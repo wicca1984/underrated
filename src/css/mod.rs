@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod colors;
+pub mod media;
 pub mod parser;
 pub mod resolve;
 pub mod values;
