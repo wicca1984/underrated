@@ -2,6 +2,7 @@
 
 mod query;
 mod serialize;
+mod text;
 
 use crate::infra::{Arena, NodeId};
 
