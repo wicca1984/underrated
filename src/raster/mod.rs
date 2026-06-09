@@ -34,30 +34,6 @@ impl Canvas {
     }
 }
 
-/// Loads image bytes from a path or file:// URL.
-fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
-    // 1. Try parsing as a URL
-    if let Ok(url) = crate::url::Url::parse(src)
-        && url.scheme == "file"
-    {
-        if let Ok(bytes) = std::fs::read(&url.path) {
-            return Some(bytes);
-        }
-        // Try relative as fallback
-        let relative_path = url.path.trim_start_matches('/');
-        if let Ok(bytes) = std::fs::read(relative_path) {
-            return Some(bytes);
-        }
-    }
-
-    // 2. Fall back to reading src directly as a standard file path
-    if let Ok(bytes) = std::fs::read(src) {
-        return Some(bytes);
-    }
-
-    None
-}
-
 /// Rasterizes a display list into a canvas of the given dimensions.
 /// spec: S-14
 pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
@@ -126,14 +102,21 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                     cursor_x += font.glyph_width(c) as f32;
                 }
             }
-            DisplayItem::Image { rect, src } => {
+            DisplayItem::Image {
+                rect,
+                src,
+                base_url,
+            } => {
                 let rect_w = rect.size.width;
                 let rect_h = rect.size.height;
                 if rect_w <= 0.0 || rect_h <= 0.0 {
                     continue;
                 }
 
-                if let Some(bytes) = load_image_bytes(src)
+                let base_url_parsed = base_url
+                    .as_ref()
+                    .and_then(|b| crate::url::Url::parse(b).ok());
+                if let Some(bytes) = crate::loader::load_image_safely(src, base_url_parsed.as_ref())
                     && let Some(decoded) = crate::image::decode_png(&bytes)
                 {
                     if decoded.width == 0 || decoded.height == 0 {
@@ -825,6 +808,7 @@ mod tests {
         let items = vec![DisplayItem::Image {
             rect: Rect::new(0.0, 0.0, 4.0, 4.0),
             src: temp_filename.to_string(),
+            base_url: None,
         }];
         let list = DisplayList(items);
 
@@ -868,6 +852,7 @@ mod tests {
         let items = vec![DisplayItem::Image {
             rect: Rect::new(0.0, 0.0, 4.0, 4.0),
             src: "this_file_does_not_exist_at_all.png".to_string(),
+            base_url: None,
         }];
         let list = DisplayList(items);
         let canvas = rasterize(&list, 4, 4);
@@ -882,6 +867,7 @@ mod tests {
         let items_corrupt = vec![DisplayItem::Image {
             rect: Rect::new(0.0, 0.0, 4.0, 4.0),
             src: corrupt_filename.to_string(),
+            base_url: None,
         }];
         let list_corrupt = DisplayList(items_corrupt);
         let canvas_corrupt = rasterize(&list_corrupt, 4, 4);
