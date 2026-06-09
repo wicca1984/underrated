@@ -145,8 +145,18 @@ fn compute_node_style(
 
     // 4. Apply declarations.
     for matched in matched_declarations {
+        let name = matched.declaration.name.as_str();
+        if name == "font" {
+            if let Some(expanded) = expand_font_shorthand(&matched.declaration.value) {
+                for (longhand_name, longhand_val) in expanded {
+                    properties.insert(longhand_name, longhand_val);
+                }
+            }
+            continue;
+        }
+
         if let Some(value) = parse_value(&matched.declaration.value) {
-            match matched.declaration.name.as_str() {
+            match name {
                 "margin" => {
                     // spec: https://www.w3.org/TR/css-box-3/#propdef-margin
                     let (top, right, bottom, left) = expand_1_to_4(&value);
@@ -335,6 +345,102 @@ fn compute_node_style(
         }
     };
     properties.insert("text-align".to_string(), resolved_text_align);
+
+    // E. Resolve white-space
+    let resolved_white_space = {
+        let raw_ws = properties.get("white-space");
+        match raw_ws {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_ws = parent_style.and_then(|s| s.get("white-space")).cloned();
+                parent_ws.unwrap_or(CssValue::Keyword("normal".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("normal".to_string()),
+        }
+    };
+    properties.insert("white-space".to_string(), resolved_white_space);
+
+    // F. Resolve letter-spacing
+    let resolved_letter_spacing = {
+        let raw_ls = properties.get("letter-spacing");
+        match raw_ls {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_ls = parent_style.and_then(|s| s.get("letter-spacing")).cloned();
+                parent_ls.unwrap_or(CssValue::Keyword("normal".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
+            Some(CssValue::Length(val, unit)) => match unit {
+                LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),
+                LengthUnit::Pt => CssValue::Length(*val * 96.0 / 72.0, LengthUnit::Px),
+                LengthUnit::Em | LengthUnit::Percent => {
+                    let factor = if *unit == LengthUnit::Percent {
+                        *val / 100.0
+                    } else {
+                        *val
+                    };
+                    CssValue::Length(factor * own_fs_val, LengthUnit::Px)
+                }
+                LengthUnit::Rem => {
+                    let root_px = get_root_font_size(dom, computed_styles);
+                    CssValue::Length(*val * root_px, LengthUnit::Px)
+                }
+                LengthUnit::Vw | LengthUnit::Vh => CssValue::Length(*val, unit.clone()),
+            },
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("normal".to_string()),
+        }
+    };
+    properties.insert("letter-spacing".to_string(), resolved_letter_spacing);
+
+    // G. Resolve word-spacing
+    let resolved_word_spacing = {
+        let raw_ws = properties.get("word-spacing");
+        match raw_ws {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_ws = parent_style.and_then(|s| s.get("word-spacing")).cloned();
+                parent_ws.unwrap_or(CssValue::Keyword("normal".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
+            Some(CssValue::Length(val, unit)) => match unit {
+                LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),
+                LengthUnit::Pt => CssValue::Length(*val * 96.0 / 72.0, LengthUnit::Px),
+                LengthUnit::Em | LengthUnit::Percent => {
+                    let factor = if *unit == LengthUnit::Percent {
+                        *val / 100.0
+                    } else {
+                        *val
+                    };
+                    CssValue::Length(factor * own_fs_val, LengthUnit::Px)
+                }
+                LengthUnit::Rem => {
+                    let root_px = get_root_font_size(dom, computed_styles);
+                    CssValue::Length(*val * root_px, LengthUnit::Px)
+                }
+                LengthUnit::Vw | LengthUnit::Vh => CssValue::Length(*val, unit.clone()),
+            },
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("normal".to_string()),
+        }
+    };
+    properties.insert("word-spacing".to_string(), resolved_word_spacing);
+
+    // H. Resolve visibility
+    let resolved_visibility = {
+        let raw_vis = properties.get("visibility");
+        match raw_vis {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_vis = parent_style.and_then(|s| s.get("visibility")).cloned();
+                parent_vis.unwrap_or(CssValue::Keyword("visible".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => {
+                CssValue::Keyword("visible".to_string())
+            }
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("visible".to_string()),
+        }
+    };
+    properties.insert("visibility".to_string(), resolved_visibility);
 
     ComputedStyle { properties }
 }
@@ -649,6 +755,140 @@ fn expand_1_to_4(value: &CssValue) -> (CssValue, CssValue, CssValue, CssValue) {
         },
         v => (v.clone(), v.clone(), v.clone(), v.clone()),
     }
+}
+
+fn expand_font_shorthand(
+    values: &[crate::css::parser::ComponentValue],
+) -> Option<Vec<(String, CssValue)>> {
+    use crate::css::CssToken;
+    use crate::css::parser::ComponentValue;
+
+    let mut non_ws = Vec::new();
+    let mut orig_indices = Vec::new();
+    for (i, cv) in values.iter().enumerate() {
+        if !matches!(cv, ComponentValue::Token(CssToken::Whitespace)) {
+            non_ws.push(cv);
+            orig_indices.push(i);
+        }
+    }
+
+    if non_ws.is_empty() {
+        return None;
+    }
+
+    // Handle global keywords
+    match non_ws.as_slice() {
+        [ComponentValue::Token(CssToken::Ident(s))] if s == "inherit" || s == "initial" => {
+            let val = CssValue::Keyword(s.clone());
+            return Some(vec![
+                ("font-size".to_string(), val.clone()),
+                ("font-family".to_string(), val.clone()),
+                ("font-weight".to_string(), val.clone()),
+                ("font-style".to_string(), val.clone()),
+                ("line-height".to_string(), val),
+            ]);
+        }
+        _ => {}
+    }
+
+    // Helper to check if a component is font-size
+    fn is_font_size_token(cv: &ComponentValue) -> bool {
+        match cv {
+            ComponentValue::Token(CssToken::Dimension { .. }) => true,
+            ComponentValue::Token(CssToken::Percentage(_)) => true,
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                matches!(
+                    s.to_ascii_lowercase().as_str(),
+                    "xx-small"
+                        | "x-small"
+                        | "small"
+                        | "medium"
+                        | "large"
+                        | "x-large"
+                        | "xx-large"
+                        | "smaller"
+                        | "larger"
+                )
+            }
+            _ => false,
+        }
+    }
+
+    // Find font-size index
+    let mut fs_idx = None;
+    for (i, cv) in non_ws.iter().enumerate() {
+        if is_font_size_token(cv) {
+            fs_idx = Some(i);
+            break;
+        }
+    }
+
+    let idx = fs_idx?;
+
+    // Parse font-size
+    let fs_val = parse_value(std::slice::from_ref(non_ws[idx]))?;
+
+    // Default prefix properties
+    let mut style_val = CssValue::Keyword("normal".to_string());
+    let mut weight_val = CssValue::Keyword("normal".to_string());
+
+    // Parse prefix properties (0..idx)
+    for &prefix_item in &non_ws[0..idx] {
+        if let ComponentValue::Token(CssToken::Ident(s)) = prefix_item {
+            let lower = s.to_ascii_lowercase();
+            if matches!(lower.as_str(), "italic" | "oblique") {
+                style_val = parse_value(std::slice::from_ref(prefix_item))?;
+            } else if matches!(lower.as_str(), "bold" | "bolder" | "lighter") {
+                weight_val = parse_value(std::slice::from_ref(prefix_item))?;
+            } else if lower == "normal" {
+                // normal can reset style/weight
+                style_val = CssValue::Keyword("normal".to_string());
+                weight_val = CssValue::Keyword("normal".to_string());
+            }
+        } else if let ComponentValue::Token(CssToken::Number(_)) = prefix_item {
+            // numeric font-weight
+            weight_val = parse_value(std::slice::from_ref(prefix_item))?;
+        }
+    }
+
+    // Parse line-height if present
+    let mut lh_val = None;
+    let family_start;
+    if idx + 1 < non_ws.len()
+        && matches!(non_ws[idx + 1], ComponentValue::Token(CssToken::Delim('/')))
+    {
+        if idx + 2 < non_ws.len() {
+            lh_val = parse_value(std::slice::from_ref(non_ws[idx + 2]));
+        }
+        family_start = idx + 3;
+    } else {
+        family_start = idx + 1;
+    }
+
+    // Parse font-family (all tokens starting from family_start)
+    if family_start >= non_ws.len() {
+        return None; // font-family is required!
+    }
+
+    let orig_family_start = orig_indices[family_start];
+    let family_slice = &values[orig_family_start..];
+    let family_str = serialize_component_values(family_slice).trim().to_string();
+    if family_str.is_empty() {
+        return None;
+    }
+    let family_val = CssValue::Keyword(family_str);
+
+    let mut result = vec![
+        ("font-size".to_string(), fs_val),
+        ("font-style".to_string(), style_val),
+        ("font-weight".to_string(), weight_val),
+        ("font-family".to_string(), family_val),
+    ];
+    if let Some(lh) = lh_val {
+        result.push(("line-height".to_string(), lh));
+    }
+
+    Some(result)
 }
 
 fn find_border_width(value: &CssValue) -> Option<CssValue> {
@@ -1283,6 +1523,170 @@ mod tests {
             Some(&CssValue::Color(crate::css::values::Color::Rgba(
                 0, 128, 0, 255
             )))
+        );
+    }
+
+    #[test]
+    fn test_s69_white_space_and_font_shorthand() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+        dom.append_child(div, p);
+
+        // 1. Default initial values check
+        let stylesheet_empty = parse_stylesheet("");
+        let styles_empty = compute_styles(&dom, &stylesheet_empty);
+        let div_style = styles_empty.get(&div).unwrap();
+        assert_eq!(
+            div_style.get("white-space"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            div_style.get("letter-spacing"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            div_style.get("word-spacing"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            div_style.get("visibility"),
+            Some(&CssValue::Keyword("visible".to_string()))
+        );
+
+        // 2. Inheritance check
+        let stylesheet_inherited =
+            parse_stylesheet("div { white-space: pre; visibility: hidden; }");
+        let styles_inherited = compute_styles(&dom, &stylesheet_inherited);
+        let p_style = styles_inherited.get(&p).unwrap();
+        assert_eq!(
+            p_style.get("white-space"),
+            Some(&CssValue::Keyword("pre".to_string()))
+        );
+        assert_eq!(
+            p_style.get("visibility"),
+            Some(&CssValue::Keyword("hidden".to_string()))
+        );
+
+        // 3. Font shorthand expansion
+        let stylesheet_font = parse_stylesheet(
+            "
+            div {
+                font: italic bold 16px \"Helvetica Neue\", sans-serif;
+            }
+            p {
+                font: 12px/20px serif;
+            }
+        ",
+        );
+        let styles_font = compute_styles(&dom, &stylesheet_font);
+        let div_style = styles_font.get(&div).unwrap();
+        assert_eq!(
+            div_style.get("font-size"),
+            Some(&CssValue::Length(16.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            div_style.get("font-style"),
+            Some(&CssValue::Keyword("italic".to_string()))
+        );
+        assert_eq!(
+            div_style.get("font-weight"),
+            Some(&CssValue::Keyword("bold".to_string()))
+        );
+        assert_eq!(
+            div_style.get("font-family"),
+            Some(&CssValue::Keyword(
+                "\"Helvetica Neue\", sans-serif".to_string()
+            ))
+        );
+
+        let p_style = styles_font.get(&p).unwrap();
+        assert_eq!(
+            p_style.get("font-size"),
+            Some(&CssValue::Length(12.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            p_style.get("font-style"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            p_style.get("font-weight"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            p_style.get("line-height"),
+            Some(&CssValue::Length(20.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            p_style.get("font-family"),
+            Some(&CssValue::Keyword("serif".to_string()))
+        );
+
+        // 4. Letter-spacing and word-spacing relative (em) resolution
+        let stylesheet_spacing = parse_stylesheet(
+            "
+            div {
+                font-size: 20px;
+                letter-spacing: 0.1em;
+                word-spacing: 0.2em;
+            }
+        ",
+        );
+        let styles_spacing = compute_styles(&dom, &stylesheet_spacing);
+        let div_style = styles_spacing.get(&div).unwrap();
+        // 0.1em of 20px = 2px
+        assert_eq!(
+            div_style.get("letter-spacing"),
+            Some(&CssValue::Length(2.0, LengthUnit::Px))
+        );
+        // 0.2em of 20px = 4px
+        assert_eq!(
+            div_style.get("word-spacing"),
+            Some(&CssValue::Length(4.0, LengthUnit::Px))
+        );
+
+        // 5. Keyword initial and inherit
+        let stylesheet_kw = parse_stylesheet(
+            "
+            div {
+                white-space: nowrap;
+                letter-spacing: 2px;
+                word-spacing: 4px;
+                visibility: hidden;
+            }
+            p {
+                white-space: initial;
+                letter-spacing: inherit;
+                word-spacing: initial;
+                visibility: inherit;
+            }
+        ",
+        );
+        let styles_kw = compute_styles(&dom, &stylesheet_kw);
+        let p_style_kw = styles_kw.get(&p).unwrap();
+        assert_eq!(
+            p_style_kw.get("white-space"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            p_style_kw.get("letter-spacing"),
+            Some(&CssValue::Length(2.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            p_style_kw.get("word-spacing"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            p_style_kw.get("visibility"),
+            Some(&CssValue::Keyword("hidden".to_string()))
         );
     }
 }
