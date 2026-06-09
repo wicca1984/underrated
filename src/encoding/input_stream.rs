@@ -2,6 +2,9 @@ pub struct InputStream {
     data: Vec<char>,
     pos: usize,
     reconsume: bool,
+    /// True when the most recent `next()` returned `None` (EOF). Used so that
+    /// `reconsume()` after EOF re-yields EOF, not the last real code point.
+    last_was_eof: bool,
 }
 
 impl InputStream {
@@ -25,6 +28,7 @@ impl InputStream {
             data,
             pos: 0,
             reconsume: false,
+            last_was_eof: false,
         }
     }
 
@@ -35,17 +39,23 @@ impl InputStream {
     pub fn next(&mut self) -> Option<char> {
         if self.reconsume {
             self.reconsume = false;
+            // After EOF, reconsume must re-yield EOF, not the last real character.
+            if self.last_was_eof {
+                return None;
+            }
             if self.pos > 0 {
                 return Some(self.data[self.pos - 1]);
             }
-            // TODO(spec): Behavior of reconsume when pos is 0 is undefined in task,
-            // but in practice next() should have been called at least once.
+            // TODO(spec): reconsume before the first next() is undefined here; in
+            // practice next() is always called at least once before reconsume().
         }
         if self.pos < self.data.len() {
             let c = self.data[self.pos];
             self.pos += 1;
+            self.last_was_eof = false;
             Some(c)
         } else {
+            self.last_was_eof = true;
             None
         }
     }
@@ -57,8 +67,13 @@ impl InputStream {
 
     /// Look at the next code point without consuming it.
     pub fn peek(&self) -> Option<char> {
-        if self.reconsume && self.pos > 0 {
-            return Some(self.data[self.pos - 1]);
+        if self.reconsume {
+            if self.last_was_eof {
+                return None;
+            }
+            if self.pos > 0 {
+                return Some(self.data[self.pos - 1]);
+            }
         }
         if self.pos < self.data.len() {
             Some(self.data[self.pos])
@@ -124,6 +139,17 @@ mod tests {
         assert_eq!(stream.next(), Some('b'));
         assert_eq!(stream.next(), Some('c'));
         assert_eq!(stream.next(), None);
+    }
+
+    #[test]
+    fn test_reconsume_after_eof() {
+        // After EOF, reconsume must re-yield EOF (None), not the last character.
+        let mut stream = InputStream::from_utf8(b"a");
+        assert_eq!(stream.next(), Some('a'));
+        assert_eq!(stream.next(), None); // EOF
+        stream.reconsume();
+        assert_eq!(stream.peek(), None); // not Some('a')
+        assert_eq!(stream.next(), None); // not Some('a')
     }
 
     #[test]
