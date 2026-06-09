@@ -405,51 +405,8 @@ fn evaluate_media_query(
     prelude: &[crate::css::parser::ComponentValue],
     viewport_width: f32,
 ) -> bool {
-    use crate::css::CssToken;
-    use crate::css::parser::ComponentValue;
-
-    // Very basic evaluation: look for (max-width: Npx) or (min-width: Npx)
-    for val in prelude {
-        if let ComponentValue::SimpleBlock {
-            associated: '(',
-            value,
-        } = val
-        {
-            let mut i = 0;
-            while i < value.len() {
-                if let ComponentValue::Token(CssToken::Ident(name)) = &value[i]
-                    && (name == "max-width" || name == "min-width")
-                    && i + 2 < value.len()
-                    && let ComponentValue::Token(CssToken::Colon) = &value[i + 1]
-                {
-                    // Skip whitespace
-                    let mut next_idx = i + 2;
-                    while next_idx < value.len() {
-                        if let ComponentValue::Token(CssToken::Whitespace) = &value[next_idx] {
-                            next_idx += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    if next_idx < value.len()
-                        && let ComponentValue::Token(CssToken::Dimension { value: v, unit }) =
-                            &value[next_idx]
-                        && unit == "px"
-                    {
-                        if name == "max-width" {
-                            return viewport_width <= *v as f32;
-                        } else if name == "min-width" {
-                            return viewport_width >= *v as f32;
-                        }
-                    }
-                }
-                i += 1;
-            }
-        }
-    }
-
-    // TODO(spec): Other media features
-    true // Default to true if not recognized or no condition
+    let query_str = serialize_component_values(prelude);
+    crate::css::media::media_matches(&query_str, viewport_width)
 }
 
 struct PeekableTokenizer<'a> {
@@ -1272,6 +1229,60 @@ mod tests {
         assert_eq!(
             p_style_keywords.get("text-align"),
             Some(&CssValue::Keyword("left".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_media_queries_integration_acceptance() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        // spec: @media rule matches screen and width thresholds
+        let stylesheet = parse_stylesheet(
+            "
+            p { color: blue; }
+            @media (max-width: 600px) {
+                p { color: red; }
+            }
+            @media screen and (min-width: 800px) {
+                p { color: green; }
+            }
+        ",
+        );
+
+        // At 500px, max-width: 600px matches, so p should be red
+        let styles_500 = compute_styles_with_viewport(&dom, &stylesheet, 500.0);
+        let p_style_500 = styles_500.get(&p).unwrap();
+        assert_eq!(
+            p_style_500.get("color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255
+            )))
+        );
+
+        // At 700px, neither @media matches, so p should be blue (fallback)
+        let styles_700 = compute_styles_with_viewport(&dom, &stylesheet, 700.0);
+        let p_style_700 = styles_700.get(&p).unwrap();
+        assert_eq!(
+            p_style_700.get("color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            )))
+        );
+
+        // At 900px, screen and (min-width: 800px) matches, so p should be green
+        let styles_900 = compute_styles_with_viewport(&dom, &stylesheet, 900.0);
+        let p_style_900 = styles_900.get(&p).unwrap();
+        assert_eq!(
+            p_style_900.get("color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 128, 0, 255
+            )))
         );
     }
 }
