@@ -91,13 +91,10 @@ impl Dom {
             .unwrap_or(&[])
     }
 
-    /// Returns the data of the given node.
-    pub fn data(&self, node: NodeId) -> &NodeData {
-        match self.arena.get(node) {
-            Some(node) => &node.data,
-            // spec: The NodeId should be valid. An invalid ID is considered a bug in the caller.
-            None => panic!("invalid NodeId"),
-        }
+    /// Returns the data of the given node, or `None` if the `NodeId` is
+    /// invalid or stale (mirrors the generational arena's `get`).
+    pub fn data(&self, node: NodeId) -> Option<&NodeData> {
+        self.arena.get(node).map(|n| &n.data)
     }
 }
 
@@ -110,7 +107,7 @@ mod tests {
         let dom = Dom::new();
         let doc_id = dom.document();
         match dom.data(doc_id) {
-            NodeData::Document => {}
+            Some(NodeData::Document) => {}
             _ => panic!("Root should be a Document"),
         }
     }
@@ -123,7 +120,7 @@ mod tests {
             attrs: vec![],
         };
         let node_id = dom.create_node(data.clone());
-        assert_eq!(dom.data(node_id), &data);
+        assert_eq!(dom.data(node_id), Some(&data));
     }
 
     #[test]
@@ -135,7 +132,7 @@ mod tests {
             system_id: "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd".to_string(),
         };
         let node_id = dom.create_node(data.clone());
-        assert_eq!(dom.data(node_id), &data);
+        assert_eq!(dom.data(node_id), Some(&data));
     }
 
     #[test]
@@ -190,8 +187,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid NodeId")]
-    fn test_invalid_id_panic() {
+    fn test_foreign_id_returns_none() {
         let mut dom1 = Dom::new();
         let dom2 = Dom::new();
 
@@ -200,7 +196,7 @@ mod tests {
             last_id = dom1.create_node(NodeData::Text(i.to_string()));
         }
 
-        // last_id is from dom1, using it on dom2 should panic
-        dom2.data(last_id);
+        // last_id is from dom1; querying dom2 must not panic and must return None.
+        assert_eq!(dom2.data(last_id), None);
     }
 }
