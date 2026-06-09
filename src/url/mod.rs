@@ -4,7 +4,7 @@
 
 mod encoding;
 
-pub use encoding::{PercentEncodeSet, percent_decode, percent_encode};
+pub use encoding::{PercentEncodeSet, encode_query, parse_query, percent_decode, percent_encode};
 
 /// A WHATWG URL.
 ///
