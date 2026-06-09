@@ -150,7 +150,7 @@ pub fn layout_flex_container(
     };
 
     let spacing = if justify_content == JustifyContent::SpaceBetween && children.len() > 1 {
-        (main_size - total_main_size) / (children.len() - 1) as f32
+        ((main_size - total_main_size) / (children.len() - 1) as f32).max(0.0)
     } else {
         0.0
     };
@@ -162,31 +162,46 @@ pub fn layout_flex_container(
         };
 
         // Align items
+        let child_style = child_box.node.and_then(|id| styles.get(&id));
         let cross_offset = match align_items {
             AlignItems::FlexStart => 0.0,
             AlignItems::Center => (container_cross_size - child_cross_size) / 2.0,
             AlignItems::Stretch => {
-                match flex_direction {
-                    FlexDirection::Row => child_box.rect.size.height = container_cross_size,
-                    FlexDirection::Column => child_box.rect.size.width = container_cross_size,
+                let has_explicit = match flex_direction {
+                    FlexDirection::Row => has_explicit_size(child_style, "height"),
+                    FlexDirection::Column => has_explicit_size(child_style, "width"),
+                };
+                if !has_explicit {
+                    match flex_direction {
+                        FlexDirection::Row => child_box.rect.size.height = container_cross_size,
+                        FlexDirection::Column => child_box.rect.size.width = container_cross_size,
+                    }
                 }
                 0.0
             }
         };
 
+        let target_origin = match flex_direction {
+            FlexDirection::Row => Point {
+                x: inner_x + main_cursor,
+                y: inner_y + cross_offset,
+            },
+            FlexDirection::Column => Point {
+                x: inner_x + cross_offset,
+                y: inner_y + main_cursor,
+            },
+        };
+
+        let dx = target_origin.x - child_box.rect.origin.x;
+        let dy = target_origin.y - child_box.rect.origin.y;
+
+        crate::layout::position::shift_layout_box(child_box, styles, dx, dy);
+
         match flex_direction {
             FlexDirection::Row => {
-                child_box.rect.origin = Point {
-                    x: inner_x + main_cursor,
-                    y: inner_y + cross_offset,
-                };
                 main_cursor += child_box.rect.size.width + spacing;
             }
             FlexDirection::Column => {
-                child_box.rect.origin = Point {
-                    x: inner_x + cross_offset,
-                    y: inner_y + main_cursor,
-                };
                 main_cursor += child_box.rect.size.height + spacing;
             }
         }
@@ -194,7 +209,7 @@ pub fn layout_flex_container(
 
     let border_box_height = match flex_direction {
         FlexDirection::Row => container_cross_size,
-        FlexDirection::Column => total_main_size,
+        FlexDirection::Column => get_px(style, "height", total_main_size),
     } + padding_top
         + padding_bottom
         + border_top
@@ -236,6 +251,17 @@ fn get_number(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
     match style.get(prop) {
         Some(CssValue::Number(v)) => *v,
         _ => default,
+    }
+}
+
+fn has_explicit_size(style: Option<&ComputedStyle>, prop: &str) -> bool {
+    let Some(style) = style else {
+        return false;
+    };
+    match style.get(prop) {
+        Some(CssValue::Length(_, _)) => true,
+        Some(CssValue::Keyword(kw)) if kw != "auto" => true,
+        _ => false,
     }
 }
 
@@ -469,5 +495,154 @@ mod tests {
         assert_eq!(container_box.children.len(), 2);
         assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
         assert!(approx_eq(container_box.children[1].rect.origin.y, 50.0));
+    }
+
+    #[test]
+    fn test_descendant_position_shifting() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child".into())],
+        });
+        dom.append_child(container, child);
+
+        let grandchild = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "grandchild".into())],
+        });
+        dom.append_child(child, grandchild);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                width: 300px;
+                justify-content: center; /* moves child to x = 100 */
+            }
+            #child {
+                width: 100px;
+                height: 50px;
+            }
+            #grandchild {
+                width: 50px;
+                height: 20px;
+                margin-left: 10px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Check container
+        assert_eq!(container_box.children.len(), 1);
+        let child_box = &container_box.children[0];
+        // Child should be shifted to x = 100 (due to centering)
+        assert!(approx_eq(child_box.rect.origin.x, 100.0));
+
+        // Grandchild should be shifted recursively as well
+        assert_eq!(child_box.children.len(), 1);
+        let grandchild_box = &child_box.children[0];
+        // Grandchild original offset was inner_x + child_margin_left = 10px.
+        // It should now be shifted to 100 + 10 = 110px.
+        assert!(approx_eq(grandchild_box.rect.origin.x, 110.0));
+    }
+
+    #[test]
+    fn test_align_items_stretch_with_explicit_size() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                height: 200px;
+                align-items: stretch;
+            }
+            #child1 {
+                height: 50px; /* has explicit height, shouldn't stretch */
+            }
+            #child2 {
+                /* has auto height, should stretch to 200 */
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        // child1 height should remain 50
+        assert!(approx_eq(container_box.children[0].rect.size.height, 50.0));
+        // child2 height should stretch to 200
+        assert!(approx_eq(container_box.children[1].rect.size.height, 200.0));
+    }
+
+    #[test]
+    fn test_column_container_explicit_height() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(container, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: column;
+                height: 300px;
+                justify-content: center; /* centers items inside 300px height */
+            }
+            div {
+                height: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Container height should be 300px
+        assert!(approx_eq(container_box.rect.size.height, 300.0));
+
+        // Child should be vertically centered: (300 - 100) / 2 = 100px offset
+        assert_eq!(container_box.children.len(), 1);
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 100.0));
     }
 }
