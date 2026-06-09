@@ -22,7 +22,11 @@ pub fn shift_layout_box(
     styles: &HashMap<NodeId, ComputedStyle>,
     dx: f32,
     dy: f32,
+    depth: usize,
 ) {
+    if depth > crate::layout::MAX_DEPTH {
+        return;
+    }
     if dx == 0.0 && dy == 0.0 {
         return;
     }
@@ -37,7 +41,7 @@ pub fn shift_layout_box(
     layout_box.rect.origin.x += dx;
     layout_box.rect.origin.y += dy;
     for child in &mut layout_box.children {
-        shift_layout_box(child, styles, dx, dy);
+        shift_layout_box(child, styles, dx, dy, depth + 1);
     }
 }
 
@@ -46,9 +50,13 @@ pub fn shift_layout_box(
 pub fn resolve_relative_positions(
     layout_box: &mut LayoutBox,
     styles: &HashMap<NodeId, ComputedStyle>,
+    depth: usize,
 ) {
+    if depth > crate::layout::MAX_DEPTH {
+        return;
+    }
     for child in &mut layout_box.children {
-        resolve_relative_positions(child, styles);
+        resolve_relative_positions(child, styles, depth + 1);
     }
 
     if let Some(style) = layout_box.node.and_then(|node_id| styles.get(&node_id))
@@ -56,36 +64,49 @@ pub fn resolve_relative_positions(
     {
         let dx = get_px(style, "left", 0.0);
         let dy = get_px(style, "top", 0.0);
-        shift_layout_box(layout_box, styles, dx, dy);
+        shift_layout_box(layout_box, styles, dx, dy, depth);
     }
 }
 
-/// Recursively finds all absolute and fixed elements in pre-order.
+/// Recursively finds all absolute and fixed elements in pre-order, pruning on display: none.
 /// spec: S-31
 pub fn find_absolute_and_fixed(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
     node: NodeId,
     out: &mut Vec<NodeId>,
+    depth: usize,
 ) {
+    if depth > crate::layout::MAX_DEPTH {
+        return;
+    }
+    if let Some(style) = styles.get(&node)
+        && matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "none")
+    {
+        // Prune the subtree if display: none
+        return;
+    }
     if let Some(style) = styles.get(&node)
         && matches!(style.get("position"), Some(CssValue::Keyword(kw)) if kw == "absolute" || kw == "fixed")
     {
         out.push(node);
     }
     for &child in dom.children(node) {
-        find_absolute_and_fixed(dom, styles, child, out);
+        find_absolute_and_fixed(dom, styles, child, out, depth + 1);
     }
 }
 
 /// Helper to recursively check if a LayoutBox with given node_id exists.
 /// spec: S-31
-pub fn has_layout_box(layout_box: &LayoutBox, node_id: NodeId) -> bool {
+pub fn has_layout_box(layout_box: &LayoutBox, node_id: NodeId, depth: usize) -> bool {
+    if depth > crate::layout::MAX_DEPTH {
+        return false;
+    }
     if layout_box.node == Some(node_id) {
         return true;
     }
     for child in &layout_box.children {
-        if has_layout_box(child, node_id) {
+        if has_layout_box(child, node_id, depth + 1) {
             return true;
         }
     }
@@ -94,12 +115,19 @@ pub fn has_layout_box(layout_box: &LayoutBox, node_id: NodeId) -> bool {
 
 /// Recursively searches for the LayoutBox with given node_id and returns a mutable reference.
 /// spec: S-31
-pub fn find_layout_box_mut(layout_box: &mut LayoutBox, node_id: NodeId) -> Option<&mut LayoutBox> {
+pub fn find_layout_box_mut(
+    layout_box: &mut LayoutBox,
+    node_id: NodeId,
+    depth: usize,
+) -> Option<&mut LayoutBox> {
+    if depth > crate::layout::MAX_DEPTH {
+        return None;
+    }
     if layout_box.node == Some(node_id) {
         return Some(layout_box);
     }
     for child in &mut layout_box.children {
-        if let Some(found) = find_layout_box_mut(child, node_id) {
+        if let Some(found) = find_layout_box_mut(child, node_id, depth + 1) {
             return Some(found);
         }
     }
@@ -118,7 +146,7 @@ pub fn insert_into_nearest_ancestor_layout_box(
     let mut current = dom.parent(node);
     let mut target_ancestor = None;
     while let Some(ancestor) = current {
-        if has_layout_box(layout_tree, ancestor) {
+        if has_layout_box(layout_tree, ancestor, 0) {
             target_ancestor = Some(ancestor);
             break;
         }
@@ -126,7 +154,7 @@ pub fn insert_into_nearest_ancestor_layout_box(
     }
 
     if let Some(ancestor) = target_ancestor
-        && let Some(parent_box) = find_layout_box_mut(layout_tree, ancestor)
+        && let Some(parent_box) = find_layout_box_mut(layout_tree, ancestor, 0)
     {
         parent_box.children.push(child_box);
         return;
@@ -144,7 +172,7 @@ pub fn layout_absolute_and_fixed_elements(
     root_box: &mut LayoutBox,
 ) {
     let mut absolute_nodes = Vec::new();
-    find_absolute_and_fixed(dom, styles, dom.document(), &mut absolute_nodes);
+    find_absolute_and_fixed(dom, styles, dom.document(), &mut absolute_nodes, 0);
 
     for node in absolute_nodes {
         // Retrieve computed styles
