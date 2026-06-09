@@ -6,6 +6,7 @@ description = "An independent web browser engine written from scratch in Rust."
 license = "Apache-2.0"
 
 [dependencies]
+boa_engine = "0.21.1"
 softbuffer = "0.4"
 ureq = { version = "3.3.0", features = ["gzip"] }
 winit = "0.30"

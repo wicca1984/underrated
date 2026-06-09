@@ -4,6 +4,11 @@
 [advisories]
 version = 2
 # RustSec 脆弱性 DB。yanked クレートは既定で deny。
+ignore = [
+  # paste: proc-macro, unmaintained だが脆弱性ではない。boa_engine の推移依存。
+  # boa が paste を外したら撤去する（定期見直し対象）。
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (no security impact); transitive via boa_engine. Remove once boa drops it." },
+]
 
 [licenses]
 version = 2
