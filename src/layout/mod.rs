@@ -1,7 +1,10 @@
+mod inline;
+
 use crate::css::values::{CssValue, LengthUnit};
-use crate::dom::Dom;
+use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
+use crate::layout::inline::layout_inline;
 use crate::style::ComputedStyle;
 use std::collections::HashMap;
 
@@ -101,21 +104,34 @@ fn layout_node(
     let mut child_cursor_y = border_box_y + border_top + padding_top;
 
     // Layout children
-    for &child in dom.children(node) {
-        if let Some(child_box) = layout_node(
+    if has_inline_content(dom, styles, node) {
+        let (line_boxes, total_height) = layout_inline(
             dom,
             styles,
-            child,
+            node,
             content_width,
             border_box_x + border_left + padding_left,
             child_cursor_y,
-            depth + 1,
-        ) {
-            if let Some(child_style) = styles.get(&child) {
-                let child_margin_bottom = get_px(child_style, "margin-bottom", 0.0);
-                child_cursor_y = child_box.rect.max_y() + child_margin_bottom;
+        );
+        children.extend(line_boxes);
+        child_cursor_y += total_height;
+    } else {
+        for &child in dom.children(node) {
+            if let Some(child_box) = layout_node(
+                dom,
+                styles,
+                child,
+                content_width,
+                border_box_x + border_left + padding_left,
+                child_cursor_y,
+                depth + 1,
+            ) {
+                if let Some(child_style) = styles.get(&child) {
+                    let child_margin_bottom = get_px(child_style, "margin-bottom", 0.0);
+                    child_cursor_y = child_box.rect.max_y() + child_margin_bottom;
+                }
+                children.push(child_box);
             }
-            children.push(child_box);
         }
     }
 
@@ -137,6 +153,28 @@ fn layout_node(
         ),
         children,
     })
+}
+
+fn has_inline_content(dom: &Dom, styles: &HashMap<NodeId, ComputedStyle>, node: NodeId) -> bool {
+    for &child in dom.children(node) {
+        if let Some(data) = dom.data(child) {
+            match data {
+                NodeData::Text(_) => return true,
+                NodeData::Element { .. } => {
+                    if let Some(style) = styles.get(&child) {
+                        // If it's display: inline, it's inline content.
+                        // Default for unknown or block-level is NOT inline for now.
+                        if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline")
+                        {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
@@ -292,5 +330,52 @@ mod tests {
         let body_box = &layout_tree.children[0];
         let div_box = &body_box.children[0];
         assert!(approx_eq(div_box.rect.size.height, 100.0));
+    }
+
+    #[test]
+    fn test_text_wrapping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        // CHAR_WIDTH is 8.0. LINE_HEIGHT is 16.0.
+        // Words: "Hello " (48px), "world " (48px), "this " (40px), "is " (24px), "a " (16px), "test" (32px)
+        // Limit: 150px
+        // Line 1: "Hello ", "world ", "this " (Total 136px)
+        // Line 2: "is ", "a ", "test" (Total 72px)
+        let text = dom.create_node(NodeData::Text("Hello world this is a test".into()));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet("div { display: block; width: 150px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+
+        // Should have 2 line boxes
+        assert_eq!(div_box.children.len(), 2);
+
+        // div_box height should be 2 * LINE_HEIGHT (16.0) = 32.0
+        assert!(approx_eq(div_box.rect.size.height, 32.0));
+
+        // Check first line children
+        let line1 = &div_box.children[0];
+        assert_eq!(line1.children.len(), 3);
+        assert!(approx_eq(line1.rect.size.width, 136.0));
+
+        let line2 = &div_box.children[1];
+        assert_eq!(line2.children.len(), 3);
+        assert!(approx_eq(line2.rect.size.width, 72.0));
     }
 }
