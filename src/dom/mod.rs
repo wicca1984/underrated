@@ -34,7 +34,7 @@ pub struct Dom {
 
 impl Dom {
     /// Creates a new DOM with a Document root.
-    /// // spec: https://dom.spec.whatwg.org/#dom-document
+    // spec: https://dom.spec.whatwg.org/#dom-document
     pub fn new() -> Self {
         let mut arena = Arena::new();
         let document = arena.insert(Node {
@@ -60,7 +60,7 @@ impl Dom {
     }
 
     /// Appends a child node to a parent node.
-    /// // spec: https://dom.spec.whatwg.org/#dom-node-appendchild
+    // spec: https://dom.spec.whatwg.org/#dom-node-appendchild
     pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
         // Remove from old parent if exists to maintain consistency.
         if let Some(old_parent_node) = self
