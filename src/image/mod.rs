@@ -50,7 +50,8 @@ pub fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
     let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
 
-    let bytes = &buf[..info.buffer_size()];
+    // Checked slice so a malformed PNG (buffer_size > buf len) cannot panic (I-6).
+    let bytes = buf.get(..info.buffer_size())?;
     let mut rgba = Vec::with_capacity((info.width as usize) * (info.height as usize) * 4);
 
     match info.color_type {
