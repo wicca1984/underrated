@@ -29,6 +29,9 @@ impl InputStream {
     }
 
     /// Next preprocessed code point, or None at EOF.
+    // spec: "consume the next input character" (HTML §13.2.3.5). The domain term
+    // is `next`; this is intentionally not `Iterator::next` (cf. `reconsume`/`peek`).
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<char> {
         if self.reconsume {
             self.reconsume = false;
