@@ -2,6 +2,10 @@
 //!
 // spec: <https://url.spec.whatwg.org/>
 
+mod encoding;
+
+pub use encoding::{PercentEncodeSet, percent_decode, percent_encode};
+
 /// A WHATWG URL.
 ///
 // spec: <https://url.spec.whatwg.org/#url-class>
@@ -310,15 +314,19 @@ impl Url {
                 }
                 State::Path => {
                     // // spec: https://url.spec.whatwg.org/#path-state
-                    // TODO(spec): Full percent-encoding support
                     if let Some(c) = c {
-                        if c == '/' || c == '\\' || c == '?' || c == '#' {
-                            if buffer == ".." {
+                        if c == '/'
+                            || (is_special(&url.scheme) && c == '\\')
+                            || c == '?'
+                            || c == '#'
+                        {
+                            let decoded = percent_decode(&buffer);
+                            if decoded == b".." {
                                 shorten_path(&url.scheme, &mut path_segments);
                                 if c != '/' && !(is_special(&url.scheme) && c == '\\') {
                                     path_segments.push(String::new());
                                 }
-                            } else if buffer == "." {
+                            } else if decoded == b"." {
                                 if c != '/' && !(is_special(&url.scheme) && c == '\\') {
                                     path_segments.push(String::new());
                                 }
@@ -327,17 +335,24 @@ impl Url {
                             }
                             buffer.clear();
                             if c == '?' {
+                                url.query = Some(String::new());
                                 state = State::Query;
                             } else if c == '#' {
+                                url.fragment = Some(String::new());
                                 state = State::Fragment;
                             }
                         } else {
-                            buffer.push(c);
+                            let mut char_buf = [0; 4];
+                            buffer.push_str(&percent_encode(
+                                c.encode_utf8(&mut char_buf),
+                                PercentEncodeSet::Path,
+                            ));
                         }
                     } else {
-                        if buffer == ".." {
+                        let decoded = percent_decode(&buffer);
+                        if decoded == b".." {
                             shorten_path(&url.scheme, &mut path_segments);
-                        } else if buffer == "." {
+                        } else if decoded == b"." {
                             // ignore
                         } else {
                             path_segments.push(buffer.clone());
@@ -352,7 +367,11 @@ impl Url {
                             buffer.clear();
                             state = State::Fragment;
                         } else {
-                            buffer.push(c);
+                            let mut char_buf = [0; 4];
+                            buffer.push_str(&percent_encode(
+                                c.encode_utf8(&mut char_buf),
+                                PercentEncodeSet::Query,
+                            ));
                         }
                     } else {
                         url.query = Some(buffer.clone());
@@ -361,7 +380,11 @@ impl Url {
                 }
                 State::Fragment => {
                     if let Some(c) = c {
-                        buffer.push(c);
+                        let mut char_buf = [0; 4];
+                        buffer.push_str(&percent_encode(
+                            c.encode_utf8(&mut char_buf),
+                            PercentEncodeSet::Fragment,
+                        ));
                     } else {
                         url.fragment = Some(buffer.clone());
                         buffer.clear();
@@ -575,5 +598,27 @@ mod tests {
         assert_eq!(url.host, Some("".to_string()));
         assert_eq!(url.path, "/tmp/test");
         assert_eq!(url.serialize(), "file:///tmp/test");
+    }
+
+    #[test]
+    fn test_percent_encoding_during_parse() {
+        let url = Url::parse("https://example.com/a b?q=#f").unwrap();
+        assert_eq!(url.path, "/a%20b");
+        assert_eq!(url.query, Some("q=".to_string())); // space in query is encoded but here q= is followed by nothing or space? 
+        // Wait, "a b" path, then "?" starts query.
+
+        let url2 = Url::parse("https://example.com/path?query space#frag space").unwrap();
+        assert_eq!(url2.path, "/path");
+        assert_eq!(url2.query, Some("query%20space".to_string()));
+        assert_eq!(url2.fragment, Some("frag%20space".to_string()));
+    }
+
+    #[test]
+    fn test_dot_segment_normalization_with_percent_encoding() {
+        let url = Url::parse("https://example.com/a/%2e%2e/b").unwrap();
+        assert_eq!(url.path, "/b");
+
+        let url2 = Url::parse("https://example.com/a/./%2e/b").unwrap();
+        assert_eq!(url2.path, "/a/b");
     }
 }
