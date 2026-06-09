@@ -16,4 +16,5 @@ pub mod html;
 pub mod infra;
 pub mod loader;
 pub mod selector;
+pub mod style;
 pub mod url;
