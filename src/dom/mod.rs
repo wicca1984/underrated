@@ -109,24 +109,46 @@ impl Dom {
         self.arena.get(node).map(|n| &n.data)
     }
 
+    /// Returns an iterator over all descendants of the given node in pre-order.
+    /// The node itself is excluded.
+    // spec: https://dom.spec.whatwg.org/#concept-tree-descendant
+    pub fn descendants_iter(&self, node: NodeId) -> DescendantsIter<'_> {
+        DescendantsIter {
+            dom: self,
+            stack: self.children(node).iter().rev().copied().collect(),
+        }
+    }
+
     /// Returns all descendants of the given node in pre-order.
     /// The node itself is excluded.
     // spec: https://dom.spec.whatwg.org/#concept-tree-descendant
     pub fn descendants(&self, node: NodeId) -> Vec<NodeId> {
-        // Iterative pre-order traversal with an explicit stack so that deeply
-        // nested (or maliciously crafted) trees cannot overflow the call stack (I-6).
-        let mut result = Vec::new();
-        let mut stack: Vec<NodeId> = self.children(node).iter().rev().copied().collect();
-        while let Some(n) = stack.pop() {
-            result.push(n);
-            stack.extend(self.children(n).iter().rev().copied());
-        }
-        result
+        self.descendants_iter(node).collect()
     }
 
     /// Serializes the given node and its descendants into an HTML string.
     pub fn serialize(&self, node: NodeId) -> String {
         serialize::serialize(self, node)
+    }
+}
+
+/// An iterator over the descendants of a DOM node in pre-order (document order).
+pub struct DescendantsIter<'a> {
+    dom: &'a Dom,
+    stack: Vec<NodeId>,
+}
+
+impl<'a> Iterator for DescendantsIter<'a> {
+    type Item = NodeId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(n) = self.stack.pop() {
+            self.stack
+                .extend(self.dom.children(n).iter().rev().copied());
+            Some(n)
+        } else {
+            None
+        }
     }
 }
 

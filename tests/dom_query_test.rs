@@ -165,3 +165,41 @@ fn test_acceptance_cases() {
     assert_eq!(dom.query_selector_all(doc, "").len(), 0);
     assert_eq!(dom.query_selector_all(doc, "div > > p").len(), 0);
 }
+
+#[test]
+fn test_deep_tree_no_overflow() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let mut current = doc;
+    // Build a very deep tree of 10,000 nested divs to ensure no stack overflow
+    for i in 0..10000 {
+        let attrs = if i == 9999 {
+            vec![
+                ("id".into(), "deepest".into()),
+                ("class".into(), "target".into()),
+            ]
+        } else {
+            vec![]
+        };
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs,
+        });
+        dom.append_child(current, div);
+        current = div;
+    }
+
+    // query_selector_all for div should find all 10,000 nested divs iteratively without overflow
+    let divs = dom.query_selector_all(doc, "div");
+    assert_eq!(divs.len(), 10000);
+
+    // query_selector for deepest class
+    let deepest_qs = dom.query_selector(doc, ".target");
+    assert!(deepest_qs.is_some());
+    assert_eq!(deepest_qs, Some(current));
+
+    // get_element_by_id for deepest element
+    let deepest_id = dom.get_element_by_id("deepest");
+    assert_eq!(deepest_id, Some(current));
+}
