@@ -86,7 +86,10 @@ mod tests {
     #[test]
     fn long_word_overflows_its_own_line() {
         // "wwwww" (50) alone exceeds 20 but is not split.
-        assert_eq!(break_lines("x wwwww y", 20.0, fixed), vec!["x", "wwwww", "y"]);
+        assert_eq!(
+            break_lines("x wwwww y", 20.0, fixed),
+            vec!["x", "wwwww", "y"]
+        );
     }
 
     #[test]

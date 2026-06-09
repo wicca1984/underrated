@@ -292,7 +292,7 @@ impl<'a> PeekableTokenizer<'a> {
 }
 
 /// Parses a list of declarations from a tokenizer.
-/// spec: https://www.w3.org/TR/css-syntax-3/#consume-list-of-declarations
+// spec: https://www.w3.org/TR/css-syntax-3/#consume-list-of-declarations
 /// We implement a simplified version here since we can't edit src/css/parser.rs.
 fn parse_declarations(tokenizer: &mut crate::css::CssTokenizer) -> Vec<Declaration> {
     let mut declarations = Vec::new();
