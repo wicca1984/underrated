@@ -50,9 +50,10 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
                             | Component::LastChild => class += 1,
                             Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
                             Component::Universal => {}
-                            Component::Not(_) => {
-                                unreachable!("Nested :not() is not possible in simple compound")
-                            }
+                            // Nested :not() (e.g. `:not(:not(.x))`) can be parsed, so count
+                            // it like a class rather than panicking on crafted input (I-6).
+                            // TODO(spec): recurse for exact Selectors-4 specificity.
+                            Component::Not(_) => class += 1,
                         }
                     }
                 }
