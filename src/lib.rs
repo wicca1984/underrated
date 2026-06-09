@@ -11,4 +11,5 @@ pub mod css;
 pub mod dom;
 pub mod encoding;
 pub mod geom;
+pub mod html;
 pub mod infra;
