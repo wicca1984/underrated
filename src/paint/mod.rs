@@ -19,6 +19,10 @@ pub enum DisplayItem {
         text: String,
         color: Color,
     },
+    Image {
+        rect: Rect,
+        src: String,
+    },
 }
 
 /// A list of display items, representing the final visual output.
@@ -262,6 +266,17 @@ pub fn build_display_list(
                     });
                 }
             }
+
+            // spec: if node is an img Element node -> Image item (S-58)
+            if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
+                && name == "img"
+                && let Some(src) = dom.get_attribute(node_id, "src")
+            {
+                items.push(DisplayItem::Image {
+                    rect: layout_box.rect,
+                    src: src.to_string(),
+                });
+            }
         }
 
         // Pre-order traversal: process current, then children left-to-right.
@@ -326,11 +341,12 @@ mod tests {
                         found_rect = true;
                     }
                 }
-                DisplayItem::Text { text, color, .. } => {
-                    if text == "paint me" && *color == Color::Rgba(0, 0, 255, 255) {
-                        found_text = true;
-                    }
+                DisplayItem::Text { text, color, .. }
+                    if text == "paint me" && *color == Color::Rgba(0, 0, 255, 255) =>
+                {
+                    found_text = true;
                 }
+                _ => {}
             }
         }
 
@@ -741,6 +757,36 @@ mod tests {
         } = solid_rects[0]
         {
             assert_eq!(rect_color, &Color::Rgba(255, 0, 0, 255));
+        }
+    }
+
+    #[test]
+    fn test_paint_image() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("src".into(), "test.png".into())],
+        });
+        dom.append_child(doc, img);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let image_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        assert_eq!(image_items.len(), 1);
+        if let DisplayItem::Image { src, .. } = image_items[0] {
+            assert_eq!(src, "test.png");
+        } else {
+            panic!("Expected DisplayItem::Image");
         }
     }
 }
