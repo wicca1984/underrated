@@ -1,5 +1,5 @@
-/// Charset detection and decoding for HTML documents.
-/// // spec: https://html.spec.whatwg.org/multipage/parsing.html#determining-the-character-encoding
+//! Charset detection and decoding for HTML documents.
+// spec: https://html.spec.whatwg.org/multipage/parsing.html#determining-the-character-encoding
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Charset {
@@ -10,7 +10,7 @@ pub enum Charset {
 }
 
 /// Sniff the charset from bytes and optional transport label.
-/// // spec: https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm
+// spec: https://html.spec.whatwg.org/multipage/parsing.html#encoding-sniffing-algorithm
 pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
     // 1. BOM sniffing (HTML §13.2.3.2)
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
