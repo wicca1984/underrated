@@ -144,6 +144,8 @@ impl<'a> SelectorParser<'a> {
                             // If it's not a compound selector, we might have just finished or it's invalid.
                             // But since we had whitespace and it's not Comma/Eof/ExplicitComb,
                             // it should be another compound selector.
+                            // TODO(spec): trailing invalid tokens after a valid selector (e.g.
+                            // `div @media`) are silently dropped instead of raising a parse error.
                             break;
                         }
                     } else {
