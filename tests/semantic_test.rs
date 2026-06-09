@@ -539,3 +539,211 @@ fn test_ax_tree_export() {
     assert_eq!(promo_link_node.role, Some("link".into()));
     assert_eq!(promo_link_node.name, "Promo Link");
 }
+
+#[test]
+fn test_semantic_view_form_elements_and_pruning() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    // <form action="/search" method="post">
+    let form = dom.create_node(NodeData::Element {
+        name: "form".into(),
+        attrs: vec![
+            ("action".into(), "/search".into()),
+            ("method".into(), "post".into()),
+        ],
+    });
+    dom.append_child(doc, form);
+
+    // 1. Associated label: <label for="username">User Name</label>
+    let label1 = dom.create_node(NodeData::Element {
+        name: "label".into(),
+        attrs: vec![("for".into(), "username".into())],
+    });
+    let label1_text = dom.create_node(NodeData::Text("User Name".into()));
+    dom.append_child(label1, label1_text);
+    dom.append_child(form, label1);
+
+    // <input id="username" type="text" value="alice">
+    let input1 = dom.create_node(NodeData::Element {
+        name: "input".into(),
+        attrs: vec![
+            ("id".into(), "username".into()),
+            ("type".into(), "text".into()),
+            ("value".into(), "alice".into()),
+        ],
+    });
+    dom.append_child(form, input1);
+
+    // 2. Nested label: <label>Password <input type="password" value="pass123"></label>
+    let label2 = dom.create_node(NodeData::Element {
+        name: "label".into(),
+        attrs: vec![],
+    });
+    let label2_text = dom.create_node(NodeData::Text("Password".into()));
+    dom.append_child(label2, label2_text);
+
+    let input2 = dom.create_node(NodeData::Element {
+        name: "input".into(),
+        attrs: vec![
+            ("type".into(), "password".into()),
+            ("value".into(), "pass123".into()),
+        ],
+    });
+    dom.append_child(label2, input2);
+    dom.append_child(form, label2);
+
+    // 3. Checkbox with aria-label: <input type="checkbox" checked aria-label="Subscribe">
+    let input_check = dom.create_node(NodeData::Element {
+        name: "input".into(),
+        attrs: vec![
+            ("type".into(), "checkbox".into()),
+            ("checked".into(), "".into()),
+            ("aria-label".into(), "Subscribe".into()),
+        ],
+    });
+    dom.append_child(form, input_check);
+
+    // 4. Radio without label/aria-label, fallback to name: <input type="radio" name="option_choice">
+    let input_radio = dom.create_node(NodeData::Element {
+        name: "input".into(),
+        attrs: vec![
+            ("type".into(), "radio".into()),
+            ("name".into(), "option_choice".into()),
+        ],
+    });
+    dom.append_child(form, input_radio);
+
+    // 5. Button: <button type="submit">Search</button>
+    let btn = dom.create_node(NodeData::Element {
+        name: "button".into(),
+        attrs: vec![("type".into(), "submit".into())],
+    });
+    let btn_text = dom.create_node(NodeData::Text("Search".into()));
+    dom.append_child(btn, btn_text);
+    dom.append_child(form, btn);
+
+    // 6. Select dropdown: <select aria-label="Selection"><option>A</option><option selected>B</option></select>
+    let select = dom.create_node(NodeData::Element {
+        name: "select".into(),
+        attrs: vec![("aria-label".into(), "Selection".into())],
+    });
+    let opt1 = dom.create_node(NodeData::Element {
+        name: "option".into(),
+        attrs: vec![],
+    });
+    let opt1_text = dom.create_node(NodeData::Text("A".into()));
+    dom.append_child(opt1, opt1_text);
+    let opt2 = dom.create_node(NodeData::Element {
+        name: "option".into(),
+        attrs: vec![("selected".into(), "".into())],
+    });
+    let opt2_text = dom.create_node(NodeData::Text("B".into()));
+    dom.append_child(opt2, opt2_text);
+    dom.append_child(select, opt1);
+    dom.append_child(select, opt2);
+    dom.append_child(form, select);
+
+    // 7. Hidden element that should be pruned: <div style="display: none;"><input type="text" value="secret"></div>
+    let hidden_div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("style".into(), "display: none;".into())],
+    });
+    let hidden_input = dom.create_node(NodeData::Element {
+        name: "input".into(),
+        attrs: vec![
+            ("type".into(), "text".into()),
+            ("value".into(), "secret".into()),
+        ],
+    });
+    dom.append_child(hidden_div, hidden_input);
+    dom.append_child(form, hidden_div);
+
+    let view = build_semantic_view(&dom);
+
+    // Verify SemanticNodes
+    assert_eq!(view.roots.len(), 1);
+
+    if let SemanticNode::Form {
+        action,
+        method,
+        children,
+    } = &view.roots[0]
+    {
+        assert_eq!(action, "/search");
+        assert_eq!(method, "post");
+
+        // children should contain:
+        // 1. Text("User Name") (from label1 text)
+        // 2. Input { label: "User Name", input_type: "text", value: "alice", ... }
+        // 3. Text("Password") (from label2 text)
+        // 4. Input { label: "Password", input_type: "password", value: "pass123", ... }
+        // 5. Input { label: "Subscribe", input_type: "checkbox", checked: true, ... }
+        // 6. Input { label: "option_choice", input_type: "radio", checked: false, ... }
+        // 7. Button { label: "Search", button_type: "submit" }
+        // 8. Select { label: "Selection", selected: Some("B"), options: ["A", "B"] }
+        // Note: The hidden input MUST be pruned.
+
+        assert_eq!(children.len(), 8);
+        assert_eq!(children[0], SemanticNode::Text("User Name".into()));
+        assert_eq!(
+            children[1],
+            SemanticNode::Input {
+                label: "User Name".into(),
+                input_type: "text".into(),
+                value: "alice".into(),
+                checked: false,
+            }
+        );
+        assert_eq!(children[2], SemanticNode::Text("Password".into()));
+        assert_eq!(
+            children[3],
+            SemanticNode::Input {
+                label: "Password".into(),
+                input_type: "password".into(),
+                value: "pass123".into(),
+                checked: false,
+            }
+        );
+        assert_eq!(
+            children[4],
+            SemanticNode::Input {
+                label: "Subscribe".into(),
+                input_type: "checkbox".into(),
+                value: "on".into(),
+                checked: true,
+            }
+        );
+        assert_eq!(
+            children[5],
+            SemanticNode::Input {
+                label: "option_choice".into(),
+                input_type: "radio".into(),
+                value: "on".into(),
+                checked: false,
+            }
+        );
+        assert_eq!(
+            children[6],
+            SemanticNode::Button {
+                label: "Search".into(),
+                button_type: "submit".into(),
+            }
+        );
+        assert_eq!(
+            children[7],
+            SemanticNode::Select {
+                label: "Selection".into(),
+                selected: Some("B".into()),
+                options: vec!["A".into(), "B".into()],
+            }
+        );
+    } else {
+        panic!("Expected root to be a Form node, got {:?}", view.roots[0]);
+    }
+
+    // Verify Markdown Output
+    let md = to_markdown(&view);
+    let expected_md = "[Form: /search (post)]\nUser Name\n\nUser Name: [alice]\n\nPassword\n\nPassword: [pass123]\n\n[x] Subscribe\n\n( ) option_choice\n\n[Button: Search]\n\nSelection: [B] v";
+    assert_eq!(md, expected_md);
+}

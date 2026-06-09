@@ -20,6 +20,29 @@ pub enum SemanticNode {
     Text(String),
     /// A generic section grouping related semantic nodes.
     Section(Vec<SemanticNode>),
+
+    // --- Wave L / S-63 Form elements ---
+    /// A form container.
+    Form {
+        action: String,
+        method: String,
+        children: Vec<SemanticNode>,
+    },
+    /// An input element (textbox, checkbox, radio, textarea, etc.)
+    Input {
+        label: String,
+        input_type: String,
+        value: String,
+        checked: bool,
+    },
+    /// A button element.
+    Button { label: String, button_type: String },
+    /// A select element.
+    Select {
+        label: String,
+        selected: Option<String>,
+        options: Vec<String>,
+    },
 }
 
 /// A simplified, semantic view of a DOM document.
@@ -45,11 +68,196 @@ pub fn build_semantic_view(dom: &Dom) -> SemanticView {
     SemanticView { roots }
 }
 
+/// Helper to find the label text associated with a form control.
+fn find_label(dom: &Dom, node_id: crate::infra::NodeId) -> String {
+    // 1. Check aria-label attribute
+    if let Some(label) = dom.get_attribute(node_id, "aria-label") {
+        return label.to_string();
+    }
+
+    // 2. Check if there's an associated <label> element via `for` attribute
+    if let Some(id_val) = dom.get_attribute(node_id, "id") {
+        let id_trimmed = id_val.trim();
+        if !id_trimmed.is_empty() {
+            let doc = dom.document();
+            for desc_id in dom.descendants(doc) {
+                match dom.data(desc_id) {
+                    Some(NodeData::Element { name, .. }) if name == "label" => {
+                        if let Some(for_val) = dom.get_attribute(desc_id, "for")
+                            && for_val.trim() == id_trimmed
+                        {
+                            return dom.text_content(desc_id).trim().to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 3. Check if input is nested inside a <label> element
+    let mut curr = dom.parent(node_id);
+    while let Some(p) = curr {
+        match dom.data(p) {
+            Some(NodeData::Element { name, .. }) if name == "label" => {
+                return dom.text_content(p).trim().to_string();
+            }
+            _ => {}
+        }
+        curr = dom.parent(p);
+    }
+
+    // 4. Check placeholder attribute
+    if let Some(placeholder) = dom.get_attribute(node_id, "placeholder") {
+        return placeholder.to_string();
+    }
+
+    // 5. Check name attribute
+    if let Some(name_val) = dom.get_attribute(node_id, "name") {
+        return name_val.to_string();
+    }
+
+    String::new()
+}
+
 /// Recursively builds a list of semantic nodes from a DOM node.
 fn build_nodes(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode> {
+    // spec: Prune elements hidden via aria-hidden or display: none / visibility: hidden (S-54 / S-63)
+    if is_hidden(dom, node_id) {
+        return Vec::new();
+    }
+
+    // spec: presentation/none roles are pruned (skipped, children promoted)
+    if let Some(r) = role(dom, node_id)
+        && (r == "presentation" || r == "none")
+    {
+        return build_children(dom, node_id);
+    }
+
     let Some(data) = dom.data(node_id) else {
         return Vec::new();
     };
+
+    // Try role-based semantic matching first for consistency with AXTree (t0084 / S-63)
+    let computed_role = role(dom, node_id);
+    match computed_role.as_deref() {
+        Some("heading") => {
+            let level = if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
+                if name.starts_with('h') && name.len() == 2 {
+                    name[1..].parse().unwrap_or(1)
+                } else if let Some(level_str) = dom.get_attribute(node_id, "aria-level") {
+                    level_str.parse().unwrap_or(2)
+                } else {
+                    2
+                }
+            } else {
+                2
+            };
+            return vec![SemanticNode::Heading {
+                level,
+                text: dom.text_content(node_id),
+            }];
+        }
+        Some("link") => {
+            let href = dom
+                .get_attribute(node_id, "href")
+                .unwrap_or_default()
+                .to_string();
+            return vec![SemanticNode::Link {
+                text: dom.text_content(node_id),
+                href,
+            }];
+        }
+        Some("button") => {
+            let label = accessible_name(dom, node_id);
+            let button_type = dom
+                .get_attribute(node_id, "type")
+                .unwrap_or("submit")
+                .to_ascii_lowercase();
+            return vec![SemanticNode::Button { label, button_type }];
+        }
+        Some("checkbox") => {
+            let label = find_label(dom, node_id);
+            let value = dom
+                .get_attribute(node_id, "value")
+                .unwrap_or("on")
+                .to_string();
+            let checked = dom.get_attribute(node_id, "checked").is_some();
+            return vec![SemanticNode::Input {
+                label,
+                input_type: "checkbox".to_string(),
+                value,
+                checked,
+            }];
+        }
+        Some("radio") => {
+            let label = find_label(dom, node_id);
+            let value = dom
+                .get_attribute(node_id, "value")
+                .unwrap_or("on")
+                .to_string();
+            let checked = dom.get_attribute(node_id, "checked").is_some();
+            return vec![SemanticNode::Input {
+                label,
+                input_type: "radio".to_string(),
+                value,
+                checked,
+            }];
+        }
+        Some("textbox" | "searchbox" | "slider" | "spinbutton") => {
+            let label = find_label(dom, node_id);
+            let mut value = String::new();
+            let mut input_type = "text".to_string();
+            if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
+                if name == "textarea" {
+                    input_type = "textarea".to_string();
+                    value = dom.text_content(node_id);
+                } else {
+                    if let Some(type_val) = dom.get_attribute(node_id, "type") {
+                        input_type = type_val.to_ascii_lowercase();
+                    }
+                    if let Some(value_val) = dom.get_attribute(node_id, "value") {
+                        value = value_val.to_string();
+                    }
+                }
+            }
+            return vec![SemanticNode::Input {
+                label,
+                input_type,
+                value,
+                checked: false,
+            }];
+        }
+        Some("form") => {
+            let action = dom
+                .get_attribute(node_id, "action")
+                .unwrap_or_default()
+                .to_string();
+            let method = dom
+                .get_attribute(node_id, "method")
+                .unwrap_or("get")
+                .to_ascii_lowercase();
+            let children = build_children(dom, node_id);
+            return vec![SemanticNode::Form {
+                action,
+                method,
+                children,
+            }];
+        }
+        Some("list") => {
+            let items = build_children(dom, node_id);
+            return vec![SemanticNode::List(items)];
+        }
+        Some("listitem") => {
+            let children_nodes = build_children(dom, node_id);
+            if has_links(&children_nodes) {
+                return vec![SemanticNode::Section(children_nodes)];
+            } else {
+                return vec![SemanticNode::ListItem(dom.text_content(node_id))];
+            }
+        }
+        _ => {}
+    }
 
     match data {
         NodeData::Element { name, attrs } => {
@@ -64,8 +272,6 @@ fn build_nodes(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode> {
                 }
                 // Paragraphs
                 "p" => {
-                    // Check if it has links. If it does, we use Section to keep them as Link nodes.
-                    // Otherwise, we use Paragraph for simplicity.
                     let children_nodes = build_children(dom, node_id);
                     if has_links(&children_nodes) {
                         vec![SemanticNode::Section(children_nodes)]
@@ -87,16 +293,11 @@ fn build_nodes(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode> {
                 }
                 // Lists
                 "ul" | "ol" => {
-                    let items = dom
-                        .children(node_id)
-                        .iter()
-                        .flat_map(|&c| build_nodes(dom, c))
-                        .collect();
+                    let items = build_children(dom, node_id);
                     vec![SemanticNode::List(items)]
                 }
                 // List Items
                 "li" => {
-                    // Similar to p, use Section if complex, otherwise ListItem.
                     let children_nodes = build_children(dom, node_id);
                     if has_links(&children_nodes) {
                         vec![SemanticNode::Section(children_nodes)]
@@ -104,15 +305,91 @@ fn build_nodes(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode> {
                         vec![SemanticNode::ListItem(dom.text_content(node_id))]
                     }
                 }
+                // Form element (fallback)
+                "form" => {
+                    let action = attrs
+                        .iter()
+                        .find(|(n, _)| n == "action")
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_default();
+                    let method = attrs
+                        .iter()
+                        .find(|(n, _)| n == "method")
+                        .map(|(_, v)| v.to_ascii_lowercase())
+                        .unwrap_or_else(|| "get".to_string());
+                    let children = build_children(dom, node_id);
+                    vec![SemanticNode::Form {
+                        action,
+                        method,
+                        children,
+                    }]
+                }
+                // Input elements (fallback)
+                "input" => {
+                    let label = find_label(dom, node_id);
+                    let input_type = attrs
+                        .iter()
+                        .find(|(n, _)| n == "type")
+                        .map(|(_, v)| v.to_ascii_lowercase())
+                        .unwrap_or_else(|| "text".to_string());
+                    let value = attrs
+                        .iter()
+                        .find(|(n, _)| n == "value")
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_default();
+                    let checked = attrs.iter().any(|(k, _)| k == "checked");
+                    vec![SemanticNode::Input {
+                        label,
+                        input_type,
+                        value,
+                        checked,
+                    }]
+                }
+                // Textarea (fallback)
+                "textarea" => {
+                    let label = find_label(dom, node_id);
+                    let value = dom.text_content(node_id);
+                    vec![SemanticNode::Input {
+                        label,
+                        input_type: "textarea".to_string(),
+                        value,
+                        checked: false,
+                    }]
+                }
+                // Select elements
+                "select" => {
+                    let label = find_label(dom, node_id);
+                    let mut options = Vec::new();
+                    let mut selected = None;
+                    for &child in dom.children(node_id) {
+                        match dom.data(child) {
+                            Some(NodeData::Element {
+                                name: child_name, ..
+                            }) if child_name == "option" => {
+                                let opt_text = dom.text_content(child);
+                                options.push(opt_text.clone());
+                                if dom.get_attribute(child, "selected").is_some() {
+                                    selected = Some(opt_text);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if selected.is_none() && !options.is_empty() {
+                        selected = Some(options[0].clone());
+                    }
+                    vec![SemanticNode::Select {
+                        label,
+                        selected,
+                        options,
+                    }]
+                }
                 // Sections and other block containers
                 "div" | "section" | "article" | "main" | "nav" | "aside" | "header" | "footer" => {
                     vec![SemanticNode::Section(build_children(dom, node_id))]
                 }
                 // Inline text formatting (flatten to Text)
-                "strong" | "b" | "em" | "i" | "span" => {
-                    // Recurse to children to handle nested links or just text.
-                    build_children(dom, node_id)
-                }
+                "strong" | "b" | "em" | "i" | "span" => build_children(dom, node_id),
                 // Unknown elements: recurse into children
                 _ => build_children(dom, node_id),
             }
@@ -140,7 +417,9 @@ fn build_children(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode>
 fn has_links(nodes: &[SemanticNode]) -> bool {
     nodes.iter().any(|n| match n {
         SemanticNode::Link { .. } => true,
-        SemanticNode::Section(children) | SemanticNode::List(children) => has_links(children),
+        SemanticNode::Section(children)
+        | SemanticNode::List(children)
+        | SemanticNode::Form { children, .. } => has_links(children),
         _ => false,
     })
 }
@@ -230,6 +509,118 @@ fn append_markdown(node: &SemanticNode, result: &mut String, is_block: bool) {
                 if is_block {
                     result.push_str("\n\n");
                 }
+            }
+        }
+        SemanticNode::Form {
+            action,
+            method,
+            children,
+        } => {
+            if is_block && !result.is_empty() && !result.ends_with("\n\n") {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push('\n');
+            }
+            result.push_str(&format!("[Form: {} ({})]\n", action, method));
+            let mut sub = String::new();
+            for child in children {
+                append_markdown(child, &mut sub, true);
+            }
+            result.push_str(sub.trim());
+            result.push_str("\n\n");
+        }
+        SemanticNode::Input {
+            label,
+            input_type,
+            value,
+            checked,
+        } => {
+            if is_block && !result.is_empty() && !result.ends_with("\n\n") {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push('\n');
+            }
+            if input_type == "checkbox" {
+                let box_char = if *checked { 'x' } else { ' ' };
+                if label.is_empty() {
+                    result.push_str(&format!("[{}]", box_char));
+                } else {
+                    result.push_str(&format!("[{}] {}", box_char, label));
+                }
+            } else if input_type == "radio" {
+                let radio_char = if *checked { 'x' } else { ' ' };
+                if label.is_empty() {
+                    result.push_str(&format!("({})", radio_char));
+                } else {
+                    result.push_str(&format!("({}) {}", radio_char, label));
+                }
+            } else {
+                if label.is_empty() {
+                    if value.is_empty() {
+                        result.push_str("[Input]");
+                    } else {
+                        result.push_str(&format!("[Input: {}]", value));
+                    }
+                } else {
+                    if value.is_empty() {
+                        result.push_str(&format!("{}: [ ]", label));
+                    } else {
+                        result.push_str(&format!("{}: [{}]", label, value));
+                    }
+                }
+            }
+            if is_block {
+                result.push_str("\n\n");
+            }
+        }
+        SemanticNode::Button {
+            label,
+            button_type: _,
+        } => {
+            if is_block && !result.is_empty() && !result.ends_with("\n\n") {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push('\n');
+            }
+            if label.is_empty() {
+                result.push_str("[Button]");
+            } else {
+                result.push_str(&format!("[Button: {}]", label));
+            }
+            if is_block {
+                result.push_str("\n\n");
+            }
+        }
+        SemanticNode::Select {
+            label,
+            selected,
+            options: _,
+        } => {
+            if is_block && !result.is_empty() && !result.ends_with("\n\n") {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push('\n');
+                result.push('\n');
+            }
+            if label.is_empty() {
+                if let Some(sel) = selected {
+                    result.push_str(&format!("[Select: {}]", sel));
+                } else {
+                    result.push_str("[Select]");
+                }
+            } else {
+                if let Some(sel) = selected {
+                    result.push_str(&format!("{}: [{}] v", label, sel));
+                } else {
+                    result.push_str(&format!("{}: [ ] v", label));
+                }
+            }
+            if is_block {
+                result.push_str("\n\n");
             }
         }
     }
