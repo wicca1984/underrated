@@ -1,4 +1,5 @@
 mod encoding;
+mod geom;
 mod infra;
 
 fn main() {
