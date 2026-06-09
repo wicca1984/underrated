@@ -19,9 +19,9 @@ impl ComputedStyle {
 }
 
 /// Computes the specificity of a complex selector.
-/// Returns a tuple of (id, class, type) counts.
+/// Returns a tuple of (inline, id, class, type) counts.
 // spec: https://www.w3.org/TR/selectors-4/#specificity
-pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32) {
+pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
     let mut id = 0;
     let mut class = 0;
     let mut type_ = 0;
@@ -50,9 +50,10 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32) {
                             | Component::LastChild => class += 1,
                             Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
                             Component::Universal => {}
-                            Component::Not(_) => {
-                                unreachable!("Nested :not() is not possible in simple compound")
-                            }
+                            // Nested :not() (e.g. `:not(:not(.x))`) can be parsed, so count
+                            // it like a class rather than panicking on crafted input (I-6).
+                            // TODO(spec): recurse for exact Selectors-4 specificity.
+                            Component::Not(_) => class += 1,
                         }
                     }
                 }
@@ -60,18 +61,27 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32) {
         }
     }
 
-    (id, class, type_)
+    (0, id, class, type_)
 }
 
 /// Computes the styles for all nodes in the DOM based on the given stylesheet.
 pub fn compute_styles(dom: &Dom, stylesheet: &Stylesheet) -> HashMap<NodeId, ComputedStyle> {
+    compute_styles_with_viewport(dom, stylesheet, 1024.0)
+}
+
+/// Computes the styles for all nodes in the DOM based on the given stylesheet and viewport width.
+pub fn compute_styles_with_viewport(
+    dom: &Dom,
+    stylesheet: &Stylesheet,
+    viewport_width: f32,
+) -> HashMap<NodeId, ComputedStyle> {
     let mut styles = HashMap::new();
     let root = dom.document();
 
     // Traverse the DOM in pre-order to resolve styles, allowing inheritance from parents.
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        let computed = compute_node_style(dom, node, stylesheet, &styles);
+        let computed = compute_node_style(dom, node, stylesheet, &styles, viewport_width);
         styles.insert(node, computed);
 
         // Add children to stack in reverse order to maintain pre-order traversal.
@@ -88,44 +98,37 @@ fn compute_node_style(
     node: NodeId,
     stylesheet: &Stylesheet,
     computed_styles: &HashMap<NodeId, ComputedStyle>,
+    viewport_width: f32,
 ) -> ComputedStyle {
     let mut properties = HashMap::new();
 
     // 1. Collect all matching rules and their declarations.
     let mut matched_declarations = Vec::new();
 
-    for (rule_index, rule) in stylesheet.rules.iter().enumerate() {
-        if let Rule::Qualified(qualified_rule) = rule {
-            // Re-parse prelude as selector list.
-            // In a real engine, this would be done once during stylesheet parsing.
-            // SPEC S-10: "serialize/parse it back to a selector string via parse_selector_list, or match per complex selector".
-            // Since Rule::Qualified prelude is Vec<ComponentValue>, and selector::parse_selector_list takes &str,
-            // we should have a way to get selectors.
-            // However, the task says: "the qualified rule prelude is Vec<ComponentValue> — serialize/parse it back to a selector string via parse_selector_list, or match per complex selector".
+    collect_matched_rules(
+        dom,
+        node,
+        &stylesheet.rules,
+        viewport_width,
+        &mut matched_declarations,
+    );
 
-            // For now, let's assume we can match against the rules.
-            // I need to find a way to get ComplexSelectors from QualifiedRule.
-            // The task implies I might need to serialize ComponentValue back to string to use parse_selector_list.
-
-            let selector_str = serialize_component_values(&qualified_rule.prelude);
-            if let Ok(selector_list) = crate::selector::parse_selector_list(&selector_str) {
-                for sel in &selector_list.0 {
-                    if matches_complex(sel, dom, node) {
-                        let spec = specificity(sel);
-                        for decl in &qualified_rule.declarations {
-                            matched_declarations.push(MatchedDeclaration {
-                                declaration: decl,
-                                specificity: spec,
-                                source_order: rule_index,
-                            });
-                        }
-                    }
-                }
-            }
+    // 2. Add declarations from inline style attribute.
+    if let Some(crate::dom::NodeData::Element { attrs, .. }) = dom.data(node)
+        && let Some((_, style_attr)) = attrs.iter().find(|(name, _)| name == "style")
+    {
+        let mut tokenizer = crate::css::CssTokenizer::new(style_attr);
+        let declarations = parse_declarations(&mut tokenizer);
+        for decl in declarations {
+            matched_declarations.push(MatchedDeclaration {
+                declaration: decl,
+                specificity: (1, 0, 0, 0),
+                source_order: 0, // Doesn't matter for inline style if specificity is highest
+            });
         }
     }
 
-    // 2. Cascade: sort by (!important, specificity, source order).
+    // 3. Cascade: sort by (!important, specificity, source order).
     // spec: https://www.w3.org/TR/css-cascade-4/#cascading
     matched_declarations.sort_by(|a, b| {
         // !important
@@ -140,14 +143,14 @@ fn compute_node_style(
         a.source_order.cmp(&b.source_order)
     });
 
-    // 3. Apply declarations.
+    // 4. Apply declarations.
     for matched in matched_declarations {
         if let Some(value) = parse_value(&matched.declaration.value) {
             properties.insert(matched.declaration.name.clone(), value);
         }
     }
 
-    // 4. Inheritance.
+    // 5. Inheritance.
     // spec: https://www.w3.org/TR/css-cascade-4/#inheritance
     if let Some(parent_style) = dom
         .parent(node)
@@ -163,9 +166,293 @@ fn compute_node_style(
     ComputedStyle { properties }
 }
 
-struct MatchedDeclaration<'a> {
-    declaration: &'a Declaration,
-    specificity: (u32, u32, u32),
+fn collect_matched_rules(
+    dom: &Dom,
+    node: NodeId,
+    rules: &[Rule],
+    viewport_width: f32,
+    matched_declarations: &mut Vec<MatchedDeclaration>,
+) {
+    for (rule_index, rule) in rules.iter().enumerate() {
+        match rule {
+            Rule::Qualified(qualified_rule) => {
+                let selector_str = serialize_component_values(&qualified_rule.prelude);
+                if let Ok(selector_list) = crate::selector::parse_selector_list(&selector_str) {
+                    for sel in &selector_list.0 {
+                        if matches_complex(sel, dom, node) {
+                            let spec = specificity(sel);
+                            for decl in &qualified_rule.declarations {
+                                matched_declarations.push(MatchedDeclaration {
+                                    declaration: decl.clone(),
+                                    specificity: spec,
+                                    source_order: rule_index,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            Rule::At(at_rule)
+                if at_rule.name == "media"
+                    && evaluate_media_query(&at_rule.prelude, viewport_width) =>
+            {
+                if let Some(block) = &at_rule.block {
+                    let inner_css = serialize_component_values(block);
+                    let inner_stylesheet = crate::css::parser::parse_stylesheet(&inner_css);
+                    collect_matched_rules(
+                        dom,
+                        node,
+                        &inner_stylesheet.rules,
+                        viewport_width,
+                        matched_declarations,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn evaluate_media_query(
+    prelude: &[crate::css::parser::ComponentValue],
+    viewport_width: f32,
+) -> bool {
+    use crate::css::CssToken;
+    use crate::css::parser::ComponentValue;
+
+    // Very basic evaluation: look for (max-width: Npx) or (min-width: Npx)
+    for val in prelude {
+        if let ComponentValue::SimpleBlock {
+            associated: '(',
+            value,
+        } = val
+        {
+            let mut i = 0;
+            while i < value.len() {
+                if let ComponentValue::Token(CssToken::Ident(name)) = &value[i]
+                    && (name == "max-width" || name == "min-width")
+                    && i + 2 < value.len()
+                    && let ComponentValue::Token(CssToken::Colon) = &value[i + 1]
+                {
+                    // Skip whitespace
+                    let mut next_idx = i + 2;
+                    while next_idx < value.len() {
+                        if let ComponentValue::Token(CssToken::Whitespace) = &value[next_idx] {
+                            next_idx += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if next_idx < value.len()
+                        && let ComponentValue::Token(CssToken::Dimension { value: v, unit }) =
+                            &value[next_idx]
+                        && unit == "px"
+                    {
+                        if name == "max-width" {
+                            return viewport_width <= *v as f32;
+                        } else if name == "min-width" {
+                            return viewport_width >= *v as f32;
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+
+    // TODO(spec): Other media features
+    true // Default to true if not recognized or no condition
+}
+
+struct PeekableTokenizer<'a> {
+    tokenizer: &'a mut crate::css::CssTokenizer,
+    peeked: Option<crate::css::CssToken>,
+}
+
+impl<'a> PeekableTokenizer<'a> {
+    fn new(tokenizer: &'a mut crate::css::CssTokenizer) -> Self {
+        Self {
+            tokenizer,
+            peeked: None,
+        }
+    }
+
+    fn next_token(&mut self) -> crate::css::CssToken {
+        if let Some(token) = self.peeked.take() {
+            token
+        } else {
+            self.tokenizer.next_token()
+        }
+    }
+
+    fn peek_token(&mut self) -> &crate::css::CssToken {
+        self.peeked
+            .get_or_insert_with(|| self.tokenizer.next_token())
+    }
+}
+
+/// Parses a list of declarations from a tokenizer.
+/// spec: https://www.w3.org/TR/css-syntax-3/#consume-list-of-declarations
+/// We implement a simplified version here since we can't edit src/css/parser.rs.
+fn parse_declarations(tokenizer: &mut crate::css::CssTokenizer) -> Vec<Declaration> {
+    let mut declarations = Vec::new();
+    let mut pt = PeekableTokenizer::new(tokenizer);
+    loop {
+        let token = pt.next_token();
+        match token {
+            crate::css::CssToken::Whitespace | crate::css::CssToken::Semicolon => {}
+            crate::css::CssToken::Eof => return declarations,
+            crate::css::CssToken::Ident(name) => {
+                // Consume until colon
+                let mut tokens = vec![crate::css::CssToken::Ident(name)];
+                loop {
+                    let next = pt.peek_token();
+                    if *next == crate::css::CssToken::Semicolon
+                        || *next == crate::css::CssToken::Eof
+                    {
+                        break;
+                    }
+                    tokens.push(pt.next_token());
+                }
+                if let Some(decl) = parse_declaration_from_tokens(tokens) {
+                    declarations.push(decl);
+                }
+            }
+            _ => {
+                // Skip until semicolon or EOF
+                loop {
+                    let next = pt.peek_token();
+                    if *next == crate::css::CssToken::Semicolon
+                        || *next == crate::css::CssToken::Eof
+                    {
+                        break;
+                    }
+                    pt.next_token();
+                }
+            }
+        }
+    }
+}
+
+fn parse_declaration_from_tokens(tokens: Vec<crate::css::CssToken>) -> Option<Declaration> {
+    let mut it = tokens.into_iter();
+    let name = if let Some(crate::css::CssToken::Ident(name)) = it.next() {
+        name
+    } else {
+        return None;
+    };
+
+    let mut next = it.next();
+    while let Some(crate::css::CssToken::Whitespace) = next {
+        next = it.next();
+    }
+
+    if next != Some(crate::css::CssToken::Colon) {
+        return None;
+    }
+
+    let mut tokens_for_value: Vec<crate::css::CssToken> = it.collect();
+    let mut important = false;
+    let mut non_whitespace_indices = Vec::new();
+    for (i, t) in tokens_for_value.iter().enumerate() {
+        if !matches!(t, crate::css::CssToken::Whitespace) {
+            non_whitespace_indices.push(i);
+        }
+    }
+
+    if non_whitespace_indices.len() >= 2 {
+        let idx1 = non_whitespace_indices[non_whitespace_indices.len() - 2];
+        let idx2 = non_whitespace_indices[non_whitespace_indices.len() - 1];
+        match (&tokens_for_value[idx1], &tokens_for_value[idx2]) {
+            (crate::css::CssToken::Delim('!'), crate::css::CssToken::Ident(ident))
+                if ident.eq_ignore_ascii_case("important") =>
+            {
+                important = true;
+                tokens_for_value.truncate(idx1);
+            }
+            _ => {}
+        }
+    }
+
+    let value = tokens_to_component_values(tokens_for_value);
+
+    Some(Declaration {
+        name,
+        value,
+        important,
+    })
+}
+
+fn tokens_to_component_values(
+    tokens: Vec<crate::css::CssToken>,
+) -> Vec<crate::css::parser::ComponentValue> {
+    use crate::css::CssToken;
+    use crate::css::parser::ComponentValue;
+
+    let mut values = Vec::new();
+    let mut it = tokens.into_iter().peekable();
+    while let Some(token) = it.next() {
+        match token {
+            CssToken::LeftBrace | CssToken::LeftBracket | CssToken::LeftParen => {
+                // The outer arm guarantees a bracket token; the wildcard default
+                // keeps this panic-free on any future change (I-6 — inline style is
+                // untrusted input).
+                let (associated, closing) = match token {
+                    CssToken::LeftBrace => ('{', CssToken::RightBrace),
+                    CssToken::LeftBracket => ('[', CssToken::RightBracket),
+                    CssToken::LeftParen => ('(', CssToken::RightParen),
+                    _ => ('{', CssToken::RightBrace),
+                };
+                let mut block_tokens = Vec::new();
+                let mut depth = 1;
+                for t in it.by_ref() {
+                    if t == token {
+                        depth += 1;
+                    } else if t == closing {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    block_tokens.push(t);
+                }
+                values.push(ComponentValue::SimpleBlock {
+                    associated,
+                    value: tokens_to_component_values(block_tokens),
+                });
+            }
+            CssToken::Function(name) => {
+                let mut func_tokens = Vec::new();
+                let mut depth = 1;
+                for t in it.by_ref() {
+                    if let CssToken::Function(_) = t {
+                        depth += 1;
+                    } else if t == CssToken::LeftParen {
+                        depth += 1;
+                    } else if t == CssToken::RightParen {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    func_tokens.push(t);
+                }
+                values.push(ComponentValue::Function {
+                    name,
+                    value: tokens_to_component_values(func_tokens),
+                });
+            }
+            _ => {
+                values.push(ComponentValue::Token(token));
+            }
+        }
+    }
+    values
+}
+
+struct MatchedDeclaration {
+    declaration: Declaration,
+    specificity: (u32, u32, u32, u32),
     source_order: usize,
 }
 
@@ -283,31 +570,31 @@ mod tests {
             .unwrap()
             .0
             .remove(0);
-        assert_eq!(specificity(&sel), (0, 0, 1));
+        assert_eq!(specificity(&sel), (0, 0, 0, 1));
 
         let sel = crate::selector::parse_selector_list(".foo")
             .unwrap()
             .0
             .remove(0);
-        assert_eq!(specificity(&sel), (0, 1, 0));
+        assert_eq!(specificity(&sel), (0, 0, 1, 0));
 
         let sel = crate::selector::parse_selector_list("#bar")
             .unwrap()
             .0
             .remove(0);
-        assert_eq!(specificity(&sel), (1, 0, 0));
+        assert_eq!(specificity(&sel), (0, 1, 0, 0));
 
         let sel = crate::selector::parse_selector_list("div.foo#bar")
             .unwrap()
             .0
             .remove(0);
-        assert_eq!(specificity(&sel), (1, 1, 1));
+        assert_eq!(specificity(&sel), (0, 1, 1, 1));
 
         let sel = crate::selector::parse_selector_list("div > span")
             .unwrap()
             .0
             .remove(0);
-        assert_eq!(specificity(&sel), (0, 0, 2));
+        assert_eq!(specificity(&sel), (0, 0, 0, 2));
     }
 
     #[test]
