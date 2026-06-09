@@ -22,5 +22,6 @@ pub mod paint;
 pub mod raster;
 pub mod selector;
 pub mod semantic;
+pub mod shell;
 pub mod style;
 pub mod url;
