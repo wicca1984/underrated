@@ -1,5 +1,7 @@
 use underrated::dom::{Dom, NodeData};
-use underrated::semantic::{SemanticNode, accessible_name, build_semantic_view, role, to_markdown};
+use underrated::semantic::{
+    AxNode, SemanticNode, accessible_name, ax_tree, build_semantic_view, role, to_markdown,
+};
 
 #[test]
 fn test_semantic_view_and_markdown() {
@@ -354,4 +356,186 @@ fn test_aria_role_and_accessible_name() {
     let text_node = dom.create_node(NodeData::Text("Hello".into()));
     assert_eq!(role(&dom, text_node), None);
     assert_eq!(accessible_name(&dom, text_node), "Hello".to_string());
+}
+
+#[test]
+fn test_ax_tree_export() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    // 1. Create a container (main)
+    let main = dom.create_node(NodeData::Element {
+        name: "main".into(),
+        attrs: vec![],
+    });
+    dom.append_child(doc, main);
+
+    // 2. h2 (heading)
+    let h2 = dom.create_node(NodeData::Element {
+        name: "h2".into(),
+        attrs: vec![],
+    });
+    let h2_text = dom.create_node(NodeData::Text("Welcome Header".into()));
+    dom.append_child(h2, h2_text);
+    dom.append_child(main, h2);
+
+    // 3. button (with aria-label)
+    let btn = dom.create_node(NodeData::Element {
+        name: "button".into(),
+        attrs: vec![("aria-label".into(), "Custom Button".into())],
+    });
+    let btn_text = dom.create_node(NodeData::Text("Ignored Inner".into()));
+    dom.append_child(btn, btn_text);
+    dom.append_child(main, btn);
+
+    // 4. link (a with href)
+    let link = dom.create_node(NodeData::Element {
+        name: "a".into(),
+        attrs: vec![("href".into(), "https://example.com".into())],
+    });
+    let link_text = dom.create_node(NodeData::Text("Visit Us".into()));
+    dom.append_child(link, link_text);
+    dom.append_child(main, link);
+
+    // 5. Presentation role: element itself is pruned, children are promoted
+    let presentational_div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("role".into(), "presentation".into())],
+    });
+    let promo_btn = dom.create_node(NodeData::Element {
+        name: "button".into(),
+        attrs: vec![],
+    });
+    let promo_text = dom.create_node(NodeData::Text("Promoted".into()));
+    dom.append_child(promo_btn, promo_text);
+    dom.append_child(presentational_div, promo_btn);
+    dom.append_child(main, presentational_div);
+
+    // 6. None role: same as presentation
+    let none_div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("role".into(), "none".into())],
+    });
+    let promo_link = dom.create_node(NodeData::Element {
+        name: "a".into(),
+        attrs: vec![("href".into(), "#".into())],
+    });
+    let promo_link_text = dom.create_node(NodeData::Text("Promo Link".into()));
+    dom.append_child(promo_link, promo_link_text);
+    dom.append_child(none_div, promo_link);
+    dom.append_child(main, none_div);
+
+    // 7. Hidden: aria-hidden="true" (entire subtree pruned)
+    let hidden_subtree = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("aria-hidden".into(), "true".into())],
+    });
+    let hidden_btn = dom.create_node(NodeData::Element {
+        name: "button".into(),
+        attrs: vec![],
+    });
+    let hidden_text = dom.create_node(NodeData::Text("Hidden".into()));
+    dom.append_child(hidden_btn, hidden_text);
+    dom.append_child(hidden_subtree, hidden_btn);
+    dom.append_child(main, hidden_subtree);
+
+    // 8. Hidden: display: none style (entire subtree pruned)
+    let display_none_subtree = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("style".into(), "display: none;".into())],
+    });
+    let hidden_btn2 = dom.create_node(NodeData::Element {
+        name: "button".into(),
+        attrs: vec![],
+    });
+    dom.append_child(display_none_subtree, hidden_btn2);
+    dom.append_child(main, display_none_subtree);
+
+    // 9. Hidden: visibility: hidden style (entire subtree pruned)
+    let visibility_hidden_subtree = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("style".into(), "visibility: hidden".into())],
+    });
+    let hidden_btn3 = dom.create_node(NodeData::Element {
+        name: "button".into(),
+        attrs: vec![],
+    });
+    dom.append_child(visibility_hidden_subtree, hidden_btn3);
+    dom.append_child(main, visibility_hidden_subtree);
+
+    // 10. Doctype and comment nodes (ignored entirely)
+    let doctype = dom.create_node(NodeData::Doctype {
+        name: "html".into(),
+        public_id: "".into(),
+        system_id: "".into(),
+    });
+    dom.append_child(doc, doctype);
+
+    let comment = dom.create_node(NodeData::Comment("This is a comment".into()));
+    dom.append_child(main, comment);
+
+    // Export AXTree explicitly using AxNode to avoid unused import warning.
+    let tree: AxNode = ax_tree(&dom);
+
+    // Expected structure:
+    // Document (role: None, name: "")
+    //   main (role: "main", name: "Welcome HeaderIgnored InnerVisit UsPromotedPromo Link")
+    //     h2 (role: "heading", name: "Welcome Header")
+    //       "Welcome Header" (role: None, name: "Welcome Header")
+    //     button (role: "button", name: "Custom Button")
+    //       "Ignored Inner" (role: None, name: "Ignored Inner")
+    //     link (role: "link", name: "Visit Us")
+    //       "Visit Us" (role: None, name: "Visit Us")
+    //     button (role: "button", name: "Promoted")
+    //       "Promoted" (role: None, name: "Promoted")
+    //     link (role: "link", name: "Promo Link")
+    //       "Promo Link" (role: None, name: "Promo Link")
+
+    assert_eq!(tree.role, None);
+    assert_eq!(tree.name, String::new());
+    assert_eq!(tree.children.len(), 1);
+
+    let main_node = &tree.children[0];
+    assert_eq!(main_node.role, Some("main".into()));
+    // Under existing accessible_name implementation, container's fallback is text_content of its descendants
+    assert!(main_node.name.contains("Welcome Header"));
+    assert!(main_node.name.contains("Ignored Inner"));
+    assert_eq!(main_node.children.len(), 5);
+
+    // Verify Heading
+    let h2_node = &main_node.children[0];
+    assert_eq!(h2_node.role, Some("heading".into()));
+    assert_eq!(h2_node.name, "Welcome Header");
+    assert_eq!(h2_node.children.len(), 1);
+    assert_eq!(h2_node.children[0].role, None);
+    assert_eq!(h2_node.children[0].name, "Welcome Header");
+
+    // Verify Custom Button
+    let btn_node = &main_node.children[1];
+    assert_eq!(btn_node.role, Some("button".into()));
+    assert_eq!(btn_node.name, "Custom Button");
+    assert_eq!(btn_node.children.len(), 1);
+    assert_eq!(btn_node.children[0].role, None);
+    assert_eq!(btn_node.children[0].name, "Ignored Inner");
+
+    // Verify Link
+    let link_node = &main_node.children[2];
+    assert_eq!(link_node.role, Some("link".into()));
+    assert_eq!(link_node.name, "Visit Us");
+    assert_eq!(link_node.children.len(), 1);
+    assert_eq!(link_node.children[0].role, None);
+    assert_eq!(link_node.children[0].name, "Visit Us");
+
+    // Verify Promoted Button (from role="presentation" container)
+    let promo_btn_node = &main_node.children[3];
+    assert_eq!(promo_btn_node.role, Some("button".into()));
+    assert_eq!(promo_btn_node.name, "Promoted");
+    assert_eq!(promo_btn_node.children.len(), 1);
+    assert_eq!(promo_btn_node.children[0].role, None);
+    assert_eq!(promo_btn_node.children[0].name, "Promoted");
+
+    // Verify Promoted Link (from role="none" container)
+    let promo_link_node = &main_node.children[4];
+    assert_eq!(promo_link_node.role, Some("link".into()));
+    assert_eq!(promo_link_node.name, "Promo Link");
 }
