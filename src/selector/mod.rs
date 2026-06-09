@@ -13,6 +13,7 @@ pub enum Component {
         name: String,
         op: Option<AttrOp>,
         value: Option<String>,
+        modifier: Option<char>,
     },
     PseudoClass(String),
     PseudoElement(String),
@@ -71,26 +72,34 @@ pub fn parse_selector_list(input: &str) -> Result<SelectorList, SelectorParseErr
 
 struct SelectorParser<'a> {
     tokenizer: &'a mut CssTokenizer,
-    peeked: Option<CssToken>,
+    peeked: Vec<CssToken>,
 }
 
 impl<'a> SelectorParser<'a> {
     fn new(tokenizer: &'a mut CssTokenizer) -> Self {
         Self {
             tokenizer,
-            peeked: None,
+            peeked: Vec::new(),
         }
     }
 
+    fn peek_nth(&mut self, n: usize) -> &CssToken {
+        while self.peeked.len() <= n {
+            self.peeked.push(self.tokenizer.next_token());
+        }
+        &self.peeked[n]
+    }
+
     fn peek(&mut self) -> &CssToken {
-        self.peeked
-            .get_or_insert_with(|| self.tokenizer.next_token())
+        self.peek_nth(0)
     }
 
     fn consume(&mut self) -> CssToken {
-        self.peeked
-            .take()
-            .unwrap_or_else(|| self.tokenizer.next_token())
+        if !self.peeked.is_empty() {
+            self.peeked.remove(0)
+        } else {
+            self.tokenizer.next_token()
+        }
     }
 
     fn skip_whitespace(&mut self) {
@@ -167,7 +176,23 @@ impl<'a> SelectorParser<'a> {
     fn parse_compound_selector(&mut self) -> Result<CompoundSelector, SelectorParseError> {
         let mut components = Vec::new();
 
-        // TODO(spec): namespaces like ns|type
+        // Check for namespace prefix (e.g. ns|type, *|type, |type)
+        let has_ns = matches!(self.peek_nth(0), CssToken::Ident(_))
+            && matches!(self.peek_nth(1), CssToken::Delim('|'))
+            || matches!(self.peek_nth(0), CssToken::Delim('*'))
+                && matches!(self.peek_nth(1), CssToken::Delim('|'))
+            || matches!(self.peek_nth(0), CssToken::Delim('|'));
+
+        if has_ns {
+            // Consume namespace prefix
+            if let CssToken::Delim('|') = self.peek_nth(0) {
+                self.consume(); // consume '|'
+            } else {
+                self.consume(); // consume ident or '*'
+                self.consume(); // consume '|'
+            }
+        }
+
         // Type or Universal selector (optional, must be first)
         match self.peek() {
             CssToken::Ident(name) => {
@@ -179,7 +204,11 @@ impl<'a> SelectorParser<'a> {
                 self.consume();
                 components.push(Component::Universal);
             }
-            _ => {}
+            _ => {
+                if has_ns {
+                    components.push(Component::Universal);
+                }
+            }
         }
 
         loop {
@@ -286,11 +315,36 @@ impl<'a> SelectorParser<'a> {
             None
         };
 
+        // spec: Selectors L4 — an `i`/`s` modifier may follow even a presence-only
+        // attribute selector (e.g. `[attr i]`), so do not gate this on `op`.
+        let mut modifier = None;
+        if let CssToken::Ident(s) = self.peek() {
+            let s_lower = s.to_ascii_lowercase();
+            if s_lower == "i" {
+                modifier = Some('i');
+                self.consume();
+                self.skip_whitespace();
+            } else if s_lower == "s" {
+                modifier = Some('s');
+                self.consume();
+                self.skip_whitespace();
+            } else {
+                // TODO(spec): Unknown attribute modifier.
+                self.consume();
+                self.skip_whitespace();
+            }
+        }
+
         if !matches!(self.consume(), CssToken::RightBracket) {
             return Err(SelectorParseError::InvalidSelector);
         }
 
-        Ok(Component::Attribute { name, op, value })
+        Ok(Component::Attribute {
+            name,
+            op,
+            value,
+            modifier,
+        })
     }
 
     fn parse_pseudo_selector(&mut self) -> Result<Component, SelectorParseError> {
@@ -318,6 +372,23 @@ impl<'a> SelectorParser<'a> {
                             return Err(SelectorParseError::InvalidSelector);
                         }
                         Ok(Component::NthChild(a, b))
+                    }
+                    "nth-of-type" => {
+                        let (a, b) = self.parse_nth()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::PseudoClass(format!("nth-of-type({},{})", a, b)))
+                    }
+                    "nth-last-child" => {
+                        let (a, b) = self.parse_nth()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::PseudoClass(format!(
+                            "nth-last-child({},{})",
+                            a, b
+                        )))
                     }
                     "not" => {
                         let compound = self.parse_compound_selector()?;
@@ -515,7 +586,8 @@ mod tests {
             Component::Attribute {
                 name: "title".to_string(),
                 op: None,
-                value: None
+                value: None,
+                modifier: None,
             }
         );
         assert_eq!(
@@ -523,7 +595,23 @@ mod tests {
             Component::Attribute {
                 name: "href".to_string(),
                 op: Some(AttrOp::Exact),
-                value: Some("#".to_string())
+                value: Some("#".to_string()),
+                modifier: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_presence_attr_with_modifier() {
+        // spec: Selectors L4 allows an `i` modifier on a presence-only selector.
+        let list = parse_selector_list("[title i]").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::Attribute {
+                name: "title".to_string(),
+                op: None,
+                value: None,
+                modifier: Some('i'),
             }
         );
     }
@@ -570,7 +658,8 @@ mod tests {
                 Component::Attribute {
                     name: "href".to_string(),
                     op: Some(AttrOp::Prefix),
-                    value: Some("x".to_string())
+                    value: Some("x".to_string()),
+                    modifier: None,
                 }
             ]
         );

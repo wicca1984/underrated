@@ -133,29 +133,130 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
         Component::Class(class) => attrs
             .iter()
             .any(|(n, v)| n == "class" && v.split(ascii::is_html_whitespace).any(|c| c == class)),
-        Component::Attribute { name, op, value } => {
+        Component::Attribute {
+            name,
+            op,
+            value,
+            modifier,
+        } => {
             let attr_val = attrs.iter().find(|(n, _)| n == name).map(|(_, v)| v);
             match (attr_val, op, value) {
                 (Some(_), None, _) => true, // Presence only
-                (Some(v), Some(op), Some(val)) => match op {
-                    AttrOp::Exact => v == val,
-                    AttrOp::Includes => v.split(ascii::is_html_whitespace).any(|c| c == val),
-                    AttrOp::DashMatch => {
-                        v == val
-                            || (v.starts_with(val) && v.as_bytes().get(val.len()) == Some(&b'-'))
+                (Some(v), Some(op), Some(val)) => {
+                    let case_insensitive = *modifier == Some('i');
+                    if case_insensitive {
+                        match op {
+                            AttrOp::Exact => eq_ignore_ascii_case(v, val),
+                            AttrOp::Includes => v
+                                .split(ascii::is_html_whitespace)
+                                .any(|c| eq_ignore_ascii_case(c, val)),
+                            AttrOp::DashMatch => {
+                                eq_ignore_ascii_case(v, val)
+                                    || (starts_with_ignore_ascii_case(v, val)
+                                        && v.as_bytes().get(val.len()) == Some(&b'-'))
+                            }
+                            AttrOp::Prefix => starts_with_ignore_ascii_case(v, val),
+                            AttrOp::Suffix => ends_with_ignore_ascii_case(v, val),
+                            AttrOp::Substring => contains_ignore_ascii_case(v, val),
+                        }
+                    } else {
+                        match op {
+                            AttrOp::Exact => v == val,
+                            AttrOp::Includes => {
+                                v.split(ascii::is_html_whitespace).any(|c| c == val)
+                            }
+                            AttrOp::DashMatch => {
+                                v == val
+                                    || (v.starts_with(val)
+                                        && v.as_bytes().get(val.len()) == Some(&b'-'))
+                            }
+                            AttrOp::Prefix => v.starts_with(val),
+                            AttrOp::Suffix => v.ends_with(val),
+                            AttrOp::Substring => v.contains(val),
+                        }
                     }
-                    AttrOp::Prefix => v.starts_with(val),
-                    AttrOp::Suffix => v.ends_with(val),
-                    AttrOp::Substring => v.contains(val),
-                },
+                }
                 _ => false,
             }
         }
         Component::PseudoClass(name) => {
-            // Other functional pseudo-classes are not yet implemented.
-            match name.as_str() {
-                n if n.contains('(') => false,
-                _ => true, // Match any pseudo-class by name for now as per SPEC.
+            if name.starts_with("nth-of-type(") && name.ends_with(')') {
+                let content = &name["nth-of-type(".len()..name.len() - 1];
+                let mut parts = content.split(',');
+                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
+                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
+                });
+                if let Some((a, b)) = parsed {
+                    if let Some(parent) = dom.parent(node) {
+                        let current_tag_name = match dom.data(node) {
+                            Some(NodeData::Element { name, .. }) => name,
+                            _ => return false,
+                        };
+                        let children = dom.children(parent);
+                        let mut element_index = 0;
+                        for &child in children {
+                            if child == node {
+                                let i = element_index + 1; // 1-indexed
+                                if a == 0 {
+                                    return i == b;
+                                }
+                                let diff = i - b;
+                                if a > 0 {
+                                    return diff >= 0 && diff % a == 0;
+                                } else {
+                                    return diff <= 0 && diff % a == 0;
+                                }
+                            }
+                            match dom.data(child) {
+                                Some(NodeData::Element { name, .. })
+                                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
+                                {
+                                    element_index += 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    return false;
+                }
+                false
+            } else if name.starts_with("nth-last-child(") && name.ends_with(')') {
+                let content = &name["nth-last-child(".len()..name.len() - 1];
+                let mut parts = content.split(',');
+                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
+                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
+                });
+                if let Some((a, b)) = parsed {
+                    if let Some(parent) = dom.parent(node) {
+                        let children = dom.children(parent);
+                        let mut element_index = 0;
+                        for &child in children.iter().rev() {
+                            if child == node {
+                                let i = element_index + 1; // 1-indexed
+                                if a == 0 {
+                                    return i == b;
+                                }
+                                let diff = i - b;
+                                if a > 0 {
+                                    return diff >= 0 && diff % a == 0;
+                                } else {
+                                    return diff <= 0 && diff % a == 0;
+                                }
+                            }
+                            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                                element_index += 1;
+                            }
+                        }
+                    }
+                    return false;
+                }
+                false
+            } else {
+                // Other functional pseudo-classes are not yet implemented.
+                match name.as_str() {
+                    n if n.contains('(') => false,
+                    _ => true, // Match any pseudo-class by name for now as per SPEC.
+                }
             }
         }
         Component::PseudoElement(_) => true, // Match any pseudo-element by name for now.
@@ -219,6 +320,35 @@ fn get_previous_sibling(dom: &Dom, node: NodeId) -> Option<NodeId> {
     } else {
         None
     }
+}
+
+fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+fn starts_with_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if a.len() < b.len() {
+        return false;
+    }
+    a[..b.len()].eq_ignore_ascii_case(b)
+}
+
+fn ends_with_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if a.len() < b.len() {
+        return false;
+    }
+    a[a.len() - b.len()..].eq_ignore_ascii_case(b)
+}
+
+fn contains_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if b.is_empty() {
+        return true;
+    }
+    if a.len() < b.len() {
+        return false;
+    }
+    let b_lower = b.to_ascii_lowercase();
+    a.to_ascii_lowercase().contains(&b_lower)
 }
 
 #[cfg(test)]
@@ -519,5 +649,200 @@ mod tests {
 
         assert!(!matches(&parse_selector_list("*").unwrap(), &dom, text));
         assert!(!matches(&parse_selector_list("*").unwrap(), &dom, doc));
+    }
+
+    #[test]
+    fn test_case_insensitive_attributes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let element = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "text".into()),
+                ("class".into(), "Foo Bar".into()),
+                ("lang".into(), "en-US".into()),
+            ],
+        });
+        dom.append_child(doc, element);
+
+        // Case-sensitive (default) vs Case-insensitive (i modifier)
+        assert!(matches(
+            &parse_selector_list("[type=\"text\"]").unwrap(),
+            &dom,
+            element
+        ));
+        assert!(!matches(
+            &parse_selector_list("[type=\"TEXT\"]").unwrap(),
+            &dom,
+            element
+        ));
+        assert!(matches(
+            &parse_selector_list("[type=\"TEXT\" i]").unwrap(),
+            &dom,
+            element
+        ));
+        assert!(!matches(
+            &parse_selector_list("[type=\"TEXT\" s]").unwrap(),
+            &dom,
+            element
+        ));
+
+        // prefix
+        assert!(matches(
+            &parse_selector_list("[type^=\"TE\" i]").unwrap(),
+            &dom,
+            element
+        ));
+        // suffix
+        assert!(matches(
+            &parse_selector_list("[type$=\"XT\" i]").unwrap(),
+            &dom,
+            element
+        ));
+        // substring
+        assert!(matches(
+            &parse_selector_list("[type*=\"EX\" i]").unwrap(),
+            &dom,
+            element
+        ));
+        // dashmatch
+        assert!(matches(
+            &parse_selector_list("[lang|=\"EN\" i]").unwrap(),
+            &dom,
+            element
+        ));
+        // includes
+        assert!(matches(
+            &parse_selector_list("[class~=\"foo\" i]").unwrap(),
+            &dom,
+            element
+        ));
+    }
+
+    #[test]
+    fn test_nth_of_type() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, parent);
+
+        // Children structure: span1, p1, span2, p2
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let span2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+
+        dom.append_child(parent, span1);
+        dom.append_child(parent, p1);
+        dom.append_child(parent, span2);
+        dom.append_child(parent, p2);
+
+        // nth-of-type(2)
+        assert!(!matches(
+            &parse_selector_list("p:nth-of-type(2)").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(matches(
+            &parse_selector_list("p:nth-of-type(2)").unwrap(),
+            &dom,
+            p2
+        ));
+        assert!(!matches(
+            &parse_selector_list("span:nth-of-type(2)").unwrap(),
+            &dom,
+            span1
+        ));
+        assert!(matches(
+            &parse_selector_list("span:nth-of-type(2)").unwrap(),
+            &dom,
+            span2
+        ));
+    }
+
+    #[test]
+    fn test_nth_last_child() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, parent);
+
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let p3 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+
+        dom.append_child(parent, p1);
+        dom.append_child(parent, p2);
+        dom.append_child(parent, p3);
+
+        // nth-last-child(1) matches the last child (p3)
+        assert!(matches(
+            &parse_selector_list("p:nth-last-child(1)").unwrap(),
+            &dom,
+            p3
+        ));
+        assert!(!matches(
+            &parse_selector_list("p:nth-last-child(1)").unwrap(),
+            &dom,
+            p2
+        ));
+
+        // nth-last-child(2) matches the second to last child (p2)
+        assert!(matches(
+            &parse_selector_list("p:nth-last-child(2)").unwrap(),
+            &dom,
+            p2
+        ));
+    }
+
+    #[test]
+    fn test_namespace_passthrough() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let rect = dom.create_node(NodeData::Element {
+            name: "rect".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, rect);
+
+        // svg|rect should match rect (ignoring svg prefix)
+        assert!(matches(
+            &parse_selector_list("svg|rect").unwrap(),
+            &dom,
+            rect
+        ));
+        // *|rect should match rect
+        assert!(matches(&parse_selector_list("*|rect").unwrap(), &dom, rect));
+        // |rect should match rect
+        assert!(matches(&parse_selector_list("|rect").unwrap(), &dom, rect));
+        // svg|* should match any element (like rect)
+        assert!(matches(&parse_selector_list("svg|*").unwrap(), &dom, rect));
     }
 }
