@@ -3,6 +3,7 @@
 
 pub mod colors;
 pub mod parser;
+pub mod resolve;
 pub mod values;
 
 #[derive(Debug, PartialEq, Clone)]

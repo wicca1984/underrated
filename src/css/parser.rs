@@ -56,6 +56,23 @@ pub fn parse_stylesheet(input: &str) -> Stylesheet {
     parser.parse_stylesheet()
 }
 
+/// Parses an input string into a list of component values.
+/// spec: <https://www.w3.org/TR/css-syntax-3/#consume-component-value>
+pub fn parse_component_values(input: &str) -> Vec<ComponentValue> {
+    let mut tokenizer = CssTokenizer::new(input);
+    let mut parser = Parser::new(&mut tokenizer);
+    let mut values = Vec::new();
+    loop {
+        let token = parser.consume_token();
+        if token == CssToken::Eof {
+            break;
+        }
+        parser.reconsume_token(token);
+        values.push(parser.consume_component_value());
+    }
+    values
+}
+
 struct Parser<'a> {
     tokenizer: &'a mut CssTokenizer,
     next_token: Option<CssToken>,

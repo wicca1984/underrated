@@ -8,6 +8,8 @@ pub enum LengthUnit {
     Rem,
     Pt,
     Percent,
+    Vw,
+    Vh,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -83,6 +85,8 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 "em" => LengthUnit::Em,
                 "rem" => LengthUnit::Rem,
                 "pt" => LengthUnit::Pt,
+                "vw" => LengthUnit::Vw,
+                "vh" => LengthUnit::Vh,
                 _ => return None, // TODO(spec): other units
             };
             Some(CssValue::Length(*value as f32, unit_enum))
