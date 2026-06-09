@@ -1126,6 +1126,11 @@ impl TreeBuilder {
     }
 
     fn reset_insertion_mode_appropriately(&mut self) {
+        // The spec guarantees a non-empty stack here, but guard so an empty stack
+        // cannot underflow `len() - 1` (usize wrap → panic) on crafted input (I-6).
+        if self.stack_of_open_elements.is_empty() {
+            return;
+        }
         let mut last = false;
         let mut node_idx = self.stack_of_open_elements.len() - 1;
 
