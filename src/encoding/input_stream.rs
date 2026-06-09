@@ -9,6 +9,25 @@ impl InputStream {
     /// stream preprocessing: normalize "\r\n" and a lone "\r" to "\n".
     pub fn from_utf8(bytes: &[u8]) -> Self {
         let s = String::from_utf8_lossy(bytes);
+        Self::new(&s)
+    }
+
+    /// Sniff charset, decode, and apply HTML input stream preprocessing.
+    pub fn from_bytes(bytes: &[u8], transport_label: Option<&str>) -> Self {
+        let charset = super::sniff_charset(bytes, transport_label);
+        let mut offset = 0;
+        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) && charset == super::Charset::Utf8 {
+            offset = 3;
+        } else if (bytes.starts_with(&[0xFE, 0xFF]) && charset == super::Charset::Utf16Be)
+            || (bytes.starts_with(&[0xFF, 0xFE]) && charset == super::Charset::Utf16Le)
+        {
+            offset = 2;
+        }
+        let decoded = super::decode(&bytes[offset..], charset);
+        Self::new(&decoded)
+    }
+
+    fn new(s: &str) -> Self {
         let mut data = Vec::with_capacity(s.len());
         let mut chars = s.chars().peekable();
         while let Some(c) = chars.next() {
@@ -147,5 +166,27 @@ mod tests {
         assert_eq!(stream.next(), Some('\u{FFFD}'));
         assert_eq!(stream.next(), Some('a'));
         assert_eq!(stream.next(), None);
+    }
+
+    #[test]
+    fn test_from_bytes() {
+        // UTF-16BE BOM
+        let mut stream = InputStream::from_bytes(&[0xFE, 0xFF, 0x00, b'a'], None);
+        assert_eq!(stream.next(), Some('a'));
+        assert_eq!(stream.next(), None);
+
+        // Windows-1252 via transport label
+        let mut stream = InputStream::from_bytes(&[0x80], Some("windows-1252"));
+        assert_eq!(stream.next(), Some('€'));
+        assert_eq!(stream.next(), None);
+
+        // Meta prescan
+        let html = b"<html><meta charset='utf-8'><body>\xF0\x9F\x90\xA7</body></html>";
+        let mut stream = InputStream::from_bytes(html, None);
+        let mut s = String::new();
+        while let Some(c) = stream.next() {
+            s.push(c);
+        }
+        assert!(s.contains('🐧'));
     }
 }
