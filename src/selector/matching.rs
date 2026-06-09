@@ -252,10 +252,16 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                 }
                 false
             } else {
-                // Other functional pseudo-classes are not yet implemented.
-                match name.as_str() {
+                match name.to_ascii_lowercase().as_str() {
+                    "hover" => get_node_state(node).hover,
+                    "focus" => get_node_state(node).focus,
+                    "active" => get_node_state(node).active,
+                    "first-of-type" => is_first_of_type(dom, node),
+                    "last-of-type" => is_last_of_type(dom, node),
+                    "only-child" => is_only_child(dom, node),
+                    "only-of-type" => is_only_of_type(dom, node),
                     n if n.contains('(') => false,
-                    _ => true, // Match any pseudo-class by name for now as per SPEC.
+                    _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
             }
         }
@@ -308,6 +314,130 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
             }
             false
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeState {
+    pub hover: bool,
+    pub focus: bool,
+    pub active: bool,
+}
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    static NODE_STATES: RefCell<HashMap<NodeId, NodeState>> = RefCell::new(HashMap::new());
+}
+
+/// Sets the pseudo-class state for a given node.
+pub fn set_node_state(node: NodeId, state: NodeState) {
+    NODE_STATES.with(|states| {
+        states.borrow_mut().insert(node, state);
+    });
+}
+
+/// Gets the pseudo-class state for a given node.
+pub fn get_node_state(node: NodeId) -> NodeState {
+    NODE_STATES.with(|states| states.borrow().get(&node).copied().unwrap_or_default())
+}
+
+/// Clears all node states.
+pub fn clear_node_states() {
+    NODE_STATES.with(|states| {
+        states.borrow_mut().clear();
+    });
+}
+
+fn is_first_of_type(dom: &Dom, node: NodeId) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if child == node {
+                return true;
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn is_last_of_type(dom: &Dom, node: NodeId) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children.iter().rev() {
+            if child == node {
+                return true;
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn is_only_child(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if child != node && matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                return false;
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn is_only_of_type(dom: &Dom, node: NodeId) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if child != node {
+                match dom.data(child) {
+                    Some(NodeData::Element { name, .. })
+                        if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
+                    {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        true
+    } else {
+        false
     }
 }
 
@@ -544,6 +674,15 @@ mod tests {
     #[test]
     fn test_matches_pseudo() {
         let (dom, p) = setup_dom();
+
+        set_node_state(
+            p,
+            NodeState {
+                hover: true,
+                focus: false,
+                active: false,
+            },
+        );
 
         assert!(matches(&parse_selector_list("p:hover").unwrap(), &dom, p));
         assert!(matches(&parse_selector_list("p::before").unwrap(), &dom, p));
@@ -948,5 +1087,201 @@ mod tests {
         });
         // Passing stale_node into `matches` against `dom` should safely return false without any panic
         assert!(!matches(&selector, &dom, stale_node));
+    }
+
+    #[test]
+    fn test_state_pseudo_classes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let el = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, el);
+
+        // Initially all are false
+        set_node_state(el, NodeState::default());
+        assert!(!matches(
+            &parse_selector_list("button:hover").unwrap(),
+            &dom,
+            el
+        ));
+        assert!(!matches(
+            &parse_selector_list("button:focus").unwrap(),
+            &dom,
+            el
+        ));
+        assert!(!matches(
+            &parse_selector_list("button:active").unwrap(),
+            &dom,
+            el
+        ));
+
+        // Set hover
+        set_node_state(
+            el,
+            NodeState {
+                hover: true,
+                focus: false,
+                active: false,
+            },
+        );
+        assert!(matches(
+            &parse_selector_list("button:hover").unwrap(),
+            &dom,
+            el
+        ));
+        assert!(!matches(
+            &parse_selector_list("button:focus").unwrap(),
+            &dom,
+            el
+        ));
+
+        // Set focus
+        set_node_state(
+            el,
+            NodeState {
+                hover: false,
+                focus: true,
+                active: false,
+            },
+        );
+        assert!(!matches(
+            &parse_selector_list("button:hover").unwrap(),
+            &dom,
+            el
+        ));
+        assert!(matches(
+            &parse_selector_list("button:focus").unwrap(),
+            &dom,
+            el
+        ));
+
+        // Set active
+        set_node_state(
+            el,
+            NodeState {
+                hover: false,
+                focus: false,
+                active: true,
+            },
+        );
+        assert!(!matches(
+            &parse_selector_list("button:hover").unwrap(),
+            &dom,
+            el
+        ));
+        assert!(matches(
+            &parse_selector_list("button:active").unwrap(),
+            &dom,
+            el
+        ));
+    }
+
+    #[test]
+    fn test_structural_pseudo_classes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, parent);
+
+        // 1. Only child / Only of type
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(parent, p1);
+
+        assert!(matches(
+            &parse_selector_list("p:first-of-type").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(matches(
+            &parse_selector_list("p:last-of-type").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(matches(
+            &parse_selector_list("p:only-child").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(matches(
+            &parse_selector_list("p:only-of-type").unwrap(),
+            &dom,
+            p1
+        ));
+
+        // 2. Add another p of the same type (now p1, p2)
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(parent, p2);
+
+        assert!(matches(
+            &parse_selector_list("p:first-of-type").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(!matches(
+            &parse_selector_list("p:first-of-type").unwrap(),
+            &dom,
+            p2
+        ));
+
+        assert!(!matches(
+            &parse_selector_list("p:last-of-type").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(matches(
+            &parse_selector_list("p:last-of-type").unwrap(),
+            &dom,
+            p2
+        ));
+
+        assert!(!matches(
+            &parse_selector_list("p:only-child").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(!matches(
+            &parse_selector_list("p:only-of-type").unwrap(),
+            &dom,
+            p1
+        ));
+
+        // 3. Add a span (now p1, p2, span1)
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(parent, span1);
+
+        assert!(matches(
+            &parse_selector_list("span:first-of-type").unwrap(),
+            &dom,
+            span1
+        ));
+        assert!(matches(
+            &parse_selector_list("span:last-of-type").unwrap(),
+            &dom,
+            span1
+        ));
+        assert!(matches(
+            &parse_selector_list("span:only-of-type").unwrap(),
+            &dom,
+            span1
+        ));
+        assert!(!matches(
+            &parse_selector_list("span:only-child").unwrap(),
+            &dom,
+            span1
+        ));
     }
 }
