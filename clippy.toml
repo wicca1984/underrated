@@ -1,0 +1,5 @@
+# clippy の restriction lint を機械強制しつつ、テストでは実用上の利便を許す。
+# 本体コードでの unwrap/expect/panic は AGENTS.md I-6 で禁止 → Cargo.toml [lints] で deny。
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

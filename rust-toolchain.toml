@@ -1,0 +1,4 @@
+# ツールチェーンを固定し、CI と手元の再現性を担保する。
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

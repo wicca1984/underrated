@@ -2,9 +2,19 @@
 name = "underrated"
 version = "0.1.0"
 edition = "2024"
-description = "A web browser engine built from scratch, for learning."
+description = "An independent web browser engine written from scratch in Rust."
+license = "Apache-2.0"
 
 [dependencies]
+
+# Lint で AGENTS.md I-1/I-6 を機械強制する。
+# unsafe 全面禁止 / 本体コードの unwrap・expect 禁止（テストは clippy.toml で免除）。
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
 
 [profile.dev]
 # ブラウザエンジンは依存が増えるとビルドが重くなりがち。開発時の最適化は最小に

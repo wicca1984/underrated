@@ -1,6 +1,6 @@
 name: CI
 
-# ワーカーのブランチ push と PR で、決定的ゲート(fmt/clippy/test)を回す。
+# ワーカーのブランチ push と PR で、決定的ゲートを回す。
 # AI レビュー(OCR)はローカルのオーケストレーション側で実行する(ローカルLLMはクラウドrunnerから不可達のため)。
 on:
   push:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   check:
-    name: fmt / clippy / test
+    name: fmt / clippy / test / doc
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -37,3 +37,37 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Doc (deny warnings)
+        run: cargo doc --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  deny:
+    name: cargo-deny (security / license / deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  coverage:
+    name: coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Coverage summary
+        run: cargo llvm-cov --all-targets --summary-only
