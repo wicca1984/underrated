@@ -339,3 +339,142 @@ pub fn accessible_name(dom: &Dom, node: crate::infra::NodeId) -> String {
         _ => String::new(),
     }
 }
+
+/// An accessibility node in the lightweight accessibility tree (AXTree).
+///
+/// This implements SPEC S-54: represents a simplified DOM structure
+/// combined with ARIA roles and accessible names.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct AxNode {
+    /// The ARIA role of the node, if any.
+    pub role: Option<String>,
+    /// The computed accessible name of the node.
+    pub name: String,
+    /// The children of this accessibility node.
+    pub children: Vec<AxNode>,
+}
+
+/// Builds a lightweight accessibility tree (AXTree) from the given `Dom`.
+///
+/// This implements SPEC S-54: recursively builds an `AxNode` hierarchy,
+/// reusing implicit and explicit roles and accessible name computation.
+/// Nodes with a "presentation" or "none" role are pruned (the node itself is
+/// excluded but its children are promoted), and elements hidden via
+/// `aria-hidden="true"` or hidden inline styles (e.g. `display: none`)
+/// are entirely pruned along with their subtrees.
+pub fn ax_tree(dom: &Dom) -> AxNode {
+    let doc = dom.document();
+    let mut root_nodes = process_ax_node(dom, doc);
+
+    // spec: S-54: Return a single root AxNode representing the document.
+    // If process_ax_node returns multiple or zero nodes (e.g., if everything is hidden),
+    // we fallback to an empty default AxNode.
+    root_nodes.pop().unwrap_or_else(|| AxNode {
+        role: None,
+        name: String::new(),
+        children: Vec::new(),
+    })
+}
+
+/// Helper to recursively process a DOM node and return its corresponding `AxNode` list.
+///
+/// Returns a `Vec<AxNode>` to elegantly support promoting children of presentational/none nodes,
+/// as well as skipping ignored or hidden subtrees entirely.
+fn process_ax_node(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<AxNode> {
+    let Some(data) = dom.data(node_id) else {
+        return Vec::new();
+    };
+
+    // spec: S-54: elements hidden via aria-hidden or display: none/visibility: hidden inline styles are pruned.
+    if is_hidden(dom, node_id) {
+        return Vec::new();
+    }
+
+    match data {
+        NodeData::Text(s) => {
+            // Trim empty/whitespace text nodes to avoid cluttering the tree.
+            if s.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![AxNode {
+                    role: None,
+                    name: s.clone(),
+                    children: Vec::new(),
+                }]
+            }
+        }
+        NodeData::Element { .. } => {
+            let r = role(dom, node_id);
+
+            // spec: S-54: presentation/none roles are pruned (node is skipped, children promoted).
+            if matches!(r.as_deref(), Some("presentation" | "none")) {
+                let mut promoted_children = Vec::new();
+                for &child in dom.children(node_id) {
+                    promoted_children.extend(process_ax_node(dom, child));
+                }
+                return promoted_children;
+            }
+
+            // Normal element: compute role, accessible name, and recursively process children.
+            let name = accessible_name(dom, node_id);
+            let mut children = Vec::new();
+            for &child in dom.children(node_id) {
+                children.extend(process_ax_node(dom, child));
+            }
+
+            vec![AxNode {
+                role: r,
+                name,
+                children,
+            }]
+        }
+        NodeData::Document => {
+            // Document root is processed, returning its children inside a container AxNode.
+            let mut children = Vec::new();
+            for &child in dom.children(node_id) {
+                children.extend(process_ax_node(dom, child));
+            }
+            vec![AxNode {
+                role: None,
+                name: String::new(),
+                children,
+            }]
+        }
+        NodeData::Doctype { .. } | NodeData::Comment(_) => {
+            // spec: S-54: Skip Doctype and Comment nodes from the accessibility tree.
+            Vec::new()
+        }
+    }
+}
+
+/// Helper to determine if a node is hidden (e.g. via `aria-hidden="true"` or inline `display: none`).
+// TODO(spec): Support full display and visibility coupling from style resolution / layout.
+fn is_hidden(dom: &Dom, node_id: crate::infra::NodeId) -> bool {
+    let Some(data) = dom.data(node_id) else {
+        return false;
+    };
+
+    if let NodeData::Element { attrs, .. } = data {
+        // spec: Check aria-hidden="true" (case-insensitive)
+        if attrs
+            .iter()
+            .any(|(k, v)| k == "aria-hidden" && v.trim().eq_ignore_ascii_case("true"))
+        {
+            return true;
+        }
+
+        // spec: Check basic display: none or visibility: hidden inline styles.
+        if let Some((_, style_val)) = attrs.iter().find(|(k, _)| k == "style") {
+            let normalized = style_val.to_ascii_lowercase();
+            if normalized.contains("display:none")
+                || normalized.contains("display: none")
+                || normalized.contains("visibility:hidden")
+                || normalized.contains("visibility: hidden")
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
