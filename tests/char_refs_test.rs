@@ -40,11 +40,27 @@ fn test_numeric_entities_no_normalization() {
 fn test_named_entities() {
     let inputs = [
         ("&amp;", '&'),
+        ("&amp", '&'),
         ("&lt;", '<'),
+        ("&lt", '<'),
         ("&gt;", '>'),
+        ("&gt", '>'),
         ("&quot;", '"'),
+        ("&quot", '"'),
         ("&apos;", '\''),
+        ("&apos", '\''),
         ("&nbsp;", '\u{00A0}'),
+        ("&nbsp", '\u{00A0}'),
+        ("&copy;", '©'),
+        ("&copy", '©'),
+        ("&reg;", '®'),
+        ("&reg", '®'),
+        ("&trade;", '™'),
+        ("&trade", '™'),
+        ("&deg;", '°'),
+        ("&deg", '°'),
+        ("&plusmn;", '±'),
+        ("&plusmn", '±'),
     ];
     for (input, expected) in inputs {
         let stream = InputStream::from_utf8(input.as_bytes());
@@ -60,7 +76,12 @@ fn test_named_entities() {
 
 #[test]
 fn test_invalid_entities() {
-    let inputs = [("&unknown;", "&unknown;"), ("&#;", "&#;"), ("&#x;", "&#x;")];
+    let inputs = [
+        ("&unknown;", "&unknown;"),
+        ("&#;", "&#;"),
+        ("&#x;", "&#x;"),
+        ("&noti;", "¬i;"), // semicolonless &not matches first, leaving "i;"
+    ];
     for (input, expected) in inputs {
         let stream = InputStream::from_utf8(input.as_bytes());
         let mut tokenizer = Tokenizer::new(stream);
