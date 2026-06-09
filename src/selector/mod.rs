@@ -1,7 +1,9 @@
 mod matching;
 
 use crate::css::{CssToken, CssTokenizer};
-pub use matching::{matches, matches_complex};
+pub use matching::{
+    NodeState, clear_node_states, get_node_state, matches, matches_complex, set_node_state,
+};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Component {
@@ -360,12 +362,12 @@ impl<'a> SelectorParser<'a> {
             }
         } else {
             match self.consume() {
-                CssToken::Ident(name) => match name.as_str() {
+                CssToken::Ident(name) => match name.to_ascii_lowercase().as_str() {
                     "first-child" => Ok(Component::FirstChild),
                     "last-child" => Ok(Component::LastChild),
-                    _ => Ok(Component::PseudoClass(name)),
+                    _ => Ok(Component::PseudoClass(name.to_ascii_lowercase())),
                 },
-                CssToken::Function(name) => match name.as_str() {
+                CssToken::Function(name) => match name.to_ascii_lowercase().as_str() {
                     "nth-child" => {
                         let (a, b) = self.parse_nth()?;
                         if !matches!(self.consume(), CssToken::RightParen) {
