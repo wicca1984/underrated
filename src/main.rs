@@ -1,3 +1,4 @@
+mod dom;
 mod encoding;
 mod infra;
 
