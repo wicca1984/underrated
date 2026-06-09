@@ -7,6 +7,7 @@
 //!
 //! See `docs/ARCHITECTURE.md` (meta repo) for the module boundaries.
 
+pub mod ascii;
 pub mod css;
 pub mod dom;
 pub mod encoding;
