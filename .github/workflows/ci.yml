@@ -23,10 +23,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain (stable, edition 2024)
-        uses: dtolnay/rust-toolchain@stable
+      # ubuntu-latest には rustup が同梱されているので `curl sh.rustup.rs` の不安定な
+      # 導入は避け、コンポーネント取得だけを retry でラップする（GitHub/rustup の
+      # 一時的ネットワーク障害でも最大3回やり直す）。
+      - name: Install Rust toolchain (stable, edition 2024) — resilient
+        uses: nick-fields/retry@v3
         with:
-          components: clippy, rustfmt
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: rustup toolchain install stable --profile minimal --component clippy --component rustfmt --no-self-update && rustup default stable
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -62,10 +68,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain — resilient
+        uses: nick-fields/retry@v3
         with:
-          components: llvm-tools-preview
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: rustup toolchain install stable --profile minimal --component llvm-tools-preview --no-self-update && rustup default stable
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
