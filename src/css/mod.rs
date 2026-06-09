@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
+pub mod parser;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum CssToken {
     Ident(String),
