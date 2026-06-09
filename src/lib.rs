@@ -14,3 +14,4 @@ pub mod encoding;
 pub mod geom;
 pub mod html;
 pub mod infra;
+pub mod url;
