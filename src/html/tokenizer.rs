@@ -38,11 +38,16 @@ pub struct Tokenizer {
     return_state: State,
     character_reference_code: u32,
     temporary_buffer: String,
+    last_start_tag_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum State {
     Data,
+    Rcdata,
+    Rawtext,
+    ScriptData,
+    Plaintext,
     TagOpen,
     EndTagOpen,
     TagName,
@@ -55,6 +60,30 @@ enum State {
     AttributeValueUnquoted,
     AfterAttributeValueQuoted,
     SelfClosingStartTag,
+    // Special content states
+    RcdataLessThanSign,
+    RcdataEndTagOpen,
+    RcdataEndTagName,
+    RawtextLessThanSign,
+    RawtextEndTagOpen,
+    RawtextEndTagName,
+    ScriptDataLessThanSign,
+    ScriptDataEndTagOpen,
+    ScriptDataEndTagName,
+    ScriptDataEscapeStart,
+    ScriptDataEscapeStartDash,
+    ScriptDataEscaped,
+    ScriptDataEscapedDash,
+    ScriptDataEscapedDashDash,
+    ScriptDataEscapedLessThanSign,
+    ScriptDataEscapedEndTagOpen,
+    ScriptDataEscapedEndTagName,
+    ScriptDataDoubleEscapeStart,
+    ScriptDataDoubleEscaped,
+    ScriptDataDoubleEscapedDash,
+    ScriptDataDoubleEscapedDashDash,
+    ScriptDataDoubleEscapedLessThanSign,
+    ScriptDataDoubleEscapeEnd,
     // Non-scoped states
     MarkupDeclarationOpen,
     BogusComment,
@@ -107,7 +136,23 @@ impl Tokenizer {
             return_state: State::Data,
             character_reference_code: 0,
             temporary_buffer: String::new(),
+            last_start_tag_name: None,
         }
+    }
+
+    pub fn set_initial_state(&mut self, state_name: &str) {
+        match state_name {
+            "Data state" => self.state = State::Data,
+            "RCDATA state" => self.state = State::Rcdata,
+            "RAWTEXT state" => self.state = State::Rawtext,
+            "Script data state" => self.state = State::ScriptData,
+            "PLAINTEXT state" => self.state = State::Plaintext,
+            _ => {}
+        }
+    }
+
+    pub fn set_last_start_tag(&mut self, tag_name: &str) {
+        self.last_start_tag_name = Some(tag_name.to_string());
     }
 
     pub fn next_token(&mut self) -> Token {
@@ -139,6 +184,79 @@ impl Tokenizer {
 
                         None => {
                             return Token::Eof;
+                        }
+                    }
+                }
+                State::Rcdata => {
+                    // // spec: §13.2.5.3 Rcdata state
+                    match c {
+                        Some('&') => {
+                            self.return_state = State::Rcdata;
+                            self.state = State::CharacterReference;
+                        }
+                        Some('<') => {
+                            self.state = State::RcdataLessThanSign;
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::Rawtext => {
+                    // // spec: §13.2.5.4 Rawtext state
+                    match c {
+                        Some('<') => {
+                            self.state = State::RawtextLessThanSign;
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::ScriptData => {
+                    // // spec: §13.2.5.5 Script data state
+                    match c {
+                        Some('<') => {
+                            self.state = State::ScriptDataLessThanSign;
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::Plaintext => {
+                    // // spec: §13.2.5.6 Plaintext state
+                    match c {
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            return Token::Character(c_val);
                         }
                     }
                 }
@@ -245,10 +363,7 @@ impl Tokenizer {
                             self.state = State::AfterDoctypeName;
                         }
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some(c_val) if c_val.is_ascii_uppercase() => {
                             if let Some(Token::Doctype { name: Some(n), .. }) =
@@ -295,10 +410,7 @@ impl Tokenizer {
                             // Ignore
                         }
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         None => {
                             self.emit_error("eof-in-doctype");
@@ -563,10 +675,7 @@ impl Tokenizer {
                             self.state = State::BetweenDoctypePublicAndSystemIdentifiers;
                         }
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some('"') => {
                             self.emit_error(
@@ -620,10 +729,7 @@ impl Tokenizer {
                             // Ignore
                         }
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some('"') => {
                             if let Some(Token::Doctype { system_id, .. }) = &mut self.current_token
@@ -889,10 +995,7 @@ impl Tokenizer {
                             // Ignore
                         }
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         None => {
                             self.emit_error("eof-in-doctype");
@@ -918,10 +1021,7 @@ impl Tokenizer {
                     // // spec: §13.2.5.69 Bogus Doctype state
                     match c {
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some('\0') => {
                             self.emit_error("unexpected-null-character");
@@ -989,10 +1089,7 @@ impl Tokenizer {
                     // // spec: §13.2.5.42 Bogus comment state
                     match c {
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         None => {
                             self.state = State::Data;
@@ -1217,10 +1314,7 @@ impl Tokenizer {
                     // // spec: §13.2.5.52 Comment end state
                     match c {
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some('!') => {
                             self.state = State::CommentEndBang;
@@ -1389,10 +1483,7 @@ impl Tokenizer {
                             self.state = State::SelfClosingStartTag;
                         }
                         Some('>') => {
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some(c_val) if c_val.is_ascii_uppercase() => {
                             if let Some(Token::StartTag { name, .. } | Token::EndTag { name, .. }) =
@@ -1495,10 +1586,7 @@ impl Tokenizer {
                         }
                         Some('>') => {
                             self.emit_current_attribute();
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         None => {
                             self.emit_error("eof-in-tag");
@@ -1528,10 +1616,7 @@ impl Tokenizer {
                         Some('>') => {
                             self.emit_error("missing-attribute-value");
                             self.emit_current_attribute();
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some(_) => {
                             self.state = State::AttributeValueUnquoted;
@@ -1613,10 +1698,7 @@ impl Tokenizer {
                         }
                         Some('>') => {
                             self.emit_current_attribute();
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         Some('\0') => {
                             self.emit_error("unexpected-null-character");
@@ -1656,10 +1738,7 @@ impl Tokenizer {
                         }
                         Some('>') => {
                             self.emit_current_attribute();
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         None => {
                             self.emit_error("eof-in-tag");
@@ -1691,10 +1770,7 @@ impl Tokenizer {
                             {
                                 *self_closing = true;
                             }
-                            self.state = State::Data;
-                            if let Some(token) = self.current_token.take() {
-                                return token;
-                            }
+                            return self.emit_current_tag();
                         }
                         None => {
                             self.emit_error("eof-in-tag");
@@ -1704,6 +1780,576 @@ impl Tokenizer {
                         Some(_) => {
                             self.emit_error("unexpected-solidus-in-tag");
                             self.state = State::BeforeAttributeName;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::RcdataLessThanSign => {
+                    // // spec: §13.2.5.12 Rcdata less-than-sign state
+                    match c {
+                        Some('/') => {
+                            self.temporary_buffer.clear();
+                            self.state = State::RcdataEndTagOpen;
+                        }
+                        _ => {
+                            self.state = State::Rcdata;
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::RcdataEndTagOpen => {
+                    // // spec: §13.2.5.13 Rcdata end tag open state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_alphabetic() => {
+                            self.current_token = Some(Token::EndTag {
+                                name: String::new(),
+                                attrs: Vec::new(),
+                                self_closing: false,
+                            });
+                            self.state = State::RcdataEndTagName;
+                            self.input.reconsume();
+                        }
+                        _ => {
+                            self.state = State::Rcdata;
+                            self.token_buffer.push_back(Token::Character('/'));
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::RcdataEndTagName => {
+                    // // spec: §13.2.5.14 Rcdata end tag name state
+                    match c {
+                        Some('\t') | Some('\n') | Some('\u{000C}') | Some(' ') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::BeforeAttributeName;
+                            } else {
+                                self.anything_else_in_rcdata_end_tag_name()
+                            }
+                        }
+                        Some('/') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::SelfClosingStartTag;
+                            } else {
+                                self.anything_else_in_rcdata_end_tag_name()
+                            }
+                        }
+                        Some('>') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::Data;
+                                if let Some(token) = self.current_token.take() {
+                                    return token;
+                                }
+                            } else {
+                                self.anything_else_in_rcdata_end_tag_name()
+                            }
+                        }
+                        Some(c_val) if c_val.is_ascii_uppercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val.to_ascii_lowercase());
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_lowercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val);
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        _ => self.anything_else_in_rcdata_end_tag_name(),
+                    }
+                }
+                State::RawtextLessThanSign => {
+                    // // spec: §13.2.5.15 Rawtext less-than-sign state
+                    match c {
+                        Some('/') => {
+                            self.temporary_buffer.clear();
+                            self.state = State::RawtextEndTagOpen;
+                        }
+                        _ => {
+                            self.state = State::Rawtext;
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::RawtextEndTagOpen => {
+                    // // spec: §13.2.5.16 Rawtext end tag open state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_alphabetic() => {
+                            self.current_token = Some(Token::EndTag {
+                                name: String::new(),
+                                attrs: Vec::new(),
+                                self_closing: false,
+                            });
+                            self.state = State::RawtextEndTagName;
+                            self.input.reconsume();
+                        }
+                        _ => {
+                            self.state = State::Rawtext;
+                            self.token_buffer.push_back(Token::Character('/'));
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::RawtextEndTagName => {
+                    // // spec: §13.2.5.17 Rawtext end tag name state
+                    match c {
+                        Some('\t') | Some('\n') | Some('\u{000C}') | Some(' ') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::BeforeAttributeName;
+                            } else {
+                                self.anything_else_in_rawtext_end_tag_name()
+                            }
+                        }
+                        Some('/') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::SelfClosingStartTag;
+                            } else {
+                                self.anything_else_in_rawtext_end_tag_name()
+                            }
+                        }
+                        Some('>') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::Data;
+                                if let Some(token) = self.current_token.take() {
+                                    return token;
+                                }
+                            } else {
+                                self.anything_else_in_rawtext_end_tag_name()
+                            }
+                        }
+                        Some(c_val) if c_val.is_ascii_uppercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val.to_ascii_lowercase());
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_lowercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val);
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        _ => self.anything_else_in_rawtext_end_tag_name(),
+                    }
+                }
+                State::ScriptDataLessThanSign => {
+                    // // spec: §13.2.5.18 Script data less-than-sign state
+                    match c {
+                        Some('/') => {
+                            self.temporary_buffer.clear();
+                            self.state = State::ScriptDataEndTagOpen;
+                        }
+                        Some('!') => {
+                            self.state = State::ScriptDataEscapeStart;
+                            self.token_buffer.push_back(Token::Character('!'));
+                            return Token::Character('<');
+                        }
+                        _ => {
+                            self.state = State::ScriptData;
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::ScriptDataEndTagOpen => {
+                    // // spec: §13.2.5.19 Script data end tag open state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_alphabetic() => {
+                            self.current_token = Some(Token::EndTag {
+                                name: String::new(),
+                                attrs: Vec::new(),
+                                self_closing: false,
+                            });
+                            self.state = State::ScriptDataEndTagName;
+                            self.input.reconsume();
+                        }
+                        _ => {
+                            self.state = State::ScriptData;
+                            self.token_buffer.push_back(Token::Character('/'));
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::ScriptDataEndTagName => {
+                    // // spec: §13.2.5.20 Script data end tag name state
+                    match c {
+                        Some('\t') | Some('\n') | Some('\u{000C}') | Some(' ') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::BeforeAttributeName;
+                            } else {
+                                self.anything_else_in_script_data_end_tag_name()
+                            }
+                        }
+                        Some('/') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::SelfClosingStartTag;
+                            } else {
+                                self.anything_else_in_script_data_end_tag_name()
+                            }
+                        }
+                        Some('>') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::Data;
+                                if let Some(token) = self.current_token.take() {
+                                    return token;
+                                }
+                            } else {
+                                self.anything_else_in_script_data_end_tag_name()
+                            }
+                        }
+                        Some(c_val) if c_val.is_ascii_uppercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val.to_ascii_lowercase());
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_lowercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val);
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        _ => self.anything_else_in_script_data_end_tag_name(),
+                    }
+                }
+                State::ScriptDataEscapeStart => {
+                    // // spec: §13.2.5.21 Script data escape start state
+                    match c {
+                        Some('-') => {
+                            self.state = State::ScriptDataEscapeStartDash;
+                            return Token::Character('-');
+                        }
+                        _ => {
+                            self.state = State::ScriptData;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::ScriptDataEscapeStartDash => {
+                    // // spec: §13.2.5.22 Script data escape start dash state
+                    match c {
+                        Some('-') => {
+                            self.state = State::ScriptDataEscapedDashDash;
+                            return Token::Character('-');
+                        }
+                        _ => {
+                            self.state = State::ScriptData;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::ScriptDataEscaped => {
+                    // // spec: §13.2.5.23 Script data escaped state
+                    match c {
+                        Some('-') => {
+                            self.state = State::ScriptDataEscapedDash;
+                            return Token::Character('-');
+                        }
+                        Some('<') => {
+                            self.state = State::ScriptDataEscapedLessThanSign;
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            self.emit_error("eof-in-script-html-comment-like-text");
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::ScriptDataEscapedDash => {
+                    // // spec: §13.2.5.24 Script data escaped dash state
+                    match c {
+                        Some('-') => {
+                            self.state = State::ScriptDataEscapedDashDash;
+                            return Token::Character('-');
+                        }
+                        Some('<') => {
+                            self.state = State::ScriptDataEscapedLessThanSign;
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            self.state = State::ScriptDataEscaped;
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            self.emit_error("eof-in-script-html-comment-like-text");
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            self.state = State::ScriptDataEscaped;
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::ScriptDataEscapedDashDash => {
+                    // // spec: §13.2.5.25 Script data escaped dash dash state
+                    match c {
+                        Some('-') => {
+                            return Token::Character('-');
+                        }
+                        Some('<') => {
+                            self.state = State::ScriptDataEscapedLessThanSign;
+                        }
+                        Some('>') => {
+                            self.state = State::ScriptData;
+                            return Token::Character('>');
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            self.state = State::ScriptDataEscaped;
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            self.emit_error("eof-in-script-html-comment-like-text");
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            self.state = State::ScriptDataEscaped;
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::ScriptDataEscapedLessThanSign => {
+                    // // spec: §13.2.5.26 Script data escaped less-than-sign state
+                    match c {
+                        Some('/') => {
+                            self.temporary_buffer.clear();
+                            self.state = State::ScriptDataEscapedEndTagOpen;
+                        }
+                        Some(c_val) if c_val.is_ascii_alphabetic() => {
+                            self.temporary_buffer.clear();
+                            self.state = State::ScriptDataDoubleEscapeStart;
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                        _ => {
+                            self.state = State::ScriptDataEscaped;
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::ScriptDataEscapedEndTagOpen => {
+                    // // spec: §13.2.5.27 Script data escaped end tag open state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_alphabetic() => {
+                            self.current_token = Some(Token::EndTag {
+                                name: String::new(),
+                                attrs: Vec::new(),
+                                self_closing: false,
+                            });
+                            self.state = State::ScriptDataEscapedEndTagName;
+                            self.input.reconsume();
+                        }
+                        _ => {
+                            self.state = State::ScriptDataEscaped;
+                            self.token_buffer.push_back(Token::Character('/'));
+                            self.input.reconsume();
+                            return Token::Character('<');
+                        }
+                    }
+                }
+                State::ScriptDataEscapedEndTagName => {
+                    // // spec: §13.2.5.28 Script data escaped end tag name state
+                    match c {
+                        Some('\t') | Some('\n') | Some('\u{000C}') | Some(' ') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::BeforeAttributeName;
+                            } else {
+                                self.anything_else_in_script_data_escaped_end_tag_name()
+                            }
+                        }
+                        Some('/') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::SelfClosingStartTag;
+                            } else {
+                                self.anything_else_in_script_data_escaped_end_tag_name()
+                            }
+                        }
+                        Some('>') => {
+                            if self.is_appropriate_end_tag() {
+                                self.state = State::Data;
+                                if let Some(token) = self.current_token.take() {
+                                    return token;
+                                }
+                            } else {
+                                self.anything_else_in_script_data_escaped_end_tag_name()
+                            }
+                        }
+                        Some(c_val) if c_val.is_ascii_uppercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val.to_ascii_lowercase());
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_lowercase() => {
+                            if let Some(Token::EndTag { name, .. }) = &mut self.current_token {
+                                name.push(c_val);
+                            }
+                            self.temporary_buffer.push(c_val);
+                        }
+                        _ => self.anything_else_in_script_data_escaped_end_tag_name(),
+                    }
+                }
+                State::ScriptDataDoubleEscapeStart => {
+                    // // spec: §13.2.5.29 Script data double escape start state
+                    match c {
+                        Some(c_val @ '\t')
+                        | Some(c_val @ '\n')
+                        | Some(c_val @ '\u{000C}')
+                        | Some(c_val @ ' ')
+                        | Some(c_val @ '/')
+                        | Some(c_val @ '>') => {
+                            if self.temporary_buffer == "script" {
+                                self.state = State::ScriptDataDoubleEscaped;
+                            } else {
+                                self.state = State::ScriptDataEscaped;
+                            }
+                            return Token::Character(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_uppercase() => {
+                            self.temporary_buffer.push(c_val.to_ascii_lowercase());
+                            return Token::Character(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_lowercase() => {
+                            self.temporary_buffer.push(c_val);
+                            return Token::Character(c_val);
+                        }
+                        _ => {
+                            self.state = State::ScriptDataEscaped;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::ScriptDataDoubleEscaped => {
+                    // // spec: §13.2.5.30 Script data double escaped state
+                    match c {
+                        Some('-') => {
+                            self.state = State::ScriptDataDoubleEscapedDash;
+                            return Token::Character('-');
+                        }
+                        Some('<') => {
+                            self.state = State::ScriptDataDoubleEscapedLessThanSign;
+                            return Token::Character('<');
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            self.emit_error("eof-in-script-html-comment-like-text");
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::ScriptDataDoubleEscapedDash => {
+                    // // spec: §13.2.5.31 Script data double escaped dash state
+                    match c {
+                        Some('-') => {
+                            self.state = State::ScriptDataDoubleEscapedDashDash;
+                            return Token::Character('-');
+                        }
+                        Some('<') => {
+                            self.state = State::ScriptDataDoubleEscapedLessThanSign;
+                            return Token::Character('<');
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            self.state = State::ScriptDataDoubleEscaped;
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            self.emit_error("eof-in-script-html-comment-like-text");
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            self.state = State::ScriptDataDoubleEscaped;
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::ScriptDataDoubleEscapedDashDash => {
+                    // // spec: §13.2.5.32 Script data double escaped dash dash state
+                    match c {
+                        Some('-') => {
+                            return Token::Character('-');
+                        }
+                        Some('<') => {
+                            self.state = State::ScriptDataDoubleEscapedLessThanSign;
+                            return Token::Character('<');
+                        }
+                        Some('>') => {
+                            self.state = State::ScriptData;
+                            return Token::Character('>');
+                        }
+                        Some('\0') => {
+                            self.emit_error("unexpected-null-character");
+                            self.state = State::ScriptDataDoubleEscaped;
+                            return Token::Character('\u{FFFD}');
+                        }
+                        None => {
+                            self.emit_error("eof-in-script-html-comment-like-text");
+                            return Token::Eof;
+                        }
+                        Some(c_val) => {
+                            self.state = State::ScriptDataDoubleEscaped;
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::ScriptDataDoubleEscapedLessThanSign => {
+                    // // spec: §13.2.5.33 Script data double escaped less-than-sign state
+                    match c {
+                        Some('/') => {
+                            self.temporary_buffer.clear();
+                            self.state = State::ScriptDataDoubleEscapeEnd;
+                            return Token::Character('/');
+                        }
+                        _ => {
+                            self.state = State::ScriptDataDoubleEscaped;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::ScriptDataDoubleEscapeEnd => {
+                    // // spec: §13.2.5.34 Script data double escape end state
+                    match c {
+                        Some(c_val @ '\t')
+                        | Some(c_val @ '\n')
+                        | Some(c_val @ '\u{000C}')
+                        | Some(c_val @ ' ')
+                        | Some(c_val @ '/')
+                        | Some(c_val @ '>') => {
+                            if self.temporary_buffer == "script" {
+                                self.state = State::ScriptDataEscaped;
+                            } else {
+                                self.state = State::ScriptDataDoubleEscaped;
+                            }
+                            return Token::Character(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_uppercase() => {
+                            self.temporary_buffer.push(c_val.to_ascii_lowercase());
+                            return Token::Character(c_val);
+                        }
+                        Some(c_val) if c_val.is_ascii_lowercase() => {
+                            self.temporary_buffer.push(c_val);
+                            return Token::Character(c_val);
+                        }
+                        _ => {
+                            self.state = State::ScriptDataDoubleEscaped;
                             self.input.reconsume();
                         }
                     }
@@ -1940,6 +2586,88 @@ impl Tokenizer {
         }
     }
 
+    fn is_appropriate_end_tag(&self) -> bool {
+        match (&self.current_token, &self.last_start_tag_name) {
+            (Some(Token::EndTag { name, .. }), Some(last_name)) => name == last_name,
+            _ => false,
+        }
+    }
+
+    fn anything_else_in_rcdata_end_tag_name(&mut self) {
+        self.state = State::Rcdata;
+        self.token_buffer.push_back(Token::Character('<'));
+        self.token_buffer.push_back(Token::Character('/'));
+        let buffer = self.temporary_buffer.clone();
+        for c in buffer.chars() {
+            self.token_buffer.push_back(Token::Character(c));
+        }
+        self.input.reconsume();
+    }
+
+    fn anything_else_in_rawtext_end_tag_name(&mut self) {
+        self.state = State::Rawtext;
+        self.token_buffer.push_back(Token::Character('<'));
+        self.token_buffer.push_back(Token::Character('/'));
+        let buffer = self.temporary_buffer.clone();
+        for c in buffer.chars() {
+            self.token_buffer.push_back(Token::Character(c));
+        }
+        self.input.reconsume();
+    }
+
+    fn anything_else_in_script_data_end_tag_name(&mut self) {
+        self.state = State::ScriptData;
+        self.token_buffer.push_back(Token::Character('<'));
+        self.token_buffer.push_back(Token::Character('/'));
+        let buffer = self.temporary_buffer.clone();
+        for c in buffer.chars() {
+            self.token_buffer.push_back(Token::Character(c));
+        }
+        self.input.reconsume();
+    }
+
+    fn anything_else_in_script_data_escaped_end_tag_name(&mut self) {
+        self.state = State::ScriptDataEscaped;
+        self.token_buffer.push_back(Token::Character('<'));
+        self.token_buffer.push_back(Token::Character('/'));
+        let buffer = self.temporary_buffer.clone();
+        for c in buffer.chars() {
+            self.token_buffer.push_back(Token::Character(c));
+        }
+        self.input.reconsume();
+    }
+
+    fn emit_current_tag(&mut self) -> Token {
+        if let Some(token) = self.current_token.take() {
+            match &token {
+                Token::StartTag {
+                    name, self_closing, ..
+                } => {
+                    self.last_start_tag_name = Some(name.clone());
+                    if *self_closing {
+                        self.state = State::Data;
+                    } else {
+                        match name.as_str() {
+                            "title" | "textarea" => self.state = State::Rcdata,
+                            "style" | "xmp" | "iframe" | "noembed" | "noframes" => {
+                                self.state = State::Rawtext
+                            }
+                            "script" => self.state = State::ScriptData,
+                            "plaintext" => self.state = State::Plaintext,
+                            _ => self.state = State::Data,
+                        }
+                    }
+                }
+                Token::EndTag { .. } | Token::Doctype { .. } | Token::Comment(_) => {
+                    self.state = State::Data;
+                }
+                _ => {}
+            }
+            return token;
+        }
+        Token::Eof
+    }
+
     fn match_keyword(&mut self, keyword: &str) -> bool {
         let mut matched = true;
         for c_k in keyword.chars() {
@@ -1960,7 +2688,7 @@ impl Tokenizer {
 
     fn flush_character(&mut self, c: char) {
         match self.return_state {
-            State::Data => {
+            State::Data | State::Rcdata => {
                 self.token_buffer.push_back(Token::Character(c));
             }
             State::AttributeValueDoubleQuoted

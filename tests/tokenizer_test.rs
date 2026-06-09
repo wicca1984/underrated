@@ -21,6 +21,8 @@ struct TestCase {
     double_escaped: bool,
     #[serde(rename = "initialStates", default)]
     initial_states: Vec<String>,
+    #[serde(rename = "lastStartTag", default)]
+    last_start_tag: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -108,18 +110,23 @@ fn json_to_token(val: &serde_json::Value) -> Token {
                 self_closing: false,
             }
         }
+        "Character" => {
+            // This is handled by coalescing in the test runner
+            panic!("Character token should be handled specially");
+        }
         "Comment" => Token::Comment(
             arr[1]
                 .as_str()
                 .expect("comment data should be a string")
                 .to_string(),
         ),
-        "Character" => {
-            // This is handled by coalescing in the test runner
-            panic!("Character token should be handled specially");
-        }
         _ => panic!("Unknown token type: {}", type_name),
     }
+}
+
+#[test]
+fn content_model_flags() {
+    run_test_file("tests/html5lib-tests/tokenizer/contentModelFlags.test");
 }
 
 #[test]
@@ -151,122 +158,125 @@ fn entities() {
 fn run_test_file(path: &str) {
     let content = std::fs::read_to_string(path).expect("failed to read test file");
     let file: TestFile = serde_json::from_str(&content).expect("failed to parse JSON");
-    for mut test in file.tests {
-        if !test.initial_states.is_empty()
-            && !test.initial_states.contains(&"Data state".to_string())
-        {
-            continue;
-        }
+    for test in file.tests {
+        let states = if test.initial_states.is_empty() {
+            vec!["Data state".to_string()]
+        } else {
+            test.initial_states.clone()
+        };
 
-        if test.input.contains('&') {
-            continue;
-        }
+        for state in states {
+            let supported_states = [
+                "Data state",
+                "RCDATA state",
+                "RAWTEXT state",
+                "Script data state",
+                "PLAINTEXT state",
+            ];
+            if !supported_states.contains(&state.as_str()) {
+                continue;
+            }
 
-        if test.double_escaped {
-            test.input = unescape(&test.input);
-            for tok in &mut test.output {
-                if let Some(arr) = tok.as_array_mut() {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            *item = serde_json::Value::String(unescape(s));
-                        }
-                    }
+            if test.input.contains('&') {
+                continue;
+            }
+
+            let input = if test.double_escaped {
+                unescape(&test.input)
+            } else {
+                test.input.clone()
+            };
+
+            let stream = InputStream::from_utf8(input.as_bytes());
+            let mut tokenizer = Tokenizer::new(stream);
+            tokenizer.set_initial_state(&state);
+            if let Some(ref tag) = test.last_start_tag {
+                tokenizer.set_last_start_tag(tag);
+            }
+
+            let mut actual_tokens = Vec::new();
+            loop {
+                let tok = tokenizer.next_token();
+                if tok == Token::Eof {
+                    break;
                 }
+                actual_tokens.push(tok);
             }
-        }
 
-        let stream = InputStream::from_utf8(test.input.as_bytes());
-        let mut tokenizer = Tokenizer::new(stream);
-        let mut actual_tokens = Vec::new();
-        loop {
-            let tok = tokenizer.next_token();
-            if tok == Token::Eof {
-                break;
-            }
-            actual_tokens.push(tok);
-        }
+            let coalesced_actual = actual_tokens;
+            let mut expected_idx = 0;
+            let mut actual_idx = 0;
 
-        // Coalesce characters in the comparison loop, so we just collect all tokens here.
-        let coalesced_actual = actual_tokens;
-        // Actually, let's just compare against the expected tokens, handling the "Character" case.
-
-        let mut expected_idx = 0;
-        let mut actual_idx = 0;
-
-        while expected_idx < test.output.len() {
-            let expected_val = &test.output[expected_idx];
-            let expected_arr = expected_val
-                .as_array()
-                .expect("expected token should be an array");
-            let type_name = expected_arr[0]
-                .as_str()
-                .expect("expected token type should be a string");
-
-            if type_name == "Character" {
-                let expected_str = expected_arr[1]
+            while expected_idx < test.output.len() {
+                let expected_val = &test.output[expected_idx];
+                let expected_arr = expected_val
+                    .as_array()
+                    .expect("expected token should be an array");
+                let type_name = expected_arr[0]
                     .as_str()
-                    .expect("expected character data should be a string");
-                let mut actual_str = String::new();
-                while actual_idx < coalesced_actual.len() {
-                    if let Token::Character(c) = coalesced_actual[actual_idx] {
-                        actual_str.push(c);
-                        actual_idx += 1;
-                        if actual_str.len() == expected_str.len() {
+                    .expect("expected token type should be a string");
+
+                if type_name == "Character" {
+                    let expected_str = expected_arr[1]
+                        .as_str()
+                        .expect("expected character data should be a string");
+                    let mut actual_str = String::new();
+                    while actual_idx < coalesced_actual.len() {
+                        if let Token::Character(c) = coalesced_actual[actual_idx] {
+                            actual_str.push(c);
+                            actual_idx += 1;
+                            if actual_str.len() == expected_str.len() {
+                                break;
+                            }
+                        } else {
                             break;
                         }
-                    } else {
-                        break;
                     }
-                }
-                assert_eq!(
-                    actual_str, expected_str,
-                    "Character mismatch in test: {}",
-                    test.description
-                );
-            } else {
-                let expected_tok = json_to_token(expected_val);
-                assert!(
-                    actual_idx < coalesced_actual.len(),
-                    "Missing token in test: {}. Expected {:?}",
-                    test.description,
-                    expected_tok
-                );
-                let mut actual_tok = coalesced_actual[actual_idx].clone();
-                actual_idx += 1;
+                    assert_eq!(
+                        actual_str, expected_str,
+                        "Character mismatch in test: {}. Initial state: {}",
+                        test.description, state
+                    );
+                } else {
+                    let expected_tok = json_to_token(expected_val);
+                    assert!(
+                        actual_idx < coalesced_actual.len(),
+                        "Missing token in test: {}. Expected {:?}",
+                        test.description,
+                        expected_tok
+                    );
+                    let mut actual_tok = coalesced_actual[actual_idx].clone();
+                    actual_idx += 1;
 
-                // Sort actual attributes for comparison
-                if let Token::StartTag { ref mut attrs, .. } = actual_tok {
-                    attrs.sort_by(|a, b| a.0.cmp(&b.0));
-                }
-                if let Token::EndTag {
-                    ref mut attrs,
-                    ref mut self_closing,
-                    ..
-                } = actual_tok
-                {
-                    attrs.clear();
-                    *self_closing = false;
-                }
+                    if let Token::StartTag { ref mut attrs, .. } = actual_tok {
+                        attrs.sort_by(|a, b| a.0.cmp(&b.0));
+                    }
+                    if let Token::EndTag {
+                        ref mut attrs,
+                        ref mut self_closing,
+                        ..
+                    } = actual_tok
+                    {
+                        attrs.clear();
+                        *self_closing = false;
+                    }
 
-                assert_eq!(
-                    actual_tok, expected_tok,
-                    "Token mismatch in test: {}",
-                    test.description
-                );
+                    assert_eq!(
+                        actual_tok, expected_tok,
+                        "Token mismatch in test: {}. Initial state: {}",
+                        test.description, state
+                    );
+                }
+                expected_idx += 1;
             }
-            expected_idx += 1;
+
+            assert_eq!(
+                actual_idx,
+                coalesced_actual.len(),
+                "Extra tokens in test: {}. Initial state: {}",
+                test.description,
+                state
+            );
         }
-
-        assert_eq!(
-            actual_idx,
-            coalesced_actual.len(),
-            "Extra tokens in test: {}",
-            test.description
-        );
-
-        // Errors (optional for now, as I'm focusing on tokens)
-        let _actual_errors = tokenizer.take_errors();
-        // Some tests might have errors that I don't implement yet.
-        // I'll just check if the number of errors matches if specified, or skip for now.
     }
 }
