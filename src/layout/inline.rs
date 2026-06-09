@@ -77,10 +77,9 @@ fn layout_inline_recursive(
                     let words = collapsed.split_inclusive(' ');
 
                     for word in words {
-                        // Measure each character in the word with the font glyph width.
-                        // spec: S-45
-                        let word_width: f32 =
-                            word.chars().map(|c| font.glyph_width(c) as f32).sum();
+                        // Measure the word with the font's measure helper.
+                        // spec: S-45, S-57
+                        let word_width = font.measure(word) as f32;
 
                         if *cursor_x + word_width > containing_width && *cursor_x > 0.0 {
                             // Flush current line
