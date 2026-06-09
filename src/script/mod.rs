@@ -37,6 +37,43 @@ pub trait ScriptHost {
     fn eval(&mut self, src: &str) -> Result<(), ScriptError>;
 }
 
+thread_local! {
+    static LIMITS_ENABLED: RefCell<bool> = const { RefCell::new(true) };
+    static MAX_SCRIPT_LENGTH: RefCell<usize> = const { RefCell::new(5000) };
+    static MAX_YIELDS: RefCell<usize> = const { RefCell::new(100) };
+    static BUDGET_PER_YIELD: RefCell<usize> = const { RefCell::new(1000) };
+}
+
+/// Configures whether script execution budgets/limits are enabled.
+///
+/// By default, limits are enabled to prevent infinite loops and freezing.
+/// Disabling limits (i.e. opting-in to complete execution) can be done by
+/// calling `set_limits_enabled(false)`.
+pub fn set_limits_enabled(enabled: bool) {
+    LIMITS_ENABLED.with(|cell| *cell.borrow_mut() = enabled);
+}
+
+/// Checks whether script execution budgets/limits are enabled.
+pub fn is_limits_enabled() -> bool {
+    LIMITS_ENABLED.with(|cell| *cell.borrow())
+}
+
+/// Sets the maximum character length for inline scripts when limits are enabled.
+/// Scripts exceeding this limit will be truncated or aborted safely.
+pub fn set_max_script_length(len: usize) {
+    MAX_SCRIPT_LENGTH.with(|cell| *cell.borrow_mut() = len);
+}
+
+/// Sets the budget per yield (VM instruction cost threshold).
+pub fn set_budget_per_yield(budget: usize) {
+    BUDGET_PER_YIELD.with(|cell| *cell.borrow_mut() = budget);
+}
+
+/// Sets the maximum number of yields/polls allowed before a script is aborted.
+pub fn set_max_yields(yields: usize) {
+    MAX_YIELDS.with(|cell| *cell.borrow_mut() = yields);
+}
+
 /// A `ScriptHost` implementation using the Boa JavaScript engine.
 pub struct BoaHost {
     context: Context,
@@ -286,8 +323,54 @@ impl BoaHost {
         }
 
         // 3. Evaluate the source code.
-        let source = Source::from_bytes(src.as_bytes());
-        let res_val = self.context.eval(source);
+        let is_limit = is_limits_enabled();
+        let final_src = if is_limit {
+            let max_len = MAX_SCRIPT_LENGTH.with(|cell| *cell.borrow());
+            if src.chars().count() > max_len {
+                // Safely truncate to the maximum number of characters
+                src.chars().take(max_len).collect::<String>()
+            } else {
+                src.to_string()
+            }
+        } else {
+            src.to_string()
+        };
+
+        let res_val = if is_limit {
+            let source = Source::from_bytes(final_src.as_bytes());
+            match boa_engine::script::Script::parse(source, None, &mut self.context) {
+                Ok(script) => {
+                    let budget = BUDGET_PER_YIELD.with(|cell| *cell.borrow()) as u32;
+                    let max_yields = MAX_YIELDS.with(|cell| *cell.borrow());
+                    let mut future =
+                        Box::pin(script.evaluate_async_with_budget(&mut self.context, budget));
+                    let waker = std::task::Waker::noop();
+                    let mut cx = std::task::Context::from_waker(waker);
+                    let mut yield_count = 0;
+
+                    loop {
+                        match future.as_mut().poll(&mut cx) {
+                            std::task::Poll::Ready(res) => {
+                                break res;
+                            }
+                            std::task::Poll::Pending => {
+                                yield_count += 1;
+                                if yield_count > max_yields {
+                                    // Budget exceeded! Abort execution.
+                                    break Err(JsError::from_opaque(JsValue::from(
+                                        JsString::from("Execution budget exceeded"),
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            let source = Source::from_bytes(final_src.as_bytes());
+            self.context.eval(source)
+        };
 
         // 4. Restore DOM
         let restored_dom = CURRENT_DOM.with(|cell| cell.borrow_mut().take());
@@ -1206,5 +1289,120 @@ mod tests {
         // Run: output should be "AB"
         let mutated_dom = run_inline_scripts(dom);
         assert_eq!(mutated_dom.text_content(element_id), "AB");
+    }
+
+    #[test]
+    fn test_script_budget_infinite_loop() {
+        // Enforce default limits
+        set_limits_enabled(true);
+        set_max_yields(5); // low limit for quick test
+        set_budget_per_yield(100);
+
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        // Infinite loop script.
+        // It tries to set textContent to 'looping' inside the loop,
+        // but it should hit the budget and get aborted.
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text = dom.create_node(NodeData::Text(
+            "while(true) { document.getElementById('target').textContent='looping'; }".to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        // Run scripts: must NOT hang or panic!
+        let _mutated_dom = run_inline_scripts(dom);
+
+        // Restore defaults
+        set_limits_enabled(true);
+        set_max_yields(100);
+        set_budget_per_yield(1000);
+        set_max_script_length(5000);
+    }
+
+    #[test]
+    fn test_script_budget_length_limit() {
+        set_limits_enabled(true);
+        set_max_script_length(20);
+
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        // This script is 54 characters. With limit of 20, it is truncated to:
+        // "document.getElementB" which has a syntax error.
+        // It must NOT panic!
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent='changed';".to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom);
+        assert_eq!(mutated_dom.text_content(element_id), "original");
+
+        // Restore defaults
+        set_max_script_length(5000);
+    }
+
+    #[test]
+    fn test_script_budget_opt_out() {
+        // Turn off limits
+        set_limits_enabled(false);
+
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        // A long script that would have been truncated if limits were on
+        set_max_script_length(20);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent='changed';".to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom);
+        assert_eq!(mutated_dom.text_content(element_id), "changed");
+
+        // Restore defaults
+        set_limits_enabled(true);
+        set_max_script_length(5000);
     }
 }
