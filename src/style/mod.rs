@@ -30,11 +30,32 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32) {
         for component in &compound.components {
             match component {
                 Component::Id(_) => id += 1,
-                Component::Class(_) | Component::Attribute { .. } | Component::PseudoClass(_) => {
-                    class += 1
-                }
+                Component::Class(_)
+                | Component::Attribute { .. }
+                | Component::PseudoClass(_)
+                | Component::NthChild(_, _)
+                | Component::FirstChild
+                | Component::LastChild => class += 1,
                 Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
                 Component::Universal => {}
+                Component::Not(compound) => {
+                    for sub_comp in &compound.components {
+                        match sub_comp {
+                            Component::Id(_) => id += 1,
+                            Component::Class(_)
+                            | Component::Attribute { .. }
+                            | Component::PseudoClass(_)
+                            | Component::NthChild(_, _)
+                            | Component::FirstChild
+                            | Component::LastChild => class += 1,
+                            Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
+                            Component::Universal => {}
+                            Component::Not(_) => {
+                                unreachable!("Nested :not() is not possible in simple compound")
+                            }
+                        }
+                    }
+                }
             }
         }
     }
