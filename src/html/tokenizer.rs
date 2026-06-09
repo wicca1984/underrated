@@ -1777,19 +1777,10 @@ impl Tokenizer {
                 State::HexadecimalCharacterReference => {
                     // // spec: §13.2.5.78 Hexadecimal character reference state
                     match c {
-                        Some(c_val) if c_val.is_ascii_digit() => {
-                            self.character_reference_code = self
-                                .character_reference_code
-                                .saturating_mul(16)
-                                .saturating_add(c_val.to_digit(16).unwrap_or(0));
-                        }
-                        Some(c_val) if c_val.is_ascii_lowercase() => {
-                            self.character_reference_code = self
-                                .character_reference_code
-                                .saturating_mul(16)
-                                .saturating_add(c_val.to_digit(16).unwrap_or(0));
-                        }
-                        Some(c_val) if c_val.is_ascii_uppercase() => {
+                        // spec: ASCII hex digit (0-9 / a-f / A-F) ONLY. Other letters
+                        // (g-z, G-Z) must not be consumed here — they terminate the
+                        // reference via the catch-all arm below (missing-semicolon).
+                        Some(c_val) if c_val.is_ascii_hexdigit() => {
                             self.character_reference_code = self
                                 .character_reference_code
                                 .saturating_mul(16)
