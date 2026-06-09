@@ -1,20 +1,24 @@
+<p align="center">
+  <img src="img/Underrated_logo.png" alt="underrated" width="320">
+</p>
+
 # underrated
 
-Gecko / WebKit / Blink に頼らない、ゼロから自前実装する Web ブラウザエンジン（Rust, edition 2024）。
+An independent web browser engine, written from scratch in Rust (edition 2024) — no Gecko, WebKit, or Blink.
 
-## セットアップ
+## Setup
 
-DevContainer（Zed Remote / VS Code Dev Containers）で開くと `postCreate` が走り、`cargo fetch` まで完了する。
+Open in a DevContainer (Zed Remote / VS Code Dev Containers). `postCreate` runs and finishes `cargo fetch`.
 
-## 使い方
+## Usage
 
 ```bash
-cargo run                    # 実行
-cargo test                   # テスト
+cargo run                    # run
+cargo test                   # test
 cargo clippy --all-targets   # lint
 cargo fmt                    # format
 ```
 
-## ライセンス
+## License
 
 [Apache-2.0](LICENSE)
