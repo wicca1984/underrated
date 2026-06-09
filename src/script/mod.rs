@@ -3,7 +3,10 @@
 //! This module implements the `ScriptHost` port, allowing the browser engine
 //! to execute scripts. The current implementation uses the `boa_engine` crate.
 
-use boa_engine::{Context, JsError, Source};
+use crate::dom::{Dom, NodeData};
+use boa_engine::object::ObjectInitializer;
+use boa_engine::property::Attribute;
+use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 
 /// Errors that can occur during script execution.
 #[derive(Debug, PartialEq)]
@@ -49,9 +52,26 @@ impl BoaHost {
     }
 
     fn setup_experimental_dom(context: &mut Context) {
-        use boa_engine::JsString;
-        use boa_engine::object::ObjectInitializer;
-        use boa_engine::property::Attribute;
+        let get_element_by_id = NativeFunction::from_fn_ptr(|_this, args, context| {
+            let id_val = if let Some(arg) = args.first() {
+                arg.to_string(context)?.to_std_string().unwrap_or_default()
+            } else {
+                return Ok(JsValue::null());
+            };
+
+            let global = context.global_object();
+            let document = global.get(JsString::from("document"), context)?;
+            if let Some(document_obj) = document.as_object() {
+                let elements_val = document_obj.get(JsString::from("__elements__"), context)?;
+                if let Some(elements_obj) = elements_val.as_object() {
+                    let elem = elements_obj.get(JsString::from(id_val), context)?;
+                    if !elem.is_undefined() {
+                        return Ok(elem);
+                    }
+                }
+            }
+            Ok(JsValue::null())
+        });
 
         let document = ObjectInitializer::new(context)
             .property(
@@ -59,6 +79,7 @@ impl BoaHost {
                 JsString::from("Underrated"),
                 Attribute::all(),
             )
+            .function(get_element_by_id, JsString::from("getElementById"), 1)
             .build();
 
         let _ = context.register_global_property(
@@ -66,6 +87,82 @@ impl BoaHost {
             document,
             Attribute::all(),
         );
+    }
+
+    /// Evaluates the given script with the provided DOM context.
+    ///
+    /// Exposes a read-only `document` object to the script enabling `document.getElementById`.
+    pub fn eval_with_dom(&mut self, src: &str, dom: &Dom) -> Result<String, ScriptError> {
+        // 1. Gather all element nodes in `dom` with an `id`.
+        let mut elements_with_id = Vec::new();
+        let root = dom.document();
+        let mut nodes_to_check = vec![root];
+        while let Some(node_id) = nodes_to_check.pop() {
+            if let Some(NodeData::Element { attrs, .. }) = dom.data(node_id) {
+                let id_attr = attrs.iter().find(|(n, _)| n == "id");
+                if let Some((_, id_val)) = id_attr {
+                    elements_with_id.push((id_val.clone(), dom.text_content(node_id)));
+                }
+            }
+            nodes_to_check.extend(dom.children(node_id).iter().rev().copied());
+        }
+
+        // 2. Build the element JS objects.
+        let mut element_objs = Vec::new();
+        for (id_val, text_content_val) in elements_with_id {
+            let element_obj = ObjectInitializer::new(&mut self.context)
+                .property(
+                    JsString::from("textContent"),
+                    JsString::from(text_content_val),
+                    Attribute::all(),
+                )
+                .property(
+                    JsString::from("id"),
+                    JsString::from(id_val.clone()),
+                    Attribute::all(),
+                )
+                .build();
+            element_objs.push((JsString::from(id_val), element_obj));
+        }
+
+        // Build the `__elements__` registry JS object.
+        let mut registry_builder = ObjectInitializer::new(&mut self.context);
+        for (id_js, element_obj) in element_objs {
+            registry_builder.property(id_js, element_obj, Attribute::all());
+        }
+        let registry_obj = registry_builder.build();
+
+        // 3. Find the global `document` object.
+        let global = self.context.global_object();
+        let document_val = global
+            .get(JsString::from("document"), &mut self.context)
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+        let document_obj = document_val
+            .as_object()
+            .ok_or_else(|| ScriptError::Runtime("global document is not an object".to_string()))?;
+
+        // 4. Attach `__elements__` to `document`.
+        document_obj
+            .set(
+                JsString::from("__elements__"),
+                JsValue::from(registry_obj),
+                false,
+                &mut self.context,
+            )
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+
+        // 5. Evaluate the source code.
+        let source = Source::from_bytes(src.as_bytes());
+        let res_val = self.context.eval(source).map_err(map_boa_error)?;
+
+        // 6. Coerce the JS result to String.
+        let res_str = res_val
+            .to_string(&mut self.context)
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?
+            .to_std_string()
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+
+        Ok(res_str)
     }
 }
 
@@ -128,5 +225,31 @@ mod tests {
             host.eval("if (document.title !== 'New Title') throw 'Title not updated';")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn test_eval_with_dom_basic() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "greeting".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("Hello".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let mut host = BoaHost::new();
+        let res = host.eval_with_dom("document.getElementById('greeting').textContent", &dom);
+        assert_eq!(res, Ok("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_missing_id() {
+        let dom = Dom::new();
+        let mut host = BoaHost::new();
+        let res = host.eval_with_dom("document.getElementById('nonexistent')", &dom);
+        assert_eq!(res, Ok("null".to_string()));
     }
 }
