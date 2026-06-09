@@ -47,7 +47,12 @@ impl BitmapFont {
 
         let size = (self.width * self.height) as usize;
         let start = index * size;
-        &self.data[start..start + size]
+        // Checked slice so a future change to the glyph table can never panic
+        // here (I-6); fall back to the blank cell at index 0.
+        self.data
+            .get(start..start + size)
+            .or_else(|| self.data.get(0..size))
+            .unwrap_or(&[])
     }
 
     /// Returns the (width, height) of a glyph cell in pixels.
