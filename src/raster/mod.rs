@@ -64,23 +64,42 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                     }
                 }
             }
-            DisplayItem::Text { rect, .. } => {
-                // // TODO(spec): real font rasterization (rustybuzz/fonts later)
-                // Draw a faint rect placeholder (faint gray)
-                let color = (200, 200, 200, 64); // Faint gray
+            DisplayItem::Text { rect, text, color } => {
+                let font = crate::font::BitmapFont::builtin();
+                let (r_f, g_f, b_f, a_f) = match color {
+                    Color::Rgba(r, g, b, a) => (*r, *g, *b, *a),
+                };
+                if a_f == 0 {
+                    continue;
+                }
 
-                let x_start = (rect.origin.x.max(0.0).floor() as u32).min(width);
-                let y_start = (rect.origin.y.max(0.0).floor() as u32).min(height);
-                let x_end = (rect.max_x().max(0.0).ceil() as u32).min(width);
-                let y_end = (rect.max_y().max(0.0).ceil() as u32).min(height);
+                let mut cursor_x = rect.origin.x;
+                let cursor_y = rect.origin.y;
 
-                for y in y_start..y_end {
-                    for x in x_start..x_end {
-                        let index = (y as usize) * (width as usize) + (x as usize);
-                        if let Some(pixel) = canvas.pixels.get_mut(index) {
-                            *pixel = blend(color, *pixel);
+                for c in text.chars() {
+                    let coverage = font.glyph_coverage(c);
+                    let (gw, gh) = font.glyph_size();
+
+                    for gy in 0..gh {
+                        for gx in 0..gw {
+                            let c_x = (cursor_x.floor() as i32) + gx as i32;
+                            let c_y = (cursor_y.floor() as i32) + gy as i32;
+
+                            // Clip to canvas bounds
+                            if c_x >= 0 && c_x < width as i32 && c_y >= 0 && c_y < height as i32 {
+                                let cov = coverage[(gy * gw + gx) as usize];
+                                if cov > 0 {
+                                    // Scale foreground alpha by glyph coverage
+                                    let alpha = ((a_f as u32 * cov as u32 + 127) / 255) as u8;
+                                    let index = (c_y as usize) * (width as usize) + (c_x as usize);
+                                    if let Some(pixel) = canvas.pixels.get_mut(index) {
+                                        *pixel = blend((r_f, g_f, b_f, alpha), *pixel);
+                                    }
+                                }
+                            }
                         }
                     }
+                    cursor_x += font.glyph_width(c) as f32;
                 }
             }
         }
@@ -225,5 +244,43 @@ mod tests {
         let canvas = rasterize(&list, 1, 1);
 
         assert_eq!(canvas.pixel(0, 0), 0xFF0000FF);
+    }
+
+    #[test]
+    fn test_rasterize_text() {
+        let items = vec![DisplayItem::Text {
+            rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+            text: "A".into(),
+            color: Color::Rgba(255, 0, 0, 255), // Red
+        }];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 20, 20);
+
+        // "A" in BitmapFont::builtin() (8x8) is not blank.
+        // It should have some red pixels.
+        let mut found_red = false;
+        for y in 0..20 {
+            for x in 0..20 {
+                let pixel = canvas.pixel(x, y);
+                if pixel == 0xFFFF0000 {
+                    found_red = true;
+                }
+            }
+        }
+        assert!(found_red, "Should find at least one red pixel for 'A'");
+    }
+
+    #[test]
+    fn test_rasterize_text_clipping() {
+        let items = vec![DisplayItem::Text {
+            rect: Rect::new(18.0, 18.0, 10.0, 10.0),
+            text: "A".into(),
+            color: Color::Rgba(255, 0, 0, 255),
+        }];
+        let list = DisplayList(items);
+        // Canvas is 20x20. Text starts at (18, 18).
+        // 8x8 glyph will go to (26, 26).
+        // It should not panic.
+        let _canvas = rasterize(&list, 20, 20);
     }
 }
