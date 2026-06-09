@@ -34,6 +34,30 @@ impl Canvas {
     }
 }
 
+/// Loads image bytes from a path or file:// URL.
+fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
+    // 1. Try parsing as a URL
+    if let Ok(url) = crate::url::Url::parse(src)
+        && url.scheme == "file"
+    {
+        if let Ok(bytes) = std::fs::read(&url.path) {
+            return Some(bytes);
+        }
+        // Try relative as fallback
+        let relative_path = url.path.trim_start_matches('/');
+        if let Ok(bytes) = std::fs::read(relative_path) {
+            return Some(bytes);
+        }
+    }
+
+    // 2. Fall back to reading src directly as a standard file path
+    if let Ok(bytes) = std::fs::read(src) {
+        return Some(bytes);
+    }
+
+    None
+}
+
 /// Rasterizes a display list into a canvas of the given dimensions.
 /// spec: S-14
 pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
@@ -100,6 +124,51 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                         }
                     }
                     cursor_x += font.glyph_width(c) as f32;
+                }
+            }
+            DisplayItem::Image { rect, src } => {
+                let rect_w = rect.size.width;
+                let rect_h = rect.size.height;
+                if rect_w <= 0.0 || rect_h <= 0.0 {
+                    continue;
+                }
+
+                if let Some(bytes) = load_image_bytes(src)
+                    && let Some(decoded) = crate::image::decode_png(&bytes)
+                {
+                    if decoded.width == 0 || decoded.height == 0 {
+                        continue;
+                    }
+
+                    // Clip to canvas bounds
+                    let x_start = (rect.origin.x.max(0.0).floor() as u32).min(width);
+                    let y_start = (rect.origin.y.max(0.0).floor() as u32).min(height);
+                    let x_end = (rect.max_x().max(0.0).ceil() as u32).min(width);
+                    let y_end = (rect.max_y().max(0.0).ceil() as u32).min(height);
+
+                    for y in y_start..y_end {
+                        let fy = ((y as f32 - rect.origin.y) / rect_h).clamp(0.0, 1.0);
+                        let src_y =
+                            ((fy * decoded.height as f32).floor() as u32).min(decoded.height - 1);
+                        for x in x_start..x_end {
+                            let fx = ((x as f32 - rect.origin.x) / rect_w).clamp(0.0, 1.0);
+                            let src_x =
+                                ((fx * decoded.width as f32).floor() as u32).min(decoded.width - 1);
+
+                            let pixel_idx = ((src_y * decoded.width + src_x) * 4) as usize;
+                            if pixel_idx + 3 < decoded.rgba.len() {
+                                let r = decoded.rgba[pixel_idx];
+                                let g = decoded.rgba[pixel_idx + 1];
+                                let b = decoded.rgba[pixel_idx + 2];
+                                let a = decoded.rgba[pixel_idx + 3];
+
+                                let index = (y as usize) * (width as usize) + (x as usize);
+                                if let Some(pixel) = canvas.pixels.get_mut(index) {
+                                    *pixel = blend((r, g, b, a), *pixel);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -735,5 +804,91 @@ mod tests {
 
         // Center pixel (4, 4) should be exactly midpoint (128, 0, 128)
         assert_eq!(canvas.pixel(4, 4), 0xFF800080);
+    }
+
+    #[test]
+    fn test_rasterize_image_blit() {
+        use crate::geom::Rect;
+
+        // 1. Generate 2x2 image
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        source_canvas.pixels[2] = 0xFF0000FF; // Blue
+        source_canvas.pixels[3] = 0xFFFFFF00; // Yellow
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_test_rasterize_image_blit.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        // 2. Build DisplayList to scale this 2x2 PNG onto a 4x4 rect
+        let items = vec![DisplayItem::Image {
+            rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+            src: temp_filename.to_string(),
+        }];
+        let list = DisplayList(items);
+
+        // 3. Rasterize onto a 4x4 canvas
+        let canvas = rasterize(&list, 4, 4);
+
+        // 4. Verify nearest-neighbor scale output pixels
+        // Top-left 2x2 should be Red
+        assert_eq!(canvas.pixel(0, 0), 0xFFFF0000);
+        assert_eq!(canvas.pixel(1, 0), 0xFFFF0000);
+        assert_eq!(canvas.pixel(0, 1), 0xFFFF0000);
+        assert_eq!(canvas.pixel(1, 1), 0xFFFF0000);
+
+        // Top-right 2x2 should be Green
+        assert_eq!(canvas.pixel(2, 0), 0xFF00FF00);
+        assert_eq!(canvas.pixel(3, 0), 0xFF00FF00);
+        assert_eq!(canvas.pixel(2, 1), 0xFF00FF00);
+        assert_eq!(canvas.pixel(3, 1), 0xFF00FF00);
+
+        // Bottom-left 2x2 should be Blue
+        assert_eq!(canvas.pixel(0, 2), 0xFF0000FF);
+        assert_eq!(canvas.pixel(1, 2), 0xFF0000FF);
+        assert_eq!(canvas.pixel(0, 3), 0xFF0000FF);
+        assert_eq!(canvas.pixel(1, 3), 0xFF0000FF);
+
+        // Bottom-right 2x2 should be Yellow
+        assert_eq!(canvas.pixel(2, 2), 0xFFFFFF00);
+        assert_eq!(canvas.pixel(3, 2), 0xFFFFFF00);
+        assert_eq!(canvas.pixel(2, 3), 0xFFFFFF00);
+        assert_eq!(canvas.pixel(3, 3), 0xFFFFFF00);
+
+        // Cleanup
+        let _ = std::fs::remove_file(temp_filename);
+    }
+
+    #[test]
+    fn test_rasterize_image_missing_or_corrupt() {
+        use crate::geom::Rect;
+
+        // Missing file should skip gracefully without panicking
+        let items = vec![DisplayItem::Image {
+            rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+            src: "this_file_does_not_exist_at_all.png".to_string(),
+        }];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 4, 4);
+        for &pixel in &canvas.pixels {
+            assert_eq!(pixel, 0);
+        }
+
+        // Corrupt file should skip gracefully without panicking
+        let corrupt_filename = "temp_test_corrupt.png";
+        std::fs::write(corrupt_filename, b"completely corrupted png data").unwrap();
+
+        let items_corrupt = vec![DisplayItem::Image {
+            rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+            src: corrupt_filename.to_string(),
+        }];
+        let list_corrupt = DisplayList(items_corrupt);
+        let canvas_corrupt = rasterize(&list_corrupt, 4, 4);
+        for &pixel in &canvas_corrupt.pixels {
+            assert_eq!(pixel, 0);
+        }
+
+        let _ = std::fs::remove_file(corrupt_filename);
     }
 }
