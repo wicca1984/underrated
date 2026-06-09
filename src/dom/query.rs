@@ -19,29 +19,29 @@ impl Dom {
             })
     }
 
-    /// Returns the first element in the document that matches the given `selector`.
+    /// Returns the first descendant of the given `root` node that matches the given `selector`.
     // spec: https://dom.spec.whatwg.org/#dom-parentnode-queryselector
-    pub fn query_selector(&self, selector: &str) -> Option<NodeId> {
+    pub fn query_selector(&self, root: NodeId, selector: &str) -> Option<NodeId> {
         let selector_list = match selector::parse_selector_list(selector) {
             Ok(list) => list,
             Err(_) => return None,
         };
 
-        std::iter::once(self.document())
-            .chain(self.descendants(self.document()))
+        self.descendants(root)
+            .into_iter()
             .find(|&node_id| selector::matches(&selector_list, self, node_id))
     }
 
-    /// Returns all elements in the document that match the given `selector` in document order.
+    /// Returns all descendants of the given `root` node that match the given `selector` in document order.
     // spec: https://dom.spec.whatwg.org/#dom-parentnode-queryselectorall
-    pub fn query_selector_all(&self, selector: &str) -> Vec<NodeId> {
+    pub fn query_selector_all(&self, root: NodeId, selector: &str) -> Vec<NodeId> {
         let selector_list = match selector::parse_selector_list(selector) {
             Ok(list) => list,
             Err(_) => return Vec::new(),
         };
 
-        std::iter::once(self.document())
-            .chain(self.descendants(self.document()))
+        self.descendants(root)
+            .into_iter()
             .filter(|&node_id| selector::matches(&selector_list, self, node_id))
             .collect()
     }
