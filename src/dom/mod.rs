@@ -32,6 +32,12 @@ pub struct Dom {
     document: NodeId,
 }
 
+impl Default for Dom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Dom {
     /// Creates a new DOM with a Document root.
     // spec: https://dom.spec.whatwg.org/#dom-document
