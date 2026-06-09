@@ -7,6 +7,11 @@ license = "Apache-2.0"
 
 [dependencies]
 
+# テストデータ(html5lib tokenizer JSON)読み込み専用。本体コードは依存しない。
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
 # Lint で AGENTS.md I-1/I-6 を機械強制する。
 # unsafe 全面禁止 / 本体コードの unwrap・expect 禁止（テストは clippy.toml で免除）。
 [lints.rust]
