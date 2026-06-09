@@ -3,14 +3,6 @@ use crate::infra::NodeId;
 use std::cell::Cell;
 use std::collections::HashMap;
 
-/// Phases of event propagation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventPhase {
-    Capture,
-    Target,
-    Bubble,
-}
-
 /// DOM events as specified in SPEC S-25.
 pub enum DomEvent {
     Click {
