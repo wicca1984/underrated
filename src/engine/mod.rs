@@ -234,6 +234,136 @@ pub fn render_html_with_loader(
     }
 }
 
+/// Renders a page with HTML, a base URL, a resource loader, and a viewport width.
+/// This includes hoisting `<style>`, loading `<link rel="stylesheet">` CSS via resolved URLs,
+/// running inline scripts to mutate the DOM, and resolving CSS using viewport-specific rules.
+/// spec: S-64
+pub fn render_page(
+    html: &str,
+    base_url: &crate::url::Url,
+    loader: &dyn crate::loader::ResourceLoader,
+    viewport_width: f32,
+) -> Page {
+    // 1. HTML -> DOM
+    let input = crate::encoding::InputStream::from_utf8(html.as_bytes());
+    let mut dom = crate::html::parse_document(input);
+
+    // 2 & 3. Walk DOM to collect the text of every <style> element and fetch/decode every <link rel="stylesheet">
+    let mut css_accumulator =
+        String::from("head, style, script, meta, link, title { display: none; }\n");
+    let doc = dom.document();
+    for node_id in dom.descendants(doc) {
+        if let Some(NodeData::Element { name, attrs }) = dom.data(node_id) {
+            if name.eq_ignore_ascii_case("style") {
+                for &child_id in dom.children(node_id) {
+                    if let Some(NodeData::Text(text)) = dom.data(child_id) {
+                        css_accumulator.push_str(text);
+                    }
+                }
+            } else if name.eq_ignore_ascii_case("link") {
+                let mut is_stylesheet = false;
+                let mut href = None;
+                for (attr_name, attr_value) in attrs {
+                    if attr_name.eq_ignore_ascii_case("rel") {
+                        let has_stylesheet_rel = attr_value
+                            .split_ascii_whitespace()
+                            .any(|s| s.eq_ignore_ascii_case("stylesheet"));
+                        if has_stylesheet_rel {
+                            is_stylesheet = true;
+                        }
+                    } else if attr_name.eq_ignore_ascii_case("href") {
+                        href = Some(attr_value);
+                    }
+                }
+                if is_stylesheet && let Some(href_val) = href {
+                    // Adjust href to bypass basic URL parser bug (treating relative path starting with letter as scheme)
+                    let adjusted = if href_val.contains(':') {
+                        let mut has_scheme = false;
+                        if let Some(colon_pos) = href_val.find(':') {
+                            let before_colon = &href_val[..colon_pos];
+                            let path_or_query_pos =
+                                href_val.find(['/', '?', '#']).unwrap_or(href_val.len());
+                            if colon_pos < path_or_query_pos && !before_colon.is_empty() {
+                                let mut chars = before_colon.chars();
+                                if let Some(first) = chars.next()
+                                    && first.is_ascii_alphabetic()
+                                    && chars.all(|c| {
+                                        c.is_ascii_alphanumeric()
+                                            || c == '+'
+                                            || c == '-'
+                                            || c == '.'
+                                    })
+                                {
+                                    has_scheme = true;
+                                }
+                            }
+                        }
+                        if has_scheme {
+                            href_val.clone()
+                        } else if href_val
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphabetic())
+                        {
+                            format!("./{}", href_val)
+                        } else {
+                            href_val.clone()
+                        }
+                    } else if href_val
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic())
+                    {
+                        format!("./{}", href_val)
+                    } else {
+                        href_val.clone()
+                    };
+
+                    if let Some(resolved_url) = crate::url::resolve(base_url, &adjusted)
+                        && let Ok(css_bytes) = loader.load(&resolved_url)
+                        && let Ok(css_str) = String::from_utf8(css_bytes)
+                    {
+                        css_accumulator.push_str(&css_str);
+                        css_accumulator.push('\n');
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Run inline scripts
+    dom = crate::script::run_inline_scripts(dom);
+
+    // 5. Parse accumulated stylesheet
+    let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
+
+    // 6. Compute styles with viewport
+    let styles = crate::style::compute_styles_with_viewport(&dom, &stylesheet, viewport_width);
+
+    // 7. Layout document
+    let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
+
+    Page {
+        dom,
+        styles,
+        layout,
+    }
+}
+
+/// Renders HTML containing inline styles, external stylesheets, and inline scripts to a pixel canvas.
+/// spec: S-64
+pub fn render_page_to_canvas(
+    html: &str,
+    base_url: &crate::url::Url,
+    loader: &dyn crate::loader::ResourceLoader,
+    width: u32,
+    height: u32,
+) -> crate::raster::Canvas {
+    let page = render_page(html, base_url, loader, width as f32);
+    let display_list = crate::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+    crate::raster::rasterize(&display_list, width, height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,5 +668,170 @@ mod tests {
         } else {
             panic!("Expected width 150px");
         }
+    }
+
+    #[test]
+    fn test_render_page_script_mutation_and_viewport_style() {
+        let html = "
+            <html>
+              <head>
+                <style>
+                  #target { width: 100px; height: 50px; }
+                  @media (max-width: 600px) {
+                    #target { background-color: #ff0000; }
+                  }
+                  @media (min-width: 601px) {
+                    #target { background-color: #0000ff; }
+                  }
+                </style>
+              </head>
+              <body>
+                <div id=\"initial\"></div>
+                <script>
+                  let el = document.getElementById('initial');
+                  el.setAttribute('id', 'target');
+                </script>
+              </body>
+            </html>
+        ";
+
+        let loader = MockLoader {
+            responses: HashMap::new(),
+        };
+        let base_url = crate::url::Url::parse("https://example.com/").unwrap();
+
+        // Test with viewport <= 600px
+        let page_narrow = render_page(html, &base_url, &loader, 500.0);
+        let doc_narrow = page_narrow.dom.document();
+
+        // The element with id initial should have been mutated to target
+        let mut target_node_id = None;
+        for id in page_narrow.dom.descendants(doc_narrow) {
+            if let Some(NodeData::Element { attrs, .. }) = page_narrow.dom.data(id)
+                && attrs.iter().any(|(k, v)| k == "id" && v == "target")
+            {
+                target_node_id = Some(id);
+                break;
+            }
+        }
+        let target_id = target_node_id.expect("Should find mutated element with id='target'");
+
+        // Check computed style at 500px - should be #ff0000 (red)
+        let style_narrow = page_narrow
+            .styles
+            .get(&target_id)
+            .expect("Should have style");
+        if let Some(crate::css::values::CssValue::Color(c)) = style_narrow.get("background-color") {
+            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 0, 255));
+        } else {
+            panic!("Expected red background color");
+        }
+
+        // Test with viewport > 600px
+        let page_wide = render_page(html, &base_url, &loader, 800.0);
+        let doc_wide = page_wide.dom.document();
+
+        let mut target_node_id_wide = None;
+        for id in page_wide.dom.descendants(doc_wide) {
+            if let Some(NodeData::Element { attrs, .. }) = page_wide.dom.data(id)
+                && attrs.iter().any(|(k, v)| k == "id" && v == "target")
+            {
+                target_node_id_wide = Some(id);
+                break;
+            }
+        }
+        let target_id_wide =
+            target_node_id_wide.expect("Should find mutated element in wide viewport");
+
+        // Check computed style at 800px - should be #0000ff (blue)
+        let style_wide = page_wide
+            .styles
+            .get(&target_id_wide)
+            .expect("Should have style");
+        if let Some(crate::css::values::CssValue::Color(c)) = style_wide.get("background-color") {
+            assert_eq!(c, &crate::css::values::Color::Rgba(0, 0, 255, 255));
+        } else {
+            panic!("Expected blue background color");
+        }
+    }
+
+    #[test]
+    fn test_render_page_external_stylesheet_loading() {
+        let mut responses = HashMap::new();
+        responses.insert(
+            "https://example.com/responsive.css".to_string(),
+            Ok(b"
+                @media (max-width: 600px) {
+                  p { background-color: #ff00ff; }
+                }
+            "
+            .to_vec()),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("https://example.com/").unwrap();
+
+        let html = "
+            <html>
+              <head>
+                <link rel=\"stylesheet\" href=\"responsive.css\">
+              </head>
+              <body>
+                <p>Hello world</p>
+              </body>
+            </html>
+        ";
+
+        // Under 500px, responsive.css applies and makes <p> magenta (#ff00ff)
+        let page_narrow = render_page(html, &base_url, &loader, 500.0);
+        let mut p_node_id = None;
+        for id in page_narrow.dom.descendants(page_narrow.dom.document()) {
+            if let Some(NodeData::Element { name, .. }) = page_narrow.dom.data(id)
+                && name == "p"
+            {
+                p_node_id = Some(id);
+                break;
+            }
+        }
+        let p_id = p_node_id.expect("Should find p element");
+        let style_narrow = page_narrow.styles.get(&p_id).expect("Should have style");
+        if let Some(crate::css::values::CssValue::Color(c)) = style_narrow.get("background-color") {
+            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 255, 255));
+        } else {
+            panic!("Expected magenta background color for p element at 500px width");
+        }
+
+        // Under 800px, responsive.css's max-width: 600px does not apply
+        let page_wide = render_page(html, &base_url, &loader, 800.0);
+        let mut p_node_id_wide = None;
+        for id in page_wide.dom.descendants(page_wide.dom.document()) {
+            if let Some(NodeData::Element { name, .. }) = page_wide.dom.data(id)
+                && name == "p"
+            {
+                p_node_id_wide = Some(id);
+                break;
+            }
+        }
+        let p_id_wide = p_node_id_wide.expect("Should find p element");
+        let style_wide = page_wide.styles.get(&p_id_wide).expect("Should have style");
+        assert!(style_wide.get("background-color").is_none());
+    }
+
+    #[test]
+    fn test_render_page_to_canvas_smoke() {
+        let html = "<html><head><style>div { background-color: #00ff00; width: 10px; height: 10px; }</style></head><body><div></div></body></html>";
+
+        let loader = MockLoader {
+            responses: HashMap::new(),
+        };
+        let base_url = crate::url::Url::parse("https://example.com/").unwrap();
+
+        let canvas = render_page_to_canvas(html, &base_url, &loader, 20, 20);
+        assert_eq!(canvas.width, 20);
+        assert_eq!(canvas.height, 20);
+
+        // Check if the 10x10 div is green (#00ff00 -> 0xFF00FF00)
+        let pixel = canvas.pixel(5, 5);
+        assert_eq!(pixel, 0xFF00FF00);
     }
 }
