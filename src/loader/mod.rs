@@ -1,3 +1,7 @@
+mod http;
+
+pub use http::HttpLoader;
+
 use crate::url::Url;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,7 +44,6 @@ impl FsLoader {
 impl ResourceLoader for FsLoader {
     fn load(&self, url: &Url) -> Result<Vec<u8>, LoadError> {
         // // spec: file: scheme only
-        // // TODO(spec): support http/https schemes in a separate loader or by extending this one.
         if url.scheme != "file" {
             return Err(LoadError::UnsupportedScheme);
         }
