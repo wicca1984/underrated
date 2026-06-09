@@ -4,6 +4,10 @@
 [advisories]
 version = 2
 # RustSec 脆弱性 DB。yanked クレートは既定で deny。
+ignore = [
+  # paste: proc-macro, unmaintained だが脆弱性ではない。boa_engine の推移依存。
+  "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2
