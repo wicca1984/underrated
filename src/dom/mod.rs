@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod mutate;
 mod query;
 mod serialize;
 mod text;
