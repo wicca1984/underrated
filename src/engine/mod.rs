@@ -117,6 +117,123 @@ pub fn render_html_to_canvas(html: &str, width: u32, height: u32) -> crate::rast
     canvas
 }
 
+/// Renders HTML containing inline styles and/or external stylesheets, fetched via the loader.
+/// spec: S-37
+pub fn render_html_with_loader(
+    html: &str,
+    base: &crate::url::Url,
+    loader: &dyn crate::loader::ResourceLoader,
+    viewport_width: f32,
+) -> Page {
+    // 1. InputStream::from_utf8(html)
+    let input = crate::encoding::InputStream::from_utf8(html.as_bytes());
+
+    // 2. html::parse_document(input)
+    let dom = crate::html::parse_document(input);
+
+    // 3. Walk DOM to collect the text of every <style> element and fetch/decode every <link rel="stylesheet">
+    // spec: In real browsers, head, style, script, etc. are display: none by default so they aren't rendered.
+    let mut css_accumulator =
+        String::from("head, style, script, meta, link, title { display: none; }\n");
+    let doc = dom.document();
+    for node_id in dom.descendants(doc) {
+        if let Some(NodeData::Element { name, attrs }) = dom.data(node_id) {
+            if name.eq_ignore_ascii_case("style") {
+                for &child_id in dom.children(node_id) {
+                    if let Some(NodeData::Text(text)) = dom.data(child_id) {
+                        css_accumulator.push_str(text);
+                    }
+                }
+            } else if name.eq_ignore_ascii_case("link") {
+                let mut is_stylesheet = false;
+                let mut href = None;
+                for (attr_name, attr_value) in attrs {
+                    if attr_name.eq_ignore_ascii_case("rel") {
+                        let has_stylesheet_rel = attr_value
+                            .split_ascii_whitespace()
+                            .any(|s| s.eq_ignore_ascii_case("stylesheet"));
+                        if has_stylesheet_rel {
+                            is_stylesheet = true;
+                        }
+                    } else if attr_name.eq_ignore_ascii_case("href") {
+                        href = Some(attr_value);
+                    }
+                }
+                if is_stylesheet && let Some(href_val) = href {
+                    // Adjust href to bypass basic URL parser bug (treating relative path starting with letter as scheme)
+                    let adjusted = if href_val.contains(':') {
+                        let mut has_scheme = false;
+                        if let Some(colon_pos) = href_val.find(':') {
+                            let before_colon = &href_val[..colon_pos];
+                            let path_or_query_pos =
+                                href_val.find(['/', '?', '#']).unwrap_or(href_val.len());
+                            if colon_pos < path_or_query_pos && !before_colon.is_empty() {
+                                let mut chars = before_colon.chars();
+                                if let Some(first) = chars.next()
+                                    && first.is_ascii_alphabetic()
+                                    && chars.all(|c| {
+                                        c.is_ascii_alphanumeric()
+                                            || c == '+'
+                                            || c == '-'
+                                            || c == '.'
+                                    })
+                                {
+                                    has_scheme = true;
+                                }
+                            }
+                        }
+                        if has_scheme {
+                            href_val.clone()
+                        } else if href_val
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphabetic())
+                        {
+                            format!("./{}", href_val)
+                        } else {
+                            href_val.clone()
+                        }
+                    } else if href_val
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic())
+                    {
+                        format!("./{}", href_val)
+                    } else {
+                        href_val.clone()
+                    };
+
+                    // resolve relative to base
+                    // spec: failed parse or failed fetch is ignored gracefully
+                    if let Ok(resolved_url) = crate::url::Url::parse_with_base(&adjusted, base)
+                        && let Ok(css_bytes) = loader.load(&resolved_url)
+                        && let Ok(css_str) = String::from_utf8(css_bytes)
+                    {
+                        css_accumulator.push_str(&css_str);
+                        css_accumulator.push('\n');
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. css::parse_stylesheet(hoisted_css)
+    let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
+
+    // 5. style::compute_styles(&dom, &stylesheet)
+    let styles = crate::style::compute_styles(&dom, &stylesheet);
+
+    // 6. layout::layout_document(&dom, &styles, viewport_width)
+    let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
+
+    // 7. return Page { dom, styles, layout }
+    Page {
+        dom,
+        styles,
+        layout,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +410,133 @@ mod tests {
                 "Expected background-color red, got {:?}",
                 style.get("background-color")
             );
+        }
+    }
+
+    struct MockLoader {
+        responses: HashMap<String, Result<Vec<u8>, crate::loader::LoadError>>,
+    }
+
+    impl crate::loader::ResourceLoader for MockLoader {
+        fn load(&self, url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+            let serialized = url.serialize();
+            if let Some(res) = self.responses.get(&serialized) {
+                match res {
+                    Ok(bytes) => Ok(bytes.clone()),
+                    Err(crate::loader::LoadError::UnsupportedScheme) => {
+                        Err(crate::loader::LoadError::UnsupportedScheme)
+                    }
+                    Err(crate::loader::LoadError::NotFound) => {
+                        Err(crate::loader::LoadError::NotFound)
+                    }
+                    Err(crate::loader::LoadError::OutsideRoot) => {
+                        Err(crate::loader::LoadError::OutsideRoot)
+                    }
+                    Err(crate::loader::LoadError::Io(s)) => {
+                        Err(crate::loader::LoadError::Io(s.clone()))
+                    }
+                }
+            } else {
+                Err(crate::loader::LoadError::NotFound)
+            }
+        }
+    }
+
+    #[test]
+    fn test_render_html_with_loader_basic() {
+        use std::collections::HashMap;
+
+        let mut responses = HashMap::new();
+        responses.insert(
+            "https://example.com/style.css".to_string(),
+            Ok(b"div { background-color: #0000ff; }".to_vec()),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("https://example.com/").unwrap();
+        let html = "<html><head><link rel=\"stylesheet\" href=\"style.css\"></head><body><div></div></body></html>";
+        let page = render_html_with_loader(html, &base_url, &loader, 800.0);
+
+        // Find div
+        let doc = page.dom.document();
+        let mut div_node_id = None;
+        for node_id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(node_id)
+                && name == "div"
+            {
+                div_node_id = Some(node_id);
+                break;
+            }
+        }
+
+        let div_id = div_node_id.expect("Should find a div node");
+        let style = page
+            .styles
+            .get(&div_id)
+            .expect("Should have computed style");
+        if let Some(crate::css::values::CssValue::Color(c)) = style.get("background-color") {
+            assert_eq!(c, &crate::css::values::Color::Rgba(0, 0, 255, 255));
+        } else {
+            panic!("Expected blue background color");
+        }
+    }
+
+    #[test]
+    fn test_render_html_with_loader_graceful_failures() {
+        use std::collections::HashMap;
+
+        let mut responses = HashMap::new();
+        // style1.css fails to load
+        responses.insert(
+            "https://example.com/style1.css".to_string(),
+            Err(crate::loader::LoadError::NotFound),
+        );
+        // style2.css loads successfully
+        responses.insert(
+            "https://example.com/style2.css".to_string(),
+            Ok(b"div { width: 150px; }".to_vec()),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("https://example.com/").unwrap();
+        let html = "<html><head>\
+            <link rel=\"stylesheet\" href=\"style1.css\">\
+            <style>div { height: 120px; }</style>\
+            <link rel=\"stylesheet\" href=\"style2.css\">\
+            </head><body><div></div></body></html>";
+
+        let page = render_html_with_loader(html, &base_url, &loader, 800.0);
+
+        // Find div
+        let doc = page.dom.document();
+        let mut div_node_id = None;
+        for node_id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(node_id)
+                && name == "div"
+            {
+                div_node_id = Some(node_id);
+                break;
+            }
+        }
+
+        let div_id = div_node_id.expect("Should find a div node");
+        let style = page
+            .styles
+            .get(&div_id)
+            .expect("Should have computed style");
+
+        // height should be 120px from the inline style
+        if let Some(crate::css::values::CssValue::Length(val, _)) = style.get("height") {
+            assert_eq!(*val, 120.0);
+        } else {
+            panic!("Expected height 120px");
+        }
+
+        // width should be 150px from style2.css
+        if let Some(crate::css::values::CssValue::Length(val, _)) = style.get("width") {
+            assert_eq!(*val, 150.0);
+        } else {
+            panic!("Expected width 150px");
         }
     }
 }
