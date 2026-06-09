@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
+pub mod colors;
 pub mod parser;
 pub mod values;
 
