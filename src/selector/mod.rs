@@ -1,4 +1,7 @@
+mod matching;
+
 use crate::css::{CssToken, CssTokenizer};
+pub use matching::{matches, matches_complex};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Component {
