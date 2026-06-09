@@ -170,10 +170,190 @@ pub enum LoadError {
     OutsideRoot,
 }
 
+/// A rich response containing the loaded bytes, Content-Type, and charset (if determined).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoaderResponse {
+    /// The loaded raw resource bytes.
+    pub bytes: Vec<u8>,
+    /// The parsed or sniffed Content-Type of the resource (e.g. "text/html").
+    pub content_type: String,
+    /// The determined charset (e.g. "utf-8"), if available.
+    pub charset: Option<String>,
+}
+
+/// Parses a Content-Type header value.
+/// Returns a tuple of (media_type, charset).
+/// Both are in lowercase.
+/// Example: "text/html; charset=UTF-8" -> ("text/html", Some("utf-8"))
+pub fn parse_content_type(header_val: &str) -> (String, Option<String>) {
+    let mut parts = header_val.split(';');
+    let media_type = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+
+    let mut charset = None;
+    for part in parts {
+        let part = part.trim();
+        if let Some((k, v)) = part.split_once('=')
+            && k.trim().eq_ignore_ascii_case("charset")
+        {
+            let mut val = v.trim().to_ascii_lowercase();
+            if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+                val = val[1..val.len() - 1].to_string();
+            }
+            charset = Some(val);
+            break;
+        }
+    }
+
+    (media_type, charset)
+}
+
+fn get_first_significant_bytes(bytes: &[u8]) -> &[u8] {
+    let mut start = 0;
+    // Skip BOMs if present
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        start += 3;
+    } else if bytes.starts_with(&[0xFE, 0xFF]) || bytes.starts_with(&[0xFF, 0xFE]) {
+        start += 2;
+    }
+    while start < bytes.len() {
+        let b = bytes[start];
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == 0x0C {
+            start += 1;
+        } else {
+            break;
+        }
+    }
+    &bytes[start..]
+}
+
+/// Sniffs the content type of the raw resource bytes.
+/// Supports HTML, CSS, and basic image types.
+pub fn sniff_content_type_from_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png".to_string());
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg".to_string());
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif".to_string());
+    }
+    if bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp".to_string());
+    }
+
+    let sig = get_first_significant_bytes(bytes);
+    let limit = std::cmp::min(sig.len(), 100);
+    let prefix = &sig[..limit];
+    let prefix_lower = prefix.to_ascii_lowercase();
+
+    if prefix_lower.starts_with(b"<!doctype")
+        || prefix_lower.starts_with(b"<html")
+        || prefix_lower.starts_with(b"<head")
+        || prefix_lower.starts_with(b"<body")
+        || prefix_lower.starts_with(b"<title")
+        || prefix_lower.starts_with(b"<!--")
+    {
+        return Some("text/html".to_string());
+    }
+
+    if prefix_lower.starts_with(b"<?xml") || prefix_lower.starts_with(b"<svg") {
+        return Some("image/svg+xml".to_string());
+    }
+
+    if prefix_lower.starts_with(b"@charset")
+        || prefix_lower.starts_with(b"@import")
+        || prefix_lower.starts_with(b"/*")
+    {
+        return Some("text/css".to_string());
+    }
+
+    None
+}
+
+/// Determines content type based on the file extension of the URL.
+pub fn sniff_content_type_from_extension(url: &Url) -> Option<String> {
+    let extension = std::path::Path::new(&url.path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+
+    match extension.as_deref() {
+        Some("html") | Some("htm") => Some("text/html".to_string()),
+        Some("css") => Some("text/css".to_string()),
+        Some("png") => Some("image/png".to_string()),
+        Some("jpg") | Some("jpeg") => Some("image/jpeg".to_string()),
+        Some("gif") => Some("image/gif".to_string()),
+        Some("webp") => Some("image/webp".to_string()),
+        Some("svg") => Some("image/svg+xml".to_string()),
+        _ => None,
+    }
+}
+
+/// Helper to sniff Content-Type and charset from bytes, URL, and transport label.
+pub fn sniff_response(
+    bytes: &[u8],
+    url: &Url,
+    transport_content_type: Option<&str>,
+) -> (String, Option<String>) {
+    // 1. If we have a transport content type, parse it first
+    let (mut media_type, mut charset) = if let Some(t_ct) = transport_content_type {
+        let (mt, cs) = parse_content_type(t_ct);
+        (mt, cs)
+    } else {
+        (String::new(), None)
+    };
+
+    // If media type is generic or empty, try content/extension sniffing
+    let is_generic = media_type.is_empty()
+        || media_type == "application/octet-stream"
+        || media_type == "text/plain";
+
+    if is_generic {
+        // A. Content Sniffing (Magic numbers)
+        if let Some(sniffed_mt) = sniff_content_type_from_bytes(bytes) {
+            media_type = sniffed_mt;
+        } else {
+            // B. Extension Sniffing
+            if let Some(ext_mt) = sniff_content_type_from_extension(url) {
+                media_type = ext_mt;
+            } else {
+                // Default fallback
+                media_type = "text/html".to_string();
+            }
+        }
+    }
+
+    // 2. Charset determination
+    // If charset is not determined by transport, perform BOM sniffing or meta prescan
+    if charset.is_none() {
+        let sniffed_charset = crate::encoding::sniff_charset(bytes, None);
+        charset = match sniffed_charset {
+            crate::encoding::Charset::Utf8 => Some("utf-8".to_string()),
+            crate::encoding::Charset::Utf16Le => Some("utf-16le".to_string()),
+            crate::encoding::Charset::Utf16Be => Some("utf-16be".to_string()),
+            crate::encoding::Charset::Windows1252 => Some("windows-1252".to_string()),
+        };
+    }
+
+    (media_type, charset)
+}
+
 /// A trait for loading resources from a given URL.
 pub trait ResourceLoader {
     /// Loads the resource at the specified URL.
     fn load(&self, url: &Url) -> Result<Vec<u8>, LoadError>;
+
+    /// Loads the resource at the specified URL with a richer response containing Content-Type and charset.
+    fn load_rich(&self, url: &Url) -> Result<LoaderResponse, LoadError> {
+        let bytes = self.load(url)?;
+        let (content_type, charset) = sniff_response(&bytes, url, None);
+        Ok(LoaderResponse {
+            bytes,
+            content_type,
+            charset,
+        })
+    }
 }
 
 /// A filesystem-based resource loader.
@@ -395,5 +575,99 @@ mod tests {
         );
 
         let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn test_parse_content_type_spec() {
+        assert_eq!(
+            parse_content_type("text/html;charset=utf-8"),
+            ("text/html".to_string(), Some("utf-8".to_string()))
+        );
+        assert_eq!(
+            parse_content_type("TEXT/HTML; charset=\"UTF-8\""),
+            ("text/html".to_string(), Some("utf-8".to_string()))
+        );
+        assert_eq!(
+            parse_content_type("text/css"),
+            ("text/css".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn test_sniff_content_type_from_bytes_spec() {
+        assert_eq!(
+            sniff_content_type_from_bytes(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+            Some("image/png".to_string())
+        );
+        assert_eq!(
+            sniff_content_type_from_bytes(b"<!DOCTYPE html><html></html>"),
+            Some("text/html".to_string())
+        );
+        // HTML sniffing ignoring leading BOM and spaces
+        assert_eq!(
+            sniff_content_type_from_bytes(b"\xEF\xBB\xBF  \n <html lang=\"en\">"),
+            Some("text/html".to_string())
+        );
+        assert_eq!(
+            sniff_content_type_from_bytes(b"/* CSS Comment */\nbody { margin: 0; }"),
+            Some("text/css".to_string())
+        );
+        assert_eq!(
+            sniff_content_type_from_bytes(b"generic random bytes that do not look like html"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_sniff_content_type_from_extension_spec() {
+        let url_html = Url::parse("file:///index.html").unwrap();
+        assert_eq!(
+            sniff_content_type_from_extension(&url_html),
+            Some("text/html".to_string())
+        );
+
+        let url_css = Url::parse("file:///style.css").unwrap();
+        assert_eq!(
+            sniff_content_type_from_extension(&url_css),
+            Some("text/css".to_string())
+        );
+
+        let url_unknown = Url::parse("file:///unknown.dat").unwrap();
+        assert_eq!(sniff_content_type_from_extension(&url_unknown), None);
+    }
+
+    #[test]
+    fn test_fs_loader_load_rich_spec() {
+        let temp_dir = env::temp_dir().join("underrated_loader_test_rich");
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Create a file with CSS content but no specific css extension
+        let file_path_css = temp_dir.join("style.txt");
+        let mut file_css = File::create(&file_path_css).unwrap();
+        file_css
+            .write_all(b"/* CSS */\nbody { color: red; }")
+            .unwrap();
+
+        let loader = FsLoader::new(&temp_dir);
+        let url_css = Url::parse("file:///style.txt").unwrap();
+        let res_css = loader.load_rich(&url_css).unwrap();
+
+        assert_eq!(res_css.content_type, "text/css");
+        assert_eq!(res_css.charset, Some("windows-1252".to_string())); // fallback
+
+        // 2. Create a file with HTML content, UTF-8 BOM, and .html extension
+        let file_path_html = temp_dir.join("index.html");
+        let mut file_html = File::create(&file_path_html).unwrap();
+        file_html
+            .write_all(b"\xEF\xBB\xBF<!doctype html>hello")
+            .unwrap();
+
+        let url_html = Url::parse("file:///index.html").unwrap();
+        let res_html = loader.load_rich(&url_html).unwrap();
+
+        assert_eq!(res_html.content_type, "text/html");
+        assert_eq!(res_html.charset, Some("utf-8".to_string())); // BOM detected
+
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 }

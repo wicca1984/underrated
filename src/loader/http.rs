@@ -233,6 +233,60 @@ impl ResourceLoader for HttpLoader {
 
         Ok(body)
     }
+
+    fn load_rich(&self, url: &Url) -> Result<crate::loader::LoaderResponse, LoadError> {
+        // // spec: support http and https schemes
+        if url.scheme != "http" && url.scheme != "https" {
+            return Err(LoadError::UnsupportedScheme);
+        }
+
+        let url_str = url.serialize();
+        let mut req = ureq::get(url_str);
+
+        // Add cookies
+        if let Some(cookie_hdr) = get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path) {
+            req = req.header("Cookie", cookie_hdr);
+        }
+
+        // // spec: follow redirects, decode gzip
+        // ureq v3 follows redirects and decodes gzip by default if the features are enabled.
+        let response = req.call().map_err(|e| match e {
+            ureq::Error::StatusCode(404) => LoadError::NotFound,
+            _ => LoadError::Io(e.to_string()),
+        })?;
+
+        // Extract Set-Cookie headers
+        for header_value in response.headers().get_all("set-cookie") {
+            if let Some(cookie) = header_value.to_str().ok().and_then(|cookie_str| {
+                parse_set_cookie(cookie_str, url.host.as_deref().unwrap_or(""), &url.path)
+            }) {
+                add_cookie(cookie);
+            }
+        }
+
+        // Extract Content-Type header
+        let transport_content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(|s| s.to_string());
+
+        let mut body = Vec::new();
+        response
+            .into_body()
+            .into_reader()
+            .read_to_end(&mut body)
+            .map_err(|e| LoadError::Io(e.to_string()))?;
+
+        let (content_type, charset) =
+            crate::loader::sniff_response(&body, url, transport_content_type.as_deref());
+
+        Ok(crate::loader::LoaderResponse {
+            bytes: body,
+            content_type,
+            charset,
+        })
+    }
 }
 
 #[cfg(test)]
