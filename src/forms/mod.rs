@@ -265,4 +265,181 @@ mod tests {
         let t = dom.create_node(NodeData::Text("x".into()));
         assert!(submit(&dom, t, &FormState::new()).is_none());
     }
+
+    #[test]
+    fn test_editing_model_basic() {
+        let mut state = EditingState::new(String::new());
+        assert_eq!(state.value(), "");
+        assert_eq!(state.cursor(), 0);
+
+        state = insert_char(state, 'a');
+        state = insert_char(state, 'b');
+        state = insert_char(state, 'c');
+        assert_eq!(state.value(), "abc");
+        assert_eq!(state.cursor(), 3);
+
+        state = backspace(state);
+        assert_eq!(state.value(), "ab");
+        assert_eq!(state.cursor(), 2);
+    }
+
+    #[test]
+    fn test_editing_model_move_cursor_and_clamping() {
+        let mut state = EditingState::new("hello".to_string());
+        assert_eq!(state.value(), "hello");
+        assert_eq!(state.cursor(), 5);
+
+        // Move past right boundary
+        state = move_cursor(state, 5);
+        assert_eq!(state.cursor(), 5);
+
+        // Move left
+        state = move_cursor(state, -2);
+        assert_eq!(state.cursor(), 3);
+
+        // Insert at cursor
+        state = insert_char(state, 'x');
+        assert_eq!(state.value(), "helxlo");
+        assert_eq!(state.cursor(), 4);
+
+        // Backspace at cursor
+        state = backspace(state);
+        assert_eq!(state.value(), "hello");
+        assert_eq!(state.cursor(), 3);
+
+        // Move past left boundary
+        state = move_cursor(state, -10);
+        assert_eq!(state.cursor(), 0);
+
+        // Backspace at boundary 0 (noop)
+        state = backspace(state);
+        assert_eq!(state.value(), "hello");
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_editing_model_utf8() {
+        // Multi-byte Unicode character editing (e.g., CJK)
+        let mut state = EditingState::new("こんにちは".to_string());
+        assert_eq!(state.value(), "こんにちは");
+        assert_eq!(state.cursor(), 5);
+
+        state = move_cursor(state, -2);
+        assert_eq!(state.cursor(), 3);
+
+        // Backspace 'に' which is at character index 2 (preceding cursor 3)
+        state = backspace(state);
+        assert_eq!(state.value(), "こんちは");
+        assert_eq!(state.cursor(), 2);
+
+        state = insert_char(state, 'に');
+        assert_eq!(state.value(), "こんにちは");
+        assert_eq!(state.cursor(), 3);
+    }
+}
+
+/// Editing state for `<input type=text>` and `<textarea>`.
+/// Holds the current text value and the cursor position (as a character index).
+// spec: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html
+// spec: S-51
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EditingState {
+    value: String,
+    cursor: usize,
+}
+
+impl EditingState {
+    /// Creates a new editing state with the given value.
+    /// The cursor is initialized at the end of the value.
+    pub fn new(value: String) -> Self {
+        let char_count = value.chars().count();
+        Self {
+            value,
+            cursor: char_count,
+        }
+    }
+
+    /// Returns the current text value.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Returns the current cursor index as a character position.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Inserts a character at the current cursor position, modifying the state in-place.
+    ///
+    // spec: S-51
+    pub fn insert_char_mut(&mut self, ch: char) {
+        // TODO(spec): IME support is not implemented yet.
+        // TODO(spec): Selection support is not implemented yet.
+        let mut chars: Vec<char> = self.value.chars().collect();
+        if self.cursor > chars.len() {
+            self.cursor = chars.len();
+        }
+        chars.insert(self.cursor, ch);
+        self.value = chars.into_iter().collect();
+        self.cursor += 1;
+    }
+
+    /// Deletes the character immediately preceding the current cursor position, modifying the state in-place.
+    ///
+    // spec: S-51
+    pub fn backspace_mut(&mut self) {
+        // TODO(spec): IME support is not implemented yet.
+        // TODO(spec): Selection support is not implemented yet.
+        let mut chars: Vec<char> = self.value.chars().collect();
+        if self.cursor > chars.len() {
+            self.cursor = chars.len();
+        }
+        if self.cursor > 0 {
+            chars.remove(self.cursor - 1);
+            self.value = chars.into_iter().collect();
+            self.cursor -= 1;
+        }
+    }
+
+    /// Moves the cursor by delta (positive or negative), clamping to the bounds of the value, modifying the state in-place.
+    ///
+    // spec: S-51
+    pub fn move_cursor_mut(&mut self, delta: isize) {
+        let char_count = self.value.chars().count();
+        if self.cursor > char_count {
+            self.cursor = char_count;
+        }
+        let new_cursor = (self.cursor as isize).saturating_add(delta);
+        self.cursor = if new_cursor < 0 {
+            0
+        } else if new_cursor > char_count as isize {
+            char_count
+        } else {
+            new_cursor as usize
+        };
+    }
+}
+
+/// Inserts a character at the current cursor position.
+///
+// spec: S-51
+pub fn insert_char(mut state: EditingState, ch: char) -> EditingState {
+    state.insert_char_mut(ch);
+    state
+}
+
+/// Deletes the character immediately preceding the current cursor position.
+///
+// spec: S-51
+pub fn backspace(mut state: EditingState) -> EditingState {
+    state.backspace_mut();
+    state
+}
+
+/// Moves the cursor by delta (positive or negative), clamping it to the bounds of the value.
+///
+// spec: S-51
+pub fn move_cursor(mut state: EditingState, delta: isize) -> EditingState {
+    state.move_cursor_mut(delta);
+    state
 }
