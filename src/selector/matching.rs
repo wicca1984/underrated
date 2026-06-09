@@ -66,19 +66,19 @@ fn matches_rest(
             }
         }
         Combinator::NextSibling => {
-            if let Some(prev) = get_previous_sibling(dom, node) {
+            if let Some(prev) = get_previous_element_sibling(dom, node) {
                 matches_complex_at_part(parts, dom, prev)
             } else {
                 false
             }
         }
         Combinator::SubsequentSibling => {
-            let mut current = get_previous_sibling(dom, node);
+            let mut current = get_previous_element_sibling(dom, node);
             while let Some(sibling) = current {
                 if matches_complex_at_part(parts, dom, sibling) {
                     return true;
                 }
-                current = get_previous_sibling(dom, sibling);
+                current = get_previous_element_sibling(dom, sibling);
             }
             false
         }
@@ -311,15 +311,17 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
     }
 }
 
-fn get_previous_sibling(dom: &Dom, node: NodeId) -> Option<NodeId> {
+fn get_previous_element_sibling(dom: &Dom, node: NodeId) -> Option<NodeId> {
     let parent = dom.parent(node)?;
     let children = dom.children(parent);
     let idx = children.iter().position(|&id| id == node)?;
-    if idx > 0 {
-        Some(children[idx - 1])
-    } else {
-        None
+    for i in (0..idx).rev() {
+        let sibling = children[i];
+        if matches!(dom.data(sibling), Some(NodeData::Element { .. })) {
+            return Some(sibling);
+        }
     }
+    None
 }
 
 fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
@@ -844,5 +846,107 @@ mod tests {
         assert!(matches(&parse_selector_list("|rect").unwrap(), &dom, rect));
         // svg|* should match any element (like rect)
         assert!(matches(&parse_selector_list("svg|*").unwrap(), &dom, rect));
+    }
+
+    #[test]
+    fn test_robustness_spec_53() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Setup DOM:
+        // <body>
+        //   <div class="x">
+        //     <p id="p1-1"></p>
+        //     <p id="p1-2"></p>
+        //   </div>
+        //   <div>
+        //     <p id="p2-1"></p>
+        //     <!-- comment -->
+        //     "   whitespace text node   "
+        //     <p id="p2-2"></p>
+        //     <p id="p2-3"></p>
+        //   </div>
+        // </body>
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "x".into())],
+        });
+        dom.append_child(body, div1);
+
+        let p1_1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p1-1".into())],
+        });
+        let p1_2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p1-2".into())],
+        });
+        dom.append_child(div1, p1_1);
+        dom.append_child(div1, p1_2);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div2);
+
+        let p2_1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p2-1".into())],
+        });
+        let comment = dom.create_node(NodeData::Comment("comment".into()));
+        let text = dom.create_node(NodeData::Text("   \n   ".into()));
+        let p2_2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p2-2".into())],
+        });
+        let p2_3 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p2-3".into())],
+        });
+        dom.append_child(div2, p2_1);
+        dom.append_child(div2, comment);
+        dom.append_child(div2, text);
+        dom.append_child(div2, p2_2);
+        dom.append_child(div2, p2_3);
+
+        // 1. Selector "div:not(.x) > p:nth-of-type(2)"
+        let selector = parse_selector_list("div:not(.x) > p:nth-of-type(2)").unwrap();
+        // Should match p2_2
+        assert!(matches(&selector, &dom, p2_2));
+        // Should NOT match p1_2 (parent has class .x)
+        assert!(!matches(&selector, &dom, p1_2));
+        // Should NOT match p2_1 (first of type) or p2_3 (third of type)
+        assert!(!matches(&selector, &dom, p2_1));
+        assert!(!matches(&selector, &dom, p2_3));
+
+        // 2. NextSibling (+) ignoring comments & text nodes: "p + p"
+        // In div2, the elements are p2_1, and p2_2.
+        // Between them are a Comment and Text node, but they are adjacent element siblings!
+        let next_sibling_sel = parse_selector_list("p + p").unwrap();
+        assert!(matches(&next_sibling_sel, &dom, p2_2));
+        assert!(matches(&next_sibling_sel, &dom, p2_3));
+        assert!(!matches(&next_sibling_sel, &dom, p2_1));
+
+        // 3. SubsequentSibling (~) ignoring comments & text nodes: "p ~ p"
+        let subsequent_sibling_sel = parse_selector_list("p ~ p").unwrap();
+        assert!(matches(&subsequent_sibling_sel, &dom, p2_2));
+        assert!(matches(&subsequent_sibling_sel, &dom, p2_3));
+        assert!(!matches(&subsequent_sibling_sel, &dom, p2_1));
+
+        // 4. Robustness against nonexistent / stale NodeId
+        let mut another_dom = Dom::new();
+        let stale_node = another_dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        // Passing stale_node into `matches` against `dom` should safely return false without any panic
+        assert!(!matches(&selector, &dom, stale_node));
     }
 }
