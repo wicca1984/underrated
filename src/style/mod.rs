@@ -1,5 +1,5 @@
 use crate::css::parser::{Declaration, Rule, Stylesheet};
-use crate::css::values::{CssValue, parse_value};
+use crate::css::values::{CssValue, LengthUnit, parse_value};
 use crate::dom::Dom;
 use crate::infra::NodeId;
 use crate::selector::{ComplexSelector, Component, matches_complex};
@@ -209,7 +209,144 @@ fn compute_node_style(
         }
     }
 
+    // --- 6. Resolution of text/font properties (S-43) ---
+    let parent_style = dom
+        .parent(node)
+        .and_then(|parent| computed_styles.get(&parent));
+
+    // A. Resolve font-size first, as line-height depends on it.
+    let resolved_font_size = {
+        let raw_fs = properties.get("font-size");
+        match raw_fs {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_fs = parent_style.and_then(|s| s.get("font-size")).cloned();
+                parent_fs.unwrap_or(CssValue::Length(16.0, LengthUnit::Px))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Length(16.0, LengthUnit::Px),
+            Some(CssValue::Keyword(s)) => {
+                let px = match s.to_ascii_lowercase().as_str() {
+                    "xx-small" => 8.0,
+                    "x-small" => 10.0,
+                    "small" => 13.0,
+                    "medium" => 16.0,
+                    "large" => 20.0,
+                    "x-large" => 24.0,
+                    "xx-large" => 32.0,
+                    _ => 16.0,
+                };
+                CssValue::Length(px, LengthUnit::Px)
+            }
+            Some(CssValue::Length(val, unit)) => match unit {
+                LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),
+                LengthUnit::Pt => CssValue::Length(*val * 96.0 / 72.0, LengthUnit::Px),
+                LengthUnit::Em | LengthUnit::Percent => {
+                    let parent_px = parent_style
+                        .and_then(|s| s.get("font-size"))
+                        .and_then(|v| match v {
+                            CssValue::Length(px, LengthUnit::Px) => Some(*px),
+                            _ => None,
+                        })
+                        .unwrap_or(16.0);
+                    let factor = if *unit == LengthUnit::Percent {
+                        *val / 100.0
+                    } else {
+                        *val
+                    };
+                    CssValue::Length(factor * parent_px, LengthUnit::Px)
+                }
+                LengthUnit::Rem => {
+                    let root_px = get_root_font_size(dom, computed_styles);
+                    CssValue::Length(*val * root_px, LengthUnit::Px)
+                }
+            },
+            Some(_) => CssValue::Length(16.0, LengthUnit::Px),
+            None => CssValue::Length(16.0, LengthUnit::Px),
+        }
+    };
+    let own_fs_val = match &resolved_font_size {
+        CssValue::Length(px, LengthUnit::Px) => *px,
+        _ => 16.0,
+    };
+    properties.insert("font-size".to_string(), resolved_font_size);
+
+    // B. Resolve font-weight
+    let resolved_font_weight = {
+        let raw_fw = properties.get("font-weight");
+        match raw_fw {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_fw = parent_style.and_then(|s| s.get("font-weight")).cloned();
+                parent_fw.unwrap_or(CssValue::Keyword("normal".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("normal".to_string()),
+        }
+    };
+    properties.insert("font-weight".to_string(), resolved_font_weight);
+
+    // C. Resolve line-height
+    let resolved_line_height = {
+        let raw_lh = properties.get("line-height");
+        match raw_lh {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_lh = parent_style.and_then(|s| s.get("line-height")).cloned();
+                parent_lh.unwrap_or(CssValue::Keyword("normal".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
+            Some(CssValue::Length(val, unit)) => match unit {
+                LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),
+                LengthUnit::Pt => CssValue::Length(*val * 96.0 / 72.0, LengthUnit::Px),
+                LengthUnit::Em | LengthUnit::Percent => {
+                    let factor = if *unit == LengthUnit::Percent {
+                        *val / 100.0
+                    } else {
+                        *val
+                    };
+                    CssValue::Length(factor * own_fs_val, LengthUnit::Px)
+                }
+                LengthUnit::Rem => {
+                    let root_px = get_root_font_size(dom, computed_styles);
+                    CssValue::Length(*val * root_px, LengthUnit::Px)
+                }
+            },
+            Some(CssValue::Number(val)) => CssValue::Number(*val),
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("normal".to_string()),
+        }
+    };
+    properties.insert("line-height".to_string(), resolved_line_height);
+
+    // D. Resolve text-align
+    let resolved_text_align = {
+        let raw_ta = properties.get("text-align");
+        match raw_ta {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_ta = parent_style.and_then(|s| s.get("text-align")).cloned();
+                parent_ta.unwrap_or(CssValue::Keyword("left".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("left".to_string()),
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("left".to_string()),
+        }
+    };
+    properties.insert("text-align".to_string(), resolved_text_align);
+
     ComputedStyle { properties }
+}
+
+fn get_root_font_size(dom: &Dom, computed_styles: &HashMap<NodeId, ComputedStyle>) -> f32 {
+    let document_node = dom.document();
+    let root_element = dom
+        .children(document_node)
+        .iter()
+        .find(|&&child| matches!(dom.data(child), Some(crate::dom::NodeData::Element { .. })));
+    if let Some(&root_id) = root_element
+        && let Some(root_style) = computed_styles.get(&root_id)
+        && let Some(CssValue::Length(px, LengthUnit::Px)) = root_style.get("font-size")
+    {
+        return *px;
+    }
+    16.0
 }
 
 fn collect_matched_rules(
@@ -950,6 +1087,186 @@ mod tests {
         assert_eq!(
             style_border_thick.get("border-top-width"),
             Some(&CssValue::Keyword("thick".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_text_font_computed_values_and_inheritance() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+        dom.append_child(div, p);
+
+        // 1. Initial/default values check when nothing is specified.
+        let stylesheet_empty = parse_stylesheet("");
+        let styles_empty = compute_styles(&dom, &stylesheet_empty);
+
+        let div_style = styles_empty.get(&div).unwrap();
+        assert_eq!(
+            div_style.get("font-size"),
+            Some(&CssValue::Length(16.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            div_style.get("font-weight"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            div_style.get("line-height"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            div_style.get("text-align"),
+            Some(&CssValue::Keyword("left".to_string()))
+        );
+
+        // 2. Specified values and relative em/rem resolution, along with inheritance.
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                font-size: 16px;
+                font-weight: bold;
+                line-height: 2;
+                text-align: center;
+            }
+            p {
+                font-size: 2em;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let div_style = styles.get(&div).unwrap();
+        let p_style = styles.get(&p).unwrap();
+
+        // Div checks
+        assert_eq!(
+            div_style.get("font-size"),
+            Some(&CssValue::Length(16.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            div_style.get("font-weight"),
+            Some(&CssValue::Keyword("bold".to_string()))
+        );
+        assert_eq!(div_style.get("line-height"), Some(&CssValue::Number(2.0)));
+        assert_eq!(
+            div_style.get("text-align"),
+            Some(&CssValue::Keyword("center".to_string()))
+        );
+
+        // P checks (em resolution: 2em * parent's 16px = 32px)
+        assert_eq!(
+            p_style.get("font-size"),
+            Some(&CssValue::Length(32.0, LengthUnit::Px))
+        );
+        // Inherited font-weight (bold), line-height (number 2.0), text-align (center)
+        assert_eq!(
+            p_style.get("font-weight"),
+            Some(&CssValue::Keyword("bold".to_string()))
+        );
+        assert_eq!(p_style.get("line-height"), Some(&CssValue::Number(2.0)));
+        assert_eq!(
+            p_style.get("text-align"),
+            Some(&CssValue::Keyword("center".to_string()))
+        );
+
+        // 3. Child explicitly overrides inherited values.
+        let stylesheet_override = parse_stylesheet(
+            "
+            div {
+                font-size: 16px;
+                font-weight: bold;
+                line-height: 24px;
+                text-align: center;
+            }
+            p {
+                font-weight: normal;
+                line-height: 1.5em;
+                text-align: right;
+            }
+        ",
+        );
+        let styles_override = compute_styles(&dom, &stylesheet_override);
+        let p_style_override = styles_override.get(&p).unwrap();
+
+        // p has explicitly overridden: font-weight, line-height, text-align.
+        // And p's line-height: 1.5em is relative to p's own font-size (which is inherited 16px, so 1.5 * 16px = 24px)
+        assert_eq!(
+            p_style_override.get("font-size"),
+            Some(&CssValue::Length(16.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            p_style_override.get("font-weight"),
+            Some(&CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            p_style_override.get("line-height"),
+            Some(&CssValue::Length(24.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            p_style_override.get("text-align"),
+            Some(&CssValue::Keyword("right".to_string()))
+        );
+
+        // 4. Test root element font-size with rem resolution.
+        let stylesheet_rem = parse_stylesheet(
+            "
+            div {
+                font-size: 20px;
+            }
+            p {
+                font-size: 1.5rem;
+            }
+        ",
+        );
+        // div is the first element child of doc (the root element).
+        // Its font-size is 20px, so root font-size is 20px.
+        // p's font-size: 1.5rem should resolve to 1.5 * 20px = 30px.
+        let styles_rem = compute_styles(&dom, &stylesheet_rem);
+        let p_style_rem = styles_rem.get(&p).unwrap();
+        assert_eq!(
+            p_style_rem.get("font-size"),
+            Some(&CssValue::Length(30.0, LengthUnit::Px))
+        );
+
+        // 5. Test inherit / initial keywords.
+        let stylesheet_keywords = parse_stylesheet(
+            "
+            div {
+                font-size: 24px;
+                font-weight: 500;
+                text-align: right;
+            }
+            p {
+                font-size: initial;
+                font-weight: inherit;
+                text-align: initial;
+            }
+        ",
+        );
+        let styles_keywords = compute_styles(&dom, &stylesheet_keywords);
+        let p_style_keywords = styles_keywords.get(&p).unwrap();
+        // p's font-size: initial -> 16px
+        assert_eq!(
+            p_style_keywords.get("font-size"),
+            Some(&CssValue::Length(16.0, LengthUnit::Px))
+        );
+        // p's font-weight: inherit -> 500
+        assert_eq!(
+            p_style_keywords.get("font-weight"),
+            Some(&CssValue::Number(500.0))
+        );
+        // p's text-align: initial -> left
+        assert_eq!(
+            p_style_keywords.get("text-align"),
+            Some(&CssValue::Keyword("left".to_string()))
         );
     }
 }
