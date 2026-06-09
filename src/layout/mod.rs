@@ -410,7 +410,7 @@ mod tests {
         });
         dom.append_child(body, div);
 
-        // CHAR_WIDTH is 8.0. LINE_HEIGHT is 16.0.
+        // CHAR_WIDTH is 8.0. LINE_HEIGHT is 8.0 (font line_height).
         // Words: "Hello " (48px), "world " (48px), "this " (40px), "is " (24px), "a " (16px), "test" (32px)
         // Limit: 150px
         // Line 1: "Hello ", "world ", "this " (Total 136px)
@@ -428,8 +428,8 @@ mod tests {
         // Should have 2 line boxes
         assert_eq!(div_box.children.len(), 2);
 
-        // div_box height should be 2 * LINE_HEIGHT (16.0) = 32.0
-        assert!(approx_eq(div_box.rect.size.height, 32.0));
+        // div_box height should be 2 * LINE_HEIGHT (8.0) = 16.0
+        assert!(approx_eq(div_box.rect.size.height, 16.0));
 
         // Check first line children
         let line1 = &div_box.children[0];
@@ -439,6 +439,49 @@ mod tests {
         let line2 = &div_box.children[1];
         assert_eq!(line2.children.len(), 3);
         assert!(approx_eq(line2.rect.size.width, 72.0));
+    }
+
+    #[test]
+    fn test_inline_line_wrapping_acceptance() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        // Word "aaaa " is 5 chars * 8px = 40px
+        // Word "bbbb " is 5 chars * 8px = 40px
+        // Word "cccc" is 4 chars * 8px = 32px
+        // Total of first two is 80px <= 100px width.
+        // Adding third makes 112px > 100px width.
+        // It must wrap to at least 2 lines.
+        let text = dom.create_node(NodeData::Text("aaaa bbbb cccc".into()));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet("div { display: block; width: 100px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+
+        assert!(div_box.children.len() >= 2);
+
+        let line1 = &div_box.children[0];
+        assert_eq!(line1.children.len(), 2); // "aaaa ", "bbbb "
+        assert!(approx_eq(line1.rect.size.width, 80.0));
+
+        let line2 = &div_box.children[1];
+        assert_eq!(line2.children.len(), 1); // "cccc"
+        assert!(approx_eq(line2.rect.size.width, 32.0));
     }
 
     #[test]
