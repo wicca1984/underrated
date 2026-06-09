@@ -20,7 +20,7 @@ pub struct LayoutBox {
     pub children: Vec<LayoutBox>,
 }
 
-const MAX_DEPTH: usize = 1000;
+pub(crate) const MAX_DEPTH: usize = 1000;
 
 /// Performs block layout on the document.
 /// spec: S-11
@@ -58,7 +58,7 @@ pub fn layout_document(
 
     // Apply relative positioning offsets
     // spec: S-31
-    position::resolve_relative_positions(&mut root_box, styles);
+    position::resolve_relative_positions(&mut root_box, styles, 0);
 
     root_box
 }
@@ -139,6 +139,7 @@ pub(crate) fn layout_node(
             content_width,
             border_box_x + border_left + padding_left,
             child_cursor_y,
+            depth,
         );
         children.extend(line_boxes);
         child_cursor_y += total_height;
@@ -803,5 +804,65 @@ mod tests {
             hit_test(&root_box, 15.0, 90.0),
             Some(node_nested_under_none)
         );
+    }
+
+    #[test]
+    fn test_display_none_absolute_subtree_pruning() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, container);
+
+        let abs_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(container, abs_div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { display: none; }
+            div > div { position: absolute; top: 10px; left: 10px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // Neither container nor abs_div should have any box, so body should have 0 children
+        assert_eq!(body_box.children.len(), 0);
+    }
+
+    #[test]
+    fn test_deep_tree_recursion_cap() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let mut current = doc;
+        // Nest 1050 levels deep
+        for _ in 0..1050 {
+            let div = dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![],
+            });
+            dom.append_child(current, div);
+            current = div;
+        }
+
+        let stylesheet = parse_stylesheet("div { display: block; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // This must not stack overflow!
+        let _layout_tree = layout_document(&dom, &styles, 800.0);
     }
 }

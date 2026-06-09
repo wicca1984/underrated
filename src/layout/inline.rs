@@ -16,6 +16,7 @@ pub fn layout_inline(
     containing_width: f32,
     offset_x: f32,
     offset_y: f32,
+    depth: usize,
 ) -> (Vec<LayoutBox>, f32) {
     let font = crate::font::BitmapFont::builtin();
     let line_height = font.line_height() as f32;
@@ -38,6 +39,7 @@ pub fn layout_inline(
         &mut line_boxes,
         &font,
         line_height,
+        depth,
     );
 
     if !current_line_children.is_empty() {
@@ -68,7 +70,12 @@ fn layout_inline_recursive(
     line_boxes: &mut Vec<LayoutBox>,
     font: &crate::font::BitmapFont,
     line_height: f32,
+    depth: usize,
 ) {
+    if depth > crate::layout::MAX_DEPTH {
+        return;
+    }
+
     for &child in dom.children(node) {
         if let Some(data) = dom.data(child) {
             match data {
@@ -140,6 +147,7 @@ fn layout_inline_recursive(
                                 line_boxes,
                                 font,
                                 line_height,
+                                depth + 1,
                             );
                         }
                     }

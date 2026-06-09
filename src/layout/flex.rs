@@ -195,7 +195,7 @@ pub fn layout_flex_container(
         let dx = target_origin.x - child_box.rect.origin.x;
         let dy = target_origin.y - child_box.rect.origin.y;
 
-        crate::layout::position::shift_layout_box(child_box, styles, dx, dy);
+        crate::layout::position::shift_layout_box(child_box, styles, dx, dy, depth);
 
         match flex_direction {
             FlexDirection::Row => {
