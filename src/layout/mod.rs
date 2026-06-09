@@ -485,6 +485,60 @@ mod tests {
     }
 
     #[test]
+    fn test_s57_text_line_flow_wiring() {
+        // spec: S-57
+        // Verify that long text in a narrow container occupies multiple line-heights of block height,
+        // using the real font glyph widths and inline wrapping, and advances block height accordingly.
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        // Built-in font has character width 8.0, and height 8.0.
+        // "word1 word2 word3 word4" has:
+        // "word1 " (40px with space)
+        // "word2 " (40px with space)
+        // "word3 " (40px with space)
+        // "word4"  (40px without space)
+        // In a container of width 50px, each word has to be wrapped on its own line!
+        // This will result in 4 lines, total height 4 * 8.0 = 32.0.
+        let text = dom.create_node(NodeData::Text("word1 word2 word3 word4".into()));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet("div { display: block; width: 50px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+
+        // Should have exactly 4 line boxes
+        assert_eq!(div_box.children.len(), 4);
+
+        // Block height must be exactly 4 * line-height (8.0) = 32.0
+        assert!(approx_eq(div_box.rect.size.height, 32.0));
+
+        // Let's check each line width:
+        // "word1 " is 6 characters (5 + space), so 48px.
+        // "word2 " is 48px.
+        // "word3 " is 48px.
+        // "word4" is 5 characters (no space), so 40px.
+        assert!(approx_eq(div_box.children[0].rect.size.width, 48.0));
+        assert!(approx_eq(div_box.children[1].rect.size.width, 48.0));
+        assert!(approx_eq(div_box.children[2].rect.size.width, 48.0));
+        assert!(approx_eq(div_box.children[3].rect.size.width, 40.0));
+    }
+
+    #[test]
     fn test_relative_position_offset() {
         let mut dom = Dom::new();
         let doc = dom.document();
