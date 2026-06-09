@@ -39,6 +39,22 @@ pub fn render(html: &str, css: &str, viewport_width: f32) -> Page {
     }
 }
 
+/// Renders content (html + css) all the way to a pixel canvas.
+/// spec: S-13b
+pub fn render_to_canvas(html: &str, css: &str, width: u32, height: u32) -> crate::raster::Canvas {
+    // 1. let page = render(html, css, width as f32);
+    let page = render(html, css, width as f32);
+
+    // 2. let display_list = paint::build_display_list(&page.layout, &page.dom, &page.styles);
+    let display_list = crate::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+
+    // 3. let canvas = raster::rasterize(&display_list, width, height);
+    let canvas = crate::raster::rasterize(&display_list, width, height);
+
+    // 4. return canvas.
+    canvas
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +104,27 @@ mod tests {
         let b = div_box.expect("Layout tree should contain a box for the div");
         assert!((b.rect.size.width - 100.0).abs() < 0.001);
         assert!((b.rect.size.height - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_render_to_canvas() {
+        let html = "<div></div>";
+        let css = "div { background-color: #ff0000; width: 10px; height: 10px; }";
+        let width = 20;
+        let height = 20;
+
+        let canvas = render_to_canvas(html, css, width, height);
+
+        assert_eq!(canvas.width, 20);
+        assert_eq!(canvas.height, 20);
+
+        // Check a pixel that should be red
+        // The div should be at (0,0) with 10x10 size.
+        let pixel = canvas.pixel(5, 5);
+        assert_eq!(pixel, 0xFFFF0000); // 0xAARRGGBB
+
+        // Check a pixel outside the div
+        let outside_pixel = canvas.pixel(15, 15);
+        assert_eq!(outside_pixel, 0);
     }
 }
