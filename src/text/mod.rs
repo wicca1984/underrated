@@ -50,6 +50,62 @@ pub fn break_lines(text: &str, max_width: f32, measure: impl Fn(char) -> f32) ->
     lines
 }
 
+/// Returns a list of byte offsets where a line break may occur (after spaces,
+/// after hyphens, or between consecutive CJK characters).
+///
+/// Full UAX#14 tables are left as `// TODO(spec)`.
+/// Never panics; offsets are guaranteed to be valid `char` boundaries.
+// spec: https://www.unicode.org/reports/tr14/ (simplified, minimal class set)
+pub fn break_opportunities(s: &str) -> Vec<usize> {
+    // TODO(spec): Implement full UAX#14 class tables and state machine.
+    let mut opportunities = Vec::new();
+    let mut chars = s.char_indices().peekable();
+
+    while let Some((_idx, c)) = chars.next() {
+        let next_opt = chars.peek();
+
+        if let Some(&(next_idx, next_c)) = next_opt {
+            let break_after_space = is_space(c) && !is_space(next_c);
+            let break_after_hyphen = is_hyphen(c) && !is_space(next_c) && !is_hyphen(next_c);
+            let break_between_cjk = is_cjk(c) && is_cjk(next_c);
+
+            if break_after_space || break_after_hyphen || break_between_cjk {
+                opportunities.push(next_idx);
+            }
+        }
+    }
+
+    opportunities
+}
+
+fn is_space(c: char) -> bool {
+    c.is_whitespace()
+}
+
+fn is_hyphen(c: char) -> bool {
+    c == '-' || c == '\u{2010}'
+}
+
+fn is_cjk(c: char) -> bool {
+    match c as u32 {
+        0x4E00..=0x9FFF |    // CJK Unified Ideographs
+        0x3400..=0x4DBF |    // CJK Unified Ideographs Extension A
+        0x20000..=0x2A6DF |  // CJK Unified Ideographs Extension B
+        0x2A700..=0x2B73F |  // CJK Unified Ideographs Extension C
+        0x2B740..=0x2B81F |  // CJK Unified Ideographs Extension D
+        0x2B820..=0x2CEAF |  // CJK Unified Ideographs Extension E
+        0xF900..=0xFAFF |    // CJK Compatibility Ideographs
+        0x2F800..=0x2FA1F |  // CJK Compatibility Ideographs Supplement
+        0x3040..=0x309F |    // Hiragana
+        0x30A0..=0x30FF |    // Katakana
+        0xAC00..=0xD7AF |    // Hangul Syllables
+        0x1100..=0x11FF |    // Hangul Jamo
+        0x3130..=0x318F      // Hangul Compatibility Jamo
+        => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +113,35 @@ mod tests {
     // Each character is 10 wide, space included.
     fn fixed(_c: char) -> f32 {
         10.0
+    }
+
+    #[test]
+    fn test_break_opportunities() {
+        // "ab cd-ef" -> opportunities at index 3 (after ' ') and 6 (after '-')
+        assert_eq!(break_opportunities("ab cd-ef"), vec![3, 6]);
+
+        // Consecutive CJK characters ("日本語") -> opportunities between characters (3 and 6)
+        assert_eq!(break_opportunities("日本語"), vec![3, 6]);
+
+        // Empty string -> no opportunities
+        assert_eq!(break_opportunities(""), Vec::<usize>::new());
+
+        // Single character -> no opportunities
+        assert_eq!(break_opportunities("a"), Vec::<usize>::new());
+        assert_eq!(break_opportunities("日"), Vec::<usize>::new());
+
+        // Multiple spaces -> break after the sequence of spaces
+        assert_eq!(break_opportunities("ab   cd"), vec![5]);
+
+        // Multiple hyphens -> break after the sequence of hyphens
+        assert_eq!(break_opportunities("ab--cd"), vec![4]);
+
+        // Space followed by hyphen -> break after space (at 3) and after hyphen (at 4)
+        assert_eq!(break_opportunities("ab -cd"), vec![3, 4]);
+
+        // CJK mixed with non-CJK (e.g. "日a") -> no opportunities between CJK and standard letters
+        assert_eq!(break_opportunities("日a"), Vec::<usize>::new());
+        assert_eq!(break_opportunities("a日"), Vec::<usize>::new());
     }
 
     #[test]
