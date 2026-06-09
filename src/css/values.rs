@@ -65,6 +65,103 @@ pub fn parse_value(components: &[ComponentValue]) -> Option<CssValue> {
     }
 }
 
+/// Helper to check if a property name is a layout-related property.
+pub fn is_known_layout_property(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "position"
+            | "overflow"
+            | "box-sizing"
+            | "display"
+            | "flex-direction"
+            | "justify-content"
+            | "align-items"
+    )
+}
+
+/// Validates that a CSS value is valid for a layout-related property.
+pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
+    let name_lower = name.to_ascii_lowercase();
+    match name_lower.as_str() {
+        "position" => {
+            if let CssValue::Keyword(kw) = value {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "static" | "relative" | "absolute" | "fixed"
+                )
+            } else {
+                false
+            }
+        }
+        "overflow" => {
+            if let CssValue::Keyword(kw) = value {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "visible" | "hidden" | "scroll" | "auto"
+                )
+            } else {
+                false
+            }
+        }
+        "box-sizing" => {
+            if let CssValue::Keyword(kw) = value {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "content-box" | "border-box"
+                )
+            } else {
+                false
+            }
+        }
+        "display" => {
+            if let CssValue::Keyword(kw) = value {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "block" | "inline" | "inline-block" | "none" | "flex"
+                )
+            } else {
+                false
+            }
+        }
+        "flex-direction" => {
+            if let CssValue::Keyword(kw) = value {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "row" | "row-reverse" | "column" | "column-reverse"
+                )
+            } else {
+                false
+            }
+        }
+        "justify-content" => {
+            if let CssValue::Keyword(kw) = value {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "flex-start"
+                        | "flex-end"
+                        | "center"
+                        | "space-between"
+                        | "space-around"
+                        | "space-evenly"
+                )
+            } else {
+                false
+            }
+        }
+        "align-items" => {
+            if let CssValue::Keyword(kw) = value {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "flex-start" | "flex-end" | "center" | "baseline" | "stretch"
+                )
+            } else {
+                false
+            }
+        }
+        _ => true,
+    }
+}
+
 fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
     if components.len() != 1 {
         // TODO(spec): Support complex single values (e.g. 1px/2px)

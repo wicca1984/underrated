@@ -360,6 +360,19 @@ impl<'a> Parser<'a> {
         // 6. Convert the declaration's value to a list of component values.
         let value = self.tokens_to_component_values(tokens_for_value);
 
+        // Check if the property is a known layout-related property.
+        // If it is, and it does not contain a custom variable/calc function,
+        // validate its value. If the value is invalid or unknown, ignore/discard the declaration.
+        if crate::css::values::is_known_layout_property(&name) && !has_var_or_calc(&value) {
+            if let Some(parsed_val) = crate::css::values::parse_value(&value) {
+                if !crate::css::values::is_valid_property_value(&name, &parsed_val) {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+
         Some(Declaration {
             name,
             value,
@@ -510,6 +523,26 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn has_var_or_calc(components: &[ComponentValue]) -> bool {
+    for comp in components {
+        match comp {
+            ComponentValue::Function { name, value } => {
+                if name.eq_ignore_ascii_case("var") || name.eq_ignore_ascii_case("calc") {
+                    return true;
+                }
+                if has_var_or_calc(value) {
+                    return true;
+                }
+            }
+            ComponentValue::SimpleBlock { value, .. } if has_var_or_calc(value) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +636,76 @@ mod tests {
             assert_eq!(rule.declarations.len(), 2);
             assert_eq!(rule.declarations[0].name, "color");
             assert_eq!(rule.declarations[1].name, "background");
+        }
+    }
+
+    #[test]
+    fn test_parse_layout_properties_validation() {
+        // 1. Valid properties & values (mixed case)
+        let input = "
+            div {
+                position: ABSOLUTE;
+                overflow: hidden;
+                box-sizing: border-box;
+                display: flex;
+                flex-direction: COLUMN;
+                justify-content: space-between;
+                align-items: center;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            assert_eq!(rule.declarations.len(), 7);
+            assert_eq!(rule.declarations[0].name, "position");
+            assert_eq!(rule.declarations[1].name, "overflow");
+            assert_eq!(rule.declarations[2].name, "box-sizing");
+            assert_eq!(rule.declarations[3].name, "display");
+            assert_eq!(rule.declarations[4].name, "flex-direction");
+            assert_eq!(rule.declarations[5].name, "justify-content");
+            assert_eq!(rule.declarations[6].name, "align-items");
+        } else {
+            panic!("Expected qualified rule");
+        }
+
+        // 2. Invalid/Unknown values are ignored/discarded
+        let input_invalid = "
+            div {
+                position: invalid-position;
+                overflow: invalid-overflow;
+                box-sizing: invalid-box-sizing;
+                display: invalid-display;
+                flex-direction: invalid-direction;
+                justify-content: invalid-justify;
+                align-items: invalid-align;
+                color: red; /* non-layout property stays valid */
+            }
+        ";
+        let stylesheet_invalid = parse_stylesheet(input_invalid);
+        assert_eq!(stylesheet_invalid.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet_invalid.rules[0] {
+            // All invalid layout declarations must be discarded, only color is left
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule");
+        }
+
+        // 3. Properties containing var() or calc() are preserved and not validated during parsing
+        let input_vars = "
+            div {
+                position: var(--pos);
+                flex-direction: calc(1);
+            }
+        ";
+        let stylesheet_vars = parse_stylesheet(input_vars);
+        assert_eq!(stylesheet_vars.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet_vars.rules[0] {
+            assert_eq!(rule.declarations.len(), 2);
+            assert_eq!(rule.declarations[0].name, "position");
+            assert_eq!(rule.declarations[1].name, "flex-direction");
+        } else {
+            panic!("Expected qualified rule");
         }
     }
 }
