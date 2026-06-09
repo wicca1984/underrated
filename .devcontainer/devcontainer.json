@@ -1,0 +1,38 @@
+{
+  "name": "toy-browser",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "vscode",
+
+  "features": {
+    // claude-code feature が npm 経由で入るため node が前提
+    "ghcr.io/devcontainers/features/node:1": { "version": "lts" },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+
+  // llm-net に参加すると llama-server コンテナへ DNS 名で到達できる
+  "runArgs": ["--network=llm-net"],
+
+  // コンテナ内 CLI（Claude Code 等）が参照する OpenAI 互換エンドポイント
+  "containerEnv": {
+    "OPENAI_BASE_URL": "http://llama-server:8080/v1",
+    "OPENAI_API_KEY": "not-used",
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
+    // cargo home は base image で /usr/local/cargo。registry を named volume に逃がすので明示
+    "CARGO_HOME": "/usr/local/cargo"
+  },
+
+  // 認証分離方針（_template-python 踏襲, zenn.dev/y_dkama/articles/windows-zed-devcontainers）:
+  //  - gh は **プロジェクト単位** で分離（PAT スコープ＝repo 隔離が意味を持つ）
+  //  - claude は **全プロジェクト共有**（1度どこかで claude /login すれば全コンテナで認証済）
+  //  - gemini も **全プロジェクト共有**（Zed Agent Panel から ACP で叩く。claude と同方針）
+  //  - cargo-registry は **全プロジェクト共有**（crate DL の重複回避。uv-cache の Rust 版）
+  "mounts": [
+    "source=${localWorkspaceFolderBasename}-gh-config,target=/home/vscode/.config/gh,type=volume",
+    "source=shared-claude-config,target=/home/vscode/.claude,type=volume",
+    "source=shared-gemini-config,target=/home/vscode/.gemini,type=volume",
+    "source=cargo-registry,target=/usr/local/cargo/registry,type=volume"
+  ],
+
+  "postCreateCommand": "bash .devcontainer/setup.sh"
+}

@@ -1,0 +1,11 @@
+[package]
+name = "underrated"
+version = "0.1.0"
+edition = "2024"
+description = "A web browser engine built from scratch, for learning."
+
+[dependencies]
+
+[profile.dev]
+# ブラウザエンジンは依存が増えるとビルドが重くなりがち。開発時の最適化は最小に
+opt-level = 0
