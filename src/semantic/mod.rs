@@ -14,6 +14,15 @@ pub enum SemanticNode {
     Link { text: String, href: String },
     /// A list (ordered or unordered) containing other semantic nodes.
     List(Vec<SemanticNode>),
+    /// An ordered list containing other semantic nodes.
+    OrderedList(Vec<SemanticNode>),
+    /// An image with alt text.
+    Image { alt: String },
+    /// A table with headers and rows.
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
     /// A single item in a list, containing plain text.
     ListItem(String),
     /// A piece of plain text.
@@ -246,7 +255,23 @@ fn build_nodes(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode> {
         }
         Some("list") => {
             let items = build_children(dom, node_id);
+            if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
+                && name == "ol"
+            {
+                return vec![SemanticNode::OrderedList(items)];
+            }
             return vec![SemanticNode::List(items)];
+        }
+        Some("img") => {
+            let alt = dom
+                .get_attribute(node_id, "alt")
+                .or_else(|| dom.get_attribute(node_id, "aria-label"))
+                .unwrap_or_default()
+                .to_string();
+            return vec![SemanticNode::Image { alt }];
+        }
+        Some("table") => {
+            return vec![build_table_node(dom, node_id)];
         }
         Some("listitem") => {
             let children_nodes = build_children(dom, node_id);
@@ -292,9 +317,32 @@ fn build_nodes(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode> {
                     }]
                 }
                 // Lists
-                "ul" | "ol" => {
+                "ul" => {
                     let items = build_children(dom, node_id);
                     vec![SemanticNode::List(items)]
+                }
+                "ol" => {
+                    let items = build_children(dom, node_id);
+                    vec![SemanticNode::OrderedList(items)]
+                }
+                // Image
+                "img" => {
+                    let alt = attrs
+                        .iter()
+                        .find(|(n, _)| n == "alt")
+                        .map(|(_, v)| v.clone())
+                        .or_else(|| {
+                            attrs
+                                .iter()
+                                .find(|(n, _)| n == "aria-label")
+                                .map(|(_, v)| v.clone())
+                        })
+                        .unwrap_or_default();
+                    vec![SemanticNode::Image { alt }]
+                }
+                // Table
+                "table" => {
+                    vec![build_table_node(dom, node_id)]
                 }
                 // List Items
                 "li" => {
@@ -413,12 +461,92 @@ fn build_children(dom: &Dom, node_id: crate::infra::NodeId) -> Vec<SemanticNode>
         .collect()
 }
 
+/// Helper to find all `tr` elements inside a table node that are not inside a nested table.
+fn find_table_rows(dom: &Dom, node_id: crate::infra::NodeId, rows: &mut Vec<crate::infra::NodeId>) {
+    for &child in dom.children(node_id) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if name == "table" {
+                continue;
+            } else if name == "tr" {
+                rows.push(child);
+            } else {
+                find_table_rows(dom, child, rows);
+            }
+        }
+    }
+}
+
+/// Helper to find all cells (th, td) in a table row.
+fn find_row_cells(dom: &Dom, node_id: crate::infra::NodeId, cells: &mut Vec<crate::infra::NodeId>) {
+    for &child in dom.children(node_id) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if name == "td" || name == "th" {
+                cells.push(child);
+            } else {
+                find_row_cells(dom, child, cells);
+            }
+        }
+    }
+}
+
+/// Helper to build a table node.
+fn build_table_node(dom: &Dom, node_id: crate::infra::NodeId) -> SemanticNode {
+    let mut table_rows = Vec::new();
+    find_table_rows(dom, node_id, &mut table_rows);
+
+    let mut headers = Vec::new();
+    let mut rows = Vec::new();
+
+    for row_id in table_rows {
+        let mut cell_nodes = Vec::new();
+        find_row_cells(dom, row_id, &mut cell_nodes);
+
+        let mut row_cells = Vec::new();
+        let mut is_header_row = false;
+
+        for cell_id in cell_nodes {
+            if let Some(NodeData::Element { name, .. }) = dom.data(cell_id)
+                && name == "th"
+            {
+                is_header_row = true;
+            }
+            let text = dom.text_content(cell_id).trim().to_string();
+            row_cells.push(text);
+        }
+
+        if !row_cells.is_empty() {
+            if is_header_row && headers.is_empty() {
+                headers = row_cells;
+            } else {
+                rows.push(row_cells);
+            }
+        }
+    }
+
+    if headers.is_empty() && !rows.is_empty() {
+        headers = rows.remove(0);
+    }
+    let num_cols = headers.len();
+    if num_cols > 0 {
+        for row in &mut rows {
+            if row.len() < num_cols {
+                row.resize(num_cols, String::new());
+            } else {
+                row.truncate(num_cols);
+            }
+        }
+    }
+
+    SemanticNode::Table { headers, rows }
+}
+
 /// Helper to check if a list of semantic nodes contains any Link.
 fn has_links(nodes: &[SemanticNode]) -> bool {
     nodes.iter().any(|n| match n {
         SemanticNode::Link { .. } => true,
         SemanticNode::Section(children)
         | SemanticNode::List(children)
+        | SemanticNode::OrderedList(children)
         | SemanticNode::Form { children, .. } => has_links(children),
         _ => false,
     })
@@ -486,6 +614,66 @@ fn append_markdown(node: &SemanticNode, result: &mut String, is_block: bool) {
                 }
             }
             result.push('\n');
+        }
+        SemanticNode::OrderedList(items) => {
+            if !result.is_empty() && !result.ends_with("\n\n") {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push('\n');
+            }
+            for (index, item) in items.iter().enumerate() {
+                result.push_str(&format!("{}. ", index + 1));
+                append_markdown(item, result, false);
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+            }
+            result.push('\n');
+        }
+        SemanticNode::Image { alt } => {
+            result.push_str("![");
+            result.push_str(alt);
+            result.push(']');
+            if is_block {
+                result.push_str("\n\n");
+            }
+        }
+        SemanticNode::Table { headers, rows } => {
+            if !result.is_empty() && !result.ends_with("\n\n") {
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push('\n');
+            }
+            if !headers.is_empty() {
+                result.push('|');
+                for header in headers {
+                    result.push(' ');
+                    result.push_str(&header.replace('|', "\\|"));
+                    result.push_str(" |");
+                }
+                result.push('\n');
+
+                result.push('|');
+                for _ in headers {
+                    result.push_str(" --- |");
+                }
+                result.push('\n');
+
+                for row in rows {
+                    result.push('|');
+                    for cell in row {
+                        result.push(' ');
+                        result.push_str(&cell.replace('|', "\\|"));
+                        result.push_str(" |");
+                    }
+                    result.push('\n');
+                }
+            }
+            if is_block {
+                result.push('\n');
+            }
         }
         SemanticNode::ListItem(text) => {
             result.push_str(text);
@@ -694,6 +882,11 @@ pub fn role(dom: &Dom, node: crate::infra::NodeId) -> Option<String> {
         // List elements
         "ul" | "ol" => Some("list".to_string()),
         "li" => Some("listitem".to_string()),
+        // Table elements
+        "table" => Some("table".to_string()),
+        "tr" => Some("row".to_string()),
+        "th" => Some("columnheader".to_string()),
+        "td" => Some("cell".to_string()),
         _ => None,
     }
 }
@@ -868,4 +1061,163 @@ fn is_hidden(dom: &Dom, node_id: crate::infra::NodeId) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dom::{Dom, NodeData};
+
+    #[test]
+    fn test_list_and_ordered_list() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <ol>
+        //   <li>First</li>
+        //   <li>Second</li>
+        // </ol>
+        let ol = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![],
+        });
+        let li1 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        let t1 = dom.create_node(NodeData::Text("First".into()));
+        dom.append_child(li1, t1);
+
+        let li2 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        let t2 = dom.create_node(NodeData::Text("Second".into()));
+        dom.append_child(li2, t2);
+
+        dom.append_child(ol, li1);
+        dom.append_child(ol, li2);
+        dom.append_child(doc, ol);
+
+        let view = build_semantic_view(&dom);
+        assert_eq!(view.roots.len(), 1);
+
+        match &view.roots[0] {
+            SemanticNode::OrderedList(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], SemanticNode::ListItem("First".into()));
+                assert_eq!(items[1], SemanticNode::ListItem("Second".into()));
+            }
+            _ => panic!("Expected OrderedList, got {:?}", view.roots[0]),
+        }
+
+        let md = to_markdown(&view);
+        assert_eq!(md, "1. First\n2. Second");
+    }
+
+    #[test]
+    fn test_images() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <img alt="A beautiful sunset">
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("alt".into(), "A beautiful sunset".into())],
+        });
+        dom.append_child(doc, img);
+
+        let view = build_semantic_view(&dom);
+        assert_eq!(view.roots.len(), 1);
+        assert_eq!(
+            view.roots[0],
+            SemanticNode::Image {
+                alt: "A beautiful sunset".into()
+            }
+        );
+
+        let md = to_markdown(&view);
+        assert_eq!(md, "![A beautiful sunset]");
+    }
+
+    #[test]
+    fn test_tables() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <table>
+        //   <tr>
+        //     <th>Header 1</th>
+        //     <th>Header 2</th>
+        //   </tr>
+        //   <tr>
+        //     <td>Val 1</td>
+        //     <td>Val 2</td>
+        //   </tr>
+        // </table>
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![],
+        });
+
+        let tr1 = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        let th1 = dom.create_node(NodeData::Element {
+            name: "th".into(),
+            attrs: vec![],
+        });
+        let th1_text = dom.create_node(NodeData::Text("Header 1".into()));
+        dom.append_child(th1, th1_text);
+        let th2 = dom.create_node(NodeData::Element {
+            name: "th".into(),
+            attrs: vec![],
+        });
+        let th2_text = dom.create_node(NodeData::Text("Header 2".into()));
+        dom.append_child(th2, th2_text);
+        dom.append_child(tr1, th1);
+        dom.append_child(tr1, th2);
+
+        let tr2 = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        let td1 = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![],
+        });
+        let td1_text = dom.create_node(NodeData::Text("Val 1".into()));
+        dom.append_child(td1, td1_text);
+        let td2 = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![],
+        });
+        let td2_text = dom.create_node(NodeData::Text("Val 2".into()));
+        dom.append_child(td2, td2_text);
+        dom.append_child(tr2, td1);
+        dom.append_child(tr2, td2);
+
+        dom.append_child(table, tr1);
+        dom.append_child(table, tr2);
+        dom.append_child(doc, table);
+
+        let view = build_semantic_view(&dom);
+        assert_eq!(view.roots.len(), 1);
+
+        match &view.roots[0] {
+            SemanticNode::Table { headers, rows } => {
+                assert_eq!(
+                    headers,
+                    &vec!["Header 1".to_string(), "Header 2".to_string()]
+                );
+                assert_eq!(rows, &vec![vec!["Val 1".to_string(), "Val 2".to_string()]]);
+            }
+            _ => panic!("Expected Table, got {:?}", view.roots[0]),
+        }
+
+        let md = to_markdown(&view);
+        let expected_md = "| Header 1 | Header 2 |\n| --- | --- |\n| Val 1 | Val 2 |";
+        assert_eq!(md, expected_md);
+    }
 }
