@@ -771,6 +771,42 @@ fn map_boa_error(err: JsError) -> ScriptError {
     }
 }
 
+/// Finds inline `<script>` elements in document order and runs them.
+///
+/// If a script throws an error, it is caught per-script and does not abort
+/// the overall run (I-6 safety). External `src`, `defer`, or `async` scripts
+/// are skipped and marked with a spec TODO.
+pub fn run_inline_scripts(mut dom: Dom) -> Dom {
+    // Collect inline script node IDs in document order (pre-order traversal)
+    let mut script_ids = Vec::new();
+    for id in dom.descendants(dom.document()) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(id)
+            && name.eq_ignore_ascii_case("script")
+        {
+            // TODO(spec): Support external src, defer, or async execution modes.
+            let has_src = dom.get_attribute(id, "src").is_some();
+            let has_defer = dom.get_attribute(id, "defer").is_some();
+            let has_async = dom.get_attribute(id, "async").is_some();
+
+            if has_src || has_defer || has_async {
+                continue;
+            }
+
+            script_ids.push(id);
+        }
+    }
+
+    let mut host = BoaHost::new();
+    for id in script_ids {
+        let src = dom.text_content(id);
+        // Execute the script with the current DOM context
+        // spec: S-61 Any exception from a throwing script must be caught per-script and not abort the entire run.
+        let _ = host.eval_with_dom(&src, &mut dom);
+    }
+
+    dom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,5 +1048,163 @@ mod tests {
         let root_children = dom.children(dom.document());
         let child_id = root_children[0];
         assert_eq!(dom.text_content(child_id), "Updated content!");
+    }
+
+    #[test]
+    fn test_run_inline_scripts_basic() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "x".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("initial".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text = dom.create_node(NodeData::Text(
+            "document.getElementById('x').textContent='hi'".to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom);
+        assert_eq!(mutated_dom.text_content(element_id), "hi");
+    }
+
+    #[test]
+    fn test_run_inline_scripts_throwing_ignored() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // 1. First script element throws an error
+        let script_id1 = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text1 = dom.create_node(NodeData::Text(
+            "throw new Error('Some panic code');".to_string(),
+        ));
+        dom.append_child(script_id1, script_text1);
+        dom.append_child(document, script_id1);
+
+        // 2. Second script element works fine and modifies an element
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id2 = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text2 = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent='recovered'".to_string(),
+        ));
+        dom.append_child(script_id2, script_text2);
+        dom.append_child(document, script_id2);
+
+        // This must run successfully without panic and execute the second script!
+        let mutated_dom = run_inline_scripts(dom);
+        assert_eq!(mutated_dom.text_content(element_id), "recovered");
+    }
+
+    #[test]
+    fn test_run_inline_scripts_skipped_modes() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        // Script 1: has src attribute (external script)
+        let script_src = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("src".to_string(), "app.js".to_string())],
+        });
+        let text_src = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent='src_run'".to_string(),
+        ));
+        dom.append_child(script_src, text_src);
+        dom.append_child(document, script_src);
+
+        // Script 2: has defer attribute
+        let script_defer = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("defer".to_string(), "".to_string())],
+        });
+        let text_defer = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent='defer_run'".to_string(),
+        ));
+        dom.append_child(script_defer, text_defer);
+        dom.append_child(document, script_defer);
+
+        // Script 3: has async attribute
+        let script_async = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("async".to_string(), "".to_string())],
+        });
+        let text_async = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent='async_run'".to_string(),
+        ));
+        dom.append_child(script_async, text_async);
+        dom.append_child(document, script_async);
+
+        // Run scripts: all three must be skipped and target must remain "original"
+        let mutated_dom = run_inline_scripts(dom);
+        assert_eq!(mutated_dom.text_content(element_id), "original");
+    }
+
+    #[test]
+    fn test_run_inline_scripts_ordering() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        // Script 1: sets it to "A"
+        let script_id1 = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text1 = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent += 'A';".to_string(),
+        ));
+        dom.append_child(script_id1, script_text1);
+        dom.append_child(document, script_id1);
+
+        // Script 2: appends "B"
+        let script_id2 = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text2 = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent += 'B';".to_string(),
+        ));
+        dom.append_child(script_id2, script_text2);
+        dom.append_child(document, script_id2);
+
+        // Run: output should be "AB"
+        let mutated_dom = run_inline_scripts(dom);
+        assert_eq!(mutated_dom.text_content(element_id), "AB");
     }
 }
