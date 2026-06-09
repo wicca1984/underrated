@@ -23,6 +23,8 @@ pub struct NavigationRequest {
     pub method: Method,
     /// For POST, the urlencoded body (empty for GET, which carries the query in `url`).
     pub body: String,
+    /// For POST, the content type of the body (e.g., "application/x-www-form-urlencoded").
+    pub content_type: Option<String>,
 }
 
 /// Live values of form controls (what the user has typed / toggled), keyed by
@@ -166,12 +168,103 @@ pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationR
                 url,
                 method,
                 body: String::new(),
+                content_type: None,
             })
         }
         Method::Post => Some(NavigationRequest {
             url: action,
             method,
             body: query,
+            content_type: Some("application/x-www-form-urlencoded".to_string()),
+        }),
+    }
+}
+
+/// Submits `form` using a map/assoc of field name to current edited value,
+/// producing a [`NavigationRequest`], or `None` if `form` is not an element.
+/// GET requests build query parameters in the URL, while POST requests
+/// place them in the urlencoded body and set the content type.
+// spec: S-62
+pub fn submit_with_values(
+    dom: &Dom,
+    form: NodeId,
+    edited_values: &HashMap<String, String>,
+) -> Option<NavigationRequest> {
+    tag(dom, form)?; // must be an element
+
+    let method = match attr(dom, form, "method") {
+        Some(m) if m.eq_ignore_ascii_case("post") => Method::Post,
+        _ => Method::Get,
+    };
+    let action = attr(dom, form, "action").unwrap_or("").to_string();
+
+    let mut pairs: Vec<String> = Vec::new();
+    for node in dom.descendants(form) {
+        let Some(t) = tag(dom, node) else { continue };
+        let t = t.to_ascii_lowercase();
+        if !matches!(t.as_str(), "input" | "textarea" | "select") {
+            continue;
+        }
+        let Some(name) = attr(dom, node, "name") else {
+            continue;
+        };
+        let input_type = attr(dom, node, "type")
+            .unwrap_or("text")
+            .to_ascii_lowercase();
+
+        // Buttons and submit/reset/file controls are not successful here.
+        if matches!(
+            input_type.as_str(),
+            "submit" | "reset" | "button" | "file" | "image"
+        ) {
+            continue;
+        }
+
+        // Checkbox/radio: only successful when checked.
+        if matches!(input_type.as_str(), "checkbox" | "radio") {
+            let checked = if let Some(ev) = edited_values.get(name) {
+                let ctrl_val = attr(dom, node, "value").unwrap_or("on");
+                ev == ctrl_val || ev == "on" || ev == "true"
+            } else {
+                attr(dom, node, "checked").is_some()
+            };
+            if !checked {
+                continue;
+            }
+        }
+
+        let value = edited_values
+            .get(name)
+            .map(|s| s.as_str())
+            .or_else(|| attr(dom, node, "value"))
+            .unwrap_or("");
+
+        pairs.push(format!("{}={}", form_encode(name), form_encode(value)));
+    }
+
+    let query = pairs.join("&");
+
+    match method {
+        Method::Get => {
+            let url = if query.is_empty() {
+                action
+            } else if action.contains('?') {
+                format!("{action}&{query}")
+            } else {
+                format!("{action}?{query}")
+            };
+            Some(NavigationRequest {
+                url,
+                method,
+                body: String::new(),
+                content_type: None,
+            })
+        }
+        Method::Post => Some(NavigationRequest {
+            url: action,
+            method,
+            body: query,
+            content_type: Some("application/x-www-form-urlencoded".to_string()),
         }),
     }
 }
@@ -335,6 +428,77 @@ mod tests {
         state = insert_char(state, 'に');
         assert_eq!(state.value(), "こんにちは");
         assert_eq!(state.cursor(), 3);
+    }
+
+    #[test]
+    fn test_submit_with_values_get() {
+        let mut dom = Dom::new();
+        let form = el(
+            &mut dom,
+            "form",
+            &[("action", "/search"), ("method", "get")],
+        );
+        let input = el(&mut dom, "input", &[("name", "q")]);
+        dom.append_child(form, input);
+
+        let mut edited = HashMap::new();
+        edited.insert("q".to_string(), "a b".to_string());
+
+        let req = submit_with_values(&dom, form, &edited).unwrap();
+        assert_eq!(req.method, Method::Get);
+        assert_eq!(req.url, "/search?q=a+b");
+        assert_eq!(req.body, "");
+        assert_eq!(req.content_type, None);
+    }
+
+    #[test]
+    fn test_submit_with_values_post() {
+        let mut dom = Dom::new();
+        let form = el(
+            &mut dom,
+            "form",
+            &[("action", "/submit"), ("method", "post")],
+        );
+        let input = el(&mut dom, "input", &[("name", "data")]);
+        dom.append_child(form, input);
+
+        let mut edited = HashMap::new();
+        edited.insert("data".to_string(), "a b".to_string());
+
+        let req = submit_with_values(&dom, form, &edited).unwrap();
+        assert_eq!(req.method, Method::Post);
+        assert_eq!(req.url, "/submit");
+        assert_eq!(req.body, "data=a+b");
+        assert_eq!(
+            req.content_type,
+            Some("application/x-www-form-urlencoded".to_string())
+        );
+    }
+
+    #[test]
+    fn test_submit_with_values_fallback() {
+        let mut dom = Dom::new();
+        let form = el(
+            &mut dom,
+            "form",
+            &[("action", "/submit"), ("method", "post")],
+        );
+        let input1 = el(&mut dom, "input", &[("name", "f1"), ("value", "default1")]);
+        let input2 = el(&mut dom, "input", &[("name", "f2"), ("value", "default2")]);
+        dom.append_child(form, input1);
+        dom.append_child(form, input2);
+
+        let mut edited = HashMap::new();
+        edited.insert("f1".to_string(), "overridden1".to_string());
+
+        let req = submit_with_values(&dom, form, &edited).unwrap();
+        assert_eq!(req.method, Method::Post);
+        assert_eq!(req.url, "/submit");
+        assert_eq!(req.body, "f1=overridden1&f2=default2");
+        assert_eq!(
+            req.content_type,
+            Some("application/x-www-form-urlencoded".to_string())
+        );
     }
 }
 
