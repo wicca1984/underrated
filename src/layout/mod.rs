@@ -1,3 +1,4 @@
+mod flex;
 mod inline;
 
 use crate::css::values::{CssValue, LengthUnit};
@@ -47,7 +48,7 @@ pub fn layout_document(
     root_box
 }
 
-fn layout_node(
+pub(crate) fn layout_node(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
     node: NodeId,
@@ -68,7 +69,18 @@ fn layout_node(
         return None;
     }
 
-    // TODO(spec): Support display: inline and others. For now, assume block.
+    // display: flex
+    if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "flex") {
+        return crate::layout::flex::layout_flex_container(
+            dom,
+            styles,
+            node,
+            containing_width,
+            offset_x,
+            offset_y,
+            depth,
+        );
+    }
 
     // Get box model values
     let margin_left = get_px(style, "margin-left", 0.0);
@@ -177,7 +189,7 @@ fn has_inline_content(dom: &Dom, styles: &HashMap<NodeId, ComputedStyle>, node: 
     false
 }
 
-fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
+pub(crate) fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
     match style.get(prop) {
         Some(CssValue::Length(v, LengthUnit::Px)) => *v,
         _ => default,
