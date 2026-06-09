@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code)]
 
+mod au;
+
+pub use au::Au;
+
 /// A 2D point with f32 coordinates.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Point {
