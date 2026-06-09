@@ -1083,8 +1083,19 @@ impl TreeBuilder {
     }
 
     // Helper: insert a character
+    // spec: §13.2.6.1 Creating and inserting nodes - insert a character step
+    // If the node's last child is already a Text node, append the character to that
+    // existing text node's data; otherwise create a new Text node.
     fn insert_character(&mut self, c: char) {
         let parent = self.get_appropriate_place_for_inserting_node();
+        if let Some(&last_child) = self.dom.children(parent).last()
+            && let Some(NodeData::Text(s)) = self.dom.data(last_child)
+        {
+            let mut s = s.clone();
+            s.push(c);
+            self.dom.set_text(last_child, &s);
+            return;
+        }
         let node = self.dom.create_node(NodeData::Text(c.to_string()));
         self.dom.append_child(parent, node);
     }
@@ -1497,6 +1508,55 @@ mod tests {
         assert_eq!(
             dom.serialize(dom.document()),
             "<html><head></head><body><my-custom-tag><other-tag>content</other-tag></my-custom-tag></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_character_coalescing() {
+        // parsing <p>Hello world</p> yields exactly ONE text node "Hello world"
+        let html = "<p>Hello world</p>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        let p_node = dom
+            .query_selector(dom.document(), "p")
+            .expect("p element exists");
+        let p_children = dom.children(p_node);
+        assert_eq!(p_children.len(), 1, "p should have exactly 1 child");
+        let first_child = p_children[0];
+        assert_eq!(
+            dom.data(first_child),
+            Some(&NodeData::Text("Hello world".to_string())),
+            "first child should be a single Text node with 'Hello world'"
+        );
+
+        // <p>a<b>x</b>b</p> yields text "a", element b with text "x", then text "b"
+        let html2 = "<p>a<b>x</b>b</p>";
+        let dom2 = parse_document(InputStream::from_utf8(html2.as_bytes()));
+        let p_node2 = dom2
+            .query_selector(dom2.document(), "p")
+            .expect("p element exists");
+        let p_children2 = dom2.children(p_node2);
+        assert_eq!(p_children2.len(), 3, "p should have exactly 3 children");
+        assert_eq!(
+            dom2.data(p_children2[0]),
+            Some(&NodeData::Text("a".to_string())),
+            "first child of p should be text 'a'"
+        );
+        let b_node = p_children2[1];
+        assert!(
+            matches!(dom2.data(b_node), Some(NodeData::Element { name, .. }) if name == "b"),
+            "second child of p should be element 'b'"
+        );
+        let b_children = dom2.children(b_node);
+        assert_eq!(b_children.len(), 1, "b should have exactly 1 child");
+        assert_eq!(
+            dom2.data(b_children[0]),
+            Some(&NodeData::Text("x".to_string())),
+            "b's child should be text 'x'"
+        );
+        assert_eq!(
+            dom2.data(p_children2[2]),
+            Some(&NodeData::Text("b".to_string())),
+            "third child of p should be text 'b'"
         );
     }
 }
