@@ -11,6 +11,7 @@ pub mod ascii;
 pub mod css;
 pub mod dom;
 pub mod encoding;
+pub mod engine;
 pub mod geom;
 pub mod html;
 pub mod infra;
