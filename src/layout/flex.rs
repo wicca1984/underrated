@@ -2,7 +2,7 @@ use crate::css::values::CssValue;
 use crate::dom::Dom;
 use crate::geom::{Point, Rect};
 use crate::infra::NodeId;
-use crate::layout::{LayoutBox, get_px, layout_node};
+use crate::layout::{LayoutBox, get_px, is_absolute_or_fixed, layout_node};
 use crate::style::ComputedStyle;
 use std::collections::HashMap;
 
@@ -71,6 +71,9 @@ pub fn layout_flex_container(
     let inner_y = border_box_y + border_top + padding_top;
 
     for &child in dom.children(node) {
+        if is_absolute_or_fixed(styles, child) {
+            continue;
+        }
         if let Some(child_box) = layout_node(
             dom,
             styles,

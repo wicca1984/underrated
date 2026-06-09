@@ -1,5 +1,8 @@
 mod flex;
 mod inline;
+mod position;
+
+pub(crate) use position::is_absolute_or_fixed;
 
 use crate::css::values::{CssValue, LengthUnit};
 use crate::dom::{Dom, NodeData};
@@ -35,6 +38,9 @@ pub fn layout_document(
     // The document's children (usually just <html>)
     let mut cursor_y = 0.0;
     for &child in dom.children(dom.document()) {
+        if is_absolute_or_fixed(styles, child) {
+            continue;
+        }
         if let Some(child_box) = layout_node(dom, styles, child, viewport_width, 0.0, cursor_y, 0) {
             if let Some(child_style) = styles.get(&child) {
                 let margin_bottom = get_px(child_style, "margin-bottom", 0.0);
@@ -45,6 +51,15 @@ pub fn layout_document(
     }
 
     root_box.rect.size.height = cursor_y;
+
+    // Apply absolute and fixed positioning
+    // spec: S-31
+    position::layout_absolute_and_fixed_elements(dom, styles, viewport_width, &mut root_box);
+
+    // Apply relative positioning offsets
+    // spec: S-31
+    position::resolve_relative_positions(&mut root_box, styles);
+
     root_box
 }
 
@@ -129,6 +144,9 @@ pub(crate) fn layout_node(
         child_cursor_y += total_height;
     } else {
         for &child in dom.children(node) {
+            if is_absolute_or_fixed(styles, child) {
+                continue;
+            }
             if let Some(child_box) = layout_node(
                 dom,
                 styles,
@@ -174,6 +192,9 @@ fn has_inline_content(dom: &Dom, styles: &HashMap<NodeId, ComputedStyle>, node: 
                 NodeData::Text(_) => return true,
                 NodeData::Element { .. } => {
                     if let Some(style) = styles.get(&child) {
+                        if is_absolute_or_fixed(styles, child) {
+                            continue;
+                        }
                         // If it's display: inline, it's inline content.
                         // Default for unknown or block-level is NOT inline for now.
                         if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline")
@@ -389,5 +410,205 @@ mod tests {
         let line2 = &div_box.children[1];
         assert_eq!(line2.children.len(), 3);
         assert!(approx_eq(line2.rect.size.width, 72.0));
+    }
+
+    #[test]
+    fn test_relative_position_offset() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let sibling = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, sibling);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                height: 50px;
+            }
+            body > div:first-child {
+                position: relative;
+                top: 10px;
+                left: 20px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // First div (relative)
+        let div_box = &body_box.children[0];
+        assert_eq!(div_box.node, Some(div));
+        // Static layout position would be (0, 0)
+        // With relative top:10px; left:20px, it should be offset to (20, 10)
+        assert!(approx_eq(div_box.rect.origin.x, 20.0));
+        assert!(approx_eq(div_box.rect.origin.y, 10.0));
+
+        // Second div (sibling)
+        let sibling_box = &body_box.children[1];
+        assert_eq!(sibling_box.node, Some(sibling));
+        // Sibling position should not be affected by first div's relative offset
+        // Static height of first div is 50px. Sibling should start at (0, 50).
+        assert!(approx_eq(sibling_box.rect.origin.x, 0.0));
+        assert!(approx_eq(sibling_box.rect.origin.y, 50.0));
+    }
+
+    #[test]
+    fn test_absolute_position_and_out_of_flow() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div1);
+
+        let div_abs = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div_abs);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                height: 50px;
+            }
+            body > div:nth-child(2) {
+                position: absolute;
+                top: 5px;
+                left: 5px;
+                width: 100px;
+                height: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // div1 (static)
+        let div1_box = &body_box.children[0];
+        assert_eq!(div1_box.node, Some(div1));
+        assert!(approx_eq(div1_box.rect.origin.x, 0.0));
+        assert!(approx_eq(div1_box.rect.origin.y, 0.0));
+
+        // div2 (static, sibling after the absolute div)
+        let div2_box = &body_box.children[1];
+        assert_eq!(div2_box.node, Some(div2));
+        // Since absolute div is out of flow, div2 should immediately follow div1.
+        // div1 has height 50, so div2 starts at (0, 50).
+        assert!(approx_eq(div2_box.rect.origin.x, 0.0));
+        assert!(approx_eq(div2_box.rect.origin.y, 50.0));
+
+        // div_abs (absolute)
+        // It is integrated into parent's children (or root_box/nearest ancestor layout box)
+        // So let's find it in the layout tree.
+        let div_abs_box = body_box
+            .children
+            .iter()
+            .find(|b| b.node == Some(div_abs))
+            .expect("abs box should exist in layout tree");
+        // It should be placed at (5, 5) relative to viewport/containing block
+        assert!(approx_eq(div_abs_box.rect.origin.x, 5.0));
+        assert!(approx_eq(div_abs_box.rect.origin.y, 5.0));
+        assert!(approx_eq(div_abs_box.rect.size.width, 100.0));
+        assert!(approx_eq(div_abs_box.rect.size.height, 100.0));
+    }
+
+    #[test]
+    fn test_relative_nested_absolute_no_shifting() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let rel_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, rel_div);
+
+        let abs_child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(rel_div, abs_child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            body > div {
+                position: relative;
+                top: 20px;
+                left: 30px;
+                height: 50px;
+            }
+            div > div {
+                position: absolute;
+                top: 5px;
+                left: 5px;
+                width: 40px;
+                height: 40px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // Relative div
+        let rel_box = &body_box.children[0];
+        assert_eq!(rel_box.node, Some(rel_div));
+        assert!(approx_eq(rel_box.rect.origin.x, 30.0));
+        assert!(approx_eq(rel_box.rect.origin.y, 20.0));
+
+        // Absolute child (it is positioned relative to viewport for v1)
+        // In the layout tree, it is added under its nearest ancestor layout box, which is rel_box.
+        let abs_box = rel_box
+            .children
+            .iter()
+            .find(|b| b.node == Some(abs_child))
+            .expect("abs child box should exist in layout tree");
+        // Since it is positioned relative to the viewport/containing block (use viewport/root for v1),
+        // its final coordinates should be (5, 5) and NOT shifted by the relative parent's offset of (30, 20)!
+        assert!(approx_eq(abs_box.rect.origin.x, 5.0));
+        assert!(approx_eq(abs_box.rect.origin.y, 5.0));
     }
 }
