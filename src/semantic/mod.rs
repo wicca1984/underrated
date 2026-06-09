@@ -234,3 +234,108 @@ fn append_markdown(node: &SemanticNode, result: &mut String, is_block: bool) {
         }
     }
 }
+
+/// Computes the implicit or explicit ARIA role of a DOM element node.
+///
+/// This implements SPEC S-42: maps HTML elements to their implicit ARIA roles
+/// (e.g., `button` -> "button", `a[href]` -> "link", `h1`-`h6` -> "heading", `img` -> "img",
+/// `input` -> by type, landmarks like `nav` -> "navigation"), and honors any explicit `role`
+/// attribute (taking the first non-empty role token specified).
+///
+/// If the node is not an element, or the ID is invalid, returns `None`.
+// TODO(spec): Support full HTML-ARIA mapping, conditional roles, and role hierarchy.
+pub fn role(dom: &Dom, node: crate::infra::NodeId) -> Option<String> {
+    let data = dom.data(node)?;
+
+    let NodeData::Element { name, attrs } = data else {
+        return None;
+    };
+
+    // 1. Honoring explicit role attribute (first token if multi-valued)
+    if let Some((_, role_val)) = attrs.iter().find(|(k, _)| k == "role") {
+        let trimmed = role_val.trim();
+        if let Some(first_role) = trimmed.split_whitespace().next() {
+            return Some(first_role.to_string());
+        }
+    }
+
+    // 2. Implicit ARIA roles based on element tag name
+    match name.as_str() {
+        "button" => Some("button".to_string()),
+        "a" => {
+            // "a" has "link" role ONLY if it has "href"
+            if attrs.iter().any(|(k, _)| k == "href") {
+                Some("link".to_string())
+            } else {
+                None
+            }
+        }
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => Some("heading".to_string()),
+        "img" => Some("img".to_string()),
+        "input" => {
+            // Determine input type, defaulting to "text" if missing
+            let input_type = attrs
+                .iter()
+                .find(|(k, _)| k == "type")
+                .map(|(_, v)| v.to_ascii_lowercase())
+                .unwrap_or_else(|| "text".to_string());
+
+            match input_type.as_str() {
+                "button" | "image" | "submit" | "reset" => Some("button".to_string()),
+                "checkbox" => Some("checkbox".to_string()),
+                "radio" => Some("radio".to_string()),
+                "search" => Some("searchbox".to_string()),
+                "range" => Some("slider".to_string()),
+                "number" => Some("spinbutton".to_string()),
+                // text, email, tel, url, password, or unrecognized -> textbox
+                _ => Some("textbox".to_string()),
+            }
+        }
+        // Landmark elements
+        "nav" => Some("navigation".to_string()),
+        "main" => Some("main".to_string()),
+        "aside" => Some("complementary".to_string()),
+        "header" => Some("banner".to_string()),
+        "footer" => Some("contentinfo".to_string()),
+        "article" => Some("article".to_string()),
+        "section" => Some("region".to_string()),
+        "form" => Some("form".to_string()),
+        // List elements
+        "ul" | "ol" => Some("list".to_string()),
+        "li" => Some("listitem".to_string()),
+        _ => None,
+    }
+}
+
+/// Computes the accessible name of a DOM node.
+///
+/// This implements SPEC S-42: computes the accessible name from the `aria-label`
+/// attribute, the `alt` attribute (for elements like images), or falls back to
+/// the node's text content.
+///
+/// If the node is invalid or cannot have an accessible name, returns an empty string.
+// TODO(spec): Implement full AccName 1.1 computation algorithm, including aria-labelledby, aria-describedby, and layout visibility.
+pub fn accessible_name(dom: &Dom, node: crate::infra::NodeId) -> String {
+    let Some(data) = dom.data(node) else {
+        return String::new();
+    };
+
+    match data {
+        NodeData::Element { attrs, .. } => {
+            // 1. aria-label attribute
+            if let Some((_, label)) = attrs.iter().find(|(k, _)| k == "aria-label") {
+                return label.clone();
+            }
+
+            // 2. alt attribute
+            if let Some((_, alt)) = attrs.iter().find(|(k, _)| k == "alt") {
+                return alt.clone();
+            }
+
+            // 3. Fall back to text content
+            dom.text_content(node)
+        }
+        NodeData::Text(s) => s.clone(),
+        _ => String::new(),
+    }
+}
