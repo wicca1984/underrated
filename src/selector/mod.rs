@@ -16,6 +16,10 @@ pub enum Component {
     },
     PseudoClass(String),
     PseudoElement(String),
+    NthChild(i32, i32),
+    Not(Box<CompoundSelector>),
+    FirstChild,
+    LastChild,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -301,11 +305,147 @@ impl<'a> SelectorParser<'a> {
                 Err(SelectorParseError::InvalidSelector)
             }
         } else {
-            if let CssToken::Ident(name) = self.consume() {
-                // TODO(spec): functional pseudo-classes like :nth-child(...), :not(...)
-                Ok(Component::PseudoClass(name))
-            } else {
-                Err(SelectorParseError::InvalidSelector)
+            match self.consume() {
+                CssToken::Ident(name) => match name.as_str() {
+                    "first-child" => Ok(Component::FirstChild),
+                    "last-child" => Ok(Component::LastChild),
+                    _ => Ok(Component::PseudoClass(name)),
+                },
+                CssToken::Function(name) => match name.as_str() {
+                    "nth-child" => {
+                        let (a, b) = self.parse_nth()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::NthChild(a, b))
+                    }
+                    "not" => {
+                        let compound = self.parse_compound_selector()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::Not(Box::new(compound)))
+                    }
+                    _ => {
+                        // TODO(spec): Other functional pseudo-classes.
+                        // We need to consume until RightParen to stay in sync.
+                        let mut depth = 1;
+                        while depth > 0 {
+                            match self.consume() {
+                                CssToken::LeftParen | CssToken::Function(_) => depth += 1,
+                                CssToken::RightParen => depth -= 1,
+                                CssToken::Eof => return Err(SelectorParseError::UnexpectedEof),
+                                _ => {}
+                            }
+                        }
+                        Ok(Component::PseudoClass(name))
+                    }
+                },
+                _ => Err(SelectorParseError::InvalidSelector),
+            }
+        }
+    }
+
+    fn consume_nth_b(&mut self, a: i32) -> Result<(i32, i32), SelectorParseError> {
+        self.skip_whitespace();
+        let b = match self.peek() {
+            CssToken::Number(n) => {
+                let val = *n as i32;
+                self.consume();
+                val
+            }
+            CssToken::Delim('+') | CssToken::Delim('-') => {
+                let sign = if matches!(self.consume(), CssToken::Delim('+')) {
+                    1
+                } else {
+                    -1
+                };
+                self.skip_whitespace();
+                if let CssToken::Number(n) = self.consume() {
+                    sign * n as i32
+                } else {
+                    return Err(SelectorParseError::InvalidSelector);
+                }
+            }
+            _ => 0,
+        };
+        Ok((a, b))
+    }
+
+    fn parse_nth(&mut self) -> Result<(i32, i32), SelectorParseError> {
+        self.skip_whitespace();
+        match self.peek().clone() {
+            CssToken::Ident(s) if s.eq_ignore_ascii_case("odd") => {
+                self.consume();
+                Ok((2, 1))
+            }
+            CssToken::Ident(s) if s.eq_ignore_ascii_case("even") => {
+                self.consume();
+                Ok((2, 0))
+            }
+            _ => {
+                let mut sign = 1;
+                if matches!(self.peek(), CssToken::Delim('+') | CssToken::Delim('-')) {
+                    if matches!(self.consume(), CssToken::Delim('-')) {
+                        sign = -1;
+                    }
+                    self.skip_whitespace();
+                }
+
+                match self.peek().clone() {
+                    CssToken::Number(n) => {
+                        self.consume();
+                        Ok((0, sign * n as i32))
+                    }
+                    CssToken::Dimension { value, unit } if unit.eq_ignore_ascii_case("n") => {
+                        self.consume();
+                        self.consume_nth_b(sign * value as i32)
+                    }
+                    CssToken::Ident(s) => {
+                        let s_lower = s.to_lowercase();
+                        if s_lower == "n" {
+                            self.consume();
+                            self.consume_nth_b(sign)
+                        } else if s_lower == "-n" && sign == 1 {
+                            self.consume();
+                            self.consume_nth_b(-1)
+                        } else if s_lower == "n-" {
+                            self.consume();
+                            self.skip_whitespace();
+                            if let CssToken::Number(n) = self.consume() {
+                                Ok((sign, -(n as i32)))
+                            } else {
+                                Err(SelectorParseError::InvalidSelector)
+                            }
+                        } else if s_lower == "-n-" && sign == 1 {
+                            self.consume();
+                            self.skip_whitespace();
+                            if let CssToken::Number(n) = self.consume() {
+                                Ok((-1, -(n as i32)))
+                            } else {
+                                Err(SelectorParseError::InvalidSelector)
+                            }
+                        } else if let Some(rest) = s_lower.strip_prefix("n-") {
+                            if let Ok(b) = rest.parse::<i32>() {
+                                self.consume();
+                                Ok((sign, -b))
+                            } else {
+                                Err(SelectorParseError::InvalidSelector)
+                            }
+                        } else if sign == 1 && s_lower.starts_with("-n-") {
+                            let rest = &s_lower[3..];
+                            if let Ok(b) = rest.parse::<i32>() {
+                                self.consume();
+                                Ok((-1, -b))
+                            } else {
+                                Err(SelectorParseError::InvalidSelector)
+                            }
+                        } else {
+                            Err(SelectorParseError::InvalidSelector)
+                        }
+                    }
+                    _ => Err(SelectorParseError::InvalidSelector),
+                }
             }
         }
     }
@@ -440,6 +580,109 @@ mod tests {
             parts[1].1.components,
             vec![Component::Type("span".to_string())]
         );
+    }
+
+    #[test]
+    fn test_parse_functional_pseudo() {
+        // :nth-child(2n+1)
+        let list = parse_selector_list(":nth-child(2n+1)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(2, 1)
+        );
+
+        // :nth-child(even)
+        let list = parse_selector_list(":nth-child(even)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(2, 0)
+        );
+
+        // :nth-child(odd)
+        let list = parse_selector_list(":nth-child(odd)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(2, 1)
+        );
+
+        // :nth-child(5)
+        let list = parse_selector_list(":nth-child(5)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(0, 5)
+        );
+
+        // :nth-child(n)
+        let list = parse_selector_list(":nth-child(n)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(1, 0)
+        );
+
+        // :nth-child(-n+3)
+        let list = parse_selector_list(":nth-child(-n+3)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(-1, 3)
+        );
+
+        // :nth-child(n-1)
+        let list = parse_selector_list(":nth-child(n-1)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(1, -1)
+        );
+
+        // :nth-child(2n - 1)
+        let list = parse_selector_list(":nth-child(2n - 1)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(2, -1)
+        );
+
+        // :nth-child(-2n + 3)
+        let list = parse_selector_list(":nth-child(-2n + 3)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(-2, 3)
+        );
+
+        // :nth-child(+n)
+        let list = parse_selector_list(":nth-child(+n)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(1, 0)
+        );
+
+        // :nth-child(+5)
+        let list = parse_selector_list(":nth-child(+5)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(0, 5)
+        );
+
+        // :nth-child(-5)
+        let list = parse_selector_list(":nth-child(-5)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(0, -5)
+        );
+
+        // :not(div.foo)
+        let list = parse_selector_list(":not(div.foo)").unwrap();
+        if let Component::Not(c) = &list.0[0].parts[0].1.components[0] {
+            assert_eq!(c.components.len(), 2);
+            assert_eq!(c.components[0], Component::Type("div".to_string()));
+            assert_eq!(c.components[1], Component::Class("foo".to_string()));
+        } else {
+            panic!("Expected Not component");
+        }
+
+        // :first-child, :last-child
+        let list = parse_selector_list(":first-child").unwrap();
+        assert_eq!(list.0[0].parts[0].1.components[0], Component::FirstChild);
+        let list = parse_selector_list(":last-child").unwrap();
+        assert_eq!(list.0[0].parts[0].1.components[0], Component::LastChild);
     }
 
     #[test]

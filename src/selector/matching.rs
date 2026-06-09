@@ -152,15 +152,61 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
             }
         }
         Component::PseudoClass(name) => {
-            // TODO(spec): functional pseudo-classes (:nth-child etc.) are not yet implemented.
+            // Other functional pseudo-classes are not yet implemented.
             match name.as_str() {
-                // For now, we only match by name if it's not functional.
-                // Functional ones usually contain '('.
                 n if n.contains('(') => false,
                 _ => true, // Match any pseudo-class by name for now as per SPEC.
             }
         }
         Component::PseudoElement(_) => true, // Match any pseudo-element by name for now.
+        Component::NthChild(a, b) => {
+            if let Some(parent) = dom.parent(node) {
+                let children = dom.children(parent);
+                // Only count elements
+                let mut element_index = 0;
+                for &child in children {
+                    if child == node {
+                        let i = element_index + 1; // 1-indexed
+                        if *a == 0 {
+                            return i == *b;
+                        }
+                        let diff = i - *b;
+                        if *a > 0 {
+                            return diff >= 0 && diff % *a == 0;
+                        } else {
+                            return diff <= 0 && diff % *a == 0;
+                        }
+                    }
+                    if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                        element_index += 1;
+                    }
+                }
+            }
+            false
+        }
+        Component::Not(compound) => !matches_compound(compound, dom, node),
+        Component::FirstChild => {
+            if let Some(parent) = dom.parent(node) {
+                let children = dom.children(parent);
+                for &child in children {
+                    if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                        return child == node;
+                    }
+                }
+            }
+            false
+        }
+        Component::LastChild => {
+            if let Some(parent) = dom.parent(node) {
+                let children = dom.children(parent);
+                for &child in children.iter().rev() {
+                    if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                        return child == node;
+                    }
+                }
+            }
+            false
+        }
     }
 }
 
@@ -382,6 +428,86 @@ mod tests {
         };
         let list = SelectorList(vec![complex]);
         assert!(!matches(&list, &dom, p));
+    }
+
+    #[test]
+    fn test_matches_functional_pseudo() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, parent);
+
+        let mut children = Vec::new();
+        for i in 1..=5 {
+            let child = dom.create_node(NodeData::Element {
+                name: "p".into(),
+                attrs: vec![("id".into(), format!("p{}", i))],
+            });
+            dom.append_child(parent, child);
+            children.push(child);
+        }
+
+        // :first-child
+        assert!(matches(
+            &parse_selector_list(":first-child").unwrap(),
+            &dom,
+            children[0]
+        ));
+        assert!(!matches(
+            &parse_selector_list(":first-child").unwrap(),
+            &dom,
+            children[1]
+        ));
+
+        // :last-child
+        assert!(matches(
+            &parse_selector_list(":last-child").unwrap(),
+            &dom,
+            children[4]
+        ));
+        assert!(!matches(
+            &parse_selector_list(":last-child").unwrap(),
+            &dom,
+            children[3]
+        ));
+
+        // :nth-child(odd) (1, 3, 5)
+        let odd = parse_selector_list(":nth-child(odd)").unwrap();
+        assert!(matches(&odd, &dom, children[0]));
+        assert!(!matches(&odd, &dom, children[1]));
+        assert!(matches(&odd, &dom, children[2]));
+        assert!(!matches(&odd, &dom, children[3]));
+        assert!(matches(&odd, &dom, children[4]));
+
+        // :nth-child(even) (2, 4)
+        let even = parse_selector_list(":nth-child(even)").unwrap();
+        assert!(!matches(&even, &dom, children[0]));
+        assert!(matches(&even, &dom, children[1]));
+        assert!(!matches(&even, &dom, children[2]));
+        assert!(matches(&even, &dom, children[3]));
+        assert!(!matches(&even, &dom, children[4]));
+
+        // :nth-child(3)
+        assert!(matches(
+            &parse_selector_list(":nth-child(3)").unwrap(),
+            &dom,
+            children[2]
+        ));
+
+        // :nth-child(2n+1) same as odd
+        assert!(matches(
+            &parse_selector_list(":nth-child(2n+1)").unwrap(),
+            &dom,
+            children[2]
+        ));
+
+        // :not(#p1)
+        let not_p1 = parse_selector_list(":not(#p1)").unwrap();
+        assert!(!matches(&not_p1, &dom, children[0]));
+        assert!(matches(&not_p1, &dom, children[1]));
     }
 
     #[test]
