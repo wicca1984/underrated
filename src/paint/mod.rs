@@ -22,6 +22,7 @@ pub enum DisplayItem {
     Image {
         rect: Rect,
         src: String,
+        base_url: Option<String>,
     },
 }
 
@@ -272,9 +273,22 @@ pub fn build_display_list(
                 && name == "img"
                 && let Some(src) = dom.get_attribute(node_id, "src")
             {
+                // Scan DOM for a <base href="..."> tag
+                let mut base_url = None;
+                for n_id in dom.descendants(dom.document()) {
+                    if let Some(NodeData::Element { name: el_name, .. }) = dom.data(n_id)
+                        && el_name.eq_ignore_ascii_case("base")
+                        && let Some(href) = dom.get_attribute(n_id, "href")
+                    {
+                        base_url = Some(href.to_string());
+                        break;
+                    }
+                }
+
                 items.push(DisplayItem::Image {
                     rect: layout_box.rect,
                     src: src.to_string(),
+                    base_url,
                 });
             }
         }

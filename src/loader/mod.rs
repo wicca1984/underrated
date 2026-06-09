@@ -6,6 +6,157 @@ use crate::url::Url;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Decodes a simple base64 encoded string.
+/// Returns `None` if the input contains invalid base64 characters.
+pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0;
+
+    for c in input.chars() {
+        if c.is_whitespace() || c == '=' {
+            continue;
+        }
+
+        let val = match c {
+            'A'..='Z' => c as u32 - 'A' as u32,
+            'a'..='z' => c as u32 - 'a' as u32 + 26,
+            '0'..='9' => c as u32 - '0' as u32 + 52,
+            '+' | '-' => 62,
+            '/' | '_' => 63,
+            _ => return None,
+        };
+
+        buffer = (buffer << 6) | val;
+        bits += 6;
+
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buffer >> bits) as u8);
+        }
+    }
+
+    Some(bytes)
+}
+
+/// Decodes image bytes from a data URI.
+/// Supports both base64 and percent-encoded data.
+pub fn load_data_uri(src: &str) -> Option<Vec<u8>> {
+    if !src.starts_with("data:") {
+        return None;
+    }
+    let comma_idx = src.find(',')?;
+    let metadata = &src["data:".len()..comma_idx];
+    let payload = &src[comma_idx + 1..];
+
+    if metadata.contains(";base64") {
+        decode_base64(payload)
+    } else {
+        let decoded = crate::url::percent_decode(payload);
+        Some(decoded)
+    }
+}
+
+/// Verification helper for local files. Only allows files located within the current working
+/// directory or the temporary directory.
+fn is_path_allowed(path: &std::path::Path) -> bool {
+    let canonical_path = match std::fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(cwd_canonical) = std::fs::canonicalize(&cwd)
+        && canonical_path.starts_with(cwd_canonical)
+    {
+        return true;
+    }
+
+    let temp_dir = std::env::temp_dir();
+    if let Ok(temp_canonical) = std::fs::canonicalize(&temp_dir)
+        && canonical_path.starts_with(temp_canonical)
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Gated function to fetch image bytes from a source, using the specified document's base URL (if any).
+/// Ensures that:
+/// - `data:` URIs are parsed and decoded safely.
+/// - `http:` and `https:` resources are loaded via HttpLoader.
+/// - Local filesystem reads (`file://` and raw paths) are restricted:
+///   - Completely DENIED when requested from a remote page (e.g. `base_url` is http(s)).
+///   - Checked via `is_path_allowed` to ensure they do not escape the workspace or temporary directories.
+///
+/// spec: S-65 / F-3
+pub fn load_image_safely(src: &str, base_url: Option<&Url>) -> Option<Vec<u8>> {
+    if src.starts_with("data:") {
+        return load_data_uri(src);
+    }
+
+    let resolved_url = if let Some(base) = base_url {
+        crate::url::resolve(base, src)
+    } else {
+        Url::parse(src).ok()
+    };
+
+    if let Some(url) = resolved_url {
+        if url.scheme == "data" {
+            return load_data_uri(&url.serialize());
+        }
+
+        if url.scheme == "http" || url.scheme == "https" {
+            let loader = HttpLoader;
+            if let Ok(bytes) = loader.load(&url) {
+                return Some(bytes);
+            }
+            return None;
+        }
+
+        if url.scheme == "file" {
+            if let Some(base) = base_url
+                && (base.scheme == "http" || base.scheme == "https")
+            {
+                return None;
+            }
+
+            let path_str = url.path.trim_start_matches('/');
+            let path = Path::new(path_str);
+            if is_path_allowed(path)
+                && let Ok(bytes) = fs::read(path)
+            {
+                return Some(bytes);
+            }
+
+            // Fallback for file URLs that might be relative
+            let relative_path = Path::new(path_str);
+            if is_path_allowed(relative_path)
+                && let Ok(bytes) = fs::read(relative_path)
+            {
+                return Some(bytes);
+            }
+            return None;
+        }
+    }
+
+    if let Some(base) = base_url
+        && (base.scheme == "http" || base.scheme == "https")
+    {
+        return None;
+    }
+
+    let path = Path::new(src);
+    if is_path_allowed(path)
+        && let Ok(bytes) = fs::read(path)
+    {
+        return Some(bytes);
+    }
+
+    None
+}
+
 /// Error types for resource loading.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadError {
@@ -183,5 +334,66 @@ mod tests {
 
         assert_eq!(result, b"subdir content");
         fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_decode_base64_basic() {
+        assert_eq!(decode_base64("SGVsbG8="), Some(b"Hello".to_vec()));
+        assert_eq!(
+            decode_base64("SGVsbG8gd29ybGQ="),
+            Some(b"Hello world".to_vec())
+        );
+        assert_eq!(decode_base64("SGVsbG8gd29ybGQ!"), None); // contains literal '!'
+    }
+
+    #[test]
+    fn test_load_data_uri_base64() {
+        let uri = "data:text/plain;base64,SGVsbG8=";
+        assert_eq!(load_data_uri(uri), Some(b"Hello".to_vec()));
+    }
+
+    #[test]
+    fn test_load_data_uri_percent() {
+        let uri = "data:text/plain,Hello%20world";
+        assert_eq!(load_data_uri(uri), Some(b"Hello world".to_vec()));
+    }
+
+    #[test]
+    fn test_load_image_safely_deny_etc_passwd() {
+        // file:///etc/passwd is always denied
+        assert_eq!(load_image_safely("file:///etc/passwd", None), None);
+        assert_eq!(load_image_safely("/etc/passwd", None), None);
+        assert_eq!(load_image_safely("../../etc/passwd", None), None);
+    }
+
+    #[test]
+    fn test_load_image_safely_deny_from_remote() {
+        let remote_base = Url::parse("https://example.com/").unwrap();
+        // local files should be completely denied if base_url is remote http(s)
+        assert_eq!(
+            load_image_safely("file:///etc/passwd", Some(&remote_base)),
+            None
+        );
+        assert_eq!(load_image_safely("/etc/passwd", Some(&remote_base)), None);
+        assert_eq!(
+            load_image_safely("temp_test_rasterize_image_blit.png", Some(&remote_base)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_load_image_safely_allow_cwd_and_temp() {
+        let temp_dir = env::temp_dir();
+        let test_file = temp_dir.join("test_load_image_safely_allow.txt");
+        fs::write(&test_file, b"allowed_temp_content").unwrap();
+
+        // Must be allowed since it's within the temp dir
+        let path_str = test_file.to_str().unwrap();
+        assert_eq!(
+            load_image_safely(path_str, None),
+            Some(b"allowed_temp_content".to_vec())
+        );
+
+        let _ = fs::remove_file(test_file);
     }
 }
