@@ -21,6 +21,7 @@ pub mod layout;
 pub mod loader;
 pub mod paint;
 pub mod raster;
+pub mod script;
 pub mod selector;
 pub mod semantic;
 pub mod shell;
