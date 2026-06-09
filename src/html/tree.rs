@@ -1088,16 +1088,13 @@ impl TreeBuilder {
     // existing text node's data; otherwise create a new Text node.
     fn insert_character(&mut self, c: char) {
         let parent = self.get_appropriate_place_for_inserting_node();
-        println!("insert_character: c='{}', parent={:?}, children={:?}", c, parent, self.dom.children(parent));
-        if let Some(&last_child) = self.dom.children(parent).last() {
-            println!("  last_child={:?}, data={:?}", last_child, self.dom.data(last_child));
-            if let Some(NodeData::Text(s)) = self.dom.data(last_child) {
-                println!("  MATCHED NodeData::Text: s='{}'", s);
-                let mut s = s.clone();
-                s.push(c);
-                self.dom.set_text(last_child, &s);
-                return;
-            }
+        if let Some(&last_child) = self.dom.children(parent).last()
+            && let Some(NodeData::Text(s)) = self.dom.data(last_child)
+        {
+            let mut s = s.clone();
+            s.push(c);
+            self.dom.set_text(last_child, &s);
+            return;
         }
         let node = self.dom.create_node(NodeData::Text(c.to_string()));
         self.dom.append_child(parent, node);
