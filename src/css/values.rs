@@ -115,6 +115,12 @@ fn parse_named_color(name: &str) -> Option<Color> {
 }
 
 fn parse_hex_color(s: &str) -> Option<Color> {
+    // A hex color is ASCII only; bail before any byte slicing so that a
+    // non-ASCII `Hash` value (the tokenizer permits those) cannot panic on a
+    // char boundary (I-6).
+    if !s.is_ascii() {
+        return None;
+    }
     if s.len() == 3 {
         let r = u8::from_str_radix(&s[0..1], 16).ok()?;
         let g = u8::from_str_radix(&s[1..2], 16).ok()?;
@@ -252,6 +258,14 @@ mod tests {
             parse_value(&components),
             Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
         );
+    }
+
+    #[test]
+    fn test_parse_color_hex_non_ascii_does_not_panic() {
+        // A non-ASCII Hash must not panic on a char boundary (I-6); it is simply
+        // not a valid hex color.
+        let components = [token(CssToken::Hash("日本語".to_string()))];
+        assert_eq!(parse_value(&components), None);
     }
 
     #[test]
