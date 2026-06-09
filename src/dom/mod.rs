@@ -109,16 +109,15 @@ impl Dom {
     /// The node itself is excluded.
     // spec: https://dom.spec.whatwg.org/#concept-tree-descendant
     pub fn descendants(&self, node: NodeId) -> Vec<NodeId> {
+        // Iterative pre-order traversal with an explicit stack so that deeply
+        // nested (or maliciously crafted) trees cannot overflow the call stack (I-6).
         let mut result = Vec::new();
-        self.descendants_recursive(node, &mut result);
-        result
-    }
-
-    fn descendants_recursive(&self, node: NodeId, result: &mut Vec<NodeId>) {
-        for &child in self.children(node) {
-            result.push(child);
-            self.descendants_recursive(child, result);
+        let mut stack: Vec<NodeId> = self.children(node).iter().rev().copied().collect();
+        while let Some(n) = stack.pop() {
+            result.push(n);
+            stack.extend(self.children(n).iter().rev().copied());
         }
+        result
     }
 
     /// Serializes the given node and its descendants into an HTML string.
