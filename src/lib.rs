@@ -16,6 +16,7 @@ pub mod event;
 pub mod font;
 pub mod geom;
 pub mod html;
+pub mod image;
 pub mod infra;
 pub mod layout;
 pub mod loader;
