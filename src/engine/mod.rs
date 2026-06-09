@@ -12,6 +12,25 @@ pub struct Page {
     pub layout: LayoutBox,
 }
 
+// spec: S-79
+// The default User-Agent stylesheet used by the browser.
+const UA_DEFAULT_CSS: &str = "\
+html, body { background: #fff; background-color: #fff; color: #000; }\n\
+body { margin: 8px; }\n\
+div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article { display: block; }\n\
+p { margin-top: 1em; margin-bottom: 1em; }\n\
+h1 { margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }\n\
+h2 { margin-top: 0.83em; margin-bottom: 0.83em; font-weight: bold; }\n\
+h3 { margin-top: 1em; margin-bottom: 1em; font-weight: bold; }\n\
+h4 { margin-top: 1.33em; margin-bottom: 1.33em; font-weight: bold; }\n\
+h5 { margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold; }\n\
+h6 { margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold; }\n\
+a { color: #0000ee; text-decoration: underline; }\n\
+b, strong { font-weight: bold; }\n\
+i, em { font-style: italic; }\n\
+head, style, script, meta, link, title { display: none; }\n\
+";
+
 /// The main entry point for the engine: html + css -> Page.
 /// spec: S-13
 pub fn render(html: &str, css: &str, viewport_width: f32) -> Page {
@@ -66,8 +85,7 @@ pub fn render_html(html: &str, viewport_width: f32) -> Page {
 
     // 3. Walk DOM to collect the text of every <style> element (concatenate, in document order)
     // spec: In real browsers, head, style, script, etc. are display: none by default so they aren't rendered.
-    let mut css_accumulator =
-        String::from("head, style, script, meta, link, title { display: none; }\n");
+    let mut css_accumulator = String::from(UA_DEFAULT_CSS);
     let doc = dom.document();
     for node_id in dom.descendants(doc) {
         if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
@@ -133,8 +151,7 @@ pub fn render_html_with_loader(
 
     // 3. Walk DOM to collect the text of every <style> element and fetch/decode every <link rel="stylesheet">
     // spec: In real browsers, head, style, script, etc. are display: none by default so they aren't rendered.
-    let mut css_accumulator =
-        String::from("head, style, script, meta, link, title { display: none; }\n");
+    let mut css_accumulator = String::from(UA_DEFAULT_CSS);
     let doc = dom.document();
     for node_id in dom.descendants(doc) {
         if let Some(NodeData::Element { name, attrs }) = dom.data(node_id) {
@@ -249,8 +266,7 @@ pub fn render_page(
     let mut dom = crate::html::parse_document(input);
 
     // 2 & 3. Walk DOM to collect the text of every <style> element and fetch/decode every <link rel="stylesheet">
-    let mut css_accumulator =
-        String::from("head, style, script, meta, link, title { display: none; }\n");
+    let mut css_accumulator = String::from(UA_DEFAULT_CSS);
     let doc = dom.document();
     for node_id in dom.descendants(doc) {
         if let Some(NodeData::Element { name, attrs }) = dom.data(node_id) {
@@ -482,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_render_html_to_canvas() {
-        let html = "<html><head><style>div { background-color: #ff0000; width: 10px; height: 10px; }</style></head><body><div></div></body></html>";
+        let html = "<html><head><style>html, body { background-color: transparent; } body { margin: 0; } div { background-color: #ff0000; width: 10px; height: 10px; }</style></head><body><div></div></body></html>";
         let width = 20;
         let height = 20;
 
@@ -819,7 +835,7 @@ mod tests {
 
     #[test]
     fn test_render_page_to_canvas_smoke() {
-        let html = "<html><head><style>div { background-color: #00ff00; width: 10px; height: 10px; }</style></head><body><div></div></body></html>";
+        let html = "<html><head><style>html, body { background-color: transparent; } body { margin: 0; } div { background-color: #00ff00; width: 10px; height: 10px; }</style></head><body><div></div></body></html>";
 
         let loader = MockLoader {
             responses: HashMap::new(),
@@ -833,5 +849,86 @@ mod tests {
         // Check if the 10x10 div is green (#00ff00 -> 0xFF00FF00)
         let pixel = canvas.pixel(5, 5);
         assert_eq!(pixel, 0xFF00FF00);
+    }
+
+    #[test]
+    fn test_ua_default_stylesheet() {
+        let html =
+            "<html><body><p>Hello</p><a href=\"#\">Link</a><b>Bold</b><i>Italic</i></body></html>";
+        let page = render_html(html, 800.0);
+
+        // Find elements and check their resolved styles
+        let doc = page.dom.document();
+        let mut p_style = None;
+        let mut a_style = None;
+        let mut b_style = None;
+        let mut i_style = None;
+        let mut body_style = None;
+
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(id) {
+                match name.as_str() {
+                    "p" => p_style = page.styles.get(&id),
+                    "a" => a_style = page.styles.get(&id),
+                    "b" => b_style = page.styles.get(&id),
+                    "i" => i_style = page.styles.get(&id),
+                    "body" => body_style = page.styles.get(&id),
+                    _ => {}
+                }
+            }
+        }
+
+        let p_s = p_style.expect("p should have styles");
+        assert_eq!(
+            p_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
+        // p should have margin-top and margin-bottom 1em
+        assert_eq!(
+            p_s.get("margin-top"),
+            Some(&crate::css::values::CssValue::Length(
+                1.0,
+                crate::css::values::LengthUnit::Em
+            ))
+        );
+
+        let a_s = a_style.expect("a should have styles");
+        if let Some(crate::css::values::CssValue::Color(c)) = a_s.get("color") {
+            assert_eq!(c, &crate::css::values::Color::Rgba(0, 0, 0xee, 255));
+        } else {
+            panic!("Expected color blue #0000ee for link");
+        }
+        assert_eq!(
+            a_s.get("text-decoration"),
+            Some(&crate::css::values::CssValue::Keyword(
+                "underline".to_string()
+            ))
+        );
+
+        let b_s = b_style.expect("b should have styles");
+        assert_eq!(
+            b_s.get("font-weight"),
+            Some(&crate::css::values::CssValue::Keyword("bold".to_string()))
+        );
+
+        let i_s = i_style.expect("i should have styles");
+        assert_eq!(
+            i_s.get("font-style"),
+            Some(&crate::css::values::CssValue::Keyword("italic".to_string()))
+        );
+
+        let body_s = body_style.expect("body should have styles");
+        assert_eq!(
+            body_s.get("margin-top"),
+            Some(&crate::css::values::CssValue::Length(
+                8.0,
+                crate::css::values::LengthUnit::Px
+            ))
+        );
+        if let Some(crate::css::values::CssValue::Color(c)) = body_s.get("background-color") {
+            assert_eq!(c, &crate::css::values::Color::Rgba(255, 255, 255, 255));
+        } else {
+            panic!("Expected white background color for body");
+        }
     }
 }
