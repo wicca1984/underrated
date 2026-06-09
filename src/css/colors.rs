@@ -162,12 +162,17 @@ pub fn named_color(name: &str) -> Option<Color> {
 /// h is in degrees, s, l, and a are in the range [0.0, 1.0].
 /// spec: <https://www.w3.org/TR/css-color-4/#hsl-color>
 pub fn parse_hsl(h: f32, s: f32, l: f32, a: f32) -> Color {
-    let s = s.clamp(0.0, 1.0);
-    let l = l.clamp(0.0, 1.0);
-    let a = a.clamp(0.0, 1.0);
+    // Sanitize non-finite inputs (NaN / infinity) to 0 so they cannot propagate
+    // into the output (a NaN would otherwise cast to a meaningless channel).
+    fn finite_or_zero(v: f32) -> f32 {
+        if v.is_finite() { v } else { 0.0 }
+    }
+    let s = finite_or_zero(s).clamp(0.0, 1.0);
+    let l = finite_or_zero(l).clamp(0.0, 1.0);
+    let a = finite_or_zero(a).clamp(0.0, 1.0);
 
     // Normalize hue to [0, 360)
-    let h = h % 360.0;
+    let h = finite_or_zero(h) % 360.0;
     let h = if h < 0.0 { h + 360.0 } else { h };
 
     fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
