@@ -162,14 +162,6 @@ fn run_test_file(path: &str) {
             continue;
         }
 
-        if test.output.iter().any(|tok| {
-            let arr = tok.as_array().expect("token should be an array");
-            let type_name = arr[0].as_str().expect("token type should be a string");
-            type_name == "DOCTYPE" || type_name == "Comment"
-        }) {
-            continue;
-        }
-
         if test.double_escaped {
             test.input = unescape(&test.input);
             for tok in &mut test.output {
