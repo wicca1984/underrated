@@ -3,23 +3,38 @@ use crate::infra::NodeId;
 use std::cell::Cell;
 use std::collections::HashMap;
 
+/// DOM event phase constants.
+pub const NONE: u16 = 0;
+pub const CAPTURING_PHASE: u16 = 1;
+pub const AT_TARGET: u16 = 2;
+pub const BUBBLING_PHASE: u16 = 3;
+
 /// DOM events as specified in SPEC S-25.
 pub enum DomEvent {
     Click {
         node: NodeId,
         stopped: Cell<bool>,
+        stopped_immediate: Cell<bool>,
         default_prevented: Cell<bool>,
+        current_target: Cell<Option<NodeId>>,
+        event_phase: Cell<u16>,
     },
     Input {
         node: NodeId,
         value: String,
         stopped: Cell<bool>,
+        stopped_immediate: Cell<bool>,
         default_prevented: Cell<bool>,
+        current_target: Cell<Option<NodeId>>,
+        event_phase: Cell<u16>,
     },
     KeyDown {
         key: String,
         stopped: Cell<bool>,
+        stopped_immediate: Cell<bool>,
         default_prevented: Cell<bool>,
+        current_target: Cell<Option<NodeId>>,
+        event_phase: Cell<u16>,
     },
 }
 
@@ -29,7 +44,10 @@ impl DomEvent {
         Self::Click {
             node,
             stopped: Cell::new(false),
+            stopped_immediate: Cell::new(false),
             default_prevented: Cell::new(false),
+            current_target: Cell::new(None),
+            event_phase: Cell::new(NONE),
         }
     }
 
@@ -39,7 +57,10 @@ impl DomEvent {
             node,
             value,
             stopped: Cell::new(false),
+            stopped_immediate: Cell::new(false),
             default_prevented: Cell::new(false),
+            current_target: Cell::new(None),
+            event_phase: Cell::new(NONE),
         }
     }
 
@@ -48,7 +69,10 @@ impl DomEvent {
         Self::KeyDown {
             key,
             stopped: Cell::new(false),
+            stopped_immediate: Cell::new(false),
             default_prevented: Cell::new(false),
+            current_target: Cell::new(None),
+            event_phase: Cell::new(NONE),
         }
     }
 
@@ -58,6 +82,21 @@ impl DomEvent {
             DomEvent::Click { stopped, .. } => stopped.set(true),
             DomEvent::Input { stopped, .. } => stopped.set(true),
             DomEvent::KeyDown { stopped, .. } => stopped.set(true),
+        }
+    }
+
+    /// Prevents further propagation of the event and stops other listeners on the same element from running.
+    pub fn stop_immediate_propagation(&self) {
+        match self {
+            DomEvent::Click {
+                stopped_immediate, ..
+            } => stopped_immediate.set(true),
+            DomEvent::Input {
+                stopped_immediate, ..
+            } => stopped_immediate.set(true),
+            DomEvent::KeyDown {
+                stopped_immediate, ..
+            } => stopped_immediate.set(true),
         }
     }
 
@@ -76,12 +115,39 @@ impl DomEvent {
         }
     }
 
-    /// Returns whether `stop_propagation` was called.
+    /// Returns whether `stop_propagation` or `stop_immediate_propagation` was called.
     pub fn is_stopped(&self) -> bool {
         match self {
-            DomEvent::Click { stopped, .. } => stopped.get(),
-            DomEvent::Input { stopped, .. } => stopped.get(),
-            DomEvent::KeyDown { stopped, .. } => stopped.get(),
+            DomEvent::Click {
+                stopped,
+                stopped_immediate,
+                ..
+            } => stopped.get() || stopped_immediate.get(),
+            DomEvent::Input {
+                stopped,
+                stopped_immediate,
+                ..
+            } => stopped.get() || stopped_immediate.get(),
+            DomEvent::KeyDown {
+                stopped,
+                stopped_immediate,
+                ..
+            } => stopped.get() || stopped_immediate.get(),
+        }
+    }
+
+    /// Returns whether `stop_immediate_propagation` was called.
+    pub fn is_immediate_stopped(&self) -> bool {
+        match self {
+            DomEvent::Click {
+                stopped_immediate, ..
+            } => stopped_immediate.get(),
+            DomEvent::Input {
+                stopped_immediate, ..
+            } => stopped_immediate.get(),
+            DomEvent::KeyDown {
+                stopped_immediate, ..
+            } => stopped_immediate.get(),
         }
     }
 
@@ -106,6 +172,45 @@ impl DomEvent {
             DomEvent::Click { node, .. } => Some(*node),
             DomEvent::Input { node, .. } => Some(*node),
             DomEvent::KeyDown { .. } => None,
+        }
+    }
+
+    /// Returns the current target node of the event during propagation.
+    pub fn current_target(&self) -> Option<NodeId> {
+        match self {
+            DomEvent::Click { current_target, .. } => current_target.get(),
+            DomEvent::Input { current_target, .. } => current_target.get(),
+            DomEvent::KeyDown { current_target, .. } => current_target.get(),
+        }
+    }
+
+    /// Returns the current phase of the event during propagation.
+    pub fn event_phase(&self) -> u16 {
+        match self {
+            DomEvent::Click { event_phase, .. } => event_phase.get(),
+            DomEvent::Input { event_phase, .. } => event_phase.get(),
+            DomEvent::KeyDown { event_phase, .. } => event_phase.get(),
+        }
+    }
+
+    /// Returns whether the event bubbles.
+    pub fn bubbles(&self) -> bool {
+        true
+    }
+
+    fn set_event_phase(&self, phase: u16) {
+        match self {
+            DomEvent::Click { event_phase, .. } => event_phase.set(phase),
+            DomEvent::Input { event_phase, .. } => event_phase.set(phase),
+            DomEvent::KeyDown { event_phase, .. } => event_phase.set(phase),
+        }
+    }
+
+    fn set_current_target(&self, node: Option<NodeId>) {
+        match self {
+            DomEvent::Click { current_target, .. } => current_target.set(node),
+            DomEvent::Input { current_target, .. } => current_target.set(node),
+            DomEvent::KeyDown { current_target, .. } => current_target.set(node),
         }
     }
 }
@@ -162,29 +267,41 @@ impl EventRegistry {
             curr = dom.parent(p);
         }
 
-        // 1. Capture phase: from root down to parent of target
-        for &node in ancestors.iter().rev() {
-            if event.is_stopped() {
-                return !event.is_default_prevented();
+        // spec: capture phase (from root down to parent)
+        if !ancestors.is_empty() {
+            event.set_event_phase(CAPTURING_PHASE);
+            for &node in ancestors.iter().rev() {
+                if event.is_stopped() {
+                    break;
+                }
+                event.set_current_target(Some(node));
+                self.trigger(node, event, true);
             }
-            self.trigger(node, event, true);
         }
 
-        // 2. Target phase: at the target (both capture and non-capture listeners)
+        // spec: target phase (at the target)
         if !event.is_stopped() {
+            event.set_event_phase(AT_TARGET);
+            event.set_current_target(Some(target));
             self.trigger(target, event, true);
-            if !event.is_stopped() {
-                self.trigger(target, event, false);
+            self.trigger(target, event, false);
+        }
+
+        // spec: bubble phase (from parent of target up to root)
+        if event.bubbles() && !ancestors.is_empty() {
+            event.set_event_phase(BUBBLING_PHASE);
+            for &node in ancestors.iter() {
+                if event.is_stopped() {
+                    break;
+                }
+                event.set_current_target(Some(node));
+                self.trigger(node, event, false);
             }
         }
 
-        // 3. Bubble phase: from parent of target up to root
-        for &node in ancestors.iter() {
-            if event.is_stopped() {
-                break;
-            }
-            self.trigger(node, event, false);
-        }
+        // Reset phase and current target
+        event.set_event_phase(NONE);
+        event.set_current_target(None);
 
         !event.is_default_prevented()
     }
@@ -193,6 +310,9 @@ impl EventRegistry {
     fn trigger(&mut self, node: NodeId, event: &DomEvent, capture: bool) {
         if let Some(node_listeners) = self.listeners.get_mut(&node) {
             for (is_capture, listener) in node_listeners.iter_mut() {
+                if event.is_immediate_stopped() {
+                    break;
+                }
                 if *is_capture == capture {
                     listener(event);
                 }
@@ -344,5 +464,119 @@ mod tests {
 
         assert!(!result);
         assert!(event.is_default_prevented());
+    }
+
+    #[test]
+    fn test_stop_immediate_propagation() {
+        let mut dom = Dom::new();
+        let root = dom.document();
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(root, child);
+
+        let mut registry = EventRegistry::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        {
+            let log = log.clone();
+            registry.add_listener(
+                child,
+                false,
+                Box::new(move |e| {
+                    log.borrow_mut().push("child first");
+                    e.stop_immediate_propagation();
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                child,
+                false,
+                Box::new(move |_| {
+                    log.borrow_mut().push("child second");
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |_| {
+                    log.borrow_mut().push("root");
+                }),
+            );
+        }
+
+        let event = DomEvent::click(child);
+        registry.dispatch(&dom, &event);
+
+        assert_eq!(*log.borrow(), vec!["child first"]);
+    }
+
+    #[test]
+    fn test_event_phase_and_current_target() {
+        let mut dom = Dom::new();
+        let root = dom.document();
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(root, child);
+
+        let mut registry = EventRegistry::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                true,
+                Box::new(move |e| {
+                    log.borrow_mut().push((e.event_phase(), e.current_target()));
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                child,
+                false,
+                Box::new(move |e| {
+                    log.borrow_mut().push((e.event_phase(), e.current_target()));
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |e| {
+                    log.borrow_mut().push((e.event_phase(), e.current_target()));
+                }),
+            );
+        }
+
+        let event = DomEvent::click(child);
+        assert_eq!(event.event_phase(), NONE);
+        assert_eq!(event.current_target(), None);
+
+        registry.dispatch(&dom, &event);
+
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                (CAPTURING_PHASE, Some(root)),
+                (AT_TARGET, Some(child)),
+                (BUBBLING_PHASE, Some(root))
+            ]
+        );
+
+        assert_eq!(event.event_phase(), NONE);
+        assert_eq!(event.current_target(), None);
     }
 }
