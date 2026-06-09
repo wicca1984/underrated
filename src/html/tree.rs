@@ -361,6 +361,82 @@ impl TreeBuilder {
                     let node = self.create_and_insert_element(name, attrs);
                     self.stack_of_open_elements.push(node);
                 }
+                "address" | "article" | "aside" | "blockquote" | "details" | "dialog" | "dir"
+                | "div" | "dl" | "fieldset" | "figcaption" | "figure" | "footer" | "header"
+                | "hgroup" | "main" | "menu" | "nav" | "ol" | "pre" | "listing" | "section"
+                | "summary" | "ul" | "form" => {
+                    self.close_p_element_if_in_button_scope();
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "li" => {
+                    // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
+                    for &id in self.stack_of_open_elements.iter().rev() {
+                        if let Some(NodeData::Element { name, .. }) = self.dom.data(id) {
+                            if name == "li" {
+                                self.pop_until("li");
+                                break;
+                            }
+                            if self.is_special_element(name)
+                                && name != "address"
+                                && name != "div"
+                                && name != "p"
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    self.close_p_element_if_in_button_scope();
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "dd" | "dt" => {
+                    // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
+                    for &id in self.stack_of_open_elements.iter().rev() {
+                        if let Some(NodeData::Element { name, .. }) = self.dom.data(id) {
+                            if name == "dd" || name == "dt" {
+                                let name_cloned = name.clone();
+                                self.pop_until(&name_cloned);
+                                break;
+                            }
+                            if self.is_special_element(name)
+                                && name != "address"
+                                && name != "div"
+                                && name != "p"
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    self.close_p_element_if_in_button_scope();
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "option" => {
+                    // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
+                    }) {
+                        self.pop_until("option");
+                    }
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "optgroup" => {
+                    // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
+                    }) {
+                        self.pop_until("option");
+                    }
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "optgroup")
+                    }) {
+                        self.pop_until("optgroup");
+                    }
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
                 "a" => {
                     // Adoption Agency Algorithm (subset)
                     if let Some(formatting_node_id) = self.get_formatting_element_id("a") {
@@ -926,11 +1002,8 @@ impl TreeBuilder {
     }
 
     fn close_p_element_if_in_button_scope(&mut self) {
-        // Simplified: check if 'p' is in stack
-        let found = self.stack_of_open_elements.iter().rev().any(
-            |&id| matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "p"),
-        );
-        if found {
+        // spec: https://html.spec.whatwg.org/multipage/parsing.html#close-a-p-element
+        if self.is_in_button_scope("p") {
             self.pop_until("p");
         }
     }
@@ -1361,6 +1434,69 @@ mod tests {
         assert_eq!(
             dom.serialize(dom.document()),
             "<html><head></head><body><div><template><p>hidden</p></template></div></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_robustness_table_implicit() {
+        // "<table><tr><td>x" yields tbody>tr>td>x
+        let html = "<table><tr><td>x";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><table><tbody><tr><td>x</td></tr></tbody></table></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_robustness_p_auto_close() {
+        // "<p>a<p>b" yields two sibling <p> (already verified but let's have a dedicated test)
+        let html = "<p>a<p>b";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><p>a</p><p>b</p></body></html>"
+        );
+
+        // "<p>a<div>b" should auto-close p, yielding sibling p and div
+        let html2 = "<p>a<div>b";
+        let dom2 = parse_document(InputStream::from_utf8(html2.as_bytes()));
+        assert_eq!(
+            dom2.serialize(dom2.document()),
+            "<html><head></head><body><p>a</p><div>b</div></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_robustness_li_nesting() {
+        // "<ul><li>item 1<li>item 2</ul>" resolves li nesting as sibling li elements
+        let html = "<ul><li>item 1<li>item 2</ul>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><ul><li>item 1</li><li>item 2</li></ul></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_robustness_option_nesting() {
+        // "<select><option>one<option>two</select>" resolves option nesting as sibling option elements
+        let html = "<select><option>one<option>two</select>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><option>one</option><option>two</option></select></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_robustness_unknown_tags() {
+        // unknown tags become ordinary elements and can be nested
+        let html = "<my-custom-tag><other-tag>content</other-tag></my-custom-tag>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><my-custom-tag><other-tag>content</other-tag></my-custom-tag></body></html>"
         );
     }
 }
