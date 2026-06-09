@@ -542,6 +542,12 @@ fn is_windows_drive_letter(s: &str) -> bool {
         && (s.ends_with(':') || s.ends_with('|'))
 }
 
+/// Resolves a reference URL against a base URL according to RFC 3986 reference resolution.
+// spec: <https://tools.ietf.org/html/rfc3986#section-5.2>
+pub fn resolve(base: &Url, rel: &str) -> Option<Url> {
+    Url::parse_with_base(rel, base).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,5 +626,51 @@ mod tests {
 
         let url2 = Url::parse("https://example.com/a/./%2e/b").unwrap();
         assert_eq!(url2.path, "/a/b");
+    }
+
+    #[test]
+    fn test_resolve() {
+        let base = Url::parse("https://a.com/x/y").unwrap();
+
+        // Absolute stays absolute
+        assert_eq!(
+            resolve(&base, "https://b.com/foo").unwrap().serialize(),
+            "https://b.com/foo"
+        );
+
+        // Protocol-relative //host
+        assert_eq!(
+            resolve(&base, "//cdn/p").unwrap().serialize(),
+            "https://cdn/p"
+        );
+
+        // Absolute path /p
+        assert_eq!(resolve(&base, "/p").unwrap().serialize(), "https://a.com/p");
+
+        // Relative path with ../ and ./ removal
+        assert_eq!(
+            resolve(&base, "../z").unwrap().serialize(),
+            "https://a.com/z"
+        );
+
+        assert_eq!(
+            resolve(&base, "./z").unwrap().serialize(),
+            "https://a.com/x/z"
+        );
+
+        // Query-only ?q
+        assert_eq!(
+            resolve(&base, "?q=1").unwrap().serialize(),
+            "https://a.com/x/y?q=1"
+        );
+
+        // Fragment-only #f
+        assert_eq!(
+            resolve(&base, "#f").unwrap().serialize(),
+            "https://a.com/x/y#f"
+        );
+
+        // Malformed returns None (no panic)
+        assert!(resolve(&base, "https://foo:abc/").is_none());
     }
 }
