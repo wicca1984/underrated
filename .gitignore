@@ -5,5 +5,5 @@ Cargo.lock.orig
 # editor / os
 .DS_Store
 
-# 環境固有の秘密（PAT 等は volume 側に置く方針なので repo には入れない）
+# environment-specific secrets (PATs etc. live on the volume side, never committed to the repo)
 .env

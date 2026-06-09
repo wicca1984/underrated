@@ -1,4 +1,4 @@
-# ツールチェーンを固定し、CI と手元の再現性を担保する。
+# Pin the toolchain to keep CI and local builds reproducible.
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
