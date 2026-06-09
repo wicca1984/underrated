@@ -2527,32 +2527,18 @@ impl Tokenizer {
                         Some(c_val) if c_val.is_ascii_alphanumeric() => {
                             self.temporary_buffer.push(c_val);
                             if !self.is_maybe_named_match() {
-                                let buffer = self.temporary_buffer.clone();
-                                self.flush_string(&buffer);
-                                self.state = self.return_state;
+                                self.temporary_buffer.pop();
+                                self.input.reconsume();
+                                self.perform_named_character_reference_match();
                             }
                         }
                         Some(';') => {
                             self.temporary_buffer.push(';');
-                            if let Some(replacement) = self.check_named_match(true) {
-                                self.flush_string(replacement);
-                                self.state = self.return_state;
-                            } else {
-                                let buffer = self.temporary_buffer.clone();
-                                self.flush_string(&buffer);
-                                self.state = self.return_state;
-                            }
+                            self.perform_named_character_reference_match();
                         }
                         _ => {
                             self.input.reconsume();
-                            if let Some(replacement) = self.check_named_match(false) {
-                                self.flush_string(replacement);
-                                self.state = self.return_state;
-                            } else {
-                                let buffer = self.temporary_buffer.clone();
-                                self.flush_string(&buffer);
-                                self.state = self.return_state;
-                            }
+                            self.perform_named_character_reference_match();
                         }
                     }
                 }
@@ -2710,37 +2696,62 @@ impl Tokenizer {
         }
     }
 
-    fn check_named_match(&self, has_semicolon: bool) -> Option<&'static str> {
-        let core_entities = [
-            ("&amp;", "&"),
-            ("&lt;", "<"),
-            ("&gt;", ">"),
-            ("&quot;", "\""),
-            ("&apos;", "'"),
-            ("&nbsp;", "\u{00A0}"),
-        ];
-
-        for (name, replacement) in core_entities {
-            if has_semicolon {
-                if name == self.temporary_buffer {
-                    return Some(replacement);
-                }
-            } else {
-                // For non-semicolon matches, we check if the buffer is a prefix
-                // but the spec says "match an entry in the table".
-                // Since our core set all have semicolons, this will mostly return None.
-                // However, we should handle cases where the buffer EQUALS an entry.
-                if name == self.temporary_buffer {
-                    return Some(replacement);
+    fn perform_named_character_reference_match(&mut self) {
+        let mut longest_match: Option<(&'static str, &'static str)> = None;
+        for (name, replacement) in NAMED_ENTITIES {
+            if self.temporary_buffer.starts_with(name) {
+                if let Some((prev_name, _)) = longest_match {
+                    if name.len() > prev_name.len() {
+                        longest_match = Some((*name, *replacement));
+                    }
+                } else {
+                    longest_match = Some((*name, *replacement));
                 }
             }
         }
-        None
+
+        if let Some((name, replacement)) = longest_match {
+            let is_in_attribute = matches!(
+                self.return_state,
+                State::AttributeValueDoubleQuoted
+                    | State::AttributeValueSingleQuoted
+                    | State::AttributeValueUnquoted
+            );
+
+            let next_char = if name.len() < self.temporary_buffer.len() {
+                self.temporary_buffer.chars().nth(name.len())
+            } else {
+                self.input.peek()
+            };
+
+            let ignore_match = is_in_attribute
+                && matches!(next_char, Some(nc) if nc.is_ascii_alphanumeric() || nc == '=');
+
+            if ignore_match {
+                let buffer = self.temporary_buffer.clone();
+                self.flush_string(&buffer);
+            } else {
+                if !name.ends_with(';') {
+                    self.emit_error("missing-semicolon-after-character-reference");
+                }
+                self.flush_string(replacement);
+                if name.len() < self.temporary_buffer.len() {
+                    let suffix: String = self.temporary_buffer.chars().skip(name.len()).collect();
+                    self.flush_string(&suffix);
+                }
+            }
+        } else {
+            if self.temporary_buffer.ends_with(';') {
+                self.emit_error("unknown-named-character-reference");
+            }
+            let buffer = self.temporary_buffer.clone();
+            self.flush_string(&buffer);
+        }
+        self.state = self.return_state;
     }
 
     fn is_maybe_named_match(&self) -> bool {
-        let core_entities = ["&amp;", "&lt;", "&gt;", "&quot;", "&apos;", "&nbsp;"];
-        for name in core_entities {
+        for (name, _) in NAMED_ENTITIES {
             if name.starts_with(&self.temporary_buffer) {
                 return true;
             }
@@ -2748,6 +2759,333 @@ impl Tokenizer {
         false
     }
 }
+
+const NAMED_ENTITIES: &[(&str, &str)] = &[
+    ("&AElig;", "\u{00C6}"),
+    ("&AElig", "\u{00C6}"),
+    ("&Aacute;", "\u{00C1}"),
+    ("&Aacute", "\u{00C1}"),
+    ("&Acirc;", "\u{00C2}"),
+    ("&Acirc", "\u{00C2}"),
+    ("&Agrave;", "\u{00C0}"),
+    ("&Agrave", "\u{00C0}"),
+    ("&Aring;", "\u{00C5}"),
+    ("&Aring", "\u{00C5}"),
+    ("&Atilde;", "\u{00C3}"),
+    ("&Atilde", "\u{00C3}"),
+    ("&Auml;", "\u{00C4}"),
+    ("&Auml", "\u{00C4}"),
+    ("&Ccedil;", "\u{00C7}"),
+    ("&Ccedil", "\u{00C7}"),
+    ("&ETH;", "\u{00D0}"),
+    ("&ETH", "\u{00D0}"),
+    ("&Eacute;", "\u{00C9}"),
+    ("&Eacute", "\u{00C9}"),
+    ("&Ecirc;", "\u{00CA}"),
+    ("&Ecirc", "\u{00CA}"),
+    ("&Egrave;", "\u{00C8}"),
+    ("&Egrave", "\u{00C8}"),
+    ("&Euml;", "\u{00CB}"),
+    ("&Euml", "\u{00CB}"),
+    ("&Iacute;", "\u{00CD}"),
+    ("&Iacute", "\u{00CD}"),
+    ("&Icirc;", "\u{00CE}"),
+    ("&Icirc", "\u{00CE}"),
+    ("&Igrave;", "\u{00CC}"),
+    ("&Igrave", "\u{00CC}"),
+    ("&Iuml;", "\u{00CF}"),
+    ("&Iuml", "\u{00CF}"),
+    ("&Ntilde;", "\u{00D1}"),
+    ("&Ntilde", "\u{00D1}"),
+    ("&Oacute;", "\u{00D3}"),
+    ("&Oacute", "\u{00D3}"),
+    ("&Ocirc;", "\u{00D4}"),
+    ("&Ocirc", "\u{00D4}"),
+    ("&Ograve;", "\u{00D2}"),
+    ("&Ograve", "\u{00D2}"),
+    ("&Oslash;", "\u{00D8}"),
+    ("&Oslash", "\u{00D8}"),
+    ("&Otilde;", "\u{00D5}"),
+    ("&Otilde", "\u{00D5}"),
+    ("&Ouml;", "\u{00D6}"),
+    ("&Ouml", "\u{00D6}"),
+    ("&THORN;", "\u{00DE}"),
+    ("&THORN", "\u{00DE}"),
+    ("&Uacute;", "\u{00DA}"),
+    ("&Uacute", "\u{00DA}"),
+    ("&Ucirc;", "\u{00DB}"),
+    ("&Ucirc", "\u{00DB}"),
+    ("&Ugrave;", "\u{00D9}"),
+    ("&Ugrave", "\u{00D9}"),
+    ("&Uuml;", "\u{00DC}"),
+    ("&Uuml", "\u{00DC}"),
+    ("&Yacute;", "\u{00DD}"),
+    ("&Yacute", "\u{00DD}"),
+    ("&aacute;", "\u{00E1}"),
+    ("&aacute", "\u{00E1}"),
+    ("&acirc;", "\u{00E2}"),
+    ("&acirc", "\u{00E2}"),
+    ("&acute;", "\u{00B4}"),
+    ("&acute", "\u{00B4}"),
+    ("&aelig;", "\u{00E6}"),
+    ("&aelig", "\u{00E6}"),
+    ("&agrave;", "\u{00E0}"),
+    ("&agrave", "\u{00E0}"),
+    ("&alefsym;", "\u{2135}"),
+    ("&alpha;", "\u{03B1}"),
+    ("&amp;", "&"),
+    ("&amp", "&"),
+    ("&and;", "\u{2227}"),
+    ("&ang;", "\u{2220}"),
+    ("&apos;", "'"),
+    ("&apos", "'"),
+    ("&aring;", "\u{00E5}"),
+    ("&aring", "\u{00E5}"),
+    ("&asymp;", "\u{2248}"),
+    ("&atilde;", "\u{00E3}"),
+    ("&atilde", "\u{00E3}"),
+    ("&auml;", "\u{00E4}"),
+    ("&auml", "\u{00E4}"),
+    ("&bdquo;", "\u{201E}"),
+    ("&beta;", "\u{03B2}"),
+    ("&brvbar;", "\u{00A6}"),
+    ("&brvbar", "\u{00A6}"),
+    ("&bull;", "\u{2022}"),
+    ("&cap;", "\u{2229}"),
+    ("&ccedil;", "\u{00E7}"),
+    ("&ccedil", "\u{00E7}"),
+    ("&cedil;", "\u{00B8}"),
+    ("&cedil", "\u{00B8}"),
+    ("&cent;", "\u{00A2}"),
+    ("&cent", "\u{00A2}"),
+    ("&chi;", "\u{03C7}"),
+    ("&circ;", "\u{02C6}"),
+    ("&clubs;", "\u{2663}"),
+    ("&cong;", "\u{2245}"),
+    ("&copy;", "\u{00A9}"),
+    ("&copy", "\u{00A9}"),
+    ("&crarr;", "\u{21B5}"),
+    ("&cup;", "\u{222A}"),
+    ("&curren;", "\u{00A4}"),
+    ("&curren", "\u{00A4}"),
+    ("&dArr;", "\u{21D3}"),
+    ("&dagger;", "\u{2020}"),
+    ("&dagger", "\u{2020}"),
+    ("&Dagger;", "\u{2021}"),
+    ("&darr;", "\u{2193}"),
+    ("&deg;", "\u{00B0}"),
+    ("&deg", "\u{00B0}"),
+    ("&delta;", "\u{03B4}"),
+    ("&diams;", "\u{2666}"),
+    ("&divide;", "\u{00F7}"),
+    ("&divide", "\u{00F7}"),
+    ("&eacute;", "\u{00E9}"),
+    ("&eacute", "\u{00E9}"),
+    ("&ecirc;", "\u{00EA}"),
+    ("&ecirc", "\u{00EA}"),
+    ("&egrave;", "\u{00E8}"),
+    ("&egrave", "\u{00E8}"),
+    ("&empty;", "\u{2205}"),
+    ("&emsp;", "\u{2003}"),
+    ("&ensp;", "\u{2002}"),
+    ("&epsilon;", "\u{03B5}"),
+    ("&equiv;", "\u{2261}"),
+    ("&eta;", "\u{03B7}"),
+    ("&eth;", "\u{00F0}"),
+    ("&eth", "\u{00F0}"),
+    ("&euml;", "\u{00EB}"),
+    ("&euml", "\u{00EB}"),
+    ("&euro;", "\u{20AC}"),
+    ("&exist;", "\u{2203}"),
+    ("&fnof;", "\u{0192}"),
+    ("&forall;", "\u{2200}"),
+    ("&frac12;", "\u{00BD}"),
+    ("&frac12", "\u{00BD}"),
+    ("&frac14;", "\u{00BC}"),
+    ("&frac14", "\u{00BC}"),
+    ("&frac34;", "\u{00BE}"),
+    ("&frac34", "\u{00BE}"),
+    ("&frasl;", "\u{2044}"),
+    ("&gamma;", "\u{03B3}"),
+    ("&ge;", "\u{2265}"),
+    ("&gt;", ">"),
+    ("&gt", ">"),
+    ("&hArr;", "\u{21D4}"),
+    ("&harr;", "\u{2194}"),
+    ("&hearts;", "\u{2665}"),
+    ("&hellip;", "\u{2026}"),
+    ("&iacute;", "\u{00ED}"),
+    ("&iacute", "\u{00ED}"),
+    ("&icirc;", "\u{00EE}"),
+    ("&icirc", "\u{00EE}"),
+    ("&iexcl;", "\u{00A1}"),
+    ("&iexcl", "\u{00A1}"),
+    ("&igrave;", "\u{00EC}"),
+    ("&igrave", "\u{00EC}"),
+    ("&image;", "\u{2111}"),
+    ("&infin;", "\u{221E}"),
+    ("&int;", "\u{222B}"),
+    ("&iota;", "\u{03B9}"),
+    ("&iquest;", "\u{00BF}"),
+    ("&iquest", "\u{00BF}"),
+    ("&isin;", "\u{2208}"),
+    ("&iuml;", "\u{00EF}"),
+    ("&iuml", "\u{00EF}"),
+    ("&kappa;", "\u{03BA}"),
+    ("&lArr;", "\u{21D0}"),
+    ("&lambda;", "\u{03BB}"),
+    ("&lang;", "\u{2329}"),
+    ("&larr;", "\u{2190}"),
+    ("&lceil;", "\u{2308}"),
+    ("&ldquo;", "\u{201C}"),
+    ("&le;", "\u{2264}"),
+    ("&lfloor;", "\u{230A}"),
+    ("&lowast;", "\u{2217}"),
+    ("&loz;", "\u{25CA}"),
+    ("&lrm;", "\u{200E}"),
+    ("&lsaquo;", "\u{2039}"),
+    ("&lsquo;", "\u{2018}"),
+    ("&lt;", "<"),
+    ("&lt", "<"),
+    ("&macr;", "\u{00AF}"),
+    ("&macr", "\u{00AF}"),
+    ("&mdash;", "\u{2014}"),
+    ("&micro;", "\u{00B5}"),
+    ("&micro", "\u{00B5}"),
+    ("&middot;", "\u{00B7}"),
+    ("&middot", "\u{00B7}"),
+    ("&minus;", "\u{2212}"),
+    ("&mu;", "\u{03BC}"),
+    ("&nabla;", "\u{2207}"),
+    ("&nbsp;", "\u{00A0}"),
+    ("&nbsp", "\u{00A0}"),
+    ("&ndash;", "\u{2013}"),
+    ("&ne;", "\u{2260}"),
+    ("&ni;", "\u{220B}"),
+    ("&not;", "\u{00AC}"),
+    ("&not", "\u{00AC}"),
+    ("&notin;", "\u{2209}"),
+    ("&nsub;", "\u{2284}"),
+    ("&ntilde;", "\u{00F1}"),
+    ("&ntilde", "\u{00F1}"),
+    ("&nu;", "\u{03BD}"),
+    ("&oacute;", "\u{00F3}"),
+    ("&oacute", "\u{00F3}"),
+    ("&ocirc;", "\u{00F4}"),
+    ("&ocirc", "\u{00F4}"),
+    ("&ograve;", "\u{00F2}"),
+    ("&ograve", "\u{00F2}"),
+    ("&oline;", "\u{203E}"),
+    ("&omega;", "\u{03C9}"),
+    ("&omicron;", "\u{03BF}"),
+    ("&oplus;", "\u{2295}"),
+    ("&or;", "\u{2228}"),
+    ("&ordf;", "\u{00AA}"),
+    ("&ordf", "\u{00AA}"),
+    ("&ordm;", "\u{00BA}"),
+    ("&ordm", "\u{00BA}"),
+    ("&oslash;", "\u{00F8}"),
+    ("&oslash", "\u{00F8}"),
+    ("&otilde;", "\u{00F5}"),
+    ("&otilde", "\u{00F5}"),
+    ("&otimes;", "\u{2297}"),
+    ("&ouml;", "\u{00F6}"),
+    ("&ouml", "\u{00F6}"),
+    ("&para;", "\u{00B6}"),
+    ("&para", "\u{00B6}"),
+    ("&part;", "\u{2202}"),
+    ("&permil;", "\u{2030}"),
+    ("&perp;", "\u{22A5}"),
+    ("&phi;", "\u{03C6}"),
+    ("&pi;", "\u{03C0}"),
+    ("&piv;", "\u{03D6}"),
+    ("&plusmn;", "\u{00B1}"),
+    ("&plusmn", "\u{00B1}"),
+    ("&pound;", "\u{00A3}"),
+    ("&pound", "\u{00A3}"),
+    ("&prime;", "\u{2032}"),
+    ("&Prime;", "\u{2033}"),
+    ("&prod;", "\u{220F}"),
+    ("&prop;", "\u{221D}"),
+    ("&psi;", "\u{03C8}"),
+    ("&quot;", "\""),
+    ("&quot", "\""),
+    ("&rArr;", "\u{21D2}"),
+    ("&radic;", "\u{221A}"),
+    ("&rang;", "\u{232A}"),
+    ("&rarr;", "\u{2192}"),
+    ("&rceil;", "\u{2309}"),
+    ("&rdquo;", "\u{201D}"),
+    ("&real;", "\u{211C}"),
+    ("&reg;", "\u{00AE}"),
+    ("&reg", "\u{00AE}"),
+    ("&lfloor;", "\u{230B}"),
+    ("&rho;", "\u{03C1}"),
+    ("&rlm;", "\u{200F}"),
+    ("&rsaquo;", "\u{203A}"),
+    ("&rsquo;", "\u{2019}"),
+    ("&sbquo;", "\u{201A}"),
+    ("&scasp;", "\u{2005}"),
+    ("&sdot;", "\u{22C5}"),
+    ("&sect;", "\u{00A7}"),
+    ("&sect", "\u{00A7}"),
+    ("&shy;", "\u{00AD}"),
+    ("&shy", "\u{00AD}"),
+    ("&sigma;", "\u{03C3}"),
+    ("&sigmaf;", "\u{03C2}"),
+    ("&sim;", "\u{223C}"),
+    ("&spades;", "\u{2660}"),
+    ("&sub;", "\u{2282}"),
+    ("&sube;", "\u{2286}"),
+    ("&sum;", "\u{2211}"),
+    ("&sup1;", "\u{00B9}"),
+    ("&sup1", "\u{00B9}"),
+    ("&sup2;", "\u{00B2}"),
+    ("&sup2", "\u{00B2}"),
+    ("&sup3;", "\u{00B3}"),
+    ("&sup3", "\u{00B3}"),
+    ("&sup;", "\u{2283}"),
+    ("&supe;", "\u{2287}"),
+    ("&szlig;", "\u{00DF}"),
+    ("&szlig", "\u{00DF}"),
+    ("&tau;", "\u{03C4}"),
+    ("&there4;", "\u{2234}"),
+    ("&theta;", "\u{03B8}"),
+    ("&thetasym;", "\u{03D1}"),
+    ("&thinsp;", "\u{2009}"),
+    ("&thorn;", "\u{00FE}"),
+    ("&thorn", "\u{00FE}"),
+    ("&tilde;", "\u{02DC}"),
+    ("&times;", "\u{00D7}"),
+    ("&times", "\u{00D7}"),
+    ("&trade;", "\u{2122}"),
+    ("&trade", "\u{2122}"),
+    ("&uArr;", "\u{21D1}"),
+    ("&uacute;", "\u{00FA}"),
+    ("&uacute", "\u{00FA}"),
+    ("&uarr;", "\u{2191}"),
+    ("&ucirc;", "\u{00FB}"),
+    ("&ucirc", "\u{00FB}"),
+    ("&ugrave;", "\u{00F9}"),
+    ("&ugrave", "\u{00F9}"),
+    ("&uml;", "\u{00A8}"),
+    ("&uml", "\u{00A8}"),
+    ("&upsih;", "\u{03D2}"),
+    ("&upsilon;", "\u{03C5}"),
+    ("&uuml;", "\u{00FC}"),
+    ("&uuml", "\u{00FC}"),
+    ("&weierp;", "\u{2118}"),
+    ("&xi;", "\u{03BE}"),
+    ("&yacute;", "\u{00FD}"),
+    ("&yacute", "\u{00FD}"),
+    ("&yen;", "\u{00A5}"),
+    ("&yen", "\u{00A5}"),
+    ("&yuml;", "\u{00FF}"),
+    ("&yuml", "\u{00FF}"),
+    ("&zeta;", "\u{03B6}"),
+    ("&zwj;", "\u{200D}"),
+    ("&zwnj;", "\u{200C}"),
+];
 
 fn is_noncharacter(code: u32) -> bool {
     (0xFDD0..=0xFDEF).contains(&code)
