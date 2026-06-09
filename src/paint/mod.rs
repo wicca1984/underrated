@@ -88,6 +88,59 @@ fn get_edge_color(style: &ComputedStyle, edge_prop: &str, border_color: &Color) 
     border_color.clone()
 }
 
+/// Helper to check if a ComputedStyle contains underline text decoration.
+/// spec: S-55
+fn has_underline(style: &ComputedStyle) -> bool {
+    // spec: the `text-decoration` shorthand set to `none` clears the line,
+    // overriding any `underline` keyword (e.g. from `text-decoration-line`).
+    if let Some(CssValue::Keyword(s)) = style.get("text-decoration")
+        && s.eq_ignore_ascii_case("none")
+    {
+        return false;
+    }
+    for prop in &["text-decoration", "text-decoration-line"] {
+        if let Some(val) = style.get(prop) {
+            match val {
+                CssValue::Keyword(s) => {
+                    if s.eq_ignore_ascii_case("underline") {
+                        return true;
+                    }
+                }
+                CssValue::Multiple(values) => {
+                    for v in values {
+                        if let CssValue::Keyword(s) = v
+                            && s.eq_ignore_ascii_case("underline")
+                        {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Helper to recursively check if a node or any of its DOM ancestors has computed text-decoration underline.
+/// spec: S-55
+fn is_underlined(dom: &Dom, node_id: NodeId, styles: &HashMap<NodeId, ComputedStyle>) -> bool {
+    let mut current = Some(node_id);
+    let mut depth = 0;
+    while let Some(curr_id) = current
+        && depth < 1000
+    {
+        if let Some(style) = styles.get(&curr_id)
+            && has_underline(style)
+        {
+            return true;
+        }
+        current = dom.parent(curr_id);
+        depth += 1;
+    }
+    false
+}
+
 /// Builds a display list from the layout tree.
 /// spec: S-12
 pub fn build_display_list(
@@ -172,15 +225,42 @@ pub fn build_display_list(
 
             // spec: if node is a Text node -> Text item
             if let Some(NodeData::Text(text)) = dom.data(node_id) {
-                let color = match style.get("color") {
-                    Some(CssValue::Color(c)) => c.clone(),
-                    _ => Color::Rgba(0, 0, 0, 255), // default black
-                };
+                // spec: S-55: reliably carry computed color
+                let color = style
+                    .get("color")
+                    .and_then(find_color)
+                    .unwrap_or(Color::Rgba(0, 0, 0, 255));
+
                 items.push(DisplayItem::Text {
                     rect: layout_box.rect,
                     text: text.clone(),
-                    color,
+                    color: color.clone(),
                 });
+
+                // spec: S-55: when computed 'text-decoration: underline' is present,
+                // additionally emit an underline SolidRect beneath the text run.
+                // Multi-line/decoration-color -> // TODO(spec).
+                if is_underlined(dom, node_id, styles) {
+                    let rect = layout_box.rect;
+                    let x = rect.origin.x;
+                    let y = rect.origin.y;
+                    let width = rect.size.width;
+                    let height = rect.size.height;
+
+                    // Position underline beneath the text run (e.g. at 2/3 of line height or bottom-ish)
+                    // For standard 16px line height with 8px font, y + 10.0 or 11.0 is beneath the text run.
+                    let underline_y = if height >= 12.0 {
+                        y + 11.0
+                    } else {
+                        y + height.max(2.0) - 1.0
+                    };
+                    let underline_rect = Rect::new(x, underline_y, width, 1.0);
+
+                    items.push(DisplayItem::SolidRect {
+                        rect: underline_rect,
+                        color: color.clone(),
+                    });
+                }
             }
         }
 
@@ -504,6 +584,163 @@ mod tests {
             assert_eq!(color, &Color::Rgba(0, 0, 255, 255));
         } else {
             panic!("Expected Text item fourth");
+        }
+    }
+
+    #[test]
+    fn test_paint_text_color() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("colored text".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            p { color: #00ff00; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert!(!text_items.is_empty(), "Expected at least one Text item");
+        for item in text_items {
+            if let DisplayItem::Text { color, .. } = item {
+                assert_eq!(color, &Color::Rgba(0, 255, 0, 255));
+            }
+        }
+    }
+
+    #[test]
+    fn test_paint_text_underline() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("underlined".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            p { text-decoration: underline; color: #ff00ff; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        // Since "underlined" collapses to one word fragment, there should be 1 Text item and 1 underline SolidRect
+        assert_eq!(text_items.len(), 1);
+        assert_eq!(solid_rects.len(), 1);
+
+        if let DisplayItem::Text {
+            rect: text_rect,
+            color: text_color,
+            ..
+        } = text_items[0]
+        {
+            assert_eq!(text_color, &Color::Rgba(255, 0, 255, 255));
+            if let DisplayItem::SolidRect {
+                rect: rect_rect,
+                color: rect_color,
+            } = solid_rects[0]
+            {
+                assert_eq!(rect_color, &Color::Rgba(255, 0, 255, 255));
+                assert_eq!(rect_rect.origin.x, text_rect.origin.x);
+                assert_eq!(rect_rect.size.width, text_rect.size.width);
+                assert_eq!(rect_rect.size.height, 1.0);
+                assert!(rect_rect.origin.y > text_rect.origin.y);
+            } else {
+                panic!("Expected SolidRect");
+            }
+        } else {
+            panic!("Expected Text");
+        }
+    }
+
+    #[test]
+    fn test_paint_text_underline_ancestor() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, p);
+
+        let text = dom.create_node(NodeData::Text("nested".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { text-decoration: underline; color: #ff0000; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(text_items.len(), 1);
+        assert_eq!(solid_rects.len(), 1);
+
+        if let DisplayItem::Text {
+            color: text_color, ..
+        } = text_items[0]
+        {
+            assert_eq!(text_color, &Color::Rgba(255, 0, 0, 255));
+        }
+        if let DisplayItem::SolidRect {
+            color: rect_color, ..
+        } = solid_rects[0]
+        {
+            assert_eq!(rect_color, &Color::Rgba(255, 0, 0, 255));
         }
     }
 }
