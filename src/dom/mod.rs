@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+mod serialize;
+
 use crate::infra::{Arena, NodeId};
 
 /// Node data for different types of DOM nodes.
@@ -101,6 +103,26 @@ impl Dom {
     /// invalid or stale (mirrors the generational arena's `get`).
     pub fn data(&self, node: NodeId) -> Option<&NodeData> {
         self.arena.get(node).map(|n| &n.data)
+    }
+
+    /// Returns all descendants of the given node in pre-order.
+    /// The node itself is excluded.
+    // spec: https://dom.spec.whatwg.org/#concept-tree-descendant
+    pub fn descendants(&self, node: NodeId) -> Vec<NodeId> {
+        // Iterative pre-order traversal with an explicit stack so that deeply
+        // nested (or maliciously crafted) trees cannot overflow the call stack (I-6).
+        let mut result = Vec::new();
+        let mut stack: Vec<NodeId> = self.children(node).iter().rev().copied().collect();
+        while let Some(n) = stack.pop() {
+            result.push(n);
+            stack.extend(self.children(n).iter().rev().copied());
+        }
+        result
+    }
+
+    /// Serializes the given node and its descendants into an HTML string.
+    pub fn serialize(&self, node: NodeId) -> String {
+        serialize::serialize(self, node)
     }
 }
 
@@ -204,5 +226,129 @@ mod tests {
 
         // last_id is from dom1; querying dom2 must not panic and must return None.
         assert_eq!(dom2.data(last_id), None);
+    }
+
+    #[test]
+    fn test_descendants() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let html = dom.create_node(NodeData::Element {
+            name: "html".into(),
+            attrs: vec![],
+        });
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+
+        dom.append_child(doc, html);
+        dom.append_child(html, body);
+        dom.append_child(body, p);
+
+        let desc = dom.descendants(html);
+        assert_eq!(desc, vec![body, p]);
+
+        let doc_desc = dom.descendants(doc);
+        assert_eq!(doc_desc, vec![html, body, p]);
+    }
+
+    #[test]
+    fn test_serialize_basic() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let html = dom.create_node(NodeData::Element {
+            name: "html".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, html);
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(html, body);
+
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("class".into(), "test".into())],
+        });
+        dom.append_child(body, p);
+
+        let text = dom.create_node(NodeData::Text("hi".into()));
+        dom.append_child(p, text);
+
+        assert_eq!(
+            dom.serialize(doc),
+            "<html><body><p class=\"test\">hi</p></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_void_element() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let br = dom.create_node(NodeData::Element {
+            name: "br".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, br);
+        assert_eq!(dom.serialize(doc), "<br>");
+
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("src".into(), "a.png".into())],
+        });
+        dom.append_child(doc, img);
+        assert_eq!(dom.serialize(doc), "<br><img src=\"a.png\">");
+    }
+
+    #[test]
+    fn test_serialize_escaping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("title".into(), "a \"quoted\" & b".into())],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("1 < 2 & 3 > 0".into()));
+        dom.append_child(p, text);
+
+        assert_eq!(
+            dom.serialize(doc),
+            "<p title=\"a &quot;quoted&quot; &amp; b\">1 &lt; 2 &amp; 3 &gt; 0</p>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_comment_and_doctype() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let doctype = dom.create_node(NodeData::Doctype {
+            name: "html".into(),
+            public_id: "".into(),
+            system_id: "".into(),
+        });
+        dom.append_child(doc, doctype);
+
+        let comment = dom.create_node(NodeData::Comment("secret".into()));
+        dom.append_child(doc, comment);
+
+        let html = dom.create_node(NodeData::Element {
+            name: "html".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, html);
+
+        assert_eq!(
+            dom.serialize(doc),
+            "<!DOCTYPE html><!--secret--><html></html>"
+        );
     }
 }
