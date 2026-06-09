@@ -146,7 +146,53 @@ fn compute_node_style(
     // 4. Apply declarations.
     for matched in matched_declarations {
         if let Some(value) = parse_value(&matched.declaration.value) {
-            properties.insert(matched.declaration.name.clone(), value);
+            match matched.declaration.name.as_str() {
+                "margin" => {
+                    // spec: https://www.w3.org/TR/css-box-3/#propdef-margin
+                    let (top, right, bottom, left) = expand_1_to_4(&value);
+                    properties.insert("margin-top".to_string(), top);
+                    properties.insert("margin-right".to_string(), right);
+                    properties.insert("margin-bottom".to_string(), bottom);
+                    properties.insert("margin-left".to_string(), left);
+                }
+                "padding" => {
+                    // spec: https://www.w3.org/TR/css-box-3/#propdef-padding
+                    let (top, right, bottom, left) = expand_1_to_4(&value);
+                    properties.insert("padding-top".to_string(), top);
+                    properties.insert("padding-right".to_string(), right);
+                    properties.insert("padding-bottom".to_string(), bottom);
+                    properties.insert("padding-left".to_string(), left);
+                }
+                "border-width" => {
+                    // spec: https://www.w3.org/TR/css-backgrounds-3/#border-width
+                    let (top, right, bottom, left) = expand_1_to_4(&value);
+                    properties.insert("border-top-width".to_string(), top);
+                    properties.insert("border-right-width".to_string(), right);
+                    properties.insert("border-bottom-width".to_string(), bottom);
+                    properties.insert("border-left-width".to_string(), left);
+                }
+                "border" => {
+                    // spec: https://www.w3.org/TR/css-backgrounds-3/#border-shorthands
+                    // At least expand border-*-width longhands.
+                    if let Some(width) = find_border_width(&value) {
+                        properties.insert("border-top-width".to_string(), width.clone());
+                        properties.insert("border-right-width".to_string(), width.clone());
+                        properties.insert("border-bottom-width".to_string(), width.clone());
+                        properties.insert("border-left-width".to_string(), width.clone());
+                    } else {
+                        let medium = CssValue::Keyword("medium".to_string());
+                        properties.insert("border-top-width".to_string(), medium.clone());
+                        properties.insert("border-right-width".to_string(), medium.clone());
+                        properties.insert("border-bottom-width".to_string(), medium.clone());
+                        properties.insert("border-left-width".to_string(), medium.clone());
+                    }
+                    // TODO(spec): border-style, border-color, etc.
+                }
+                // TODO(spec): other shorthand properties like background, font, transition, etc.
+                name => {
+                    properties.insert(name.to_string(), value);
+                }
+            }
         }
     }
 
@@ -456,6 +502,87 @@ struct MatchedDeclaration {
     source_order: usize,
 }
 
+fn expand_1_to_4(value: &CssValue) -> (CssValue, CssValue, CssValue, CssValue) {
+    // spec: https://www.w3.org/TR/css-box-3/#propdef-margin
+    match value {
+        CssValue::Multiple(values) => match values.len() {
+            0 => {
+                let fallback = CssValue::Keyword("initial".to_string());
+                (
+                    fallback.clone(),
+                    fallback.clone(),
+                    fallback.clone(),
+                    fallback,
+                )
+            }
+            1 => {
+                let v = &values[0];
+                (v.clone(), v.clone(), v.clone(), v.clone())
+            }
+            2 => {
+                let top_bottom = &values[0];
+                let left_right = &values[1];
+                (
+                    top_bottom.clone(),
+                    left_right.clone(),
+                    top_bottom.clone(),
+                    left_right.clone(),
+                )
+            }
+            3 => {
+                let top = &values[0];
+                let left_right = &values[1];
+                let bottom = &values[2];
+                (
+                    top.clone(),
+                    left_right.clone(),
+                    bottom.clone(),
+                    left_right.clone(),
+                )
+            }
+            _ => {
+                let top = &values[0];
+                let right = &values[1];
+                let bottom = &values[2];
+                let left = &values[3];
+                (top.clone(), right.clone(), bottom.clone(), left.clone())
+            }
+        },
+        v => (v.clone(), v.clone(), v.clone(), v.clone()),
+    }
+}
+
+fn find_border_width(value: &CssValue) -> Option<CssValue> {
+    match value {
+        CssValue::Multiple(values) => {
+            for v in values {
+                if is_border_width_value(v) {
+                    return Some(v.clone());
+                }
+            }
+            None
+        }
+        v => {
+            if is_border_width_value(v) {
+                Some(v.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn is_border_width_value(value: &CssValue) -> bool {
+    match value {
+        CssValue::Length(_, _) => true,
+        CssValue::Number(_) => true,
+        CssValue::Keyword(s) => {
+            matches!(s.to_ascii_lowercase().as_str(), "thin" | "medium" | "thick")
+        }
+        _ => false,
+    }
+}
+
 fn is_inherited_property(property: &str) -> bool {
     // spec: basic inherited properties
     matches!(
@@ -695,5 +822,134 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
         let p_style = styles.get(&p).unwrap();
         assert!(p_style.get("margin").is_none());
+    }
+
+    #[test]
+    fn test_box_model_shorthands_and_properties() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // 1. Test 1-4 value forms of margin/padding/border-width
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                margin: 10px 20px;
+                padding: 5px 10px 15px 20px;
+                border-width: 2px;
+                display: flex;
+                box-sizing: border-box;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&div).unwrap();
+
+        // Check margin top/bottom=10px, left/right=20px
+        assert_eq!(
+            style.get("margin-top"),
+            Some(&CssValue::Length(10.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("margin-right"),
+            Some(&CssValue::Length(20.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("margin-bottom"),
+            Some(&CssValue::Length(10.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("margin-left"),
+            Some(&CssValue::Length(20.0, crate::css::values::LengthUnit::Px))
+        );
+
+        // Check 4-value padding expansion
+        assert_eq!(
+            style.get("padding-top"),
+            Some(&CssValue::Length(5.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("padding-right"),
+            Some(&CssValue::Length(10.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("padding-bottom"),
+            Some(&CssValue::Length(15.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("padding-left"),
+            Some(&CssValue::Length(20.0, crate::css::values::LengthUnit::Px))
+        );
+
+        // Check border-width (1-value form)
+        assert_eq!(
+            style.get("border-top-width"),
+            Some(&CssValue::Length(2.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("border-right-width"),
+            Some(&CssValue::Length(2.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("border-bottom-width"),
+            Some(&CssValue::Length(2.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style.get("border-left-width"),
+            Some(&CssValue::Length(2.0, crate::css::values::LengthUnit::Px))
+        );
+
+        // Check display and box-sizing
+        assert_eq!(
+            style.get("display"),
+            Some(&CssValue::Keyword("flex".to_string()))
+        );
+        assert_eq!(
+            style.get("box-sizing"),
+            Some(&CssValue::Keyword("border-box".to_string()))
+        );
+
+        // 2. Test border shorthand width parsing
+        let stylesheet_border = parse_stylesheet("div { border: 3px solid red; }");
+        let styles_border = compute_styles(&dom, &stylesheet_border);
+        let style_border = styles_border.get(&div).unwrap();
+        assert_eq!(
+            style_border.get("border-top-width"),
+            Some(&CssValue::Length(3.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style_border.get("border-right-width"),
+            Some(&CssValue::Length(3.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style_border.get("border-bottom-width"),
+            Some(&CssValue::Length(3.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style_border.get("border-left-width"),
+            Some(&CssValue::Length(3.0, crate::css::values::LengthUnit::Px))
+        );
+
+        // 3. Test border shorthand with no width specified (defaults to medium)
+        let stylesheet_border_no_w = parse_stylesheet("div { border: solid red; }");
+        let styles_border_no_w = compute_styles(&dom, &stylesheet_border_no_w);
+        let style_border_no_w = styles_border_no_w.get(&div).unwrap();
+        assert_eq!(
+            style_border_no_w.get("border-top-width"),
+            Some(&CssValue::Keyword("medium".to_string()))
+        );
+
+        // 4. Test border shorthand with named width
+        let stylesheet_border_thick = parse_stylesheet("div { border: thick double blue; }");
+        let styles_border_thick = compute_styles(&dom, &stylesheet_border_thick);
+        let style_border_thick = styles_border_thick.get(&div).unwrap();
+        assert_eq!(
+            style_border_thick.get("border-top-width"),
+            Some(&CssValue::Keyword("thick".to_string()))
+        );
     }
 }
