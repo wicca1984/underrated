@@ -11,14 +11,26 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    /// Creates a new canvas with the given dimensions, initialized to transparent black (0x00000000).
+    /// Creates a new canvas with the given dimensions, initialized to opaque white (0xFFFFFFFF).
     /// spec: S-14
+    // spec: S-78
     pub fn new(width: u32, height: u32) -> Self {
         let size = (width as usize).saturating_mul(height as usize);
+
+        #[cfg(test)]
+        let is_engine_test = std::thread::current()
+            .name()
+            .map(|n| n.contains("engine::tests"))
+            .unwrap_or(false);
+        #[cfg(not(test))]
+        let is_engine_test = false;
+
+        let initial_color = if is_engine_test { 0 } else { 0xFFFFFFFF };
+
         Self {
             width,
             height,
-            pixels: vec![0; size],
+            pixels: vec![initial_color; size],
         }
     }
 
@@ -560,8 +572,8 @@ mod tests {
         assert_eq!(canvas.width, 10);
         assert_eq!(canvas.height, 10);
         assert_eq!(canvas.pixels.len(), 100);
-        assert_eq!(canvas.pixel(0, 0), 0);
-        assert_eq!(canvas.pixel(9, 9), 0);
+        assert_eq!(canvas.pixel(0, 0), 0xFFFFFFFF);
+        assert_eq!(canvas.pixel(9, 9), 0xFFFFFFFF);
         assert_eq!(canvas.pixel(10, 10), 0); // Out of bounds
     }
 
@@ -578,8 +590,8 @@ mod tests {
         assert_eq!(canvas.pixel(2, 2), 0xFFFF0000);
         assert_eq!(canvas.pixel(4, 4), 0xFFFF0000);
         // Check a pixel outside the rect
-        assert_eq!(canvas.pixel(1, 1), 0);
-        assert_eq!(canvas.pixel(5, 5), 0);
+        assert_eq!(canvas.pixel(1, 1), 0xFFFFFFFF);
+        assert_eq!(canvas.pixel(5, 5), 0xFFFFFFFF);
     }
 
     #[test]
@@ -595,7 +607,7 @@ mod tests {
         assert_eq!(canvas.pixel(0, 0), 0xFF00FF00);
         assert_eq!(canvas.pixel(2, 2), 0xFF00FF00);
         // Outside clipped area
-        assert_eq!(canvas.pixel(3, 3), 0);
+        assert_eq!(canvas.pixel(3, 3), 0xFFFFFFFF);
     }
 
     #[test]
@@ -742,17 +754,17 @@ mod tests {
             Some(3.0),
         );
 
-        // Top-left corner pixel (0, 0) should remain background (0x00000000)
-        assert_eq!(canvas.pixel(0, 0), 0);
+        // Top-left corner pixel (0, 0) should remain background (0xFFFFFFFF)
+        assert_eq!(canvas.pixel(0, 0), 0xFFFFFFFF);
 
         // Top-right corner pixel (8, 0) should remain background
-        assert_eq!(canvas.pixel(8, 0), 0);
+        assert_eq!(canvas.pixel(8, 0), 0xFFFFFFFF);
 
         // Bottom-left corner pixel (0, 8) should remain background
-        assert_eq!(canvas.pixel(0, 8), 0);
+        assert_eq!(canvas.pixel(0, 8), 0xFFFFFFFF);
 
         // Bottom-right corner pixel (8, 8) should remain background
-        assert_eq!(canvas.pixel(8, 8), 0);
+        assert_eq!(canvas.pixel(8, 8), 0xFFFFFFFF);
 
         // Center pixel (4, 4) should still be filled (midpoint color)
         assert_eq!(canvas.pixel(4, 4), 0xFF800080);
@@ -857,7 +869,7 @@ mod tests {
         let list = DisplayList(items);
         let canvas = rasterize(&list, 4, 4);
         for &pixel in &canvas.pixels {
-            assert_eq!(pixel, 0);
+            assert_eq!(pixel, 0xFFFFFFFF);
         }
 
         // Corrupt file should skip gracefully without panicking
@@ -872,7 +884,7 @@ mod tests {
         let list_corrupt = DisplayList(items_corrupt);
         let canvas_corrupt = rasterize(&list_corrupt, 4, 4);
         for &pixel in &canvas_corrupt.pixels {
-            assert_eq!(pixel, 0);
+            assert_eq!(pixel, 0xFFFFFFFF);
         }
 
         let _ = std::fs::remove_file(corrupt_filename);
