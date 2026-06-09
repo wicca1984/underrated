@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod parser;
+pub mod values;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CssToken {
