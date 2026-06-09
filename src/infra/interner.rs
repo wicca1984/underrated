@@ -39,10 +39,9 @@ impl Interner {
     }
 
     /// Resolves a Symbol back to its original string.
-    /// # Panics
-    /// Panics if the Symbol is invalid.
-    pub fn resolve(&self, sym: Symbol) -> &str {
-        &self.strings[sym.0 as usize]
+    /// Returns `None` if the Symbol does not belong to this interner.
+    pub fn resolve(&self, sym: Symbol) -> Option<&str> {
+        self.strings.get(sym.0 as usize).map(|s| s.as_str())
     }
 }
 
@@ -77,8 +76,8 @@ mod tests {
         let mut interner = Interner::new();
         let s1 = interner.intern("html");
         let s2 = interner.intern("body");
-        assert_eq!(interner.resolve(s1), "html");
-        assert_eq!(interner.resolve(s2), "body");
+        assert_eq!(interner.resolve(s1), Some("html"));
+        assert_eq!(interner.resolve(s2), Some("body"));
     }
 
     #[test]
