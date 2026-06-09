@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod query;
 mod serialize;
 
 use crate::infra::{Arena, NodeId};
