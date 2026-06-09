@@ -217,6 +217,35 @@ pub(crate) fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
     }
 }
 
+/// Performs hit-testing on the layout tree.
+///
+/// Pre-order traversal; returns the NodeId of the deepest box whose rect contains (x, y);
+/// among siblings, later (painted-on-top) wins.
+/// Boxes with no `node` (None) are skipped for the result but their children are still tested.
+/// Bounded to prevent stack overflow.
+///
+/// spec: S-36
+pub fn hit_test(root: &LayoutBox, x: f32, y: f32) -> Option<NodeId> {
+    let mut best_node = None;
+    hit_test_impl(root, x, y, 0, &mut best_node);
+    best_node
+}
+
+fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut Option<NodeId>) {
+    if depth > MAX_DEPTH {
+        // TODO(spec): Report stack depth limit exceeded in hit_test
+        return;
+    }
+
+    if box_.rect.contains(crate::geom::Point { x, y }) && box_.node.is_some() {
+        *best_node = box_.node;
+    }
+
+    for child in &box_.children {
+        hit_test_impl(child, x, y, depth + 1, best_node);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +639,72 @@ mod tests {
         // its final coordinates should be (5, 5) and NOT shifted by the relative parent's offset of (30, 20)!
         assert!(approx_eq(abs_box.rect.origin.x, 5.0));
         assert!(approx_eq(abs_box.rect.origin.y, 5.0));
+    }
+
+    #[test]
+    fn test_hit_test() {
+        let mut dom = Dom::new();
+        let node_root = dom.create_node(NodeData::Comment("root".into()));
+        let node_child1 = dom.create_node(NodeData::Comment("child1".into()));
+        let node_nested = dom.create_node(NodeData::Comment("nested".into()));
+        let node_child2 = dom.create_node(NodeData::Comment("child2".into()));
+        let node_nested_under_none = dom.create_node(NodeData::Comment("nested_under_none".into()));
+
+        let root_box = LayoutBox {
+            node: Some(node_root),
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            children: vec![
+                LayoutBox {
+                    node: Some(node_child1),
+                    rect: Rect::new(10.0, 10.0, 50.0, 50.0),
+                    children: vec![LayoutBox {
+                        node: Some(node_nested),
+                        rect: Rect::new(15.0, 15.0, 20.0, 20.0),
+                        children: vec![],
+                    }],
+                },
+                LayoutBox {
+                    node: Some(node_child2),
+                    rect: Rect::new(40.0, 10.0, 40.0, 40.0),
+                    children: vec![],
+                },
+                LayoutBox {
+                    node: None,
+                    rect: Rect::new(0.0, 80.0, 100.0, 20.0),
+                    children: vec![LayoutBox {
+                        node: Some(node_nested_under_none),
+                        rect: Rect::new(10.0, 85.0, 20.0, 10.0),
+                        children: vec![],
+                    }],
+                },
+            ],
+        };
+
+        // Point outside everything returns None
+        assert_eq!(hit_test(&root_box, 150.0, 150.0), None);
+        assert_eq!(hit_test(&root_box, -5.0, 20.0), None);
+
+        // Point only in root box returns root
+        assert_eq!(hit_test(&root_box, 5.0, 5.0), Some(node_root));
+
+        // Point in child1 but not nested returns child1
+        assert_eq!(hit_test(&root_box, 12.0, 12.0), Some(node_child1));
+
+        // Point inside nested returns nested (deepest wins)
+        assert_eq!(hit_test(&root_box, 20.0, 20.0), Some(node_nested));
+
+        // Point inside both child1 and child2 (overlapping region: child2 is later sibling, so child2 wins)
+        assert_eq!(hit_test(&root_box, 45.0, 20.0), Some(node_child2));
+
+        // Point inside the no_node box, but not nested_under_none:
+        // Returns root (since no_node is skipped, and root contains the point)
+        assert_eq!(hit_test(&root_box, 5.0, 95.0), Some(node_root));
+
+        // Point inside nested_under_none (inside no_node and root):
+        // Returns nested_under_none
+        assert_eq!(
+            hit_test(&root_box, 15.0, 90.0),
+            Some(node_nested_under_none)
+        );
     }
 }
