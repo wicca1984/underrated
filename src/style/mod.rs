@@ -393,20 +393,17 @@ fn tokens_to_component_values(
     while let Some(token) = it.next() {
         match token {
             CssToken::LeftBrace | CssToken::LeftBracket | CssToken::LeftParen => {
-                let associated = match token {
-                    CssToken::LeftBrace => '{',
-                    CssToken::LeftBracket => '[',
-                    CssToken::LeftParen => '(',
-                    _ => unreachable!(),
+                // The outer arm guarantees a bracket token; the wildcard default
+                // keeps this panic-free on any future change (I-6 — inline style is
+                // untrusted input).
+                let (associated, closing) = match token {
+                    CssToken::LeftBrace => ('{', CssToken::RightBrace),
+                    CssToken::LeftBracket => ('[', CssToken::RightBracket),
+                    CssToken::LeftParen => ('(', CssToken::RightParen),
+                    _ => ('{', CssToken::RightBrace),
                 };
                 let mut block_tokens = Vec::new();
                 let mut depth = 1;
-                let closing = match associated {
-                    '{' => CssToken::RightBrace,
-                    '[' => CssToken::RightBracket,
-                    '(' => CssToken::RightParen,
-                    _ => unreachable!(),
-                };
                 for t in it.by_ref() {
                     if t == token {
                         depth += 1;
