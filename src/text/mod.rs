@@ -11,6 +11,34 @@ pub fn words(text: &str) -> Vec<&str> {
     text.split_ascii_whitespace().collect()
 }
 
+/// Collapses whitespace according to CSS `white-space: normal` rules.
+///
+/// Runs of collapsible whitespace are collapsed into a single space (U+0020),
+/// and leading and trailing whitespaces are trimmed.
+// spec: https://www.w3.org/TR/css-text-3/#white-space-collapsing
+pub fn collapse_whitespace(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut pending_space = false;
+    let mut has_non_whitespace = false;
+
+    for c in s.chars() {
+        if crate::ascii::is_html_whitespace(c) {
+            if has_non_whitespace {
+                pending_space = true;
+            }
+        } else {
+            if pending_space {
+                result.push(' ');
+                pending_space = false;
+            }
+            result.push(c);
+            has_non_whitespace = true;
+        }
+    }
+
+    result
+}
+
 /// Greedily breaks `text` into lines no wider than `max_width`, measuring each
 /// character with `measure`. Words are kept whole and separated by a single
 /// space; a word that alone exceeds `max_width` is placed on its own line
@@ -148,6 +176,20 @@ mod tests {
     fn words_collapse_whitespace() {
         assert_eq!(words("  a\t b\n c  "), vec!["a", "b", "c"]);
         assert!(words("   ").is_empty());
+    }
+
+    #[test]
+    fn test_collapse_whitespace() {
+        assert_eq!(collapse_whitespace("a  \n b "), "a b");
+        assert_eq!(collapse_whitespace(""), "");
+        assert_eq!(collapse_whitespace("   "), "");
+        assert_eq!(collapse_whitespace("  abc  "), "abc");
+        assert_eq!(
+            collapse_whitespace(" \t\n\r\x0C a \t\n\r\x0C b \t\n\r\x0C "),
+            "a b"
+        );
+        assert_eq!(collapse_whitespace("こんにちは  世界"), "こんにちは 世界");
+        assert_eq!(collapse_whitespace("abc"), "abc");
     }
 
     #[test]
