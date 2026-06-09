@@ -258,6 +258,9 @@ fn compute_node_style(
                     let root_px = get_root_font_size(dom, computed_styles);
                     CssValue::Length(*val * root_px, LengthUnit::Px)
                 }
+                // spec: viewport units depend on the viewport, which style does not
+                // know here; pass them through for layout to resolve.
+                LengthUnit::Vw | LengthUnit::Vh => CssValue::Length(*val, unit.clone()),
             },
             Some(_) => CssValue::Length(16.0, LengthUnit::Px),
             None => CssValue::Length(16.0, LengthUnit::Px),
@@ -308,6 +311,8 @@ fn compute_node_style(
                     let root_px = get_root_font_size(dom, computed_styles);
                     CssValue::Length(*val * root_px, LengthUnit::Px)
                 }
+                // spec: viewport units resolved later at layout time.
+                LengthUnit::Vw | LengthUnit::Vh => CssValue::Length(*val, unit.clone()),
             },
             Some(CssValue::Number(val)) => CssValue::Number(*val),
             Some(val) => val.clone(),
