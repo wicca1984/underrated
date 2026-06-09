@@ -21,6 +21,8 @@ allow = [
   "MPL-2.0",
   "BSL-1.0",
   "CC0-1.0",
+  # webpki-roots (Mozilla CA bundle, via rustls/ureq TLS): permissive data license.
+  "CDLA-Permissive-2.0",
 ]
 
 [bans]
