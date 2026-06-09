@@ -9,7 +9,7 @@ impl Dom {
         // Document order (pre-order) traversal.
         // We include the document root itself, although it won't match an ID attribute.
         std::iter::once(self.document())
-            .chain(self.descendants(self.document()))
+            .chain(self.descendants_iter(self.document()))
             .find(|&node_id| {
                 if let Some(NodeData::Element { attrs, .. }) = self.data(node_id) {
                     attrs.iter().any(|(n, v)| n == "id" && v == id)
@@ -27,8 +27,7 @@ impl Dom {
             Err(_) => return None,
         };
 
-        self.descendants(root)
-            .into_iter()
+        self.descendants_iter(root)
             .find(|&node_id| selector::matches(&selector_list, self, node_id))
     }
 
@@ -40,8 +39,7 @@ impl Dom {
             Err(_) => return Vec::new(),
         };
 
-        self.descendants(root)
-            .into_iter()
+        self.descendants_iter(root)
             .filter(|&node_id| selector::matches(&selector_list, self, node_id))
             .collect()
     }
