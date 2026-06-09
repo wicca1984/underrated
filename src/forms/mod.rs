@@ -33,6 +33,7 @@ pub struct NavigationRequest {
 pub struct FormState {
     values: HashMap<NodeId, String>,
     checked: HashMap<NodeId, bool>,
+    selected: HashMap<NodeId, bool>,
 }
 
 impl FormState {
@@ -46,6 +47,62 @@ impl FormState {
     /// Sets the checked state of a checkbox/radio.
     pub fn set_checked(&mut self, node: NodeId, checked: bool) {
         self.checked.insert(node, checked);
+    }
+    /// Sets the selected state of an option.
+    pub fn set_selected(&mut self, node: NodeId, selected: bool) {
+        self.selected.insert(node, selected);
+    }
+    /// Selects a specific option within a `<select>` element and deselects all other options.
+    // spec: S-76
+    pub fn select_option(&mut self, dom: &Dom, select_node: NodeId, option_node: NodeId) {
+        for desc in dom.descendants(select_node) {
+            let Some(t) = tag(dom, desc) else {
+                continue;
+            };
+            if t.eq_ignore_ascii_case("option") {
+                self.set_selected(desc, desc == option_node);
+            }
+        }
+    }
+    /// Checks a radio button and unchecks all other radio buttons with the same name under the given root (e.g. the form).
+    // spec: S-76
+    pub fn check_radio(&mut self, dom: &Dom, root: NodeId, radio_node: NodeId) {
+        let Some(t) = tag(dom, radio_node) else {
+            return;
+        };
+        if !t.eq_ignore_ascii_case("input") {
+            return;
+        }
+        let is_radio = attr(dom, radio_node, "type")
+            .map(|typ| typ.eq_ignore_ascii_case("radio"))
+            .unwrap_or(false);
+        if !is_radio {
+            return;
+        }
+
+        let radio_name = attr(dom, radio_node, "name");
+
+        if let Some(name) = radio_name {
+            for desc in dom.descendants(root) {
+                if desc == radio_node {
+                    continue;
+                }
+                let Some(t_other) = tag(dom, desc) else {
+                    continue;
+                };
+                if t_other.eq_ignore_ascii_case("input") {
+                    let is_other_radio = attr(dom, desc, "type")
+                        .map(|typ| typ.eq_ignore_ascii_case("radio"))
+                        .unwrap_or(false);
+                    let other_name = attr(dom, desc, "name");
+                    if is_other_radio && other_name == Some(name) {
+                        self.set_checked(desc, false);
+                    }
+                }
+            }
+        }
+
+        self.set_checked(radio_node, true);
     }
 }
 
@@ -96,6 +153,55 @@ fn tag(dom: &Dom, node: NodeId) -> Option<&str> {
     }
 }
 
+fn is_radio_effectively_checked(dom: &Dom, form: NodeId, node: NodeId, values: &FormState) -> bool {
+    let checked = values
+        .checked
+        .get(&node)
+        .copied()
+        .unwrap_or_else(|| attr(dom, node, "checked").is_some());
+    if !checked {
+        return false;
+    }
+
+    let Some(name) = attr(dom, node, "name") else {
+        return true;
+    };
+
+    let mut found_self = false;
+    for desc in dom.descendants(form) {
+        if desc == node {
+            found_self = true;
+            continue;
+        }
+        if !found_self {
+            continue;
+        }
+        let Some(t) = tag(dom, desc) else {
+            continue;
+        };
+        if t.eq_ignore_ascii_case("input") {
+            let is_radio = attr(dom, desc, "type")
+                .map(|typ| typ.eq_ignore_ascii_case("radio"))
+                .unwrap_or(false);
+            if is_radio {
+                let other_name = attr(dom, desc, "name");
+                if other_name == Some(name) {
+                    let other_checked = values
+                        .checked
+                        .get(&desc)
+                        .copied()
+                        .unwrap_or_else(|| attr(dom, desc, "checked").is_some());
+                    if other_checked {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    true
+}
+
 /// Submits `form`, producing a [`NavigationRequest`], or `None` if `form` is not
 /// an element. Walks the form's descendants for successful controls (those with
 /// a `name`), serializing them as `application/x-www-form-urlencoded`.
@@ -131,24 +237,92 @@ pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationR
             continue;
         }
 
+        if t.as_str() == "select" {
+            // Check if there is an overridden value for the select itself
+            if let Some(overridden_val) = values.values.get(&node) {
+                pairs.push(format!(
+                    "{}={}",
+                    form_encode(name),
+                    form_encode(overridden_val)
+                ));
+            } else {
+                let mut options = Vec::new();
+                let mut selected_options = Vec::new();
+                for desc in dom.descendants(node) {
+                    let Some(t_desc) = tag(dom, desc) else {
+                        continue;
+                    };
+                    if t_desc.eq_ignore_ascii_case("option") {
+                        options.push(desc);
+                        let is_selected = values
+                            .selected
+                            .get(&desc)
+                            .copied()
+                            .unwrap_or_else(|| dom.get_attribute(desc, "selected").is_some());
+                        if is_selected {
+                            selected_options.push(desc);
+                        }
+                    }
+                }
+
+                if !options.is_empty() {
+                    let is_multiple = dom.get_attribute(node, "multiple").is_some();
+                    if is_multiple {
+                        for opt in selected_options {
+                            let val = dom
+                                .get_attribute(opt, "value")
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| dom.text_content(opt));
+                            pairs.push(format!("{}={}", form_encode(name), form_encode(&val)));
+                        }
+                    } else {
+                        let chosen_opt = if !selected_options.is_empty() {
+                            selected_options.last().copied()
+                        } else {
+                            options.first().copied()
+                        };
+                        if let Some(opt) = chosen_opt {
+                            let val = dom
+                                .get_attribute(opt, "value")
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| dom.text_content(opt));
+                            pairs.push(format!("{}={}", form_encode(name), form_encode(&val)));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
         // Checkbox/radio: only successful when checked.
         if matches!(input_type.as_str(), "checkbox" | "radio") {
-            let checked = values
-                .checked
-                .get(&node)
-                .copied()
-                .unwrap_or_else(|| attr(dom, node, "checked").is_some());
+            let is_radio = input_type.as_str() == "radio";
+            let checked = if is_radio {
+                is_radio_effectively_checked(dom, form, node, values)
+            } else {
+                values
+                    .checked
+                    .get(&node)
+                    .copied()
+                    .unwrap_or_else(|| attr(dom, node, "checked").is_some())
+            };
             if !checked {
                 continue;
             }
         }
+
+        let value_fallback = if matches!(input_type.as_str(), "checkbox" | "radio") {
+            "on"
+        } else {
+            ""
+        };
 
         let value = values
             .values
             .get(&node)
             .map(|s| s.as_str())
             .or_else(|| attr(dom, node, "value"))
-            .unwrap_or("");
+            .unwrap_or(value_fallback);
 
         pairs.push(format!("{}={}", form_encode(name), form_encode(value)));
     }
@@ -178,6 +352,61 @@ pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationR
             content_type: Some("application/x-www-form-urlencoded".to_string()),
         }),
     }
+}
+
+fn is_radio_effectively_checked_with_values(
+    dom: &Dom,
+    form: NodeId,
+    node: NodeId,
+    edited_values: &HashMap<String, String>,
+) -> bool {
+    let Some(name) = attr(dom, node, "name") else {
+        return false;
+    };
+    let checked = if let Some(ev) = edited_values.get(name) {
+        let ctrl_val = attr(dom, node, "value").unwrap_or("on");
+        ev == ctrl_val || ev == "on" || ev == "true"
+    } else {
+        attr(dom, node, "checked").is_some()
+    };
+    if !checked {
+        return false;
+    }
+
+    let mut found_self = false;
+    for desc in dom.descendants(form) {
+        if desc == node {
+            found_self = true;
+            continue;
+        }
+        if !found_self {
+            continue;
+        }
+        let Some(t) = tag(dom, desc) else {
+            continue;
+        };
+        if t.eq_ignore_ascii_case("input") {
+            let is_radio = attr(dom, desc, "type")
+                .map(|typ| typ.eq_ignore_ascii_case("radio"))
+                .unwrap_or(false);
+            if is_radio {
+                let other_name = attr(dom, desc, "name");
+                if other_name == Some(name) {
+                    let other_checked = if let Some(ev) = edited_values.get(name) {
+                        let ctrl_val = attr(dom, desc, "value").unwrap_or("on");
+                        ev == ctrl_val || ev == "on" || ev == "true"
+                    } else {
+                        attr(dom, desc, "checked").is_some()
+                    };
+                    if other_checked {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    true
 }
 
 /// Submits `form` using a map/assoc of field name to current edited value,
@@ -220,24 +449,88 @@ pub fn submit_with_values(
             continue;
         }
 
+        if t.as_str() == "select" {
+            // Check if there is an overridden value for the select itself in edited_values
+            if let Some(overridden_val) = edited_values.get(name) {
+                pairs.push(format!(
+                    "{}={}",
+                    form_encode(name),
+                    form_encode(overridden_val)
+                ));
+            } else {
+                let mut options = Vec::new();
+                let mut selected_options = Vec::new();
+                for desc in dom.descendants(node) {
+                    let Some(t_desc) = tag(dom, desc) else {
+                        continue;
+                    };
+                    if t_desc.eq_ignore_ascii_case("option") {
+                        options.push(desc);
+                        let is_selected = dom.get_attribute(desc, "selected").is_some();
+                        if is_selected {
+                            selected_options.push(desc);
+                        }
+                    }
+                }
+
+                if !options.is_empty() {
+                    let is_multiple = dom.get_attribute(node, "multiple").is_some();
+                    if is_multiple {
+                        for opt in selected_options {
+                            let val = dom
+                                .get_attribute(opt, "value")
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| dom.text_content(opt));
+                            pairs.push(format!("{}={}", form_encode(name), form_encode(&val)));
+                        }
+                    } else {
+                        let chosen_opt = if !selected_options.is_empty() {
+                            selected_options.last().copied()
+                        } else {
+                            options.first().copied()
+                        };
+                        if let Some(opt) = chosen_opt {
+                            let val = dom
+                                .get_attribute(opt, "value")
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| dom.text_content(opt));
+                            pairs.push(format!("{}={}", form_encode(name), form_encode(&val)));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
         // Checkbox/radio: only successful when checked.
         if matches!(input_type.as_str(), "checkbox" | "radio") {
-            let checked = if let Some(ev) = edited_values.get(name) {
-                let ctrl_val = attr(dom, node, "value").unwrap_or("on");
-                ev == ctrl_val || ev == "on" || ev == "true"
+            let is_radio = input_type.as_str() == "radio";
+            let checked = if is_radio {
+                is_radio_effectively_checked_with_values(dom, form, node, edited_values)
             } else {
-                attr(dom, node, "checked").is_some()
+                if let Some(ev) = edited_values.get(name) {
+                    let ctrl_val = attr(dom, node, "value").unwrap_or("on");
+                    ev == ctrl_val || ev == "on" || ev == "true"
+                } else {
+                    attr(dom, node, "checked").is_some()
+                }
             };
             if !checked {
                 continue;
             }
         }
 
+        let value_fallback = if matches!(input_type.as_str(), "checkbox" | "radio") {
+            "on"
+        } else {
+            ""
+        };
+
         let value = edited_values
             .get(name)
             .map(|s| s.as_str())
             .or_else(|| attr(dom, node, "value"))
-            .unwrap_or("");
+            .unwrap_or(value_fallback);
 
         pairs.push(format!("{}={}", form_encode(name), form_encode(value)));
     }
@@ -499,6 +792,210 @@ mod tests {
             req.content_type,
             Some("application/x-www-form-urlencoded".to_string())
         );
+    }
+
+    #[test]
+    fn test_select_single_first_option_default() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let select = el(&mut dom, "select", &[("name", "color")]);
+        let opt1 = el(&mut dom, "option", &[("value", "red")]);
+        let opt2 = el(&mut dom, "option", &[("value", "blue")]);
+        dom.append_child(select, opt1);
+        dom.append_child(select, opt2);
+        dom.append_child(form, select);
+
+        let req = submit(&dom, form, &FormState::new()).unwrap();
+        assert_eq!(req.url, "/a?color=red");
+    }
+
+    #[test]
+    fn test_select_single_attribute_selected() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let select = el(&mut dom, "select", &[("name", "color")]);
+        let opt1 = el(&mut dom, "option", &[("value", "red")]);
+        let opt2 = el(&mut dom, "option", &[("value", "blue"), ("selected", "")]);
+        dom.append_child(select, opt1);
+        dom.append_child(select, opt2);
+        dom.append_child(form, select);
+
+        let req = submit(&dom, form, &FormState::new()).unwrap();
+        assert_eq!(req.url, "/a?color=blue");
+    }
+
+    #[test]
+    fn test_select_option_text_content_fallback() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let select = el(&mut dom, "select", &[("name", "color")]);
+        let opt1 = el(&mut dom, "option", &[]);
+        let t1 = dom.create_node(NodeData::Text("  Green  ".to_string()));
+        dom.append_child(opt1, t1);
+        dom.append_child(select, opt1);
+        dom.append_child(form, select);
+
+        let req = submit(&dom, form, &FormState::new()).unwrap();
+        assert_eq!(req.url, "/a?color=++Green++");
+    }
+
+    #[test]
+    fn test_select_form_state_override() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let select = el(&mut dom, "select", &[("name", "color")]);
+        let opt1 = el(&mut dom, "option", &[("value", "red")]);
+        let opt2 = el(&mut dom, "option", &[("value", "blue"), ("selected", "")]);
+        dom.append_child(select, opt1);
+        dom.append_child(select, opt2);
+        dom.append_child(form, select);
+
+        let mut state = FormState::new();
+        state.set_selected(opt1, true);
+        state.set_selected(opt2, false);
+
+        let req = submit(&dom, form, &state).unwrap();
+        assert_eq!(req.url, "/a?color=red");
+    }
+
+    #[test]
+    fn test_select_option_helper() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let select = el(&mut dom, "select", &[("name", "color")]);
+        let opt1 = el(&mut dom, "option", &[("value", "red"), ("selected", "")]);
+        let opt2 = el(&mut dom, "option", &[("value", "blue")]);
+        dom.append_child(select, opt1);
+        dom.append_child(select, opt2);
+        dom.append_child(form, select);
+
+        let mut state = FormState::new();
+        state.select_option(&dom, select, opt2);
+
+        let req = submit(&dom, form, &state).unwrap();
+        assert_eq!(req.url, "/a?color=blue");
+    }
+
+    #[test]
+    fn test_select_multiple() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let select = el(&mut dom, "select", &[("name", "color"), ("multiple", "")]);
+        let opt1 = el(&mut dom, "option", &[("value", "red"), ("selected", "")]);
+        let opt2 = el(&mut dom, "option", &[("value", "blue"), ("selected", "")]);
+        dom.append_child(select, opt1);
+        dom.append_child(select, opt2);
+        dom.append_child(form, select);
+
+        let req = submit(&dom, form, &FormState::new()).unwrap();
+        assert_eq!(req.url, "/a?color=red&color=blue");
+    }
+
+    #[test]
+    fn test_radio_exclusivity_on_submit() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let r1 = el(
+            &mut dom,
+            "input",
+            &[
+                ("type", "radio"),
+                ("name", "gender"),
+                ("value", "male"),
+                ("checked", ""),
+            ],
+        );
+        let r2 = el(
+            &mut dom,
+            "input",
+            &[
+                ("type", "radio"),
+                ("name", "gender"),
+                ("value", "female"),
+                ("checked", ""),
+            ],
+        );
+        dom.append_child(form, r1);
+        dom.append_child(form, r2);
+
+        let req = submit(&dom, form, &FormState::new()).unwrap();
+        assert_eq!(req.url, "/a?gender=female");
+    }
+
+    #[test]
+    fn test_radio_exclusivity_helper() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let r1 = el(
+            &mut dom,
+            "input",
+            &[("type", "radio"), ("name", "gender"), ("value", "male")],
+        );
+        let r2 = el(
+            &mut dom,
+            "input",
+            &[("type", "radio"), ("name", "gender"), ("value", "female")],
+        );
+        dom.append_child(form, r1);
+        dom.append_child(form, r2);
+
+        let mut state = FormState::new();
+        state.check_radio(&dom, form, r1);
+        state.check_radio(&dom, form, r2);
+
+        let req = submit(&dom, form, &state).unwrap();
+        assert_eq!(req.url, "/a?gender=female");
+
+        state.check_radio(&dom, form, r1);
+        let req2 = submit(&dom, form, &state).unwrap();
+        assert_eq!(req2.url, "/a?gender=male");
+    }
+
+    #[test]
+    fn test_checkbox_default_value() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let cb = el(
+            &mut dom,
+            "input",
+            &[("type", "checkbox"), ("name", "agree"), ("checked", "")],
+        );
+        dom.append_child(form, cb);
+
+        let req = submit(&dom, form, &FormState::new()).unwrap();
+        assert_eq!(req.url, "/a?agree=on");
+    }
+
+    #[test]
+    fn test_submit_with_values_select_and_radio() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/a")]);
+        let select = el(&mut dom, "select", &[("name", "color")]);
+        let opt1 = el(&mut dom, "option", &[("value", "red")]);
+        let opt2 = el(&mut dom, "option", &[("value", "blue")]);
+        dom.append_child(select, opt1);
+        dom.append_child(select, opt2);
+        dom.append_child(form, select);
+
+        let r1 = el(
+            &mut dom,
+            "input",
+            &[("type", "radio"), ("name", "gender"), ("value", "male")],
+        );
+        let r2 = el(
+            &mut dom,
+            "input",
+            &[("type", "radio"), ("name", "gender"), ("value", "female")],
+        );
+        dom.append_child(form, r1);
+        dom.append_child(form, r2);
+
+        let mut edited = HashMap::new();
+        edited.insert("color".to_string(), "blue".to_string());
+        edited.insert("gender".to_string(), "male".to_string());
+
+        let req = submit_with_values(&dom, form, &edited).unwrap();
+        assert_eq!(req.url, "/a?color=blue&gender=male");
     }
 }
 
