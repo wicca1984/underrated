@@ -14,6 +14,7 @@ pub mod encoding;
 pub mod engine;
 pub mod event;
 pub mod font;
+pub mod forms;
 pub mod geom;
 pub mod html;
 pub mod image;
