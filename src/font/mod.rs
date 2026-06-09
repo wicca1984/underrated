@@ -6,8 +6,8 @@
 pub struct BitmapFont {
     width: u32,
     height: u32,
-    /// Row-major coverage data (0..=255) for printable ASCII (0x20-0x7E).
-    /// Size: 95 * width * height.
+    /// Row-major coverage data (0..=255) for printable ASCII (0x20-0x7E) plus the .notdef glyph.
+    /// Size: 96 * width * height.
     data: &'static [u8],
 }
 
@@ -35,37 +35,51 @@ impl BitmapFont {
     ///
     /// The length of the returned slice is always `width * height`.
     /// Printable ASCII (0x20-0x7E) returns its respective glyph.
-    /// Other characters return a blank glyph.
+    /// Other characters return the visible `.notdef` glyph.
     pub fn glyph_coverage(&self, c: char) -> &[u8] {
         let index = if (0x20..=0x7E).contains(&(c as u32)) {
             (c as u32 - 0x20) as usize
         } else {
-            // TODO(spec): Non-ASCII/non-printable chars return a blank or tofu box.
-            // Using index for space (0x20) as a blank box for now.
-            0
+            // spec: Undefined chars return a visible .notdef box (not blank)
+            95
         };
 
         let size = (self.width * self.height) as usize;
         let start = index * size;
         // Checked slice so a future change to the glyph table can never panic
-        // here (I-6); fall back to the blank cell at index 0.
-        self.data
-            .get(start..start + size)
-            .or_else(|| self.data.get(0..size))
-            .unwrap_or(&[])
+        // here (I-6); fall back to the .notdef cell at index 95.
+        if let Some(slice) = self.data.get(start..start + size) {
+            slice
+        } else if let Some(slice) = self.data.get(95 * size..96 * size) {
+            slice
+        } else {
+            &[]
+        }
     }
 
     /// Returns the (width, height) of a glyph cell in pixels.
     pub fn glyph_size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
+
+    /// Returns the total pixel width of the given string.
+    ///
+    /// spec: measure(s) returns total pixel width for layout.
+    pub fn measure(&self, s: &str) -> u32 {
+        let total = s.chars().map(|c| self.glyph_width(c) as u64).sum::<u64>();
+        if total > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            total as u32
+        }
+    }
 }
 
 /// Expands 1-bit bitmaps into 8-bit coverage data.
-const fn expand_bitmaps(bitmaps: &[u64; 95]) -> [u8; 95 * 8 * 8] {
-    let mut data = [0u8; 95 * 8 * 8];
+const fn expand_bitmaps(bitmaps: &[u64; 96]) -> [u8; 96 * 8 * 8] {
+    let mut data = [0u8; 96 * 8 * 8];
     let mut i = 0;
-    while i < 95 {
+    while i < 96 {
         let bitmap = bitmaps[i];
         let mut row = 0;
         while row < 8 {
@@ -85,10 +99,10 @@ const fn expand_bitmaps(bitmaps: &[u64; 95]) -> [u8; 95 * 8 * 8] {
     data
 }
 
-// Simple 8x8 bitmaps for printable ASCII (0x20-0x7E).
+// Simple 8x8 bitmaps for printable ASCII (0x20-0x7E) plus the .notdef glyph at the end.
 // Each u64 contains 8 rows of 8 bits. Row 0 is the top row (most significant byte).
 // Bit 7 of each byte is the leftmost pixel.
-const BITMAPS: [u64; 95] = [
+const BITMAPS: [u64; 96] = [
     0x0000000000000000, // 0x20 space
     0x1818181818001800, // 0x21 !
     0x6666660000000000, // 0x22 "
@@ -184,9 +198,10 @@ const BITMAPS: [u64; 95] = [
     0x1818181818181800, // 0x7C |
     0x3018180C18183000, // 0x7D }
     0x0000314A44000000, // 0x7E ~
+    0xFF81A59999A581FF, // 0x7F / .notdef box
 ];
 
-const BUILTIN_GLYPHS: [u8; 95 * 8 * 8] = expand_bitmaps(&BITMAPS);
+const BUILTIN_GLYPHS: [u8; 96 * 8 * 8] = expand_bitmaps(&BITMAPS);
 
 #[cfg(test)]
 mod tests {
@@ -216,11 +231,77 @@ mod tests {
     }
 
     #[test]
-    fn test_out_of_range_is_valid() {
+    fn test_lowercase_coverage_not_blank() {
         let font = BitmapFont::builtin();
-        let coverage = font.glyph_coverage('\u{0000}');
-        assert_eq!(coverage.len(), 64);
+        for c in 'a'..='z' {
+            let coverage = font.glyph_coverage(c);
+            assert!(
+                coverage.iter().any(|&v| v > 0),
+                "Lowercase character '{}' should not be blank",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_numbers_coverage_not_blank() {
+        let font = BitmapFont::builtin();
+        for c in '0'..='9' {
+            let coverage = font.glyph_coverage(c);
+            assert!(
+                coverage.iter().any(|&v| v > 0),
+                "Number '{}' should not be blank",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_symbols_coverage_not_blank() {
+        let font = BitmapFont::builtin();
+        // Check a bunch of symbols
+        for c in [
+            '!', '#', '$', '%', '&', '*', '+', ',', '-', '.', '/', ':', ';', '<', '=', '>', '?',
+            '@', '[', '\\', ']', '^', '_', '`', '{', '|', '}', '~',
+        ] {
+            let coverage = font.glyph_coverage(c);
+            assert!(
+                coverage.iter().any(|&v| v > 0),
+                "Symbol '{}' should not be blank",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_out_of_range_returns_notdef() {
+        let font = BitmapFont::builtin();
+        // .notdef glyph is at index 95. Let's make sure that a character outside 0x20..=0x7E
+        // yields the exact same coverage data as the explicit .notdef data.
+        let notdef_expected = font.data[95 * 64..96 * 64].to_vec();
+
+        let coverage_null = font.glyph_coverage('\u{0000}');
+        assert_eq!(coverage_null.len(), 64);
+        assert_eq!(coverage_null, &notdef_expected[..]);
+
         let coverage_emoji = font.glyph_coverage('🦀');
         assert_eq!(coverage_emoji.len(), 64);
+        assert_eq!(coverage_emoji, &notdef_expected[..]);
+
+        // .notdef box must be highly visible (must contain pixels)
+        assert!(
+            coverage_null.iter().any(|&v| v > 0),
+            ".notdef glyph should not be blank"
+        );
+    }
+
+    #[test]
+    fn test_measure() {
+        let font = BitmapFont::builtin();
+        let w = font.glyph_width('a');
+        assert_eq!(font.measure("ab"), w * 2);
+        assert_eq!(font.measure(""), 0);
+        assert_eq!(font.measure("Hello, World!"), w * 13);
+        assert_eq!(font.measure("🦀"), w); // Even unknown emoji has glyph_width
     }
 }
