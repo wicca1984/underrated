@@ -35,6 +35,9 @@ pub struct Tokenizer {
     current_token: Option<Token>,
     current_attribute: Option<(String, String)>,
     token_buffer: std::collections::VecDeque<Token>,
+    return_state: State,
+    character_reference_code: u32,
+    temporary_buffer: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -81,6 +84,15 @@ enum State {
     DoctypeSystemIdentifierSingleQuoted,
     AfterDoctypeSystemIdentifier,
     BogusDoctype,
+    // Character reference states
+    CharacterReference,
+    NamedCharacterReference,
+    NumericCharacterReference,
+    HexadecimalCharacterReferenceStart,
+    DecimalCharacterReferenceStart,
+    HexadecimalCharacterReference,
+    DecimalCharacterReference,
+    NumericCharacterReferenceEnd,
 }
 
 impl Tokenizer {
@@ -92,15 +104,18 @@ impl Tokenizer {
             current_token: None,
             current_attribute: None,
             token_buffer: std::collections::VecDeque::new(),
+            return_state: State::Data,
+            character_reference_code: 0,
+            temporary_buffer: String::new(),
         }
     }
 
     pub fn next_token(&mut self) -> Token {
-        if let Some(token) = self.token_buffer.pop_front() {
-            return token;
-        }
-
         loop {
+            if let Some(token) = self.token_buffer.pop_front() {
+                return token;
+            }
+
             let c = self.input.next();
 
             match self.state {
@@ -108,8 +123,8 @@ impl Tokenizer {
                     // // spec: §13.2.5.1 Data state
                     match c {
                         Some('&') => {
-                            // TODO(spec): Character reference
-                            return Token::Character('&');
+                            self.return_state = State::Data;
+                            self.state = State::CharacterReference;
                         }
                         Some('<') => {
                             self.state = State::TagOpen;
@@ -1536,10 +1551,8 @@ impl Tokenizer {
                             self.state = State::AfterAttributeValueQuoted;
                         }
                         Some('&') => {
-                            // TODO(spec): Character reference
-                            if let Some(attr) = &mut self.current_attribute {
-                                attr.1.push('&');
-                            }
+                            self.return_state = State::AttributeValueDoubleQuoted;
+                            self.state = State::CharacterReference;
                         }
                         Some('\0') => {
                             self.emit_error("unexpected-null-character");
@@ -1566,10 +1579,8 @@ impl Tokenizer {
                             self.state = State::AfterAttributeValueQuoted;
                         }
                         Some('&') => {
-                            // TODO(spec): Character reference
-                            if let Some(attr) = &mut self.current_attribute {
-                                attr.1.push('&');
-                            }
+                            self.return_state = State::AttributeValueSingleQuoted;
+                            self.state = State::CharacterReference;
                         }
                         Some('\0') => {
                             self.emit_error("unexpected-null-character");
@@ -1597,10 +1608,8 @@ impl Tokenizer {
                             self.state = State::BeforeAttributeName;
                         }
                         Some('&') => {
-                            // TODO(spec): Character reference
-                            if let Some(attr) = &mut self.current_attribute {
-                                attr.1.push('&');
-                            }
+                            self.return_state = State::AttributeValueUnquoted;
+                            self.state = State::CharacterReference;
                         }
                         Some('>') => {
                             self.emit_current_attribute();
@@ -1699,6 +1708,208 @@ impl Tokenizer {
                         }
                     }
                 }
+                State::CharacterReference => {
+                    // // spec: §13.2.5.72 Character reference state
+                    self.temporary_buffer.clear();
+                    self.temporary_buffer.push('&');
+                    match c {
+                        Some(c_val) if c_val.is_ascii_alphanumeric() => {
+                            self.state = State::NamedCharacterReference;
+                            self.input.reconsume();
+                        }
+                        Some('#') => {
+                            self.temporary_buffer.push('#');
+                            self.state = State::NumericCharacterReference;
+                        }
+                        _ => {
+                            self.flush_string("&");
+                            self.state = self.return_state;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::NumericCharacterReference => {
+                    // // spec: §13.2.5.75 Numeric character reference state
+                    self.character_reference_code = 0;
+                    match c {
+                        Some(c_val @ 'x') | Some(c_val @ 'X') => {
+                            self.temporary_buffer.push(c_val);
+                            self.state = State::HexadecimalCharacterReferenceStart;
+                        }
+                        _ => {
+                            self.state = State::DecimalCharacterReferenceStart;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::HexadecimalCharacterReferenceStart => {
+                    // // spec: §13.2.5.76 Hexadecimal character reference start state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_hexdigit() => {
+                            self.state = State::HexadecimalCharacterReference;
+                            self.input.reconsume();
+                        }
+                        _ => {
+                            self.emit_error("absence-of-digits-in-numeric-character-reference");
+                            let buffer = self.temporary_buffer.clone();
+                            self.flush_string(&buffer);
+                            self.state = self.return_state;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::DecimalCharacterReferenceStart => {
+                    // // spec: §13.2.5.77 Decimal character reference start state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_digit() => {
+                            self.state = State::DecimalCharacterReference;
+                            self.input.reconsume();
+                        }
+                        _ => {
+                            self.emit_error("absence-of-digits-in-numeric-character-reference");
+                            let buffer = self.temporary_buffer.clone();
+                            self.flush_string(&buffer);
+                            self.state = self.return_state;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::HexadecimalCharacterReference => {
+                    // // spec: §13.2.5.78 Hexadecimal character reference state
+                    match c {
+                        // spec: ASCII hex digit (0-9 / a-f / A-F) ONLY. Other letters
+                        // (g-z, G-Z) must not be consumed here — they terminate the
+                        // reference via the catch-all arm below (missing-semicolon).
+                        Some(c_val) if c_val.is_ascii_hexdigit() => {
+                            self.character_reference_code = self
+                                .character_reference_code
+                                .saturating_mul(16)
+                                .saturating_add(c_val.to_digit(16).unwrap_or(0));
+                        }
+                        Some(';') => {
+                            self.state = State::NumericCharacterReferenceEnd;
+                        }
+                        _ => {
+                            self.emit_error("missing-semicolon-after-character-reference");
+                            self.state = State::NumericCharacterReferenceEnd;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::DecimalCharacterReference => {
+                    // // spec: §13.2.5.79 Decimal character reference state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_digit() => {
+                            self.character_reference_code = self
+                                .character_reference_code
+                                .saturating_mul(10)
+                                .saturating_add(c_val.to_digit(10).unwrap_or(0));
+                        }
+                        Some(';') => {
+                            self.state = State::NumericCharacterReferenceEnd;
+                        }
+                        _ => {
+                            self.emit_error("missing-semicolon-after-character-reference");
+                            self.state = State::NumericCharacterReferenceEnd;
+                            self.input.reconsume();
+                        }
+                    }
+                }
+                State::NumericCharacterReferenceEnd => {
+                    // // spec: §13.2.5.80 Numeric character reference end state
+                    let mut code = self.character_reference_code;
+                    // // spec: §13.2.5.80 replacement rules
+                    if code == 0 {
+                        self.emit_error("null-character-reference");
+                        code = 0xFFFD;
+                    } else if code > 0x10FFFF {
+                        self.emit_error("character-reference-outside-unicode-range");
+                        code = 0xFFFD;
+                    } else if (0xD800..=0xDFFF).contains(&code) {
+                        self.emit_error("surrogate-character-reference");
+                        code = 0xFFFD;
+                    } else if is_noncharacter(code) {
+                        self.emit_error("noncharacter-character-reference");
+                        // No replacement for noncharacters, just error.
+                    } else if is_control_character(code) && !is_whitespace(code) {
+                        self.emit_error("control-character-reference");
+                        code = match code {
+                            0x80 => 0x20AC, // EURO SIGN (€)
+                            0x82 => 0x201A, // SINGLE LOW-9 QUOTATION MARK (‚)
+                            0x83 => 0x0192, // LATIN SMALL LETTER F WITH HOOK (ƒ)
+                            0x84 => 0x201E, // DOUBLE LOW-9 QUOTATION MARK („)
+                            0x85 => 0x2026, // HORIZONTAL ELLIPSIS (…)
+                            0x86 => 0x2020, // DAGGER (†)
+                            0x87 => 0x2021, // DOUBLE DAGGER (‡)
+                            0x88 => 0x02C6, // MODIFIER LETTER CIRCUMFLEX ACCENT (ˆ)
+                            0x89 => 0x2030, // PER MILLE SIGN (‰)
+                            0x8A => 0x0160, // LATIN CAPITAL LETTER S WITH CARON (Š)
+                            0x8B => 0x2039, // SINGLE LEFT-POINTING ANGLE QUOTATION MARK (‹)
+                            0x8C => 0x0152, // LATIN CAPITAL LIGATURE OE (Œ)
+                            0x8E => 0x017D, // LATIN CAPITAL LETTER Z WITH CARON (Ž)
+                            0x91 => 0x2018, // LEFT SINGLE QUOTATION MARK (‘)
+                            0x92 => 0x2019, // RIGHT SINGLE QUOTATION MARK (’)
+                            0x93 => 0x201C, // LEFT DOUBLE QUOTATION MARK (“)
+                            0x94 => 0x201D, // RIGHT DOUBLE QUOTATION MARK (”)
+                            0x95 => 0x2022, // BULLET (•)
+                            0x96 => 0x2013, // EN DASH (–)
+                            0x97 => 0x2014, // EM DASH (—)
+                            0x98 => 0x02DC, // SMALL TILDE (˜)
+                            0x99 => 0x2122, // TRADE MARK SIGN (™)
+                            0x9A => 0x0161, // LATIN SMALL LETTER S WITH CARON (š)
+                            0x9B => 0x203A, // SINGLE RIGHT-POINTING ANGLE QUOTATION MARK (›)
+                            0x9C => 0x0153, // LATIN SMALL LIGATURE OE (œ)
+                            0x9E => 0x017E, // LATIN SMALL LETTER Z WITH CARON (ž)
+                            0x9F => 0x0178, // LATIN CAPITAL LETTER Y WITH DIAERESIS (Ÿ)
+                            _ => code,
+                        };
+                    }
+
+                    if let Some(rc) = std::char::from_u32(code) {
+                        self.flush_character(rc);
+                    } else {
+                        // Should not happen if logic above is correct
+                        self.flush_character('\u{FFFD}');
+                    }
+
+                    self.state = self.return_state;
+                    self.input.reconsume();
+                }
+                State::NamedCharacterReference => {
+                    // // spec: §13.2.5.73 Named character reference state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_alphanumeric() => {
+                            self.temporary_buffer.push(c_val);
+                            if !self.is_maybe_named_match() {
+                                let buffer = self.temporary_buffer.clone();
+                                self.flush_string(&buffer);
+                                self.state = self.return_state;
+                            }
+                        }
+                        Some(';') => {
+                            self.temporary_buffer.push(';');
+                            if let Some(replacement) = self.check_named_match(true) {
+                                self.flush_string(replacement);
+                                self.state = self.return_state;
+                            } else {
+                                let buffer = self.temporary_buffer.clone();
+                                self.flush_string(&buffer);
+                                self.state = self.return_state;
+                            }
+                        }
+                        _ => {
+                            self.input.reconsume();
+                            if let Some(replacement) = self.check_named_match(false) {
+                                self.flush_string(replacement);
+                                self.state = self.return_state;
+                            } else {
+                                let buffer = self.temporary_buffer.clone();
+                                self.flush_string(&buffer);
+                                self.state = self.return_state;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1746,6 +1957,87 @@ impl Tokenizer {
         }
         matched
     }
+
+    fn flush_character(&mut self, c: char) {
+        match self.return_state {
+            State::Data => {
+                self.token_buffer.push_back(Token::Character(c));
+            }
+            State::AttributeValueDoubleQuoted
+            | State::AttributeValueSingleQuoted
+            | State::AttributeValueUnquoted => {
+                if let Some(attr) = &mut self.current_attribute {
+                    attr.1.push(c);
+                }
+            }
+            _ => {
+                // Should not happen according to spec
+            }
+        }
+    }
+
+    fn flush_string(&mut self, s: &str) {
+        for c in s.chars() {
+            self.flush_character(c);
+        }
+    }
+
+    fn check_named_match(&self, has_semicolon: bool) -> Option<&'static str> {
+        let core_entities = [
+            ("&amp;", "&"),
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&quot;", "\""),
+            ("&apos;", "'"),
+            ("&nbsp;", "\u{00A0}"),
+        ];
+
+        for (name, replacement) in core_entities {
+            if has_semicolon {
+                if name == self.temporary_buffer {
+                    return Some(replacement);
+                }
+            } else {
+                // For non-semicolon matches, we check if the buffer is a prefix
+                // but the spec says "match an entry in the table".
+                // Since our core set all have semicolons, this will mostly return None.
+                // However, we should handle cases where the buffer EQUALS an entry.
+                if name == self.temporary_buffer {
+                    return Some(replacement);
+                }
+            }
+        }
+        None
+    }
+
+    fn is_maybe_named_match(&self) -> bool {
+        let core_entities = ["&amp;", "&lt;", "&gt;", "&quot;", "&apos;", "&nbsp;"];
+        for name in core_entities {
+            if name.starts_with(&self.temporary_buffer) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn is_noncharacter(code: u32) -> bool {
+    (0xFDD0..=0xFDEF).contains(&code)
+        || [
+            0xFFFE, 0xFFFF, 0x1FFFE, 0x1FFFF, 0x2FFFE, 0x2FFFF, 0x3FFFE, 0x3FFFF, 0x4FFFE, 0x4FFFF,
+            0x5FFFE, 0x5FFFF, 0x6FFFE, 0x6FFFF, 0x7FFFE, 0x7FFFF, 0x8FFFE, 0x8FFFF, 0x9FFFE,
+            0x9FFFF, 0xAFFFE, 0xAFFFF, 0xBFFFE, 0xBFFFF, 0xCFFFE, 0xCFFFF, 0xDFFFE, 0xDFFFF,
+            0xEFFFE, 0xEFFFF, 0xFFFFE, 0xFFFFF, 0x10FFFE, 0x10FFFF,
+        ]
+        .contains(&code)
+}
+
+fn is_control_character(code: u32) -> bool {
+    (0x0000..=0x001F).contains(&code) || (0x007F..=0x009F).contains(&code)
+}
+
+fn is_whitespace(code: u32) -> bool {
+    matches!(code, 0x0009 | 0x000A | 0x000C | 0x000D | 0x0020)
 }
 
 #[cfg(test)]
