@@ -117,10 +117,15 @@ pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationR
         let Some(name) = attr(dom, node, "name") else {
             continue;
         };
-        let input_type = attr(dom, node, "type").unwrap_or("text").to_ascii_lowercase();
+        let input_type = attr(dom, node, "type")
+            .unwrap_or("text")
+            .to_ascii_lowercase();
 
         // Buttons and submit/reset/file controls are not successful here.
-        if matches!(input_type.as_str(), "submit" | "reset" | "button" | "file" | "image") {
+        if matches!(
+            input_type.as_str(),
+            "submit" | "reset" | "button" | "file" | "image"
+        ) {
             continue;
         }
 
@@ -179,14 +184,21 @@ mod tests {
     fn el(dom: &mut Dom, name: &str, attrs: &[(&str, &str)]) -> NodeId {
         dom.create_node(NodeData::Element {
             name: name.to_string(),
-            attrs: attrs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            attrs: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         })
     }
 
     #[test]
     fn get_search_builds_query() {
         let mut dom = Dom::new();
-        let form = el(&mut dom, "form", &[("action", "/search"), ("method", "get")]);
+        let form = el(
+            &mut dom,
+            "form",
+            &[("action", "/search"), ("method", "get")],
+        );
         let input = el(&mut dom, "input", &[("name", "q")]);
         dom.append_child(form, input);
 
@@ -225,7 +237,11 @@ mod tests {
     fn submit_button_not_serialized() {
         let mut dom = Dom::new();
         let form = el(&mut dom, "form", &[("action", "/a")]);
-        let btn = el(&mut dom, "input", &[("name", "go"), ("type", "submit"), ("value", "Go")]);
+        let btn = el(
+            &mut dom,
+            "input",
+            &[("name", "go"), ("type", "submit"), ("value", "Go")],
+        );
         dom.append_child(form, btn);
         let req = submit(&dom, form, &FormState::new()).unwrap();
         assert_eq!(req.url, "/a"); // empty query
