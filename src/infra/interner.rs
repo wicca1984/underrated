@@ -1,5 +1,5 @@
 //! String interner for deduping strings like tag names and attribute names.
-// spec: S-0. infra（文字列インターン）
+// spec: S-0. infra (string interning)
 
 #![allow(dead_code)]
 

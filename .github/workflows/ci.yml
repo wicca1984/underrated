@@ -1,7 +1,7 @@
 name: CI
 
-# ワーカーのブランチ push と PR で、決定的ゲートを回す。
-# AI レビュー(OCR)はローカルのオーケストレーション側で実行する(ローカルLLMはクラウドrunnerから不可達のため)。
+# Run the deterministic gates on worker branch pushes and PRs.
+# AI review (OCR) runs on the local orchestration side (the local LLM is unreachable from cloud runners).
 on:
   push:
     branches: ["**"]
@@ -23,9 +23,9 @@ jobs:
         with:
           submodules: recursive
 
-      # ubuntu-latest には rustup が同梱されているので `curl sh.rustup.rs` の不安定な
-      # 導入は避け、コンポーネント取得だけを retry でラップする（GitHub/rustup の
-      # 一時的ネットワーク障害でも最大3回やり直す）。
+      # ubuntu-latest ships rustup, so avoid the flaky `curl sh.rustup.rs` install and
+      # only wrap the component fetch in a retry (up to 3 attempts to ride out
+      # transient GitHub/rustup network failures).
       - name: Install Rust toolchain (stable, edition 2024) — resilient
         uses: nick-fields/retry@v3
         with:

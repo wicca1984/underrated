@@ -1,18 +1,19 @@
-# cargo-deny: 依存の脆弱性監査・ライセンス互換・依存ポリシー(AGENTS I-1)を機械強制する。
-# 依存ゼロの今は素通りするが、依存が増えた瞬間からゲートとして効く。
+# cargo-deny: machine-enforces dependency vulnerability auditing, license compatibility,
+# and dependency policy (AGENTS I-1). With zero deps today it passes through, but it acts
+# as a gate the moment dependencies are added.
 
 [advisories]
 version = 2
-# RustSec 脆弱性 DB。yanked クレートは既定で deny。
+# RustSec vulnerability DB. Yanked crates are denied by default.
 ignore = [
-  # paste: proc-macro, unmaintained だが脆弱性ではない。boa_engine の推移依存。
-  # boa が paste を外したら撤去する（定期見直し対象）。
+  # paste: a proc-macro, unmaintained but not a vulnerability; transitive via boa_engine.
+  # Remove once boa drops paste (revisit periodically).
   { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (no security impact); transitive via boa_engine. Remove once boa drops it." },
 ]
 
 [licenses]
 version = 2
-# product は Apache-2.0。許可する OSS ライセンスを明示し、未知ライセンスは弾く。
+# The product is Apache-2.0. List the allowed OSS licenses explicitly and reject unknown ones.
 allow = [
   "MIT",
   "Apache-2.0",
@@ -31,9 +32,9 @@ allow = [
 ]
 
 [bans]
-multiple-versions = "warn"   # 重複バージョンは警告
-wildcards = "deny"           # workspace 内の "*" 依存は禁止
-# deny = [...]               # 将来 I-1 で「ブラウザ中核を肩代わりする巨大クレート」を列挙して禁止
+multiple-versions = "warn"   # warn on duplicate versions
+wildcards = "deny"           # forbid "*" deps within the workspace
+# deny = [...]               # future I-1: list/forbid huge crates that would replace the browser core
 
 [sources]
 unknown-registry = "deny"

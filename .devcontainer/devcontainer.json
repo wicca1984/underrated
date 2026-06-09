@@ -4,29 +4,29 @@
   "remoteUser": "vscode",
 
   "features": {
-    // claude-code feature が npm 経由で入るため node が前提
+    // node is required because the claude-code feature is installed via npm
     "ghcr.io/devcontainers/features/node:1": { "version": "lts" },
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
   },
 
-  // llm-net に参加すると llama-server コンテナへ DNS 名で到達できる
+  // joining llm-net lets us reach the llama-server container by DNS name
   "runArgs": ["--network=llm-net"],
 
-  // コンテナ内 CLI（Claude Code 等）が参照する OpenAI 互換エンドポイント
+  // OpenAI-compatible endpoint that in-container CLIs (Claude Code, etc.) reference
   "containerEnv": {
     "OPENAI_BASE_URL": "http://llama-server:8080/v1",
     "OPENAI_API_KEY": "not-used",
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
-    // cargo home は base image で /usr/local/cargo。registry を named volume に逃がすので明示
+    // cargo home is /usr/local/cargo in the base image; set explicitly since the registry is offloaded to a named volume
     "CARGO_HOME": "/usr/local/cargo"
   },
 
-  // 認証分離方針（_template-python 踏襲, zenn.dev/y_dkama/articles/windows-zed-devcontainers）:
-  //  - gh は **プロジェクト単位** で分離（PAT スコープ＝repo 隔離が意味を持つ）
-  //  - claude は **全プロジェクト共有**（1度どこかで claude /login すれば全コンテナで認証済）
-  //  - gemini も **全プロジェクト共有**（Zed Agent Panel から ACP で叩く。claude と同方針）
-  //  - cargo-registry は **全プロジェクト共有**（crate DL の重複回避。uv-cache の Rust 版）
+  // Auth isolation policy (following _template-python, zenn.dev/y_dkama/articles/windows-zed-devcontainers):
+  //  - gh is isolated **per project** (PAT scope = repo isolation matters)
+  //  - claude is **shared across all projects** (one claude /login anywhere authenticates every container)
+  //  - gemini is also **shared across all projects** (driven via ACP from the Zed Agent Panel; same policy as claude)
+  //  - cargo-registry is **shared across all projects** (avoids duplicate crate downloads; the Rust analog of uv-cache)
   "mounts": [
     "source=${localWorkspaceFolderBasename}-gh-config,target=/home/vscode/.config/gh,type=volume",
     "source=shared-claude-config,target=/home/vscode/.claude,type=volume",
