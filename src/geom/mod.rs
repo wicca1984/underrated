@@ -76,6 +76,74 @@ impl Rect {
             None
         }
     }
+
+    /// Returns the intersection of two rectangles, or None if they do not intersect.
+    /// Touching rectangles (with zero-area intersection) are considered to intersect.
+    ///
+    /// // spec: CSSOM View intersection operation
+    pub fn intersect(&self, other: Rect) -> Option<Rect> {
+        self.intersection(other)
+    }
+
+    /// Returns true if this rectangle intersects with another rectangle.
+    ///
+    /// // spec: CSSOM View intersection check
+    pub fn intersects(&self, other: Rect) -> bool {
+        self.intersection(other).is_some()
+    }
+
+    /// Returns the union of two rectangles, which is the smallest rectangle that contains both.
+    ///
+    /// // spec: CSSOM View union operation
+    pub fn union(&self, other: Rect) -> Rect {
+        let x1 = self.origin.x.min(other.origin.x);
+        let y1 = self.origin.y.min(other.origin.y);
+        let x2 = self.max_x().max(other.max_x());
+        let y2 = self.max_y().max(other.max_y());
+        Rect::new(x1, y1, x2 - x1, y2 - y1)
+    }
+
+    /// Returns true if this rectangle completely contains another rectangle.
+    pub fn contains_rect(&self, other: Rect) -> bool {
+        other.origin.x >= self.origin.x
+            && other.max_x() <= self.max_x()
+            && other.origin.y >= self.origin.y
+            && other.max_y() <= self.max_y()
+    }
+
+    /// Returns a new rectangle translated by the given dx and dy offsets.
+    ///
+    /// // spec: CSSOM View translation helper
+    pub fn translate(&self, dx: f32, dy: f32) -> Rect {
+        Rect::new(
+            self.origin.x + dx,
+            self.origin.y + dy,
+            self.size.width,
+            self.size.height,
+        )
+    }
+
+    /// Returns a new rectangle translated by the coordinates of the given point.
+    ///
+    /// // spec: CSSOM View translation helper
+    pub fn translate_by_point(&self, p: Point) -> Rect {
+        self.translate(p.x, p.y)
+    }
+
+    /// Translates this rectangle in-place by the given dx and dy offsets.
+    ///
+    /// // spec: CSSOM View translation helper
+    pub fn translate_mut(&mut self, dx: f32, dy: f32) {
+        self.origin.x += dx;
+        self.origin.y += dy;
+    }
+
+    /// Translates this rectangle in-place by the coordinates of the given point.
+    ///
+    /// // spec: CSSOM View translation helper
+    pub fn translate_by_point_mut(&mut self, p: Point) {
+        self.translate_mut(p.x, p.y);
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +225,79 @@ mod tests {
         // Disjoint
         let r5 = Rect::new(11.0, 0.0, 10.0, 10.0);
         assert!(r1.intersection(r5).is_none());
+    }
+
+    #[test]
+    fn test_intersect_and_intersects() {
+        let r1 = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let r2 = Rect::new(5.0, 5.0, 10.0, 10.0);
+        let r3 = Rect::new(15.0, 15.0, 5.0, 5.0);
+
+        // intersect behavior
+        let inter = r1.intersect(r2).unwrap();
+        assert!(approx_eq(inter.origin.x, 5.0));
+        assert!(approx_eq(inter.origin.y, 5.0));
+        assert!(approx_eq(inter.size.width, 5.0));
+        assert!(approx_eq(inter.size.height, 5.0));
+
+        assert!(r1.intersect(r3).is_none());
+
+        // intersects behavior
+        assert!(r1.intersects(r2));
+        assert!(!r1.intersects(r3));
+    }
+
+    #[test]
+    fn test_union() {
+        let r1 = Rect::new(1.0, 2.0, 3.0, 4.0);
+        let r2 = Rect::new(5.0, 6.0, 2.0, 2.0);
+
+        let u = r1.union(r2);
+        assert!(approx_eq(u.origin.x, 1.0));
+        assert!(approx_eq(u.origin.y, 2.0));
+        assert!(approx_eq(u.size.width, 6.0)); // max_x is 7.0, min_x is 1.0, width = 6.0
+        assert!(approx_eq(u.size.height, 6.0)); // max_y is 8.0, min_y is 2.0, height = 6.0
+    }
+
+    #[test]
+    fn test_contains_rect() {
+        let r1 = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let r2 = Rect::new(2.0, 2.0, 5.0, 5.0);
+        let r3 = Rect::new(5.0, 5.0, 10.0, 10.0);
+
+        assert!(r1.contains_rect(r2));
+        assert!(!r1.contains_rect(r3));
+        assert!(r1.contains_rect(r1));
+    }
+
+    #[test]
+    fn test_translate() {
+        let r1 = Rect::new(1.0, 2.0, 3.0, 4.0);
+
+        // translate immutably
+        let r2 = r1.translate(2.0, -1.0);
+        assert!(approx_eq(r1.origin.x, 1.0)); // original unmodified
+        assert!(approx_eq(r1.origin.y, 2.0));
+        assert!(approx_eq(r2.origin.x, 3.0));
+        assert!(approx_eq(r2.origin.y, 1.0));
+        assert!(approx_eq(r2.size.width, 3.0));
+        assert!(approx_eq(r2.size.height, 4.0));
+
+        // translate by point
+        let r3 = r1.translate_by_point(Point { x: -1.0, y: 3.0 });
+        assert!(approx_eq(r3.origin.x, 0.0));
+        assert!(approx_eq(r3.origin.y, 5.0));
+
+        // translate mutably
+        let mut r4 = r1;
+        r4.translate_mut(2.0, -1.0);
+        assert!(approx_eq(r4.origin.x, 3.0));
+        assert!(approx_eq(r4.origin.y, 1.0));
+
+        // translate mutably by point
+        r4.translate_by_point_mut(Point { x: -3.0, y: 4.0 });
+        assert!(approx_eq(r4.origin.x, 0.0));
+        assert!(approx_eq(r4.origin.y, 5.0));
     }
 
     #[test]
