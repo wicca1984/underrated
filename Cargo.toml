@@ -6,6 +6,8 @@ description = "An independent web browser engine written from scratch in Rust."
 license = "Apache-2.0"
 
 [dependencies]
+softbuffer = "0.4"
+winit = "0.30"
 
 # テストデータ(html5lib tokenizer JSON)読み込み専用。本体コードは依存しない。
 [dev-dependencies]
