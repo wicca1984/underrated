@@ -38,6 +38,10 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
                 | Component::LastChild => class += 1,
                 Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
                 Component::Universal => {}
+                Component::Is(_) | Component::Where(_) => {
+                    // TODO(spec): :is() has specificity of its most specific argument, and :where() has 0 specificity.
+                    // For now, specificity differences are out of scope for this task (t0178).
+                }
                 Component::Not(compound) => {
                     for sub_comp in &compound.components {
                         match sub_comp {
@@ -50,6 +54,10 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
                             | Component::LastChild => class += 1,
                             Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
                             Component::Universal => {}
+                            Component::Is(_) | Component::Where(_) => {
+                                // TODO(spec): :is() has specificity of its most specific argument, and :where() has 0 specificity.
+                                // For now, specificity differences are out of scope for this task (t0178).
+                            }
                             // Nested :not() (e.g. `:not(:not(.x))`) can be parsed, so count
                             // it like a class rather than panicking on crafted input (I-6).
                             // TODO(spec): recurse for exact Selectors-4 specificity.
