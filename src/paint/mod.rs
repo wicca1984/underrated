@@ -367,11 +367,52 @@ pub fn build_display_list(
                     }
                 }
 
-                items.push(DisplayItem::Image {
-                    rect: layout_box.rect,
-                    src: src.to_string(),
-                    base_url,
-                });
+                let base_url_parsed = base_url
+                    .as_ref()
+                    .and_then(|b| crate::url::Url::parse(b).ok());
+
+                let mut painted_as_pixels = false;
+                if let Some(bytes) = crate::loader::load_image_safely(src, base_url_parsed.as_ref())
+                    && let Some(decoded) = crate::image::decode_png(&bytes)
+                {
+                    let rect_w = layout_box.rect.size.width;
+                    let rect_h = layout_box.rect.size.height;
+                    if rect_w > 0.0 && rect_h > 0.0 && decoded.width > 0 && decoded.height > 0 {
+                        painted_as_pixels = true;
+                        let sub_w = rect_w / decoded.width as f32;
+                        let sub_h = rect_h / decoded.height as f32;
+                        for y in 0..decoded.height {
+                            for x in 0..decoded.width {
+                                let idx = ((y * decoded.width + x) * 4) as usize;
+                                if idx + 3 < decoded.rgba.len() {
+                                    let r = decoded.rgba[idx];
+                                    let g = decoded.rgba[idx + 1];
+                                    let b = decoded.rgba[idx + 2];
+                                    let a = decoded.rgba[idx + 3];
+                                    let color = Color::Rgba(r, g, b, a);
+                                    let sub_rect = Rect::new(
+                                        layout_box.rect.origin.x + x as f32 * sub_w,
+                                        layout_box.rect.origin.y + y as f32 * sub_h,
+                                        sub_w,
+                                        sub_h,
+                                    );
+                                    items.push(DisplayItem::SolidRect {
+                                        rect: sub_rect,
+                                        color,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !painted_as_pixels {
+                    items.push(DisplayItem::Image {
+                        rect: layout_box.rect,
+                        src: src.to_string(),
+                        base_url,
+                    });
+                }
             }
         }
 
@@ -884,6 +925,87 @@ mod tests {
         } else {
             panic!("Expected DisplayItem::Image");
         }
+    }
+
+    #[test]
+    fn test_paint_image_decoded_blit() {
+        use crate::raster::Canvas;
+
+        // 1. Generate 2x2 image
+        let mut source_canvas = Canvas::new(2, 2);
+        // 0xAARRGGBB
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        source_canvas.pixels[2] = 0xFF0000FF; // Blue
+        source_canvas.pixels[3] = 0xFFFFFF00; // Yellow
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_paint_test_image.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("src".into(), temp_filename.into())],
+        });
+        dom.append_child(doc, img);
+
+        let stylesheet = parse_stylesheet("img { width: 4px; height: 4px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Clean up the temp file
+        let _ = std::fs::remove_file(temp_filename);
+
+        // We expect exactly 4 SolidRect items (representing the 2x2 pixels of the image)
+        // rather than 1 DisplayItem::Image item!
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(
+            solid_rects.len(),
+            4,
+            "Expected 4 SolidRects representing decoded PNG pixels"
+        );
+
+        // Let's verify the positions and colors of the SolidRects
+        // Because the image has width 4px and height 4px, sub_w = 2.0, sub_h = 2.0
+        // Rects should be at (0,0), (2,0), (0,2), (2,2) with size 2x2
+        let mut found_red = false;
+        let mut found_green = false;
+        let mut found_blue = false;
+        let mut found_yellow = false;
+
+        for item in solid_rects {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                assert_eq!(rect.size.width, 2.0);
+                assert_eq!(rect.size.height, 2.0);
+                if rect.origin.x == 0.0 && rect.origin.y == 0.0 {
+                    assert_eq!(color, &Color::Rgba(255, 0, 0, 255));
+                    found_red = true;
+                } else if rect.origin.x == 2.0 && rect.origin.y == 0.0 {
+                    assert_eq!(color, &Color::Rgba(0, 255, 0, 255));
+                    found_green = true;
+                } else if rect.origin.x == 0.0 && rect.origin.y == 2.0 {
+                    assert_eq!(color, &Color::Rgba(0, 0, 255, 255));
+                    found_blue = true;
+                } else if rect.origin.x == 2.0 && rect.origin.y == 2.0 {
+                    assert_eq!(color, &Color::Rgba(255, 255, 0, 255));
+                    found_yellow = true;
+                }
+            }
+        }
+
+        assert!(found_red, "Red pixel not found or incorrect");
+        assert!(found_green, "Green pixel not found or incorrect");
+        assert!(found_blue, "Blue pixel not found or incorrect");
+        assert!(found_yellow, "Yellow pixel not found or incorrect");
     }
 
     #[test]
