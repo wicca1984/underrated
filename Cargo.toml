@@ -7,6 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 boa_engine = "0.21.1"
+jpeg-decoder = { version = "0.3.2", default-features = false }
 png = "0.18.1"
 softbuffer = "0.4"
 ureq = { version = "3.3.0", features = ["gzip"] }
