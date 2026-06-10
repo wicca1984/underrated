@@ -79,6 +79,8 @@ fn find_input_by_name(dom: &Dom, name_attr: &str) -> Option<NodeId> {
     None
 }
 
+/// Verification for MS-MVP condition 3: asserts that the GET search form-submission
+/// results page is actually painted and rasterized.
 #[test]
 fn test_get_search_form_submit_nav_smoke() {
     // 1. Build a GET search form and parse it into a DOM.
@@ -123,8 +125,52 @@ fn test_get_search_form_submit_nav_smoke() {
         .expect("Rendered <a> element not found in navigated page");
     let a_text = page.dom.text_content(a_id);
     assert_eq!(a_text, "Result One");
+
+    // 5. Paint-level (raster) assertions for MS-MVP condition 3.
+    // Build display list and rasterize the navigated page.
+    let display_list = underrated::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+    let canvas = underrated::raster::rasterize(&display_list, 800, 600);
+
+    // Assert 1: The canvas contains MORE THAN ONE distinct color.
+    let mut unique_colors = std::collections::HashSet::new();
+    for &pixel in &canvas.pixels {
+        unique_colors.insert(pixel);
+    }
+    assert!(
+        unique_colors.len() > 1,
+        "Canvas must contain more than one distinct color, but found only {}",
+        unique_colors.len()
+    );
+
+    // Assert 2: The styled link is rasterized in its UA blue color.
+    let mut found_link_blue_threshold = false;
+    let mut found_exact_blue = false;
+
+    for &pixel in &canvas.pixels {
+        let r = (pixel >> 16) & 0xFF;
+        let g = (pixel >> 8) & 0xFF;
+        let b = pixel & 0xFF;
+
+        if b >= 0x80 && r <= 0x40 && g <= 0x40 {
+            found_link_blue_threshold = true;
+        }
+        if pixel == 0xFF0000EE {
+            found_exact_blue = true;
+        }
+    }
+
+    assert!(
+        found_link_blue_threshold,
+        "Expected to find at least one pixel with high blue and low red/green channels for the styled link"
+    );
+    assert!(
+        found_exact_blue,
+        "Expected to find at least one pixel with exact UA link blue color 0xFF0000EE"
+    );
 }
 
+/// Verification for MS-MVP condition 3: asserts that the POST search form-submission
+/// results page is actually painted and rasterized.
 #[test]
 fn test_post_search_form_submit_nav_smoke() {
     // 1. Build a POST search form and parse it into a DOM.
@@ -177,4 +223,46 @@ fn test_post_search_form_submit_nav_smoke() {
         .expect("Rendered <a> element not found in navigated page");
     let a_text = page.dom.text_content(a_id);
     assert_eq!(a_text, "Post Result One");
+
+    // 5. Paint-level (raster) assertions for MS-MVP condition 3.
+    // Build display list and rasterize the navigated page.
+    let display_list = underrated::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+    let canvas = underrated::raster::rasterize(&display_list, 800, 600);
+
+    // Assert 1: The canvas contains MORE THAN ONE distinct color.
+    let mut unique_colors = std::collections::HashSet::new();
+    for &pixel in &canvas.pixels {
+        unique_colors.insert(pixel);
+    }
+    assert!(
+        unique_colors.len() > 1,
+        "Canvas must contain more than one distinct color, but found only {}",
+        unique_colors.len()
+    );
+
+    // Assert 2: The styled link is rasterized in its UA blue color.
+    let mut found_link_blue_threshold = false;
+    let mut found_exact_blue = false;
+
+    for &pixel in &canvas.pixels {
+        let r = (pixel >> 16) & 0xFF;
+        let g = (pixel >> 8) & 0xFF;
+        let b = pixel & 0xFF;
+
+        if b >= 0x80 && r <= 0x40 && g <= 0x40 {
+            found_link_blue_threshold = true;
+        }
+        if pixel == 0xFF0000EE {
+            found_exact_blue = true;
+        }
+    }
+
+    assert!(
+        found_link_blue_threshold,
+        "Expected to find at least one pixel with high blue and low red/green channels for the styled link"
+    );
+    assert!(
+        found_exact_blue,
+        "Expected to find at least one pixel with exact UA link blue color 0xFF0000EE"
+    );
 }
