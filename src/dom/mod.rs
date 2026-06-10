@@ -30,6 +30,8 @@ struct Node {
     data: NodeData,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
+    input_value: Option<String>,
+    input_value_dirty: bool,
 }
 
 /// The DOM tree, managing nodes in an arena.
@@ -53,6 +55,8 @@ impl Dom {
             data: NodeData::Document,
             parent: None,
             children: Vec::new(),
+            input_value: None,
+            input_value_dirty: false,
         });
         Self { arena, document }
     }
@@ -68,6 +72,8 @@ impl Dom {
             data,
             parent: None,
             children: Vec::new(),
+            input_value: None,
+            input_value_dirty: false,
         })
     }
 

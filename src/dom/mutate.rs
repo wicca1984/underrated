@@ -89,6 +89,68 @@ impl Dom {
             *t = text.to_string();
         }
     }
+
+    /// Returns the current value of an `<input>` element.
+    /// Returns `None` if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn get_input_value(&self, node: NodeId) -> Option<String> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            if n.input_value_dirty {
+                // If dirty, return the current input_value or fallback to empty string
+                let val = match &n.input_value {
+                    Some(v) => v.clone(),
+                    None => String::new(),
+                };
+                return Some(val);
+            } else {
+                // If not dirty, return the value of the "value" content attribute, or empty string
+                let attr_val = attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                return Some(attr_val);
+            }
+        }
+        None
+    }
+
+    /// Sets the current value of an `<input>` element, marking it as dirty.
+    /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn set_input_value(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get_mut(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            n.input_value = Some(value.to_string());
+            n.input_value_dirty = true;
+        }
+    }
+
+    /// Returns whether the `<input>` element's value has been modified (dirty flag).
+    /// Returns `None` if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn is_input_value_dirty(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            return Some(n.input_value_dirty);
+        }
+        None
+    }
+
+    /// Sets the dirty flag of an `<input>` element.
+    /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn set_input_value_dirty(&mut self, node: NodeId, dirty: bool) {
+        if let Some(n) = self.arena.get_mut(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            n.input_value_dirty = dirty;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +247,89 @@ mod tests {
         dom2.remove_child(dom2.document(), foreign);
         dom2.insert_before(dom2.document(), foreign, None);
         assert_eq!(dom2.get_attribute(foreign, "a"), None);
+    }
+
+    #[test]
+    fn test_input_value_initial_and_attribute() {
+        let mut dom = Dom::new();
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("value".to_string(), "initial-val".to_string())],
+        });
+
+        // Initially not dirty, should return the attribute value
+        assert_eq!(dom.is_input_value_dirty(input_id), Some(false));
+        assert_eq!(
+            dom.get_input_value(input_id),
+            Some("initial-val".to_string())
+        );
+
+        // Update value attribute on non-dirty input
+        dom.set_attribute(input_id, "value", "updated-val");
+        assert_eq!(
+            dom.get_input_value(input_id),
+            Some("updated-val".to_string())
+        );
+    }
+
+    #[test]
+    fn test_input_value_set_dirty_exclusivity() {
+        let mut dom = Dom::new();
+        let input_id = dom.create_node(NodeData::Element {
+            name: "INPUT".to_string(), // case-insensitive tag test
+            attrs: vec![("value".to_string(), "initial".to_string())],
+        });
+
+        // Explicitly setting input value makes it dirty
+        dom.set_input_value(input_id, "user-typed");
+        assert_eq!(dom.is_input_value_dirty(input_id), Some(true));
+        assert_eq!(
+            dom.get_input_value(input_id),
+            Some("user-typed".to_string())
+        );
+
+        // Setting "value" attribute when dirty should NOT change the current value
+        dom.set_attribute(input_id, "value", "attr-change-while-dirty");
+        assert_eq!(
+            dom.get_input_value(input_id),
+            Some("user-typed".to_string())
+        );
+
+        // But the attribute itself is updated successfully
+        assert_eq!(
+            dom.get_attribute(input_id, "value"),
+            Some("attr-change-while-dirty")
+        );
+
+        // If we reset the dirty flag, it should fall back to the attribute value
+        dom.set_input_value_dirty(input_id, false);
+        assert_eq!(dom.is_input_value_dirty(input_id), Some(false));
+        assert_eq!(
+            dom.get_input_value(input_id),
+            Some("attr-change-while-dirty".to_string())
+        );
+    }
+
+    #[test]
+    fn test_input_value_non_input_and_invalid_nodes() {
+        let mut dom1 = Dom::new();
+        let mut dom2 = Dom::new();
+        let div_id = elem(&mut dom1, "div");
+        let text_id = dom1.create_node(NodeData::Text("hello".to_string()));
+        let foreign_id = elem(&mut dom2, "input");
+
+        // Division is not an input
+        assert_eq!(dom1.get_input_value(div_id), None);
+        assert_eq!(dom1.is_input_value_dirty(div_id), None);
+        dom1.set_input_value(div_id, "test"); // no-op
+        assert_eq!(dom1.get_input_value(div_id), None);
+
+        // Text node is not an input
+        assert_eq!(dom1.get_input_value(text_id), None);
+        assert_eq!(dom1.is_input_value_dirty(text_id), None);
+
+        // Stale / foreign NodeId on dom1
+        assert_eq!(dom1.get_input_value(foreign_id), None);
+        assert_eq!(dom1.is_input_value_dirty(foreign_id), None);
     }
 }
