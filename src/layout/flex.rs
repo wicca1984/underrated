@@ -1,4 +1,4 @@
-use crate::css::values::{AlignItemsValue, CssValue, JustifyContentValue};
+use crate::css::values::{AlignItemsValue, CssValue, JustifyContentValue, LengthUnit};
 use crate::dom::Dom;
 use crate::geom::{Point, Rect};
 use crate::infra::NodeId;
@@ -108,6 +108,49 @@ pub fn layout_flex_container(
         _ => FlexWrap::Nowrap,
     };
 
+    // Resolve main_gap and cross_gap from style
+    let mut row_gap = None;
+    let mut col_gap = None;
+
+    if let Some(CssValue::Length(px, LengthUnit::Px)) = style.get("row-gap") {
+        row_gap = Some(*px);
+    } else if style.get("row-gap").is_some() {
+        // TODO(spec): non-px gap units
+    }
+
+    if let Some(CssValue::Length(px, LengthUnit::Px)) = style.get("column-gap") {
+        col_gap = Some(*px);
+    } else if style.get("column-gap").is_some() {
+        // TODO(spec): non-px gap units
+    }
+
+    if let (true, Some(val)) = (row_gap.is_none() || col_gap.is_none(), style.get("gap")) {
+        match val {
+            CssValue::Length(px, LengthUnit::Px) => {
+                if row_gap.is_none() {
+                    row_gap = Some(*px);
+                }
+                if col_gap.is_none() {
+                    col_gap = Some(*px);
+                }
+            }
+            CssValue::Multiple(vals) if vals.len() > 1 => {
+                // TODO(spec): two-value gap shorthand
+            }
+            _ => {
+                // TODO(spec): non-px gap units
+            }
+        }
+    }
+
+    let row_gap = row_gap.unwrap_or(0.0).max(0.0);
+    let col_gap = col_gap.unwrap_or(0.0).max(0.0);
+
+    let (main_gap, cross_gap) = match flex_direction {
+        FlexDirection::Row => (col_gap, row_gap),
+        FlexDirection::Column => (row_gap, col_gap),
+    };
+
     // 1. Layout children to determine their base sizes.
     // For now, we layout them as blocks to get their natural height/width.
     let mut children = Vec::new();
@@ -157,14 +200,22 @@ pub fn layout_flex_container(
                 FlexDirection::Column => child.rect.size.height,
             };
 
+            let gap_to_add = if current_line.children.is_empty() {
+                0.0
+            } else {
+                main_gap
+            };
+
             if !current_line.children.is_empty()
-                && current_line_main_size + child_main_size > main_size
+                && current_line_main_size + gap_to_add + child_main_size > main_size
             {
                 lines.push(current_line);
                 current_line = FlexLine {
                     children: Vec::new(),
                 };
                 current_line_main_size = 0.0;
+            } else if !current_line.children.is_empty() {
+                current_line_main_size += gap_to_add;
             }
 
             current_line_main_size += child_main_size;
@@ -191,7 +242,13 @@ pub fn layout_flex_container(
             }
         }
 
-        let line_free_space = main_size - total_line_main_size;
+        let gap_count = if line.children.is_empty() {
+            0
+        } else {
+            line.children.len() - 1
+        };
+        let total_gap_size = gap_count as f32 * main_gap;
+        let line_free_space = main_size - total_line_main_size - total_gap_size;
         let has_explicit_main_size = match flex_direction {
             FlexDirection::Row => true,
             FlexDirection::Column => has_explicit_size(Some(style), "height"),
@@ -268,17 +325,25 @@ pub fn layout_flex_container(
         line_total_main_sizes.push(total_main_size);
     }
 
+    let num_lines = lines.len();
+    let total_cross_gap = if num_lines > 1 {
+        (num_lines - 1) as f32 * cross_gap
+    } else {
+        0.0
+    };
     let sum_of_each_line_max_cross_size: f32 = line_max_cross_sizes.iter().sum();
+    let total_lines_cross_size = sum_of_each_line_max_cross_size + total_cross_gap;
+
     let container_cross_size = match flex_direction {
-        FlexDirection::Row => get_px(style, "height", sum_of_each_line_max_cross_size)
-            .max(sum_of_each_line_max_cross_size),
-        FlexDirection::Column => content_width.max(sum_of_each_line_max_cross_size),
+        FlexDirection::Row => {
+            get_px(style, "height", total_lines_cross_size).max(total_lines_cross_size)
+        }
+        FlexDirection::Column => content_width.max(total_lines_cross_size),
     };
 
-    // Calculate cross offsets for each line based on align-content
-    let num_lines = lines.len();
+    // Calculate cross offsets for each line based on align-content and cross_gap
     let mut line_cross_offsets = Vec::new();
-    let free_space = (container_cross_size - sum_of_each_line_max_cross_size).max(0.0);
+    let free_space = (container_cross_size - total_lines_cross_size).max(0.0);
 
     if num_lines > 1 {
         match align_content {
@@ -286,7 +351,7 @@ pub fn layout_flex_container(
                 let mut current_offset = 0.0;
                 for &size in &line_max_cross_sizes {
                     line_cross_offsets.push(current_offset);
-                    current_offset += size;
+                    current_offset += size + cross_gap;
                 }
             }
             AlignContent::Center => {
@@ -294,15 +359,15 @@ pub fn layout_flex_container(
                 let mut current_offset = start_offset;
                 for &size in &line_max_cross_sizes {
                     line_cross_offsets.push(current_offset);
-                    current_offset += size;
+                    current_offset += size + cross_gap;
                 }
             }
             AlignContent::SpaceBetween => {
-                let gap = free_space / (num_lines - 1) as f32;
+                let extra_gap = free_space / (num_lines - 1) as f32;
                 let mut current_offset = 0.0;
                 for &size in &line_max_cross_sizes {
                     line_cross_offsets.push(current_offset);
-                    current_offset += size + gap;
+                    current_offset += size + cross_gap + extra_gap;
                 }
             }
         }
@@ -313,6 +378,21 @@ pub fn layout_flex_container(
             current_offset += size;
         }
     }
+
+    let mut line_total_main_sizes_with_gap = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let gap_count = if line.children.is_empty() {
+            0
+        } else {
+            line.children.len() - 1
+        };
+        let line_total_gap_size = gap_count as f32 * main_gap;
+        line_total_main_sizes_with_gap.push(line_total_main_sizes[idx] + line_total_gap_size);
+    }
+    let max_line_total_main_size_with_gap = line_total_main_sizes_with_gap
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max);
 
     let mut positioned_children = Vec::new();
 
@@ -328,13 +408,22 @@ pub fn layout_flex_container(
         };
 
         // 3. Position children inside this line
+        let gap_count = if line.children.is_empty() {
+            0
+        } else {
+            line.children.len() - 1
+        };
+        let line_total_gap_size = gap_count as f32 * main_gap;
+        let line_total_main_size_with_gap = line_total_main_size + line_total_gap_size;
+
         let (mut main_cursor, spacing) = match justify_content {
             JustifyContent::FlexStart => (0.0, 0.0),
-            JustifyContent::FlexEnd => (main_size - line_total_main_size, 0.0),
-            JustifyContent::Center => ((main_size - line_total_main_size) / 2.0, 0.0),
+            JustifyContent::FlexEnd => (main_size - line_total_main_size_with_gap, 0.0),
+            JustifyContent::Center => ((main_size - line_total_main_size_with_gap) / 2.0, 0.0),
             JustifyContent::SpaceBetween => {
                 let spacing = if line.children.len() > 1 {
-                    ((main_size - line_total_main_size) / (line.children.len() - 1) as f32).max(0.0)
+                    ((main_size - line_total_main_size_with_gap) / (line.children.len() - 1) as f32)
+                        .max(0.0)
                 } else {
                     0.0
                 };
@@ -343,10 +432,10 @@ pub fn layout_flex_container(
             JustifyContent::SpaceAround => {
                 if line.children.is_empty() {
                     (0.0, 0.0)
-                } else if line.children.len() == 1 || main_size < line_total_main_size {
-                    ((main_size - line_total_main_size) / 2.0, 0.0)
+                } else if line.children.len() == 1 || main_size < line_total_main_size_with_gap {
+                    ((main_size - line_total_main_size_with_gap) / 2.0, 0.0)
                 } else {
-                    let free_space = main_size - line_total_main_size;
+                    let free_space = main_size - line_total_main_size_with_gap;
                     let spacing = free_space / line.children.len() as f32;
                     (spacing / 2.0, spacing)
                 }
@@ -354,10 +443,10 @@ pub fn layout_flex_container(
             JustifyContent::SpaceEvenly => {
                 if line.children.is_empty() {
                     (0.0, 0.0)
-                } else if line.children.len() == 1 || main_size < line_total_main_size {
-                    ((main_size - line_total_main_size) / 2.0, 0.0)
+                } else if line.children.len() == 1 || main_size < line_total_main_size_with_gap {
+                    ((main_size - line_total_main_size_with_gap) / 2.0, 0.0)
                 } else {
-                    let free_space = main_size - line_total_main_size;
+                    let free_space = main_size - line_total_main_size_with_gap;
                     let spacing = free_space / (line.children.len() + 1) as f32;
                     (spacing, spacing)
                 }
@@ -414,23 +503,19 @@ pub fn layout_flex_container(
 
             crate::layout::position::shift_layout_box(child_box, styles, dx, dy, depth);
 
-            match flex_direction {
-                FlexDirection::Row => {
-                    main_cursor += child_box.rect.size.width + spacing;
-                }
-                FlexDirection::Column => {
-                    main_cursor += child_box.rect.size.height + spacing;
-                }
-            }
+            let advance = match flex_direction {
+                FlexDirection::Row => child_box.rect.size.width,
+                FlexDirection::Column => child_box.rect.size.height,
+            };
+            main_cursor += advance + main_gap + spacing;
         }
 
         positioned_children.extend(line.children);
     }
 
-    let max_line_total_main_size = line_total_main_sizes.iter().cloned().fold(0.0f32, f32::max);
     let border_box_height = match flex_direction {
         FlexDirection::Row => container_cross_size,
-        FlexDirection::Column => get_px(style, "height", max_line_total_main_size),
+        FlexDirection::Column => get_px(style, "height", max_line_total_main_size_with_gap),
     } + padding_top
         + padding_bottom
         + border_top
@@ -1705,5 +1790,247 @@ mod tests {
         // Child 2 scaled shrink: (600 / 800) * 100 = 75. New height: 200 - 75 = 125.
         assert!(approx_eq(container_box.children[0].rect.size.height, 175.0));
         assert!(approx_eq(container_box.children[1].rect.size.height, 125.0));
+    }
+
+    #[test]
+    fn test_flex_row_gap() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+        dom.append_child(container, child3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 500px;
+                column-gap: 10px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+            #child3 {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Check positions
+        // inner_x defaults to 0.0 (since no margins/padding/border)
+        // Child 1 starts at 0.0, ends at 100.0
+        // Child 2 starts at 0.0 + 100.0 + 10.0 (gap) = 110.0
+        // Child 3 starts at 110.0 + 100.0 + 10.0 (gap) = 220.0
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 110.0));
+        assert!(approx_eq(container_box.children[2].rect.origin.x, 220.0));
+    }
+
+    #[test]
+    fn test_flex_wrap_row_gap() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+        dom.append_child(container, child3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                flex-wrap: wrap;
+                width: 250px;
+                column-gap: 10px;
+                row-gap: 8px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+            #child3 {
+                width: 100px;
+                height: 40px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Wrapping details:
+        // Child 1 (100px) + Gap (10px) + Child 2 (100px) = 210px <= 250px.
+        // If we tried to fit Child 3: 210px + Gap (10px) + Child 3 (100px) = 320px > 250px, so Child 3 wraps to Line 2.
+        // Line 1 contains Child 1 and Child 2. Max cross size = 50.0.
+        // Line 2 contains Child 3. Max cross size = 40.0.
+        // Since row-gap is 8px, Line 2's cross offset (y) is: Line 1 cross offset (0.0) + Line 1 max height (50.0) + row_gap (8.0) = 58.0.
+        assert_eq!(container_box.children.len(), 3);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
+
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 110.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 0.0));
+
+        assert!(approx_eq(container_box.children[2].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[2].rect.origin.y, 58.0));
+    }
+
+    #[test]
+    fn test_flex_single_value_gap() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+                gap: 12px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Since column-gap and row-gap are absent, `gap` (12px) acts as both column-gap and row-gap.
+        // Since flex-direction is row, main_gap is column-gap = 12px.
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 112.0));
+    }
+
+    #[test]
+    fn test_flex_gap_justify_content() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+                justify-content: center;
+                gap: 20px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Container: 300px. Children: 100px + 100px = 200px. Gap: 20px.
+        // Total main size of items + gaps = 220px.
+        // Free space = 300 - 220 = 80px.
+        // justify-content: center -> start cursor offset = 80 / 2 = 40px.
+        // Child 1 starts at 40px.
+        // Child 2 starts at 40 + 100 (child1) + 20 (gap) = 160px.
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 40.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 160.0));
     }
 }
