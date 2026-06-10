@@ -6,6 +6,76 @@ use crate::layout::LayoutBox;
 use crate::style::ComputedStyle;
 use std::collections::HashMap;
 
+fn is_inline_block(styles: &HashMap<NodeId, ComputedStyle>, node: NodeId) -> bool {
+    if let Some(style) = styles.get(&node) {
+        matches!(
+            style.get("display"),
+            Some(crate::css::values::CssValue::Display(
+                crate::css::values::DisplayValue::InlineBlock
+            ))
+        ) || matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "inline-block")
+    } else {
+        false
+    }
+}
+
+fn shift_y(layout_box: &mut LayoutBox, delta: f32) {
+    layout_box.rect.origin.y += delta;
+    for child in &mut layout_box.children {
+        shift_y(child, delta);
+    }
+}
+
+fn create_line_box_adjusted(
+    mut children: Vec<LayoutBox>,
+    offset_x: f32,
+    offset_y: f32,
+    width: f32,
+    line_height: f32,
+    styles: &HashMap<NodeId, ComputedStyle>,
+) -> LayoutBox {
+    // For each child, adjust its Y position to align its bottom edge with the bottom of the line box.
+    let line_box_bottom_y = offset_y + line_height;
+
+    for child in &mut children {
+        if let Some(style) = child
+            .node
+            .filter(|&id| is_inline_block(styles, id))
+            .and_then(|id| styles.get(&id))
+        {
+            let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+            let border_box_height = child.rect.size.height;
+            let target_y = line_box_bottom_y - margin_bottom - border_box_height;
+            let delta = target_y - child.rect.origin.y;
+            if delta != 0.0 {
+                shift_y(child, delta);
+            }
+            continue;
+        }
+        let border_box_height = child.rect.size.height;
+        let target_y = line_box_bottom_y - border_box_height;
+        let delta = target_y - child.rect.origin.y;
+        if delta != 0.0 {
+            shift_y(child, delta);
+        }
+    }
+
+    LayoutBox {
+        node: None,
+        rect: Rect {
+            origin: Point {
+                x: offset_x,
+                y: offset_y,
+            },
+            size: Size {
+                width,
+                height: line_height,
+            },
+        },
+        children,
+    }
+}
+
 /// Layout inline content from a slice of children, wrapping text and display: inline boxes.
 ///
 /// spec: S-45
@@ -25,6 +95,7 @@ pub fn layout_inline_run(
     let mut current_line_children = Vec::new();
     let mut cursor_x = 0.0;
     let mut cursor_y = 0.0;
+    let mut current_line_height = line_height;
 
     for &child in children {
         layout_inline_child_recursive(
@@ -40,19 +111,21 @@ pub fn layout_inline_run(
             &mut line_boxes,
             &font,
             line_height,
+            &mut current_line_height,
             depth,
         );
     }
 
     if !current_line_children.is_empty() {
-        line_boxes.push(create_line_box(
+        line_boxes.push(create_line_box_adjusted(
             current_line_children,
             offset_x,
             offset_y + cursor_y,
             cursor_x,
-            line_height,
+            current_line_height,
+            styles,
         ));
-        cursor_y += line_height;
+        cursor_y += current_line_height;
     }
 
     (line_boxes, cursor_y)
@@ -95,6 +168,7 @@ fn layout_inline_child_recursive(
     line_boxes: &mut Vec<LayoutBox>,
     font: &crate::font::BitmapFont,
     line_height: f32,
+    current_line_height: &mut f32,
     depth: usize,
 ) {
     if depth > crate::layout::MAX_DEPTH {
@@ -114,15 +188,17 @@ fn layout_inline_child_recursive(
 
                     if *cursor_x + word_width > containing_width && *cursor_x > 0.0 {
                         // Flush current line
-                        line_boxes.push(create_line_box(
+                        line_boxes.push(create_line_box_adjusted(
                             std::mem::take(current_line_children),
                             offset_x,
                             offset_y + *cursor_y,
                             *cursor_x,
-                            line_height,
+                            *current_line_height,
+                            styles,
                         ));
                         *cursor_x = 0.0;
-                        *cursor_y += line_height;
+                        *cursor_y += *current_line_height;
+                        *current_line_height = line_height;
                     }
 
                     // Skip leading whitespace on a new line
@@ -154,9 +230,73 @@ fn layout_inline_child_recursive(
                     if crate::layout::is_absolute_or_fixed(styles, child) {
                         return;
                     }
-                    // If display: inline, recurse to lay out its inline children
-                    // spec: S-45
-                    if matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "inline")
+                    if is_inline_block(styles, child) {
+                        // Lay out the inline-block box as an atomic inline element
+                        let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
+                        let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
+                        let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
+                        let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+
+                        // Position initially at current line cursor
+                        let mut box_ = match crate::layout::layout_node(
+                            dom,
+                            styles,
+                            child,
+                            containing_width,
+                            offset_x + *cursor_x,
+                            offset_y + *cursor_y,
+                            depth + 1,
+                        ) {
+                            Some(b) => b,
+                            None => return,
+                        };
+
+                        let margin_box_width = box_.rect.size.width + margin_left + margin_right;
+
+                        // Check wrapping
+                        if *cursor_x + margin_box_width > containing_width && *cursor_x > 0.0 {
+                            // Flush line
+                            line_boxes.push(create_line_box_adjusted(
+                                std::mem::take(current_line_children),
+                                offset_x,
+                                offset_y + *cursor_y,
+                                *cursor_x,
+                                *current_line_height,
+                                styles,
+                            ));
+                            *cursor_x = 0.0;
+                            *cursor_y += *current_line_height;
+                            *current_line_height = line_height;
+
+                            // Re-layout at the start of the new line
+                            box_ = match crate::layout::layout_node(
+                                dom,
+                                styles,
+                                child,
+                                containing_width,
+                                offset_x + *cursor_x,
+                                offset_y + *cursor_y,
+                                depth + 1,
+                            ) {
+                                Some(b) => b,
+                                None => return,
+                            };
+                        }
+
+                        // Update current line height to incorporate this inline-block box's margin height
+                        let margin_box_height = box_.rect.size.height + margin_top + margin_bottom;
+                        *current_line_height = current_line_height.max(margin_box_height);
+
+                        // Add box to current line children
+                        current_line_children.push(box_);
+                        *cursor_x += margin_box_width;
+                    } else if matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "inline")
+                        || matches!(
+                            style.get("display"),
+                            Some(crate::css::values::CssValue::Display(
+                                crate::css::values::DisplayValue::Inline
+                            ))
+                        )
                     {
                         for &grandchild in dom.children(child) {
                             layout_inline_child_recursive(
@@ -172,6 +312,7 @@ fn layout_inline_child_recursive(
                                 line_boxes,
                                 font,
                                 line_height,
+                                current_line_height,
                                 depth + 1,
                             );
                         }
@@ -180,29 +321,6 @@ fn layout_inline_child_recursive(
             }
             _ => {}
         }
-    }
-}
-
-fn create_line_box(
-    children: Vec<LayoutBox>,
-    offset_x: f32,
-    offset_y: f32,
-    width: f32,
-    line_height: f32,
-) -> LayoutBox {
-    LayoutBox {
-        node: None, // Anonymous line box
-        rect: Rect {
-            origin: Point {
-                x: offset_x,
-                y: offset_y,
-            },
-            size: Size {
-                width,
-                height: line_height,
-            },
-        },
-        children,
     }
 }
 
