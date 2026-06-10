@@ -120,7 +120,13 @@ fn main() {
 
     // 3 + 4. Render to pixels and present in a window.
     let window = WinitWindow::new("underrated", width, height);
-    let base_url = Url::parse(&url).unwrap();
+    let base_url = match Url::parse(&url) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            eprintln!("failed to parse base URL: {url}");
+            return;
+        }
+    };
     let loader = HttpLoader;
     window.run(move || render_page_to_canvas(&html, &base_url, &loader, width, height));
 }

@@ -146,14 +146,27 @@ pub fn export_snapshot(html: &str, css: &str, width: u32, height: u32) -> serde_
     } else {
         format!("{}<style>{}</style>", html, css)
     };
-    
+
     struct DummyLoader;
     impl crate::loader::ResourceLoader for DummyLoader {
-        fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> { Err(crate::loader::LoadError::NotFound) }
-        fn load_request(&self, _url: &crate::url::Url, _method: crate::loader::HttpMethod, _body: &[u8], _content_type: Option<&str>) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> { Err(crate::loader::LoadError::NotFound) }
+        fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+            Err(crate::loader::LoadError::NotFound)
+        }
+        fn load_request(
+            &self,
+            _url: &crate::url::Url,
+            _method: crate::loader::HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> {
+            Err(crate::loader::LoadError::NotFound)
+        }
     }
-    
-    let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+    let base_url = match crate::url::Url::parse("http://localhost/") {
+        Ok(url) => url,
+        Err(_) => return serde_json::Value::Null,
+    };
     let page = crate::engine::render_page(&combined_html, &base_url, &DummyLoader, width as f32);
 
     let mut layout_map = HashMap::new();

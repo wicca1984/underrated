@@ -1998,10 +1998,20 @@ mod tests {
                 <p>This domain is for use in illustrative examples in documents. You may use this domain in literature without prior coordination or asking for permission.</p>
             </div>
         "#;
-                struct DummyLoader;
+        struct DummyLoader;
         impl crate::loader::ResourceLoader for DummyLoader {
-            fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> { Err(crate::loader::LoadError::NotFound) }
-            fn load_request(&self, _url: &crate::url::Url, _method: crate::loader::HttpMethod, _body: &[u8], _content_type: Option<&str>) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> { Err(crate::loader::LoadError::NotFound) }
+            fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
+            fn load_request(
+                &self,
+                _url: &crate::url::Url,
+                _method: crate::loader::HttpMethod,
+                _body: &[u8],
+                _content_type: Option<&str>,
+            ) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
         }
         let base_url = crate::url::Url::parse("http://localhost/").unwrap();
         let page = crate::engine::render_page(html, &base_url, &DummyLoader, 800.0);
