@@ -42,11 +42,7 @@ fn assert_structural_invariants(node: &Value) {
                 .as_f64()
                 .unwrap_or_else(|| panic!("rect.height must be a number"));
 
-            assert!(
-                width >= 0.0,
-                "rect.width of '{}' must be non-negative",
-                tag
-            );
+            assert!(width >= 0.0, "rect.width of '{}' must be non-negative", tag);
             assert!(
                 height >= 0.0,
                 "rect.height of '{}' must be non-negative",
@@ -210,8 +206,7 @@ fn test_fixture_03_paragraph_text_wrap() {
     let snapshot = load_fixture_snapshot("03_paragraph_text_wrap.html");
     assert_eq!(snapshot["tag"], "html");
 
-    let p = find_element_by_tag(&snapshot, "p")
-        .unwrap_or_else(|| panic!("p element must exist"));
+    let p = find_element_by_tag(&snapshot, "p").unwrap_or_else(|| panic!("p element must exist"));
     let p_width = p["rect"]["width"]
         .as_f64()
         .unwrap_or_else(|| panic!("p width must be a number"));
@@ -233,8 +228,8 @@ fn test_fixture_04_list_items() {
     let snapshot = load_fixture_snapshot("04_list_items.html");
     assert_eq!(snapshot["tag"], "html");
 
-    let ul = find_element_by_tag(&snapshot, "ul")
-        .unwrap_or_else(|| panic!("ul element must exist"));
+    let ul =
+        find_element_by_tag(&snapshot, "ul").unwrap_or_else(|| panic!("ul element must exist"));
     let mut lis = Vec::new();
     find_elements_by_tag(ul, "li", &mut lis);
     assert_eq!(
@@ -258,8 +253,7 @@ fn test_fixture_05_display_none() {
         .and_then(|_| {
             let mut divs = Vec::new();
             find_elements_by_tag(&snapshot, "div", &mut divs);
-            divs.into_iter()
-                .find(|d| d["attrs"]["class"] == "hidden")
+            divs.into_iter().find(|d| d["attrs"]["class"] == "hidden")
         })
         .unwrap_or_else(|| panic!("hidden div element should exist in DOM"));
 
@@ -276,8 +270,7 @@ fn test_fixture_05_display_none() {
         .and_then(|_| {
             let mut divs = Vec::new();
             find_elements_by_tag(&snapshot, "div", &mut divs);
-            divs.into_iter()
-                .find(|d| d["attrs"]["class"] == "visible")
+            divs.into_iter().find(|d| d["attrs"]["class"] == "visible")
         })
         .unwrap_or_else(|| panic!("visible div element should exist in DOM"));
 
