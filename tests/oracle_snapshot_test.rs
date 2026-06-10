@@ -318,3 +318,56 @@ fn test_fixture_06_vertical_stack() {
         y1 + h1
     );
 }
+
+
+#[test]
+fn test_fixture_visual_paint_gate() {
+    let path = std::path::Path::new("tests/oracle/fixtures").join("01_single_block_text.html");
+    let html = std::fs::read_to_string(&path).unwrap();
+        
+    let base_url = underrated::url::Url::parse("http://localhost/").unwrap();
+    struct DummyLoader;
+    impl underrated::loader::ResourceLoader for DummyLoader {
+        fn load(&self, _url: &underrated::url::Url) -> Result<Vec<u8>, underrated::loader::LoadError> { Err(underrated::loader::LoadError::NotFound) }
+        fn load_request(&self, _url: &underrated::url::Url, _method: underrated::loader::HttpMethod, _body: &[u8], _content_type: Option<&str>) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> { Err(underrated::loader::LoadError::NotFound) }
+    }
+    
+    let canvas = underrated::engine::render_page_to_canvas(&html, &base_url, &DummyLoader, 800, 600);
+    assert_eq!(canvas.width, 800);
+    assert_eq!(canvas.height, 600);
+    
+    let has_drawn_pixels = canvas.pixels.iter().any(|&p| p != 0 && p != 0xFFFFFFFF);
+    assert!(has_drawn_pixels, "Canvas should have drawn some non-white pixels");
+}
+
+#[test]
+fn test_fixture_07_google_mock() {
+    let snapshot = load_fixture_snapshot("07_google_mock.html");
+    assert_eq!(snapshot["tag"], "html");
+    
+    let mut scripts = Vec::new();
+    find_elements_by_tag(&snapshot, "script", &mut scripts);
+    for script in scripts {
+        let width = script["rect"]["width"].as_f64().unwrap();
+        let height = script["rect"]["height"].as_f64().unwrap();
+        assert_eq!(width, 0.0);
+        assert_eq!(height, 0.0);
+    }
+    
+    let path = std::path::Path::new("tests/oracle/fixtures").join("07_google_mock.html");
+    let html = std::fs::read_to_string(&path).unwrap();
+        
+    let base_url = underrated::url::Url::parse("http://localhost/").unwrap();
+    struct DummyLoader;
+    impl underrated::loader::ResourceLoader for DummyLoader {
+        fn load(&self, _url: &underrated::url::Url) -> Result<Vec<u8>, underrated::loader::LoadError> { Err(underrated::loader::LoadError::NotFound) }
+        fn load_request(&self, _url: &underrated::url::Url, _method: underrated::loader::HttpMethod, _body: &[u8], _content_type: Option<&str>) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> { Err(underrated::loader::LoadError::NotFound) }
+    }
+    
+    let canvas = underrated::engine::render_page_to_canvas(&html, &base_url, &DummyLoader, 800, 600);
+    assert_eq!(canvas.width, 800);
+    assert_eq!(canvas.height, 600);
+    
+    let has_drawn_pixels = canvas.pixels.iter().any(|&p| p != 0 && p != 0xFFFFFFFF);
+    assert!(has_drawn_pixels, "Canvas should have drawn some non-white pixels");
+}

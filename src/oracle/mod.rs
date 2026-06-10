@@ -141,7 +141,20 @@ fn serialize_node(
 /// tree and DOM tree to export a normalized oracle snapshot as a JSON Value.
 pub fn export_snapshot(html: &str, css: &str, width: u32, height: u32) -> serde_json::Value {
     let _ = height; // height is kept for interface matching with the schema if needed.
-    let page = crate::engine::render(html, css, width as f32);
+    let combined_html = if css.is_empty() {
+        html.to_string()
+    } else {
+        format!("{}<style>{}</style>", html, css)
+    };
+    
+    struct DummyLoader;
+    impl crate::loader::ResourceLoader for DummyLoader {
+        fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> { Err(crate::loader::LoadError::NotFound) }
+        fn load_request(&self, _url: &crate::url::Url, _method: crate::loader::HttpMethod, _body: &[u8], _content_type: Option<&str>) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> { Err(crate::loader::LoadError::NotFound) }
+    }
+    
+    let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+    let page = crate::engine::render_page(&combined_html, &base_url, &DummyLoader, width as f32);
 
     let mut layout_map = HashMap::new();
     collect_layout_rects(&page.layout, &mut layout_map);
