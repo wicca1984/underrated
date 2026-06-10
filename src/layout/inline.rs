@@ -6,13 +6,13 @@ use crate::layout::LayoutBox;
 use crate::style::ComputedStyle;
 use std::collections::HashMap;
 
-/// Layout inline content, wrapping text and display: inline boxes.
+/// Layout inline content from a slice of children, wrapping text and display: inline boxes.
 ///
 /// spec: S-45
-pub fn layout_inline(
+pub fn layout_inline_run(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
-    node: NodeId,
+    children: &[NodeId],
     containing_width: f32,
     offset_x: f32,
     offset_y: f32,
@@ -26,21 +26,23 @@ pub fn layout_inline(
     let mut cursor_x = 0.0;
     let mut cursor_y = 0.0;
 
-    layout_inline_recursive(
-        dom,
-        styles,
-        node,
-        containing_width,
-        offset_x,
-        offset_y,
-        &mut cursor_x,
-        &mut cursor_y,
-        &mut current_line_children,
-        &mut line_boxes,
-        &font,
-        line_height,
-        depth,
-    );
+    for &child in children {
+        layout_inline_child_recursive(
+            dom,
+            styles,
+            child,
+            containing_width,
+            offset_x,
+            offset_y,
+            &mut cursor_x,
+            &mut cursor_y,
+            &mut current_line_children,
+            &mut line_boxes,
+            &font,
+            line_height,
+            depth,
+        );
+    }
 
     if !current_line_children.is_empty() {
         line_boxes.push(create_line_box(
@@ -56,11 +58,34 @@ pub fn layout_inline(
     (line_boxes, cursor_y)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn layout_inline_recursive(
+/// Layout inline content for a single parent element, wrapping its children.
+///
+/// spec: S-45
+pub fn layout_inline(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
     node: NodeId,
+    containing_width: f32,
+    offset_x: f32,
+    offset_y: f32,
+    depth: usize,
+) -> (Vec<LayoutBox>, f32) {
+    layout_inline_run(
+        dom,
+        styles,
+        dom.children(node),
+        containing_width,
+        offset_x,
+        offset_y,
+        depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_inline_child_recursive(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    child: NodeId,
     containing_width: f32,
     offset_x: f32,
     offset_y: f32,
@@ -76,68 +101,68 @@ fn layout_inline_recursive(
         return;
     }
 
-    for &child in dom.children(node) {
-        if let Some(data) = dom.data(child) {
-            match data {
-                NodeData::Text(text) => {
-                    let collapsed = collapse_whitespace(text);
-                    let words = collapsed.split_inclusive(' ');
+    if let Some(data) = dom.data(child) {
+        match data {
+            NodeData::Text(text) => {
+                let collapsed = collapse_whitespace(text);
+                let words = collapsed.split_inclusive(' ');
 
-                    for word in words {
-                        // Measure the word with the font's measure helper.
-                        // spec: S-45, S-57
-                        let word_width = font.measure(word) as f32;
+                for word in words {
+                    // Measure the word with the font's measure helper.
+                    // spec: S-45, S-57
+                    let word_width = font.measure(word) as f32;
 
-                        if *cursor_x + word_width > containing_width && *cursor_x > 0.0 {
-                            // Flush current line
-                            line_boxes.push(create_line_box(
-                                std::mem::take(current_line_children),
-                                offset_x,
-                                offset_y + *cursor_y,
-                                *cursor_x,
-                                line_height,
-                            ));
-                            *cursor_x = 0.0;
-                            *cursor_y += line_height;
-                        }
-
-                        // Skip leading whitespace on a new line
-                        if *cursor_x == 0.0 && word == " " {
-                            continue;
-                        }
-
-                        // Add word to current line
-                        current_line_children.push(LayoutBox {
-                            node: Some(child),
-                            rect: Rect {
-                                origin: Point {
-                                    x: offset_x + *cursor_x,
-                                    y: offset_y + *cursor_y,
-                                },
-                                size: Size {
-                                    width: word_width,
-                                    height: line_height,
-                                },
-                            },
-                            children: Vec::new(),
-                        });
-                        *cursor_x += word_width;
+                    if *cursor_x + word_width > containing_width && *cursor_x > 0.0 {
+                        // Flush current line
+                        line_boxes.push(create_line_box(
+                            std::mem::take(current_line_children),
+                            offset_x,
+                            offset_y + *cursor_y,
+                            *cursor_x,
+                            line_height,
+                        ));
+                        *cursor_x = 0.0;
+                        *cursor_y += line_height;
                     }
+
+                    // Skip leading whitespace on a new line
+                    if *cursor_x == 0.0 && word == " " {
+                        continue;
+                    }
+
+                    // Add word to current line
+                    current_line_children.push(LayoutBox {
+                        node: Some(child),
+                        rect: Rect {
+                            origin: Point {
+                                x: offset_x + *cursor_x,
+                                y: offset_y + *cursor_y,
+                            },
+                            size: Size {
+                                width: word_width,
+                                height: line_height,
+                            },
+                        },
+                        children: Vec::new(),
+                    });
+                    *cursor_x += word_width;
                 }
-                NodeData::Element { .. } => {
-                    if let Some(style) = styles.get(&child) {
-                        // Skip out-of-flow nodes
-                        if crate::layout::is_absolute_or_fixed(styles, child) {
-                            continue;
-                        }
-                        // If display: inline, recurse to lay out its inline children
-                        // spec: S-45
-                        if matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "inline")
-                        {
-                            layout_inline_recursive(
+            }
+            NodeData::Element { .. } => {
+                if let Some(style) = styles.get(&child) {
+                    // Skip out-of-flow nodes
+                    if crate::layout::is_absolute_or_fixed(styles, child) {
+                        return;
+                    }
+                    // If display: inline, recurse to lay out its inline children
+                    // spec: S-45
+                    if matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "inline")
+                    {
+                        for &grandchild in dom.children(child) {
+                            layout_inline_child_recursive(
                                 dom,
                                 styles,
-                                child,
+                                grandchild,
                                 containing_width,
                                 offset_x,
                                 offset_y,
@@ -152,8 +177,8 @@ fn layout_inline_recursive(
                         }
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
 }

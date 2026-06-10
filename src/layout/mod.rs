@@ -8,7 +8,7 @@ use crate::css::values::{CssValue, LengthUnit};
 use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
-use crate::layout::inline::layout_inline;
+use crate::layout::inline::{layout_inline, layout_inline_run};
 use crate::style::ComputedStyle;
 use std::collections::HashMap;
 
@@ -130,8 +130,17 @@ pub(crate) fn layout_node(
     let mut children = Vec::new();
     let mut child_cursor_y = border_box_y + border_top + padding_top;
 
+    let layoutable_children = get_layoutable_children(dom, styles, node);
+    let has_inline = layoutable_children
+        .iter()
+        .any(|&c| is_inline_level(styles, dom, c));
+    let has_block = layoutable_children
+        .iter()
+        .any(|&c| !is_inline_level(styles, dom, c));
+
     // Layout children
-    if has_inline_content(dom, styles, node) {
+    if has_inline && !has_block {
+        // If ALL children are inline, keep current behavior (single inline pass)
         let (line_boxes, total_height) = layout_inline(
             dom,
             styles,
@@ -143,7 +152,8 @@ pub(crate) fn layout_node(
         );
         children.extend(line_boxes);
         child_cursor_y += total_height;
-    } else {
+    } else if !has_inline {
+        // If ALL children are block (or empty), keep current block behavior
         for &child in dom.children(node) {
             if is_absolute_or_fixed(styles, child) {
                 continue;
@@ -162,6 +172,62 @@ pub(crate) fn layout_node(
                     child_cursor_y = child_box.rect.max_y() + child_margin_bottom;
                 }
                 children.push(child_box);
+            }
+        }
+    } else {
+        // MIXED: wrap each maximal run of consecutive inline-level children in an anonymous block box
+        // spec: S-anonymous-block-boxes
+        let mut i = 0;
+        while i < layoutable_children.len() {
+            let child = layoutable_children[i];
+            if is_inline_level(styles, dom, child) {
+                let mut inline_run = Vec::new();
+                while i < layoutable_children.len()
+                    && is_inline_level(styles, dom, layoutable_children[i])
+                {
+                    inline_run.push(layoutable_children[i]);
+                    i += 1;
+                }
+                let (line_boxes, total_height) = layout_inline_run(
+                    dom,
+                    styles,
+                    &inline_run,
+                    content_width,
+                    border_box_x + border_left + padding_left,
+                    child_cursor_y,
+                    depth,
+                );
+                if !line_boxes.is_empty() {
+                    let anon_box = LayoutBox {
+                        node: None,
+                        rect: Rect::new(
+                            border_box_x + border_left + padding_left,
+                            child_cursor_y,
+                            content_width,
+                            total_height,
+                        ),
+                        children: line_boxes,
+                    };
+                    children.push(anon_box);
+                    child_cursor_y += total_height;
+                }
+            } else {
+                if let Some(child_box) = layout_node(
+                    dom,
+                    styles,
+                    child,
+                    content_width,
+                    border_box_x + border_left + padding_left,
+                    child_cursor_y,
+                    depth + 1,
+                ) {
+                    if let Some(child_style) = styles.get(&child) {
+                        let child_margin_bottom = get_px(child_style, "margin-bottom", 0.0);
+                        child_cursor_y = child_box.rect.max_y() + child_margin_bottom;
+                    }
+                    children.push(child_box);
+                }
+                i += 1;
             }
         }
     }
@@ -186,29 +252,53 @@ pub(crate) fn layout_node(
     })
 }
 
-fn has_inline_content(dom: &Dom, styles: &HashMap<NodeId, ComputedStyle>, node: NodeId) -> bool {
+fn get_layoutable_children(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    node: NodeId,
+) -> Vec<NodeId> {
+    let mut result = Vec::new();
     for &child in dom.children(node) {
+        if is_absolute_or_fixed(styles, child) {
+            continue;
+        }
         if let Some(data) = dom.data(child) {
             match data {
-                NodeData::Text(_) => return true,
+                NodeData::Text(_) => {
+                    result.push(child);
+                }
                 NodeData::Element { .. } => {
                     if let Some(style) = styles.get(&child) {
-                        if is_absolute_or_fixed(styles, child) {
+                        if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "none")
+                        {
                             continue;
                         }
-                        // If it's display: inline, it's inline content.
-                        // Default for unknown or block-level is NOT inline for now.
-                        if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline")
-                        {
-                            return true;
-                        }
+                        result.push(child);
                     }
                 }
                 _ => {}
             }
         }
     }
-    false
+    result
+}
+
+fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: NodeId) -> bool {
+    if let Some(data) = dom.data(child) {
+        match data {
+            NodeData::Text(_) => true,
+            NodeData::Element { .. } => {
+                if let Some(style) = styles.get(&child) {
+                    matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline")
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    } else {
+        false
+    }
 }
 
 pub(crate) fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
@@ -864,5 +954,139 @@ mod tests {
 
         // This must not stack overflow!
         let _layout_tree = layout_document(&dom, &styles, 800.0);
+    }
+
+    #[test]
+    fn test_mixed_layout_body_with_div_and_whitespace() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, p);
+
+        let text_hi = dom.create_node(NodeData::Text("hi".into()));
+        dom.append_child(p, text_hi);
+
+        let text_ws = dom.create_node(NodeData::Text("\n".into()));
+        dom.append_child(body, text_ws);
+
+        let stylesheet = parse_stylesheet(
+            "body { display: block; } div { display: block; } p { display: block; }",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // The body has a mix of div (block) and "\n" (whitespace inline).
+        // The div should be laid out as a normal block box under body.
+        // The whitespace text collapses and yields no line box (so no anonymous block box is created for it).
+        // Therefore, body_box has exactly 1 child: the div_box.
+        assert_eq!(body_box.children.len(), 1);
+
+        let div_box = &body_box.children[0];
+        assert_eq!(div_box.node, Some(div));
+
+        // Under div, there is p (block). So div has 1 child: p_box.
+        assert_eq!(div_box.children.len(), 1);
+
+        let p_box = &div_box.children[0];
+        assert_eq!(p_box.node, Some(p));
+
+        // Under p, there is "hi" (inline). So p has 1 child: line box.
+        assert_eq!(p_box.children.len(), 1);
+        let line_box = &p_box.children[0];
+        assert_eq!(line_box.node, None); // Anonymous line box
+        assert!(line_box.rect.size.width > 0.0);
+        assert!(line_box.rect.size.height > 0.0);
+
+        let text_box = &line_box.children[0];
+        assert_eq!(text_box.node, Some(text_hi));
+        assert!(text_box.rect.size.width > 0.0);
+        assert!(text_box.rect.size.height > 0.0);
+    }
+
+    #[test]
+    fn test_mixed_layout_block_with_mixed_text_div_text() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let parent_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, parent_div);
+
+        let text1 = dom.create_node(NodeData::Text("first ".into()));
+        dom.append_child(parent_div, text1);
+
+        let child_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(parent_div, child_div);
+
+        let text_child = dom.create_node(NodeData::Text("second ".into()));
+        dom.append_child(child_div, text_child);
+
+        let text3 = dom.create_node(NodeData::Text(" third".into()));
+        dom.append_child(parent_div, text3);
+
+        let stylesheet = parse_stylesheet("body { display: block; } div { display: block; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+        let parent_div_box = &body_box.children[0];
+
+        // Mixed layout: [text1, child_div, text3]
+        // Should produce:
+        // 1. Anonymous block box wrapping text1
+        // 2. Normal block box for child_div
+        // 3. Anonymous block box wrapping text3
+        assert_eq!(parent_div_box.children.len(), 3);
+
+        let anon1 = &parent_div_box.children[0];
+        assert_eq!(anon1.node, None); // Anonymous block box
+        assert!(anon1.rect.size.width > 0.0);
+        assert!(anon1.rect.size.height > 0.0);
+
+        let child_div_box = &parent_div_box.children[1];
+        assert_eq!(child_div_box.node, Some(child_div));
+        assert!(child_div_box.rect.size.width > 0.0);
+        assert!(child_div_box.rect.size.height > 0.0);
+
+        let anon3 = &parent_div_box.children[2];
+        assert_eq!(anon3.node, None); // Anonymous block box
+        assert!(anon3.rect.size.width > 0.0);
+        assert!(anon3.rect.size.height > 0.0);
+
+        // Verify correct vertical ordering and positions
+        assert!(anon1.rect.origin.y < child_div_box.rect.origin.y);
+        assert!(child_div_box.rect.origin.y < anon3.rect.origin.y);
+
+        // Check height matches sum of elements
+        let expected_min_height =
+            anon1.rect.size.height + child_div_box.rect.size.height + anon3.rect.size.height;
+        assert!(parent_div_box.rect.size.height >= expected_min_height);
     }
 }
