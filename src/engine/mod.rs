@@ -33,130 +33,13 @@ i, em { font-style: italic; }\n\
 head, style, script, meta, link, title { display: none; }\n\
 ";
 
-/// The main entry point for the engine: html + css -> Page.
-/// spec: S-13
-pub fn render(html: &str, css: &str, viewport_width: f32) -> Page {
-    // 1. InputStream::from_utf8(html)
-    let input = crate::encoding::InputStream::from_utf8(html.as_bytes());
 
-    // 2. html::parse_document(input)
-    let dom = crate::html::parse_document(input);
 
-    // 3. Prepend UA_DEFAULT_CSS and hoist <style> blocks.
-    // Keep author CSS (passed css arg and hoisted <style>) at a higher priority than UA defaults.
-    let mut css_accumulator = String::from(UA_DEFAULT_CSS);
-    if !css.is_empty() {
-        css_accumulator.push('\n');
-        css_accumulator.push_str(css);
-    }
 
-    let doc = dom.document();
-    for node_id in dom.descendants(doc) {
-        if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
-            && name.eq_ignore_ascii_case("style")
-        {
-            for &child_id in dom.children(node_id) {
-                if let Some(NodeData::Text(text)) = dom.data(child_id) {
-                    css_accumulator.push('\n');
-                    css_accumulator.push_str(text);
-                }
-            }
-        }
-    }
 
-    // spec: The actual API is in crate::css::parser::parse_stylesheet.
-    let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
 
-    // 4. style::compute_styles(&dom, &stylesheet)
-    let styles = crate::style::compute_styles(&dom, &stylesheet);
 
-    // 5. layout::layout_document(&dom, &styles, viewport_width)
-    let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
 
-    // 6. return Page { dom, styles, layout }
-    Page {
-        dom,
-        styles,
-        layout,
-    }
-}
-
-/// Renders content (html + css) all the way to a pixel canvas.
-/// spec: S-13b
-pub fn render_to_canvas(html: &str, css: &str, width: u32, height: u32) -> crate::raster::Canvas {
-    // 1. let page = render(html, css, width as f32);
-    let page = render(html, css, width as f32);
-
-    // 2. let display_list = paint::build_display_list(&page.layout, &page.dom, &page.styles);
-    let display_list = crate::paint::build_display_list(&page.layout, &page.dom, &page.styles);
-
-    // 3. let canvas = raster::rasterize(&display_list, width, height);
-    let canvas = crate::raster::rasterize(&display_list, width, height);
-
-    // 4. return canvas.
-    canvas
-}
-
-/// Renders HTML that contains its own `<style>` blocks (hoists them into the stylesheet).
-/// spec: S-30
-pub fn render_html(html: &str, viewport_width: f32) -> Page {
-    // 1. InputStream::from_utf8(html)
-    let input = crate::encoding::InputStream::from_utf8(html.as_bytes());
-
-    // 2. html::parse_document(input)
-    let dom = crate::html::parse_document(input);
-
-    // 3. Walk DOM to collect the text of every <style> element (concatenate, in document order)
-    // spec: In real browsers, head, style, script, etc. are display: none by default so they aren't rendered.
-    let mut css_accumulator = String::from(UA_DEFAULT_CSS);
-    let doc = dom.document();
-    for node_id in dom.descendants(doc) {
-        if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
-            && name.eq_ignore_ascii_case("style")
-        {
-            for &child_id in dom.children(node_id) {
-                if let Some(NodeData::Text(text)) = dom.data(child_id) {
-                    css_accumulator.push_str(text);
-                }
-            }
-        }
-    }
-
-    // TODO(spec): Currently we do not filter or preprocess styles based on media or title attributes here.
-    // TODO(spec): Text node content may contain HTML comment wrappers or CDATA; the CSS tokenizer handles them.
-
-    // 4. css::parse_stylesheet(hoisted_css)
-    let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
-
-    // 5. style::compute_styles(&dom, &stylesheet)
-    let styles = crate::style::compute_styles(&dom, &stylesheet);
-
-    // 6. layout::layout_document(&dom, &styles, viewport_width)
-    let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
-
-    // 7. return Page { dom, styles, layout }
-    Page {
-        dom,
-        styles,
-        layout,
-    }
-}
-
-/// Renders HTML containing style blocks all the way to a pixel canvas.
-/// spec: S-30
-pub fn render_html_to_canvas(html: &str, width: u32, height: u32) -> crate::raster::Canvas {
-    // 1. let page = render_html(html, width as f32);
-    let page = render_html(html, width as f32);
-
-    // 2. let display_list = paint::build_display_list(&page.layout, &page.dom, &page.styles);
-    let display_list = crate::paint::build_display_list(&page.layout, &page.dom, &page.styles);
-
-    // 3. let canvas = raster::rasterize(&display_list, width, height);
-    let canvas = crate::raster::rasterize(&display_list, width, height);
-
-    // 4. return canvas.
-    canvas
-}
 
 fn load_image_safely_with_loader(
     loader: &dyn crate::loader::ResourceLoader,
@@ -222,123 +105,7 @@ fn fetch_and_decode_images(
     }
 }
 
-/// Renders HTML containing inline styles and/or external stylesheets, fetched via the loader.
-/// spec: S-37
-pub fn render_html_with_loader(
-    html: &str,
-    base: &crate::url::Url,
-    loader: &dyn crate::loader::ResourceLoader,
-    viewport_width: f32,
-) -> Page {
-    // 1. InputStream::from_utf8(html)
-    let input = crate::encoding::InputStream::from_utf8(html.as_bytes());
 
-    // 2. html::parse_document(input)
-    let dom = crate::html::parse_document(input);
-
-    // 3. Walk DOM to collect the text of every <style> element and fetch/decode every <link rel="stylesheet">
-    // spec: In real browsers, head, style, script, etc. are display: none by default so they aren't rendered.
-    let mut css_accumulator = String::from(UA_DEFAULT_CSS);
-    let doc = dom.document();
-    for node_id in dom.descendants(doc) {
-        if let Some(NodeData::Element { name, attrs }) = dom.data(node_id) {
-            if name.eq_ignore_ascii_case("style") {
-                for &child_id in dom.children(node_id) {
-                    if let Some(NodeData::Text(text)) = dom.data(child_id) {
-                        css_accumulator.push_str(text);
-                    }
-                }
-            } else if name.eq_ignore_ascii_case("link") {
-                let mut is_stylesheet = false;
-                let mut href = None;
-                for (attr_name, attr_value) in attrs {
-                    if attr_name.eq_ignore_ascii_case("rel") {
-                        let has_stylesheet_rel = attr_value
-                            .split_ascii_whitespace()
-                            .any(|s| s.eq_ignore_ascii_case("stylesheet"));
-                        if has_stylesheet_rel {
-                            is_stylesheet = true;
-                        }
-                    } else if attr_name.eq_ignore_ascii_case("href") {
-                        href = Some(attr_value);
-                    }
-                }
-                if is_stylesheet && let Some(href_val) = href {
-                    // Adjust href to bypass basic URL parser bug (treating relative path starting with letter as scheme)
-                    let adjusted = if href_val.contains(':') {
-                        let mut has_scheme = false;
-                        if let Some(colon_pos) = href_val.find(':') {
-                            let before_colon = &href_val[..colon_pos];
-                            let path_or_query_pos =
-                                href_val.find(['/', '?', '#']).unwrap_or(href_val.len());
-                            if colon_pos < path_or_query_pos && !before_colon.is_empty() {
-                                let mut chars = before_colon.chars();
-                                if let Some(first) = chars.next()
-                                    && first.is_ascii_alphabetic()
-                                    && chars.all(|c| {
-                                        c.is_ascii_alphanumeric()
-                                            || c == '+'
-                                            || c == '-'
-                                            || c == '.'
-                                    })
-                                {
-                                    has_scheme = true;
-                                }
-                            }
-                        }
-                        if has_scheme {
-                            href_val.clone()
-                        } else if href_val
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_ascii_alphabetic())
-                        {
-                            format!("./{}", href_val)
-                        } else {
-                            href_val.clone()
-                        }
-                    } else if href_val
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_alphabetic())
-                    {
-                        format!("./{}", href_val)
-                    } else {
-                        href_val.clone()
-                    };
-
-                    // resolve relative to base
-                    // spec: failed parse or failed fetch is ignored gracefully
-                    if let Ok(resolved_url) = crate::url::Url::parse_with_base(&adjusted, base)
-                        && let Ok(css_bytes) = loader.load(&resolved_url)
-                        && let Ok(css_str) = String::from_utf8(css_bytes)
-                    {
-                        css_accumulator.push_str(&css_str);
-                        css_accumulator.push('\n');
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. css::parse_stylesheet(hoisted_css)
-    let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
-
-    // 5. style::compute_styles(&dom, &stylesheet)
-    let styles = crate::style::compute_styles(&dom, &stylesheet);
-
-    // 6. layout::layout_document(&dom, &styles, viewport_width)
-    let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
-
-    fetch_and_decode_images(&dom, base, loader);
-
-    // 7. return Page { dom, styles, layout }
-    Page {
-        dom,
-        styles,
-        layout,
-    }
-}
 
 /// Renders a page with HTML, a base URL, a resource loader, and a viewport width.
 /// This includes hoisting `<style>`, loading `<link rel="stylesheet">` CSS via resolved URLs,
@@ -523,14 +290,46 @@ pub fn render_page_to_canvas(
 mod tests {
     use super::*;
     use crate::dom::NodeData;
+    struct DummyLoader;
+    impl crate::loader::ResourceLoader for DummyLoader {
+        fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+            Err(crate::loader::LoadError::NotFound)
+        }
+        fn load_request(&self, _url: &crate::url::Url, _method: crate::loader::HttpMethod, _body: &[u8], _content_type: Option<&str>) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> {
+            Err(crate::loader::LoadError::NotFound)
+        }
+    }
+
+    fn render_for_test(html: &str, css: &str, viewport_width: f32) -> Page {
+        let combined = if css.is_empty() { html.to_string() } else { format!("{}<style>{}</style>", html, css) };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+        render_page(&combined, &base_url, &DummyLoader, viewport_width)
+    }
+
+    fn render_to_canvas_for_test(html: &str, css: &str, width: u32, height: u32) -> crate::raster::Canvas {
+        let combined = if css.is_empty() { html.to_string() } else { format!("{}<style>{}</style>", html, css) };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+        render_page_to_canvas(&combined, &base_url, &DummyLoader, width, height)
+    }
+
+    fn render_html_for_test(html: &str, viewport_width: f32) -> Page {
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+        render_page(html, &base_url, &DummyLoader, viewport_width)
+    }
+
+    fn render_html_to_canvas_for_test(html: &str, width: u32, height: u32) -> crate::raster::Canvas {
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+        render_page_to_canvas(html, &base_url, &DummyLoader, width, height)
+    }
+
 
     #[test]
-    fn test_smoke_render() {
+    fn test_smoke_render_for_test() {
         let html = "<html><body><div></div></body></html>";
         let css = "div { width: 100px; height: 50px; }";
         let viewport_width = 800.0;
 
-        let page = render(html, css, viewport_width);
+        let page = render_for_test(html, css, viewport_width);
 
         // Assert DOM contains the div
         let mut found_div = false;
@@ -571,13 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn test_render_to_canvas() {
+    fn test_render_to_canvas_for_test() {
         let html = "<div></div>";
         let css = "html, body { background-color: transparent; } body { margin: 0; } div { background-color: #ff0000; width: 10px; height: 10px; }";
         let width = 20;
         let height = 20;
 
-        let canvas = render_to_canvas(html, css, width, height);
+        let canvas = render_to_canvas_for_test(html, css, width, height);
 
         assert_eq!(canvas.width, 20);
         assert_eq!(canvas.height, 20);
@@ -593,11 +392,11 @@ mod tests {
     }
 
     #[test]
-    fn test_render_html() {
+    fn test_render_html_for_test() {
         let html = "<html><head><style>div { width: 100px; height: 50px; background-color: #ff0000; }</style></head><body><div></div></body></html>";
         let viewport_width = 800.0;
 
-        let page = render_html(html, viewport_width);
+        let page = render_html_for_test(html, viewport_width);
 
         // Find the div in layout tree and check its size and styles
         let mut div_box = None;
@@ -636,12 +435,12 @@ mod tests {
     }
 
     #[test]
-    fn test_render_html_to_canvas() {
+    fn test_render_html_to_canvas_for_test() {
         let html = "<html><head><style>html, body { background-color: transparent; } body { margin: 0; } div { background-color: #ff0000; width: 10px; height: 10px; }</style></head><body><div></div></body></html>";
         let width = 20;
         let height = 20;
 
-        let canvas = render_html_to_canvas(html, width, height);
+        let canvas = render_html_to_canvas_for_test(html, width, height);
 
         assert_eq!(canvas.width, 20);
         assert_eq!(canvas.height, 20);
@@ -660,7 +459,7 @@ mod tests {
         let html = "<html><head><style>div { width: 100px; }</style><style>div { height: 50px; background-color: #ff0000; }</style></head><body><div></div></body></html>";
         let viewport_width = 800.0;
 
-        let page = render_html(html, viewport_width);
+        let page = render_html_for_test(html, viewport_width);
 
         // Find the div in layout tree and check its size
         let mut div_box = None;
@@ -788,7 +587,7 @@ mod tests {
         let loader = MockLoader { responses };
         let base_url = crate::url::Url::parse("https://example.com/").unwrap();
         let html = "<html><head><link rel=\"stylesheet\" href=\"style.css\"></head><body><div></div></body></html>";
-        let page = render_html_with_loader(html, &base_url, &loader, 800.0);
+        let page = render_page(html, &base_url, &loader, 800.0);
 
         // Find div
         let doc = page.dom.document();
@@ -838,7 +637,7 @@ mod tests {
             <link rel=\"stylesheet\" href=\"style2.css\">\
             </head><body><div></div></body></html>";
 
-        let page = render_html_with_loader(html, &base_url, &loader, 800.0);
+        let page = render_page(html, &base_url, &loader, 800.0);
 
         // Find div
         let doc = page.dom.document();
@@ -1042,7 +841,7 @@ mod tests {
     fn test_ua_default_stylesheet() {
         let html =
             "<html><body><p>Hello</p><a href=\"#\">Link</a><b>Bold</b><i>Italic</i></body></html>";
-        let page = render_html(html, 800.0);
+        let page = render_html_for_test(html, 800.0);
 
         // Find elements and check their resolved styles
         let doc = page.dom.document();
@@ -1424,8 +1223,8 @@ mod tests {
             </html>
         "#;
 
-        // Render via the GUI-style render() path
-        let page = render(html, "", 800.0);
+        // Render via the GUI-style render_for_test() path
+        let page = render_for_test(html, "", 800.0);
 
         // 1. Assert style & script and head/title have display: none in computed styles
         let mut style_id = None;

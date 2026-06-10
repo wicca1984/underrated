@@ -10,7 +10,7 @@
 //! (no panics) and falls back to a built-in sample page.
 
 use underrated::dom::{Dom, NodeData};
-use underrated::engine::render_to_canvas;
+use underrated::engine::render_page_to_canvas;
 use underrated::forms::{self, FormState};
 use underrated::loader::{HttpLoader, ResourceLoader};
 use underrated::shell::WinitWindow;
@@ -104,23 +104,25 @@ fn main() {
     };
 
     // 2. Fetch it; fall back to the built-in sample when offline.
-    let (html, css) = match fetch(&url) {
+    let html = match fetch(&url) {
         Some(body) => {
             println!("fetched {} bytes from {url}", body.len());
             // The fetched page carries its own <style>; we don't extract it yet,
             // so render the structure with no author CSS. // TODO(spec): hoist
             // <style> from the DOM into the stylesheet.
-            (body, String::new())
+            body
         }
         None => {
             println!("offline / fetch failed — showing the built-in sample page");
-            (SAMPLE_HTML.to_string(), SAMPLE_CSS.to_string())
+            format!("{}<style>{}</style>", SAMPLE_HTML, SAMPLE_CSS)
         }
     };
 
     // 3 + 4. Render to pixels and present in a window.
     let window = WinitWindow::new("underrated", width, height);
-    window.run(move || render_to_canvas(&html, &css, width, height));
+    let base_url = Url::parse(&url).unwrap();
+    let loader = HttpLoader;
+    window.run(move || render_page_to_canvas(&html, &base_url, &loader, width, height));
 }
 
 #[cfg(test)]
