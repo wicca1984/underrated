@@ -1594,9 +1594,7 @@ mod tests {
         // parsing <p>Hello world</p> yields exactly ONE text node "Hello world"
         let html = "<p>Hello world</p>";
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
-        let p_node = dom
-            .query_selector(dom.document(), "p")
-            .expect("p element exists");
+        let p_node = dom.query_selector("p").expect("p element exists");
         let p_children = dom.children(p_node);
         assert_eq!(p_children.len(), 1, "p should have exactly 1 child");
         let first_child = p_children[0];
@@ -1609,9 +1607,7 @@ mod tests {
         // <p>a<b>x</b>b</p> yields text "a", element b with text "x", then text "b"
         let html2 = "<p>a<b>x</b>b</p>";
         let dom2 = parse_document(InputStream::from_utf8(html2.as_bytes()));
-        let p_node2 = dom2
-            .query_selector(dom2.document(), "p")
-            .expect("p element exists");
+        let p_node2 = dom2.query_selector("p").expect("p element exists");
         let p_children2 = dom2.children(p_node2);
         assert_eq!(p_children2.len(), 3, "p should have exactly 3 children");
         assert_eq!(
@@ -1643,9 +1639,7 @@ mod tests {
         let html = "<html><head><title>T</title><meta><style>s</style></head><body><div><p>x</p></div></body></html>";
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
 
-        let head_node = dom
-            .query_selector(dom.document(), "head")
-            .expect("<head> exists");
+        let head_node = dom.query_selector("head").expect("<head> exists");
         let head_children = dom.children(head_node);
         let head_child_names: Vec<String> = head_children
             .iter()
@@ -1656,7 +1650,7 @@ mod tests {
             .collect();
         assert_eq!(head_child_names, vec!["title", "meta", "style"]);
 
-        let body_nodes = dom.query_selector_all(dom.document(), "body");
+        let body_nodes = dom.query_selector_all("body");
         assert_eq!(
             body_nodes.len(),
             1,

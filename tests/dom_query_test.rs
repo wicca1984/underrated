@@ -65,15 +65,14 @@ fn test_get_element_by_id() {
 #[test]
 fn test_query_selector() {
     let (dom, _div) = setup_dom();
-    let doc = dom.document();
 
-    assert!(dom.query_selector(doc, "#container").is_some());
-    assert!(dom.query_selector(doc, ".text").is_some());
-    assert!(dom.query_selector(doc, "div > p").is_some());
-    assert!(dom.query_selector(doc, "section").is_none());
-    assert!(dom.query_selector(doc, "invalid selector").is_none());
+    assert!(dom.query_selector("#container").is_some());
+    assert!(dom.query_selector(".text").is_some());
+    assert!(dom.query_selector("div > p").is_some());
+    assert!(dom.query_selector("section").is_none());
+    assert!(dom.query_selector("invalid selector").is_none());
 
-    let first_text = dom.query_selector(doc, ".text").unwrap();
+    let first_text = dom.query_selector(".text").unwrap();
     if let Some(NodeData::Element { name, attrs }) = dom.data(first_text) {
         assert_eq!(name, "p");
         assert!(attrs.iter().any(|(n, v)| n == "id" && v == "p1"));
@@ -85,9 +84,8 @@ fn test_query_selector() {
 #[test]
 fn test_query_selector_all() {
     let (dom, _div) = setup_dom();
-    let doc = dom.document();
 
-    let texts = dom.query_selector_all(doc, ".text");
+    let texts = dom.query_selector_all(".text");
     assert_eq!(texts.len(), 2);
 
     // Document order: p then span
@@ -98,8 +96,8 @@ fn test_query_selector_all() {
         assert_eq!(name2, "span");
     }
 
-    assert_eq!(dom.query_selector_all(doc, "section").len(), 0);
-    assert_eq!(dom.query_selector_all(doc, "invalid selector").len(), 0);
+    assert_eq!(dom.query_selector_all("section").len(), 0);
+    assert_eq!(dom.query_selector_all("invalid selector").len(), 0);
 }
 
 #[test]
@@ -108,7 +106,7 @@ fn test_subtree_query_selector() {
 
     // Querying from div (root is div)
     // The descendant with class .text should be found.
-    let first_text_under_div = dom.query_selector(div, ".text").unwrap();
+    let first_text_under_div = dom.query_selector_from(div, ".text").unwrap();
     if let Some(NodeData::Element { name, attrs }) = dom.data(first_text_under_div) {
         assert_eq!(name, "p");
         assert!(attrs.iter().any(|(n, v)| n == "id" && v == "p1"));
@@ -118,7 +116,7 @@ fn test_subtree_query_selector() {
 
     // Since 'div' itself is not a descendant of 'div' (descendants excludes root),
     // querying for '#container' from div root should return None.
-    assert!(dom.query_selector(div, "#container").is_none());
+    assert!(dom.query_selector_from(div, "#container").is_none());
 }
 
 #[test]
@@ -152,18 +150,18 @@ fn test_acceptance_cases() {
     dom.append_child(div_x, a2);
 
     // 1. querySelector('div.x > p') matches the p node
-    let matched_p = dom.query_selector(doc, "div.x > p");
+    let matched_p = dom.query_selector("div.x > p");
     assert_eq!(matched_p, Some(p));
 
     // 2. querySelectorAll('a') returns both anchors in order
-    let anchors = dom.query_selector_all(doc, "a");
+    let anchors = dom.query_selector_all("a");
     assert_eq!(anchors, vec![a1, a2]);
 
     // 3. invalid / empty selectors return None / []
-    assert_eq!(dom.query_selector(doc, ""), None);
-    assert_eq!(dom.query_selector(doc, "div > > p"), None);
-    assert_eq!(dom.query_selector_all(doc, "").len(), 0);
-    assert_eq!(dom.query_selector_all(doc, "div > > p").len(), 0);
+    assert_eq!(dom.query_selector(""), None);
+    assert_eq!(dom.query_selector("div > > p"), None);
+    assert_eq!(dom.query_selector_all("").len(), 0);
+    assert_eq!(dom.query_selector_all("div > > p").len(), 0);
 }
 
 #[test]
@@ -191,11 +189,11 @@ fn test_deep_tree_no_overflow() {
     }
 
     // query_selector_all for div should find all 10,000 nested divs iteratively without overflow
-    let divs = dom.query_selector_all(doc, "div");
+    let divs = dom.query_selector_all("div");
     assert_eq!(divs.len(), 10000);
 
     // query_selector for deepest class
-    let deepest_qs = dom.query_selector(doc, ".target");
+    let deepest_qs = dom.query_selector(".target");
     assert!(deepest_qs.is_some());
     assert_eq!(deepest_qs, Some(current));
 
