@@ -1,4 +1,4 @@
-use crate::css::values::CssValue;
+use crate::css::values::{CssValue, LengthUnit};
 use crate::dom::Dom;
 use crate::infra::NodeId;
 use crate::layout::{LayoutBox, get_px, layout_node};
@@ -9,7 +9,20 @@ use std::collections::HashMap;
 /// spec: S-31
 pub fn is_absolute_or_fixed(styles: &HashMap<NodeId, ComputedStyle>, node: NodeId) -> bool {
     if let Some(style) = styles.get(&node) {
-        matches!(style.get("position"), Some(CssValue::Keyword(kw)) if kw == "absolute" || kw == "fixed")
+        let is_abs_or_fixed = matches!(style.get("position"), Some(CssValue::Keyword(kw)) if kw == "absolute" || kw == "fixed");
+        if is_abs_or_fixed {
+            let has_explicit_top =
+                matches!(style.get("top"), Some(CssValue::Length(_, LengthUnit::Px)));
+            let has_explicit_left =
+                matches!(style.get("left"), Some(CssValue::Length(_, LengthUnit::Px)));
+
+            // TODO(spec): True CSS static-position-for-out-of-flow semantics is deferred:
+            // we use an interim decision where if both top and left are unspecified (auto),
+            // we keep the element in normal flow (as if position: static) to avoid collapsing to (0,0).
+            has_explicit_top || has_explicit_left
+        } else {
+            false
+        }
     } else {
         false
     }
@@ -30,8 +43,8 @@ pub fn shift_layout_box(
     if dx == 0.0 && dy == 0.0 {
         return;
     }
-    if let Some(style) = layout_box.node.and_then(|node_id| styles.get(&node_id))
-        && matches!(style.get("position"), Some(CssValue::Keyword(kw)) if kw == "absolute" || kw == "fixed")
+    if let Some(node_id) = layout_box.node
+        && is_absolute_or_fixed(styles, node_id)
     {
         // Do not shift absolute or fixed elements or their descendants.
         // spec: S-31
@@ -86,9 +99,7 @@ pub fn find_absolute_and_fixed(
         // Prune the subtree if display: none
         return;
     }
-    if let Some(style) = styles.get(&node)
-        && matches!(style.get("position"), Some(CssValue::Keyword(kw)) if kw == "absolute" || kw == "fixed")
-    {
+    if is_absolute_or_fixed(styles, node) {
         out.push(node);
     }
     for &child in dom.children(node) {
