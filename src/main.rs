@@ -55,14 +55,53 @@ fn fetch(url: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Target {
+    Url(String),
+    Search(String),
+    Default,
+}
+
+/// Resolves the command line arguments to determine the execution target.
+/// Expects user-provided arguments (excluding the executable name).
+fn resolve_target(args: &[String]) -> Target {
+    if let Some(arg) = args.first() {
+        match Url::parse(arg) {
+            Ok(parsed) if parsed.scheme == "http" || parsed.scheme == "https" => {
+                Target::Url(arg.clone())
+            }
+            _ => Target::Search(arg.clone()),
+        }
+    } else {
+        Target::Default
+    }
+}
+
 fn main() {
     let width: u32 = 800;
     let height: u32 = 600;
 
-    // 1. Search: build the form and produce the query URL.
-    let url = search_url("https://example.com/", "hello underrated")
-        .unwrap_or_else(|| "https://example.com/".to_string());
-    println!("search URL: {url}");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let target = resolve_target(&args);
+
+    let url = match target {
+        Target::Url(direct_url) => {
+            println!("direct URL: {direct_url}");
+            direct_url
+        }
+        Target::Search(query) => {
+            let url = search_url("https://example.com/", &query)
+                .unwrap_or_else(|| "https://example.com/".to_string());
+            println!("search URL: {url}");
+            url
+        }
+        Target::Default => {
+            let url = search_url("https://example.com/", "hello underrated")
+                .unwrap_or_else(|| "https://example.com/".to_string());
+            println!("search URL: {url}");
+            url
+        }
+    };
 
     // 2. Fetch it; fall back to the built-in sample when offline.
     let (html, css) = match fetch(&url) {
@@ -82,4 +121,60 @@ fn main() {
     // 3 + 4. Render to pixels and present in a window.
     let window = WinitWindow::new("underrated", width, height);
     window.run(move || render_to_canvas(&html, &css, width, height));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_target_empty() {
+        let args: Vec<String> = vec![];
+        assert_eq!(resolve_target(&args), Target::Default);
+    }
+
+    #[test]
+    fn test_resolve_target_absolute_https() {
+        let args = vec!["https://example.com/foo?bar=baz".to_string()];
+        assert_eq!(
+            resolve_target(&args),
+            Target::Url("https://example.com/foo?bar=baz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_absolute_http() {
+        let args = vec!["http://localhost:8080/".to_string()];
+        assert_eq!(
+            resolve_target(&args),
+            Target::Url("http://localhost:8080/".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_plain_query_string() {
+        let args = vec!["hello underrated browser".to_string()];
+        assert_eq!(
+            resolve_target(&args),
+            Target::Search("hello underrated browser".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_capitalized_scheme() {
+        let args = vec!["HTTPS://Example.Com/".to_string()];
+        assert_eq!(
+            resolve_target(&args),
+            Target::Url("HTTPS://Example.Com/".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_unsupported_scheme() {
+        let args = vec!["ftp://example.com/".to_string()];
+        assert_eq!(
+            resolve_target(&args),
+            Target::Search("ftp://example.com/".to_string())
+        );
+    }
 }
