@@ -262,6 +262,7 @@ pub fn build_display_list(
     while let Some(layout_box) = stack.pop() {
         let mut skip_children = false;
         let mut processed_as_button = false;
+        let mut processed_as_text_input = false;
 
         if let Some((node_id, style)) = layout_box
             .node
@@ -287,6 +288,33 @@ pub fn build_display_list(
                             .map(|v| v.to_string())
                             .unwrap_or_else(|| "Submit".to_string());
                         is_btn_or_submit = true;
+                    }
+                }
+            }
+
+            // Check if this node is a text-like input field (S-94)
+            let mut is_text_input = false;
+            if !is_btn_or_submit
+                && let Some(NodeData::Element { name, .. }) = dom.data(node_id)
+                && name.eq_ignore_ascii_case("input")
+            {
+                let type_attr = dom.get_attribute(node_id, "type");
+                match type_attr {
+                    None => {
+                        is_text_input = true;
+                    }
+                    Some(t) => {
+                        let t_trimmed = t.trim();
+                        if t_trimmed.eq_ignore_ascii_case("text")
+                            || t_trimmed.eq_ignore_ascii_case("search")
+                            || t_trimmed.eq_ignore_ascii_case("email")
+                            || t_trimmed.eq_ignore_ascii_case("url")
+                            || t_trimmed.eq_ignore_ascii_case("tel")
+                            || t_trimmed.eq_ignore_ascii_case("password")
+                            || t_trimmed.eq_ignore_ascii_case("number")
+                        {
+                            is_text_input = true;
+                        }
                     }
                 }
             }
@@ -410,9 +438,132 @@ pub fn build_display_list(
                     text: label_text,
                     color: text_color,
                 });
+            } else if is_text_input {
+                processed_as_text_input = true;
+                skip_children = true;
+
+                // 1. Determine background color
+                let bg_color = if let Some(val) = style.get("background-color")
+                    && let Some(c) = find_color(val)
+                {
+                    Some(c)
+                } else if let Some(val) = style.get("background")
+                    && let Some(c) = find_color(val)
+                {
+                    Some(c)
+                } else if style.get("background-color").is_some()
+                    || style.get("background").is_some()
+                {
+                    None
+                } else {
+                    Some(Color::Rgba(255, 255, 255, 255)) // default white UA background
+                };
+
+                // Emit filled background rect
+                let rect = layout_box.rect;
+                if let Some(color) = bg_color {
+                    items.push(DisplayItem::SolidRect { rect, color });
+                }
+
+                // 2. Determine border widths and colors
+                let has_border_spec = style.get("border").is_some()
+                    || style.get("border-width").is_some()
+                    || style.get("border-style").is_some()
+                    || style.get("border-color").is_some()
+                    || style.get("border-top").is_some()
+                    || style.get("border-right").is_some()
+                    || style.get("border-bottom").is_some()
+                    || style.get("border-left").is_some()
+                    || style.get("border-top-width").is_some()
+                    || style.get("border-right-width").is_some()
+                    || style.get("border-bottom-width").is_some()
+                    || style.get("border-left-width").is_some()
+                    || style.get("border-top-color").is_some()
+                    || style.get("border-right-color").is_some()
+                    || style.get("border-bottom-color").is_some()
+                    || style.get("border-left-color").is_some()
+                    || style.get("border-top-style").is_some()
+                    || style.get("border-right-style").is_some()
+                    || style.get("border-bottom-style").is_some()
+                    || style.get("border-left-style").is_some();
+
+                let border_top = get_border_width(style, "border-top-width");
+                let border_right = get_border_width(style, "border-right-width");
+                let border_bottom = get_border_width(style, "border-bottom-width");
+                let border_left = get_border_width(style, "border-left-width");
+
+                let (t, r, b, l) = if has_border_spec {
+                    (border_top, border_right, border_bottom, border_left)
+                } else {
+                    (1.0, 1.0, 1.0, 1.0) // 1px UA default solid border
+                };
+
+                let border_color = get_border_color(style);
+                let top_color = get_edge_color(style, "border-top-color", &border_color);
+                let right_color = get_edge_color(style, "border-right-color", &border_color);
+                let bottom_color = get_edge_color(style, "border-bottom-color", &border_color);
+                let left_color = get_edge_color(style, "border-left-color", &border_color);
+
+                let (tc, rc, bc, lc) = if has_border_spec {
+                    (top_color, right_color, bottom_color, left_color)
+                } else {
+                    let default_border_color = Color::Rgba(118, 118, 118, 255); // #767676
+                    (
+                        default_border_color.clone(),
+                        default_border_color.clone(),
+                        default_border_color.clone(),
+                        default_border_color,
+                    )
+                };
+
+                let x = rect.origin.x;
+                let y = rect.origin.y;
+                let w = rect.size.width.max(0.0);
+                let h = rect.size.height.max(0.0);
+
+                let t_clamped = t.max(0.0).min(h);
+                let b_clamped = b.max(0.0).min(h - t_clamped);
+                let l_clamped = l.max(0.0).min(w);
+                let r_clamped = r.max(0.0).min(w - l_clamped);
+
+                // Top border strip
+                if t_clamped > 0.0 && w > 0.0 {
+                    items.push(DisplayItem::SolidRect {
+                        rect: Rect::new(x, y, w, t_clamped),
+                        color: tc,
+                    });
+                }
+                // Bottom border strip
+                if b_clamped > 0.0 && w > 0.0 {
+                    items.push(DisplayItem::SolidRect {
+                        rect: Rect::new(x, y + h - b_clamped, w, b_clamped),
+                        color: bc,
+                    });
+                }
+                // Left border strip
+                if l_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
+                    items.push(DisplayItem::SolidRect {
+                        rect: Rect::new(x, y + t_clamped, l_clamped, h - t_clamped - b_clamped),
+                        color: lc,
+                    });
+                }
+                // Right border strip
+                if r_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
+                    items.push(DisplayItem::SolidRect {
+                        rect: Rect::new(
+                            x + w - r_clamped,
+                            y + t_clamped,
+                            r_clamped,
+                            h - t_clamped - b_clamped,
+                        ),
+                        color: rc,
+                    });
+                }
+
+                // TODO(spec): render input value/placeholder/caret
             }
 
-            if !processed_as_button {
+            if !processed_as_button && !processed_as_text_input {
                 // spec: if node has background-color -> SolidRect
                 if let Some(CssValue::Color(color)) = style.get("background-color") {
                     // TODO(spec): border/images/gradients/rasterization
@@ -1749,5 +1900,169 @@ mod tests {
         } else {
             panic!("Expected text item");
         }
+    }
+
+    #[test]
+    fn test_paint_text_input_default_ua_chrome() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let input = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "text".into())],
+        });
+        dom.append_child(doc, input);
+
+        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 100.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Items should be:
+        // 1. Filled white background rect (Color::Rgba(255, 255, 255, 255))
+        // 2-5. 4 border strips (default border color #767676 / Color::Rgba(118, 118, 118, 255))
+
+        let background_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(255, 255, 255, 255)))
+            .collect();
+
+        let border_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(118, 118, 118, 255)))
+            .collect();
+
+        assert_eq!(
+            background_items.len(),
+            1,
+            "Expected 1 default white background"
+        );
+        assert_eq!(border_items.len(), 4, "Expected 4 default border strips");
+    }
+
+    #[test]
+    fn test_paint_input_no_type_ua_chrome() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let input = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input);
+
+        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 100.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let background_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(255, 255, 255, 255)))
+            .collect();
+
+        let border_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(118, 118, 118, 255)))
+            .collect();
+
+        assert_eq!(
+            background_items.len(),
+            1,
+            "Expected 1 default white background for input without type attribute"
+        );
+        assert_eq!(
+            border_items.len(),
+            4,
+            "Expected 4 default border strips for input without type attribute"
+        );
+    }
+
+    #[test]
+    fn test_paint_input_submit_stays_on_button_path() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let input = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "submit".into()),
+                ("value".into(), "Submit".into()),
+            ],
+        });
+        dom.append_child(doc, input);
+
+        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 100.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Ensure we do NOT emit white background or #767676 border (which are the text input defaults)
+        let text_bg_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(255, 255, 255, 255)))
+            .collect();
+
+        let text_border_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(118, 118, 118, 255)))
+            .collect();
+
+        assert_eq!(text_bg_items.len(), 0);
+        assert_eq!(text_border_items.len(), 0);
+
+        // Ensure it emits default button gray background and highlights/shadows
+        let button_bg_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(239, 239, 239, 255)))
+            .collect();
+
+        assert_eq!(button_bg_items.len(), 1);
+    }
+
+    #[test]
+    fn test_paint_input_custom_style_override() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let input = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "text".into())],
+        });
+        dom.append_child(doc, input);
+
+        let stylesheet = parse_stylesheet(
+            "input { width: 100px; height: 30px; background-color: rgb(255, 0, 0); border-color: rgb(0, 255, 0); border-width: 2px; }",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 100.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Overridden background-color: rgb(255, 0, 0)
+        let custom_bg_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(255, 0, 0, 255)))
+            .collect();
+
+        // Overridden border-color: rgb(0, 255, 0)
+        let custom_border_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(0, 255, 0, 255)))
+            .collect();
+
+        assert_eq!(
+            custom_bg_items.len(),
+            1,
+            "Expected overridden custom red background"
+        );
+        assert_eq!(
+            custom_border_items.len(),
+            4,
+            "Expected overridden custom green borders"
+        );
     }
 }
