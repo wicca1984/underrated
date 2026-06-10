@@ -41,6 +41,7 @@ pub struct Dom {
     document: NodeId,
     focused_node: std::cell::Cell<Option<NodeId>>,
     routing_keyboard_event: std::cell::Cell<bool>,
+    images: std::cell::RefCell<std::collections::HashMap<String, crate::image::DecodedImage>>,
 }
 
 impl Default for Dom {
@@ -66,7 +67,18 @@ impl Dom {
             document,
             focused_node: std::cell::Cell::new(None),
             routing_keyboard_event: std::cell::Cell::new(false),
+            images: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Adds a decoded image to the DOM's image cache.
+    pub fn add_image(&self, src: String, img: crate::image::DecodedImage) {
+        self.images.borrow_mut().insert(src, img);
+    }
+
+    /// Retrieves a decoded image from the DOM's image cache.
+    pub fn get_image(&self, src: &str) -> Option<crate::image::DecodedImage> {
+        self.images.borrow().get(src).cloned()
     }
 
     /// Returns the NodeId of the Document root.

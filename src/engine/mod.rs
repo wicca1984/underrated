@@ -137,6 +137,70 @@ pub fn render_html_to_canvas(html: &str, width: u32, height: u32) -> crate::rast
     canvas
 }
 
+fn load_image_safely_with_loader(
+    loader: &dyn crate::loader::ResourceLoader,
+    src: &str,
+    base_url: Option<&crate::url::Url>,
+) -> Option<Vec<u8>> {
+    if src.starts_with("data:") {
+        return crate::loader::load_data_uri(src);
+    }
+
+    let resolved_url = if let Some(base) = base_url {
+        crate::url::resolve(base, src)
+    } else {
+        crate::url::Url::parse(src).ok()
+    };
+
+    if let Some(url) = resolved_url {
+        if url.scheme == "data" {
+            return crate::loader::load_data_uri(&url.serialize());
+        }
+
+        if url.scheme == "http" || url.scheme == "https" {
+            if let Ok(bytes) = loader.load(&url) {
+                return Some(bytes);
+            }
+            return None;
+        }
+
+        return crate::loader::load_image_safely(src, base_url);
+    }
+
+    None
+}
+
+fn fetch_and_decode_images(
+    dom: &crate::dom::Dom,
+    base_url: &crate::url::Url,
+    loader: &dyn crate::loader::ResourceLoader,
+) {
+    let mut effective_base = base_url.clone();
+    let doc = dom.document();
+    for n_id in dom.descendants(doc) {
+        if let Some(NodeData::Element { name: el_name, .. }) = dom.data(n_id)
+            && el_name.eq_ignore_ascii_case("base")
+            && let Some(href) = dom.get_attribute(n_id, "href")
+        {
+            if let Some(resolved) = crate::url::resolve(base_url, href) {
+                effective_base = resolved;
+            }
+            break;
+        }
+    }
+
+    for n_id in dom.descendants(doc) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(n_id)
+            && name.eq_ignore_ascii_case("img")
+            && let Some(src) = dom.get_attribute(n_id, "src")
+            && let Some(bytes) = load_image_safely_with_loader(loader, src, Some(&effective_base))
+            && let Some(decoded) = crate::image::decode_png(&bytes)
+        {
+            dom.add_image(src.to_string(), decoded);
+        }
+    }
+}
+
 /// Renders HTML containing inline styles and/or external stylesheets, fetched via the loader.
 /// spec: S-37
 pub fn render_html_with_loader(
@@ -244,6 +308,8 @@ pub fn render_html_with_loader(
 
     // 6. layout::layout_document(&dom, &styles, viewport_width)
     let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
+
+    fetch_and_decode_images(&dom, base, loader);
 
     // 7. return Page { dom, styles, layout }
     Page {
@@ -360,6 +426,8 @@ pub fn render_page(
 
     // 7. Layout document
     let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
+
+    fetch_and_decode_images(&dom, base_url, loader);
 
     Page {
         dom,
@@ -1191,5 +1259,126 @@ mod tests {
             found_post_submitted_text,
             "Submitted POST page should contain search results text"
         );
+    }
+
+    #[test]
+    fn test_remote_img_fetch_decode_blit_s90() {
+        use crate::paint::DisplayItem;
+        use crate::raster::Canvas;
+
+        fn encode_base64(bytes: &[u8]) -> String {
+            const CHARS: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut result = String::new();
+            let mut i = 0;
+            while i < bytes.len() {
+                let b0 = bytes[i];
+                let b1 = if i + 1 < bytes.len() {
+                    Some(bytes[i + 1])
+                } else {
+                    None
+                };
+                let b2 = if i + 2 < bytes.len() {
+                    Some(bytes[i + 2])
+                } else {
+                    None
+                };
+
+                let val0 = b0 >> 2;
+                let val1 = ((b0 & 3) << 4) | (b1.unwrap_or(0) >> 4);
+                let val2 = b1.map(|b| ((b & 15) << 2) | (b2.unwrap_or(0) >> 6));
+                let val3 = b2.map(|b| b & 63);
+
+                result.push(CHARS[val0 as usize] as char);
+                result.push(CHARS[val1 as usize] as char);
+                if let Some(v2) = val2 {
+                    result.push(CHARS[v2 as usize] as char);
+                } else {
+                    result.push('=');
+                }
+                if let Some(v3) = val3 {
+                    result.push(CHARS[v3 as usize] as char);
+                } else {
+                    result.push('=');
+                }
+
+                i += 3;
+            }
+            result
+        }
+
+        // 1. Generate a valid 2x2 PNG image bytes
+        let mut source_canvas = Canvas::new(2, 2);
+        // 0xAARRGGBB
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        source_canvas.pixels[2] = 0xFF0000FF; // Blue
+        source_canvas.pixels[3] = 0xFFFFFF00; // Yellow
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        // 2. Set up MockLoader to return these PNG bytes for our http image URL
+        let image_url = "http://example.com/image.png";
+        let mut responses = HashMap::new();
+        responses.insert(image_url.to_string(), Ok(png_bytes.clone()));
+
+        // Also we will have a data: URI in the HTML
+        let data_uri = format!("data:image/png;base64,{}", encode_base64(&png_bytes));
+
+        let loader = MockLoader { responses };
+
+        // 3. Render HTML containing both http image URL and data: URI
+        let html = format!(
+            r#"<html>
+                <body>
+                    <img id="img1" src="http://example.com/image.png" style="width: 4px; height: 4px;">
+                    <img id="img2" src="{}" style="width: 4px; height: 4px;">
+                </body>
+            </html>"#,
+            data_uri
+        );
+
+        let base_url = crate::url::Url::parse("http://example.com/").unwrap();
+        let page = render_page(&html, &base_url, &loader, 800.0);
+
+        // 4. Build DisplayList and verify it contains DisplayItem::Image items with decoded DecodedImage
+        let display_list = crate::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+        let items = display_list.0;
+
+        let image_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        assert_eq!(
+            image_items.len(),
+            2,
+            "Should have 2 image display items in the display list"
+        );
+
+        // Verify the first image (http://example.com/image.png) has been decoded
+        if let DisplayItem::Image { src, decoded, .. } = image_items[0] {
+            assert_eq!(src, "http://example.com/image.png");
+            let decoded_img = decoded
+                .as_ref()
+                .expect("First image should have a decoded DecodedImage");
+            assert_eq!(decoded_img.width, 2);
+            assert_eq!(decoded_img.height, 2);
+            assert_eq!(&decoded_img.rgba[0..4], &[255, 0, 0, 255]); // Red
+        } else {
+            panic!("Expected DisplayItem::Image");
+        }
+
+        // Verify the second image (data: URI) has been decoded
+        if let DisplayItem::Image { src, decoded, .. } = image_items[1] {
+            assert_eq!(src, &data_uri);
+            let decoded_img = decoded
+                .as_ref()
+                .expect("Second image should have a decoded DecodedImage");
+            assert_eq!(decoded_img.width, 2);
+            assert_eq!(decoded_img.height, 2);
+            assert_eq!(&decoded_img.rgba[0..4], &[255, 0, 0, 255]); // Red
+        } else {
+            panic!("Expected DisplayItem::Image");
+        }
     }
 }

@@ -23,6 +23,7 @@ pub enum DisplayItem {
         rect: Rect,
         src: String,
         base_url: Option<String>,
+        decoded: Option<crate::image::DecodedImage>,
     },
 }
 
@@ -417,47 +418,58 @@ pub fn build_display_list(
                     .as_ref()
                     .and_then(|b| crate::url::Url::parse(b).ok());
 
-                let mut painted_as_pixels = false;
-                if let Some(bytes) = crate::loader::load_image_safely(src, base_url_parsed.as_ref())
-                    && let Some(decoded) = crate::image::decode_png(&bytes)
-                {
-                    let rect_w = layout_box.rect.size.width;
-                    let rect_h = layout_box.rect.size.height;
-                    if rect_w > 0.0 && rect_h > 0.0 && decoded.width > 0 && decoded.height > 0 {
-                        painted_as_pixels = true;
-                        let sub_w = rect_w / decoded.width as f32;
-                        let sub_h = rect_h / decoded.height as f32;
-                        for y in 0..decoded.height {
-                            for x in 0..decoded.width {
-                                let idx = ((y * decoded.width + x) * 4) as usize;
-                                if idx + 3 < decoded.rgba.len() {
-                                    let r = decoded.rgba[idx];
-                                    let g = decoded.rgba[idx + 1];
-                                    let b = decoded.rgba[idx + 2];
-                                    let a = decoded.rgba[idx + 3];
-                                    let color = Color::Rgba(r, g, b, a);
-                                    let sub_rect = Rect::new(
-                                        layout_box.rect.origin.x + x as f32 * sub_w,
-                                        layout_box.rect.origin.y + y as f32 * sub_h,
-                                        sub_w,
-                                        sub_h,
-                                    );
-                                    items.push(DisplayItem::SolidRect {
-                                        rect: sub_rect,
-                                        color,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !painted_as_pixels {
+                if let Some(pre_decoded) = dom.get_image(src) {
                     items.push(DisplayItem::Image {
                         rect: layout_box.rect,
                         src: src.to_string(),
                         base_url,
+                        decoded: Some(pre_decoded),
                     });
+                } else {
+                    let mut painted_as_pixels = false;
+                    if let Some(bytes) =
+                        crate::loader::load_image_safely(src, base_url_parsed.as_ref())
+                        && let Some(decoded) = crate::image::decode_png(&bytes)
+                    {
+                        let rect_w = layout_box.rect.size.width;
+                        let rect_h = layout_box.rect.size.height;
+                        if rect_w > 0.0 && rect_h > 0.0 && decoded.width > 0 && decoded.height > 0 {
+                            painted_as_pixels = true;
+                            let sub_w = rect_w / decoded.width as f32;
+                            let sub_h = rect_h / decoded.height as f32;
+                            for y in 0..decoded.height {
+                                for x in 0..decoded.width {
+                                    let idx = ((y * decoded.width + x) * 4) as usize;
+                                    if idx + 3 < decoded.rgba.len() {
+                                        let r = decoded.rgba[idx];
+                                        let g = decoded.rgba[idx + 1];
+                                        let b = decoded.rgba[idx + 2];
+                                        let a = decoded.rgba[idx + 3];
+                                        let color = Color::Rgba(r, g, b, a);
+                                        let sub_rect = Rect::new(
+                                            layout_box.rect.origin.x + x as f32 * sub_w,
+                                            layout_box.rect.origin.y + y as f32 * sub_h,
+                                            sub_w,
+                                            sub_h,
+                                        );
+                                        items.push(DisplayItem::SolidRect {
+                                            rect: sub_rect,
+                                            color,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !painted_as_pixels {
+                        items.push(DisplayItem::Image {
+                            rect: layout_box.rect,
+                            src: src.to_string(),
+                            base_url,
+                            decoded: None,
+                        });
+                    }
                 }
             }
         }
