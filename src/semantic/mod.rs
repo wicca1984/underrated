@@ -1220,4 +1220,398 @@ mod tests {
         let expected_md = "| Header 1 | Header 2 |\n| --- | --- |\n| Val 1 | Val 2 |";
         assert_eq!(md, expected_md);
     }
+
+    #[test]
+    fn test_role_direct() {
+        let mut dom = Dom::new();
+
+        // 1. Explicit role attribute mapping
+        let node_explicit_simple = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("role".into(), "button".into())],
+        });
+        assert_eq!(role(&dom, node_explicit_simple), Some("button".to_string()));
+
+        let node_explicit_multi = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("role".into(), "checkbox button".into())],
+        });
+        assert_eq!(
+            role(&dom, node_explicit_multi),
+            Some("checkbox".to_string())
+        );
+
+        let node_explicit_spaces = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("role".into(), "   navigation   ".into())],
+        });
+        assert_eq!(
+            role(&dom, node_explicit_spaces),
+            Some("navigation".to_string())
+        );
+
+        // 2. Implicit roles
+        // Button
+        let node_btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_btn), Some("button".to_string()));
+
+        // 'a' with href
+        let node_a_href = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("href".into(), "https://example.com".into())],
+        });
+        assert_eq!(role(&dom, node_a_href), Some("link".to_string()));
+
+        // 'a' without href
+        let node_a_no_href = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_a_no_href), None);
+
+        // h1..h6
+        for level in 1..=6 {
+            let tag = format!("h{}", level);
+            let node_h = dom.create_node(NodeData::Element {
+                name: tag,
+                attrs: vec![],
+            });
+            assert_eq!(role(&dom, node_h), Some("heading".to_string()));
+        }
+
+        // img
+        let node_img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_img), Some("img".to_string()));
+
+        // input types
+        let input_types = vec![
+            ("submit", Some("button")),
+            ("button", Some("button")),
+            ("image", Some("button")),
+            ("reset", Some("button")),
+            ("checkbox", Some("checkbox")),
+            ("radio", Some("radio")),
+            ("search", Some("searchbox")),
+            ("range", Some("slider")),
+            ("number", Some("spinbutton")),
+            ("text", Some("textbox")),
+            ("unrecognized", Some("textbox")),
+            ("", Some("textbox")),
+        ];
+        for (t, expected) in input_types {
+            let node_input = if t.is_empty() {
+                dom.create_node(NodeData::Element {
+                    name: "input".into(),
+                    attrs: vec![],
+                })
+            } else {
+                dom.create_node(NodeData::Element {
+                    name: "input".into(),
+                    attrs: vec![("type".into(), t.into())],
+                })
+            };
+            assert_eq!(role(&dom, node_input), expected.map(String::from));
+        }
+
+        // landmarks
+        let landmarks = vec![
+            ("nav", "navigation"),
+            ("main", "main"),
+            ("aside", "complementary"),
+            ("header", "banner"),
+            ("footer", "contentinfo"),
+            ("article", "article"),
+            ("section", "region"),
+            ("form", "form"),
+        ];
+        for (tag, expected) in landmarks {
+            let node_landmark = dom.create_node(NodeData::Element {
+                name: tag.into(),
+                attrs: vec![],
+            });
+            assert_eq!(role(&dom, node_landmark), Some(expected.to_string()));
+        }
+
+        // lists
+        let node_ul = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_ul), Some("list".to_string()));
+
+        let node_ol = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_ol), Some("list".to_string()));
+
+        let node_li = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_li), Some("listitem".to_string()));
+
+        // tables
+        let node_table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_table), Some("table".to_string()));
+
+        let node_tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_tr), Some("row".to_string()));
+
+        let node_th = dom.create_node(NodeData::Element {
+            name: "th".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_th), Some("columnheader".to_string()));
+
+        let node_td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_td), Some("cell".to_string()));
+
+        // unknown elements
+        let node_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_div), None);
+
+        let node_span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        assert_eq!(role(&dom, node_span), None);
+
+        // non-element nodes
+        let node_text = dom.create_node(NodeData::Text("Hello".into()));
+        assert_eq!(role(&dom, node_text), None);
+
+        let node_comment = dom.create_node(NodeData::Comment("Comment".into()));
+        assert_eq!(role(&dom, node_comment), None);
+
+        let node_doctype = dom.create_node(NodeData::Doctype {
+            name: "html".into(),
+            public_id: "".into(),
+            system_id: "".into(),
+        });
+        assert_eq!(role(&dom, node_doctype), None);
+
+        // invalid node ID
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = foreign_dom.document();
+        for _ in 0..100 {
+            foreign_node = foreign_dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![],
+            });
+        }
+        assert_eq!(role(&dom, foreign_node), None);
+    }
+
+    #[test]
+    fn test_accessible_name_direct() {
+        let mut dom = Dom::new();
+
+        // 1. From aria-label (precedence over alt and text_content)
+        let node_all = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![
+                ("aria-label".into(), "Aria Label Text".into()),
+                ("alt".into(), "Alt Text".into()),
+            ],
+        });
+        let text_child = dom.create_node(NodeData::Text("Fallback Text".into()));
+        dom.append_child(node_all, text_child);
+        assert_eq!(
+            accessible_name(&dom, node_all),
+            "Aria Label Text".to_string()
+        );
+
+        // 2. From alt (precedence over text_content)
+        let node_alt = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("alt".into(), "Alt Text Only".into())],
+        });
+        let text_child2 = dom.create_node(NodeData::Text("Fallback Text".into()));
+        dom.append_child(node_alt, text_child2);
+        assert_eq!(accessible_name(&dom, node_alt), "Alt Text Only".to_string());
+
+        // 3. Fallback to text_content
+        let node_fallback = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        let child1 = dom.create_node(NodeData::Text("Hello ".into()));
+        let child2 = dom.create_node(NodeData::Text("World!".into()));
+        dom.append_child(node_fallback, child1);
+        dom.append_child(node_fallback, child2);
+        assert_eq!(
+            accessible_name(&dom, node_fallback),
+            "Hello World!".to_string()
+        );
+
+        // 4. Text node returns its string
+        let node_text = dom.create_node(NodeData::Text("Just text".into()));
+        assert_eq!(accessible_name(&dom, node_text), "Just text".to_string());
+
+        // 5. Empty string for other node types
+        let doc = dom.document();
+        assert_eq!(accessible_name(&dom, doc), "".to_string());
+
+        let node_comment = dom.create_node(NodeData::Comment("Comment text".into()));
+        assert_eq!(accessible_name(&dom, node_comment), "".to_string());
+
+        let node_doctype = dom.create_node(NodeData::Doctype {
+            name: "html".into(),
+            public_id: "".into(),
+            system_id: "".into(),
+        });
+        assert_eq!(accessible_name(&dom, node_doctype), "".to_string());
+
+        // 6. Invalid nodes return empty string
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = foreign_dom.document();
+        for _ in 0..100 {
+            foreign_node = foreign_dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![],
+            });
+        }
+        assert_eq!(accessible_name(&dom, foreign_node), "".to_string());
+    }
+
+    #[test]
+    fn test_ax_tree_direct() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Build:
+        // <main>
+        //   <button aria-label="Action">Click</button>
+        //   <div role="presentation">
+        //     <a href="#">Link</a>
+        //   </div>
+        //   <div aria-hidden="true">
+        //     <span>Hidden 1</span>
+        //   </div>
+        //   <div style="display: none">
+        //     <span>Hidden 2</span>
+        //   </div>
+        //   <div style="visibility:hidden">
+        //     <span>Hidden 3</span>
+        //   </div>
+        // </main>
+
+        let node_main = dom.create_node(NodeData::Element {
+            name: "main".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, node_main);
+
+        // 1. Normal button with child text
+        let node_button = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![("aria-label".into(), "Action".into())],
+        });
+        let text_click = dom.create_node(NodeData::Text("Click".into()));
+        dom.append_child(node_button, text_click);
+        dom.append_child(node_main, node_button);
+
+        // 2. Presentation container with promoted child
+        let node_presentation = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("role".into(), "presentation".into())],
+        });
+        let node_link = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("href".into(), "#".into())],
+        });
+        let text_link = dom.create_node(NodeData::Text("Link".into()));
+        dom.append_child(node_link, text_link);
+        dom.append_child(node_presentation, node_link);
+        dom.append_child(node_main, node_presentation);
+
+        // 3. Hidden via aria-hidden
+        let node_hidden_aria = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("aria-hidden".into(), "true".into())],
+        });
+        let node_span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let text_hidden1 = dom.create_node(NodeData::Text("Hidden 1".into()));
+        dom.append_child(node_span1, text_hidden1);
+        dom.append_child(node_hidden_aria, node_span1);
+        dom.append_child(node_main, node_hidden_aria);
+
+        // 4. Hidden via display: none
+        let node_hidden_display = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("style".into(), "display: none".into())],
+        });
+        let node_span2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let text_hidden2 = dom.create_node(NodeData::Text("Hidden 2".into()));
+        dom.append_child(node_span2, text_hidden2);
+        dom.append_child(node_hidden_display, node_span2);
+        dom.append_child(node_main, node_hidden_display);
+
+        // 5. Hidden via visibility:hidden
+        let node_hidden_vis = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("style".into(), "visibility:hidden".into())],
+        });
+        let node_span3 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let text_hidden3 = dom.create_node(NodeData::Text("Hidden 3".into()));
+        dom.append_child(node_span3, text_hidden3);
+        dom.append_child(node_hidden_vis, node_span3);
+        dom.append_child(node_main, node_hidden_vis);
+
+        let tree = ax_tree(&dom);
+
+        // Assert root Document node
+        assert_eq!(tree.role, None);
+        assert_eq!(tree.name, "");
+        assert_eq!(tree.children.len(), 1);
+
+        // Assert main node
+        let ax_main = &tree.children[0];
+        assert_eq!(ax_main.role, Some("main".to_string()));
+        assert_eq!(ax_main.children.len(), 2); // Only button and link are included; others are pruned.
+
+        // Assert button
+        let ax_button = &ax_main.children[0];
+        assert_eq!(ax_button.role, Some("button".to_string()));
+        assert_eq!(ax_button.name, "Action");
+        assert_eq!(ax_button.children.len(), 1);
+        assert_eq!(ax_button.children[0].role, None);
+        assert_eq!(ax_button.children[0].name, "Click");
+
+        // Assert promoted link (the div presentation node itself is omitted, its children are promoted)
+        let ax_link = &ax_main.children[1];
+        assert_eq!(ax_link.role, Some("link".to_string()));
+        assert_eq!(ax_link.name, "Link");
+        assert_eq!(ax_link.children.len(), 1);
+        assert_eq!(ax_link.children[0].role, None);
+        assert_eq!(ax_link.children[0].name, "Link");
+    }
 }
