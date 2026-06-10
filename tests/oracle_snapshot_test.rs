@@ -2,7 +2,9 @@ use serde_json::Value;
 use std::path::Path;
 
 fn assert_structural_invariants(node: &Value) {
-    let node_type = node["type"].as_str().expect("Node must have a 'type' field");
+    let node_type = node["type"]
+        .as_str()
+        .expect("Node must have a 'type' field");
     match node_type {
         "element" => {
             let tag = node["tag"]
@@ -30,13 +32,11 @@ fn assert_structural_invariants(node: &Value) {
             let _x = rect["x"].as_f64().expect("rect.x must be a number");
             let _y = rect["y"].as_f64().expect("rect.y must be a number");
             let width = rect["width"].as_f64().expect("rect.width must be a number");
-            let height = rect["height"].as_f64().expect("rect.height must be a number");
+            let height = rect["height"]
+                .as_f64()
+                .expect("rect.height must be a number");
 
-            assert!(
-                width >= 0.0,
-                "rect.width of '{}' must be non-negative",
-                tag
-            );
+            assert!(width >= 0.0, "rect.width of '{}' must be non-negative", tag);
             assert!(
                 height >= 0.0,
                 "rect.height of '{}' must be non-negative",
@@ -148,14 +148,18 @@ fn test_oracle_snapshot_fixtures() {
                 let inner_div = divs[1];
 
                 // Check attributes
-                assert!(outer_div["attrs"]["style"]
-                    .as_str()
-                    .unwrap()
-                    .contains("width: 500px"));
-                assert!(inner_div["attrs"]["style"]
-                    .as_str()
-                    .unwrap()
-                    .contains("width: 250px"));
+                assert!(
+                    outer_div["attrs"]["style"]
+                        .as_str()
+                        .unwrap()
+                        .contains("width: 500px")
+                );
+                assert!(
+                    inner_div["attrs"]["style"]
+                        .as_str()
+                        .unwrap()
+                        .contains("width: 250px")
+                );
 
                 // Check rects
                 let outer_width = outer_div["rect"]["width"].as_f64().unwrap();
@@ -169,9 +173,9 @@ fn test_oracle_snapshot_fixtures() {
                 // Inner div should be nested within the hierarchy
                 // Verify inner_div is indeed in outer_div's children
                 let outer_children = outer_div["children"].as_array().unwrap();
-                let found_inner = outer_children.iter().any(|c| {
-                    c["tag"] == "div" && c["rect"]["width"] == inner_div["rect"]["width"]
-                });
+                let found_inner = outer_children
+                    .iter()
+                    .any(|c| c["tag"] == "div" && c["rect"]["width"] == inner_div["rect"]["width"]);
                 assert!(found_inner, "inner_div must be nested under outer_div");
             }),
         ),
@@ -211,10 +215,7 @@ fn test_oracle_snapshot_fixtures() {
 
                 let mut text_nodes = Vec::new();
                 collect_text_nodes(ul, &mut text_nodes);
-                assert_eq!(
-                    text_nodes,
-                    vec!["First Item", "Second Item", "Third Item"]
-                );
+                assert_eq!(text_nodes, vec!["First Item", "Second Item", "Third Item"]);
             }),
         ),
         (
@@ -227,8 +228,7 @@ fn test_oracle_snapshot_fixtures() {
                     .and_then(|_c| {
                         let mut divs = Vec::new();
                         find_elements_by_tag(snapshot, "div", &mut divs);
-                        divs.into_iter()
-                            .find(|d| d["attrs"]["class"] == "hidden")
+                        divs.into_iter().find(|d| d["attrs"]["class"] == "hidden")
                     })
                     .expect("hidden div element should exist in DOM");
 
@@ -241,8 +241,7 @@ fn test_oracle_snapshot_fixtures() {
                     .and_then(|_c| {
                         let mut divs = Vec::new();
                         find_elements_by_tag(snapshot, "div", &mut divs);
-                        divs.into_iter()
-                            .find(|d| d["attrs"]["class"] == "visible")
+                        divs.into_iter().find(|d| d["attrs"]["class"] == "visible")
                     })
                     .expect("visible div element should exist in DOM");
 
