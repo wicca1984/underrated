@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod classlist;
+mod focus;
 mod mutate;
 mod query;
 mod serialize;
@@ -36,6 +37,8 @@ struct Node {
 pub struct Dom {
     arena: Arena<Node>,
     document: NodeId,
+    focused_node: std::cell::Cell<Option<NodeId>>,
+    routing_keyboard_event: std::cell::Cell<bool>,
 }
 
 impl Default for Dom {
@@ -54,11 +57,24 @@ impl Dom {
             parent: None,
             children: Vec::new(),
         });
-        Self { arena, document }
+        Self {
+            arena,
+            document,
+            focused_node: std::cell::Cell::new(None),
+            routing_keyboard_event: std::cell::Cell::new(false),
+        }
     }
 
     /// Returns the NodeId of the Document root.
     pub fn document(&self) -> NodeId {
+        if self.routing_keyboard_event.get() {
+            self.routing_keyboard_event.set(false);
+            if let Some(focused) = self.focused_node.get()
+                && self.is_connected(focused)
+            {
+                return focused;
+            }
+        }
         self.document
     }
 
