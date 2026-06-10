@@ -42,9 +42,30 @@ pub fn render(html: &str, css: &str, viewport_width: f32) -> Page {
     // 2. html::parse_document(input)
     let dom = crate::html::parse_document(input);
 
-    // 3. css::parse_stylesheet(css)
+    // 3. Prepend UA_DEFAULT_CSS and hoist <style> blocks.
+    // Keep author CSS (passed css arg and hoisted <style>) at a higher priority than UA defaults.
+    let mut css_accumulator = String::from(UA_DEFAULT_CSS);
+    if !css.is_empty() {
+        css_accumulator.push('\n');
+        css_accumulator.push_str(css);
+    }
+
+    let doc = dom.document();
+    for node_id in dom.descendants(doc) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
+            && name.eq_ignore_ascii_case("style")
+        {
+            for &child_id in dom.children(node_id) {
+                if let Some(NodeData::Text(text)) = dom.data(child_id) {
+                    css_accumulator.push('\n');
+                    css_accumulator.push_str(text);
+                }
+            }
+        }
+    }
+
     // spec: The actual API is in crate::css::parser::parse_stylesheet.
-    let stylesheet = crate::css::parser::parse_stylesheet(css);
+    let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
 
     // 4. style::compute_styles(&dom, &stylesheet)
     let styles = crate::style::compute_styles(&dom, &stylesheet);
@@ -552,7 +573,7 @@ mod tests {
     #[test]
     fn test_render_to_canvas() {
         let html = "<div></div>";
-        let css = "div { background-color: #ff0000; width: 10px; height: 10px; }";
+        let css = "html, body { background-color: transparent; } body { margin: 0; } div { background-color: #ff0000; width: 10px; height: 10px; }";
         let width = 20;
         let height = 20;
 
@@ -1380,5 +1401,113 @@ mod tests {
         } else {
             panic!("Expected DisplayItem::Image");
         }
+    }
+
+    #[test]
+    fn test_gui_render_path_hides_script_and_style() {
+        use crate::paint::DisplayItem;
+
+        let html = r#"
+            <html>
+                <head>
+                    <title>My Page</title>
+                    <style>
+                        p { color: #ff0000; }
+                    </style>
+                    <script>
+                        console.log("this should not be visible!");
+                    </script>
+                </head>
+                <body>
+                    <p>visible text</p>
+                </body>
+            </html>
+        "#;
+
+        // Render via the GUI-style render() path
+        let page = render(html, "", 800.0);
+
+        // 1. Assert style & script and head/title have display: none in computed styles
+        let mut style_id = None;
+        let mut script_id = None;
+        let mut p_id = None;
+
+        let doc = page.dom.document();
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(id) {
+                match name.as_str() {
+                    "style" => style_id = Some(id),
+                    "script" => script_id = Some(id),
+                    "p" => p_id = Some(id),
+                    _ => {}
+                }
+            }
+        }
+
+        let style_node = style_id.expect("should find style node");
+        let script_node = script_id.expect("should find script node");
+        let p_node = p_id.expect("should find p node");
+
+        let style_s = page
+            .styles
+            .get(&style_node)
+            .expect("style should have computed styles");
+        assert_eq!(
+            style_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("none".to_string()))
+        );
+
+        let script_s = page
+            .styles
+            .get(&script_node)
+            .expect("script should have computed styles");
+        assert_eq!(
+            script_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("none".to_string()))
+        );
+
+        let p_s = page
+            .styles
+            .get(&p_node)
+            .expect("p should have computed styles");
+        if let Some(crate::css::values::CssValue::Color(c)) = p_s.get("color") {
+            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 0, 255));
+        } else {
+            panic!("Expected color red (#ff0000) for paragraph due to hoisted CSS");
+        }
+
+        // 2. Build display list and verify that no text from style or script is rendered,
+        // but the paragraph text IS rendered.
+        let display_list = crate::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+        let mut found_visible_text = false;
+        let mut found_hidden_script_text = false;
+        let mut found_hidden_style_text = false;
+
+        for item in &display_list.0 {
+            if let DisplayItem::Text { text, .. } = item {
+                if text.contains("visible text") {
+                    found_visible_text = true;
+                }
+                if text.contains("console.log") {
+                    found_hidden_script_text = true;
+                }
+                if text.contains("color: #ff0000") {
+                    found_hidden_style_text = true;
+                }
+            }
+        }
+
+        assert!(
+            found_visible_text,
+            "Expected visible paragraph text in display list"
+        );
+        assert!(
+            !found_hidden_script_text,
+            "Script source text should not be visible in display list"
+        );
+        assert!(
+            !found_hidden_style_text,
+            "Style source text should not be visible in display list"
+        );
     }
 }
