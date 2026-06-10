@@ -6,13 +6,13 @@
 //! Rationale for chosen budget:
 //! - Debug builds are significantly slower due to the lack of optimizations.
 //! - CI environments may run on shared/constrained hardware, introducing variability.
-//! - Thus, a generous ceiling of 500ms is used. This is high enough to avoid
+//! - Thus, a generous ceiling of 2000ms is used. This is high enough to avoid
 //!   flakiness under constrained CI environments, while still acting as a
 //!   dependable backstop against catastrophic regressions (e.g. infinite loops
 //!   or exponential layout/selector matching algorithms).
 //!
 //! // TODO(spec): Since the official performance gate specification is not yet
-//! // detailed, this test establishes a 500ms generous baseline. Future specifications
+//! // detailed, this test establishes a 2000ms generous baseline. Future specifications
 //! // may refine this budget or establish separate release-build bounds.
 
 use std::time::Instant;
