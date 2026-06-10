@@ -22,6 +22,19 @@ pub struct LayoutBox {
 
 pub(crate) const MAX_DEPTH: usize = 1000;
 
+fn collapse_margins(m1: f32, m2: f32) -> f32 {
+    if m1 >= 0.0 && m2 >= 0.0 {
+        m1.max(m2)
+    } else if m1 < 0.0 && m2 < 0.0 {
+        m1.min(m2) // most-negative
+    } else {
+        // mixed sign (one positive or zero, one negative)
+        let pos = m1.max(0.0).max(m2.max(0.0));
+        let neg = m1.min(0.0).min(m2.min(0.0));
+        pos + neg
+    }
+}
+
 /// Performs block layout on the document.
 /// spec: S-11
 pub fn layout_document(
@@ -37,15 +50,36 @@ pub fn layout_document(
 
     // The document's children (usually just <html>)
     let mut cursor_y = 0.0;
+    let mut prev_margin_bottom: Option<f32> = None;
+    let mut last_child_box_max_y: Option<f32> = None;
+
     for &child in dom.children(dom.document()) {
         if is_absolute_or_fixed(styles, child) {
             continue;
         }
-        if let Some(child_box) = layout_node(dom, styles, child, viewport_width, 0.0, cursor_y, 0) {
-            if let Some(child_style) = styles.get(&child) {
-                let margin_bottom = get_px(child_style, "margin-bottom", 0.0);
-                cursor_y = child_box.rect.max_y() + margin_bottom;
-            }
+
+        let offset_y =
+            if let (Some(prev_mb), Some(last_max_y)) = (prev_margin_bottom, last_child_box_max_y) {
+                let child_style = styles.get(&child);
+                let margin_top = child_style
+                    .map(|s| get_px(s, "margin-top", 0.0))
+                    .unwrap_or(0.0);
+                let collapsed = collapse_margins(prev_mb, margin_top);
+                last_max_y + collapsed - margin_top
+            } else {
+                cursor_y
+            };
+
+        if let Some(child_box) = layout_node(dom, styles, child, viewport_width, 0.0, offset_y, 0) {
+            let margin_bottom = styles
+                .get(&child)
+                .map(|s| get_px(s, "margin-bottom", 0.0))
+                .unwrap_or(0.0);
+
+            last_child_box_max_y = Some(child_box.rect.max_y());
+            prev_margin_bottom = Some(margin_bottom);
+
+            cursor_y = child_box.rect.max_y() + margin_bottom;
             root_box.children.push(child_box);
         }
     }
@@ -128,6 +162,9 @@ pub(crate) fn layout_node(
     let border_box_y = offset_y + margin_top;
 
     let mut children = Vec::new();
+    // TODO(spec): Parent-child margin collapse (collapse-through) is out of scope.
+    // Also, collapse suppression by intervening padding/border, collapse-through empty blocks,
+    // clear/clearance, floats, and BFC establishment via overflow are out of scope.
     let mut child_cursor_y = border_box_y + border_top + padding_top;
 
     let layoutable_children = get_layoutable_children(dom, styles, node);
@@ -154,29 +191,54 @@ pub(crate) fn layout_node(
         child_cursor_y += total_height;
     } else if !has_inline {
         // If ALL children are block (or empty), keep current block behavior
+        let mut prev_margin_bottom: Option<f32> = None;
+        let mut last_child_box_max_y: Option<f32> = None;
+
         for &child in dom.children(node) {
             if is_absolute_or_fixed(styles, child) {
                 continue;
             }
+
+            let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                (prev_margin_bottom, last_child_box_max_y)
+            {
+                let child_style = styles.get(&child);
+                let margin_top = child_style
+                    .map(|s| get_px(s, "margin-top", 0.0))
+                    .unwrap_or(0.0);
+                let collapsed = collapse_margins(prev_mb, margin_top);
+                last_max_y + collapsed - margin_top
+            } else {
+                child_cursor_y
+            };
+
             if let Some(child_box) = layout_node(
                 dom,
                 styles,
                 child,
                 content_width,
                 border_box_x + border_left + padding_left,
-                child_cursor_y,
+                offset_y,
                 depth + 1,
             ) {
-                if let Some(child_style) = styles.get(&child) {
-                    let child_margin_bottom = get_px(child_style, "margin-bottom", 0.0);
-                    child_cursor_y = child_box.rect.max_y() + child_margin_bottom;
-                }
+                let margin_bottom = styles
+                    .get(&child)
+                    .map(|s| get_px(s, "margin-bottom", 0.0))
+                    .unwrap_or(0.0);
+
+                last_child_box_max_y = Some(child_box.rect.max_y());
+                prev_margin_bottom = Some(margin_bottom);
+
+                child_cursor_y = child_box.rect.max_y() + margin_bottom;
                 children.push(child_box);
             }
         }
     } else {
         // MIXED: wrap each maximal run of consecutive inline-level children in an anonymous block box
         // spec: S-anonymous-block-boxes
+        let mut prev_margin_bottom: Option<f32> = None;
+        let mut last_child_box_max_y: Option<f32> = None;
+
         let mut i = 0;
         while i < layoutable_children.len() {
             let child = layoutable_children[i];
@@ -188,13 +250,24 @@ pub(crate) fn layout_node(
                     inline_run.push(layoutable_children[i]);
                     i += 1;
                 }
+
+                // Treat anonymous block as having margin_top = 0.0
+                let start_y = if let (Some(prev_mb), Some(last_max_y)) =
+                    (prev_margin_bottom, last_child_box_max_y)
+                {
+                    let collapsed = collapse_margins(prev_mb, 0.0);
+                    last_max_y + collapsed
+                } else {
+                    child_cursor_y
+                };
+
                 let (line_boxes, total_height) = layout_inline_run(
                     dom,
                     styles,
                     &inline_run,
                     content_width,
                     border_box_x + border_left + padding_left,
-                    child_cursor_y,
+                    start_y,
                     depth,
                 );
                 if !line_boxes.is_empty() {
@@ -202,29 +275,52 @@ pub(crate) fn layout_node(
                         node: None,
                         rect: Rect::new(
                             border_box_x + border_left + padding_left,
-                            child_cursor_y,
+                            start_y,
                             content_width,
                             total_height,
                         ),
                         children: line_boxes,
                     };
+
+                    last_child_box_max_y = Some(anon_box.rect.max_y());
+                    // Treat anonymous block as having margin_bottom = 0.0
+                    prev_margin_bottom = Some(0.0);
+                    child_cursor_y = anon_box.rect.max_y();
+
                     children.push(anon_box);
-                    child_cursor_y += total_height;
                 }
             } else {
+                let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                    (prev_margin_bottom, last_child_box_max_y)
+                {
+                    let child_style = styles.get(&child);
+                    let margin_top = child_style
+                        .map(|s| get_px(s, "margin-top", 0.0))
+                        .unwrap_or(0.0);
+                    let collapsed = collapse_margins(prev_mb, margin_top);
+                    last_max_y + collapsed - margin_top
+                } else {
+                    child_cursor_y
+                };
+
                 if let Some(child_box) = layout_node(
                     dom,
                     styles,
                     child,
                     content_width,
                     border_box_x + border_left + padding_left,
-                    child_cursor_y,
+                    offset_y,
                     depth + 1,
                 ) {
-                    if let Some(child_style) = styles.get(&child) {
-                        let child_margin_bottom = get_px(child_style, "margin-bottom", 0.0);
-                        child_cursor_y = child_box.rect.max_y() + child_margin_bottom;
-                    }
+                    let margin_bottom = styles
+                        .get(&child)
+                        .map(|s| get_px(s, "margin-bottom", 0.0))
+                        .unwrap_or(0.0);
+
+                    last_child_box_max_y = Some(child_box.rect.max_y());
+                    prev_margin_bottom = Some(margin_bottom);
+
+                    child_cursor_y = child_box.rect.max_y() + margin_bottom;
                     children.push(child_box);
                 }
                 i += 1;
@@ -1088,5 +1184,158 @@ mod tests {
         let expected_min_height =
             anon1.rect.size.height + child_div_box.rect.size.height + anon3.rect.size.height;
         assert!(parent_div_box.rect.size.height >= expected_min_height);
+    }
+
+    #[test]
+    fn test_margin_collapse_positive() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "prev".into())],
+        });
+        dom.append_child(body, div1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "next".into())],
+        });
+        dom.append_child(body, div2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div { display: block; height: 50px; }
+            .prev { margin-bottom: 30px; }
+            .next { margin-top: 20px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let box1 = &body_box.children[0];
+        let box2 = &body_box.children[1];
+
+        assert!(approx_eq(box1.rect.origin.y, 0.0));
+        assert!(approx_eq(box1.rect.size.height, 50.0));
+
+        // Collapsed margin = max(30, 20) = 30.
+        // So box2 border box y should be box1.rect.max_y() + 30 = 50.0 + 30.0 = 80.0.
+        assert!(
+            approx_eq(box2.rect.origin.y, 80.0),
+            "Expected second sibling border box y to be 80.0, got {}",
+            box2.rect.origin.y
+        );
+    }
+
+    #[test]
+    fn test_margin_collapse_mixed() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "prev".into())],
+        });
+        dom.append_child(body, div1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "next".into())],
+        });
+        dom.append_child(body, div2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div { display: block; height: 50px; }
+            .prev { margin-bottom: 30px; }
+            .next { margin-top: -10px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let box1 = &body_box.children[0];
+        let box2 = &body_box.children[1];
+
+        assert!(approx_eq(box1.rect.origin.y, 0.0));
+        assert!(approx_eq(box1.rect.size.height, 50.0));
+
+        // Collapsed margin = max(30, 0) + min(-10, 0) = 30 + (-10) = 20.
+        // So box2 border box y should be box1.rect.max_y() + 20 = 50.0 + 20.0 = 70.0.
+        assert!(
+            approx_eq(box2.rect.origin.y, 70.0),
+            "Expected second sibling border box y to be 70.0, got {}",
+            box2.rect.origin.y
+        );
+    }
+
+    #[test]
+    fn test_margin_collapse_both_negative() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "prev".into())],
+        });
+        dom.append_child(body, div1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "next".into())],
+        });
+        dom.append_child(body, div2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div { display: block; height: 50px; }
+            .prev { margin-bottom: -10px; }
+            .next { margin-top: -20px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let box1 = &body_box.children[0];
+        let box2 = &body_box.children[1];
+
+        assert!(approx_eq(box1.rect.origin.y, 0.0));
+        assert!(approx_eq(box1.rect.size.height, 50.0));
+
+        // Collapsed margin = min(-10, -20) = -20.
+        // So box2 border box y should be box1.rect.max_y() + (-20) = 50.0 - 20.0 = 30.0.
+        assert!(
+            approx_eq(box2.rect.origin.y, 30.0),
+            "Expected second sibling border box y to be 30.0, got {}",
+            box2.rect.origin.y
+        );
     }
 }
