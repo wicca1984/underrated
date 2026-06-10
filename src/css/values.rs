@@ -18,12 +18,77 @@ pub enum Color {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum PositionValue {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum OverflowValue {
+    Visible,
+    Hidden,
+    Scroll,
+    Auto,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum BoxSizingValue {
+    ContentBox,
+    BorderBox,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum DisplayValue {
+    Block,
+    Inline,
+    InlineBlock,
+    None,
+    Flex,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum FlexDirectionValue {
+    Row,
+    RowReverse,
+    Column,
+    ColumnReverse,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum JustifyContentValue {
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum AlignItemsValue {
+    Stretch,
+    FlexStart,
+    FlexEnd,
+    Center,
+    Baseline,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum CssValue {
     Keyword(String),
     Length(f32, LengthUnit),
     Number(f32),
     Color(Color),
     Multiple(Vec<CssValue>),
+    Position(PositionValue),
+    Overflow(OverflowValue),
+    BoxSizing(BoxSizingValue),
+    Display(DisplayValue),
+    FlexDirection(FlexDirectionValue),
+    JustifyContent(JustifyContentValue),
+    AlignItems(AlignItemsValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -83,58 +148,58 @@ pub fn is_known_layout_property(name: &str) -> bool {
 pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
     let name_lower = name.to_ascii_lowercase();
     match name_lower.as_str() {
-        "position" => {
-            if let CssValue::Keyword(kw) = value {
+        "position" => match value {
+            CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "static" | "relative" | "absolute" | "fixed"
                 )
-            } else {
-                false
             }
-        }
-        "overflow" => {
-            if let CssValue::Keyword(kw) = value {
+            CssValue::Position(_) => true,
+            _ => false,
+        },
+        "overflow" => match value {
+            CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "visible" | "hidden" | "scroll" | "auto"
                 )
-            } else {
-                false
             }
-        }
-        "box-sizing" => {
-            if let CssValue::Keyword(kw) = value {
+            CssValue::Overflow(_) => true,
+            _ => false,
+        },
+        "box-sizing" => match value {
+            CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "content-box" | "border-box"
                 )
-            } else {
-                false
             }
-        }
-        "display" => {
-            if let CssValue::Keyword(kw) = value {
+            CssValue::BoxSizing(_) => true,
+            _ => false,
+        },
+        "display" => match value {
+            CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "block" | "inline" | "inline-block" | "none" | "flex"
                 )
-            } else {
-                false
             }
-        }
-        "flex-direction" => {
-            if let CssValue::Keyword(kw) = value {
+            CssValue::Display(_) => true,
+            _ => false,
+        },
+        "flex-direction" => match value {
+            CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "row" | "row-reverse" | "column" | "column-reverse"
                 )
-            } else {
-                false
             }
-        }
-        "justify-content" => {
-            if let CssValue::Keyword(kw) = value {
+            CssValue::FlexDirection(_) => true,
+            _ => false,
+        },
+        "justify-content" => match value {
+            CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "flex-start"
@@ -144,21 +209,133 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                         | "space-around"
                         | "space-evenly"
                 )
-            } else {
-                false
             }
-        }
-        "align-items" => {
-            if let CssValue::Keyword(kw) = value {
+            CssValue::JustifyContent(_) => true,
+            _ => false,
+        },
+        "align-items" => match value {
+            CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "flex-start" | "flex-end" | "center" | "baseline" | "stretch"
                 )
+            }
+            CssValue::AlignItems(_) => true,
+            _ => false,
+        },
+        _ => true,
+    }
+}
+
+/// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
+pub fn parse_property_value(
+    property_name: &str,
+    components: &[ComponentValue],
+) -> Option<CssValue> {
+    let val = parse_value(components)?;
+    let name_lower = property_name.to_ascii_lowercase();
+    match name_lower.as_str() {
+        "position" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "static" => PositionValue::Static,
+                    "relative" => PositionValue::Relative,
+                    "absolute" => PositionValue::Absolute,
+                    "fixed" => PositionValue::Fixed,
+                    _ => return None,
+                };
+                Some(CssValue::Position(typed))
             } else {
-                false
+                None
             }
         }
-        _ => true,
+        "overflow" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "visible" => OverflowValue::Visible,
+                    "hidden" => OverflowValue::Hidden,
+                    "scroll" => OverflowValue::Scroll,
+                    "auto" => OverflowValue::Auto,
+                    _ => return None,
+                };
+                Some(CssValue::Overflow(typed))
+            } else {
+                None
+            }
+        }
+        "box-sizing" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "content-box" => BoxSizingValue::ContentBox,
+                    "border-box" => BoxSizingValue::BorderBox,
+                    _ => return None,
+                };
+                Some(CssValue::BoxSizing(typed))
+            } else {
+                None
+            }
+        }
+        "display" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "block" => DisplayValue::Block,
+                    "inline" => DisplayValue::Inline,
+                    "inline-block" => DisplayValue::InlineBlock,
+                    "none" => DisplayValue::None,
+                    "flex" => DisplayValue::Flex,
+                    _ => return None,
+                };
+                Some(CssValue::Display(typed))
+            } else {
+                None
+            }
+        }
+        "flex-direction" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "row" => FlexDirectionValue::Row,
+                    "row-reverse" => FlexDirectionValue::RowReverse,
+                    "column" => FlexDirectionValue::Column,
+                    "column-reverse" => FlexDirectionValue::ColumnReverse,
+                    _ => return None,
+                };
+                Some(CssValue::FlexDirection(typed))
+            } else {
+                None
+            }
+        }
+        "justify-content" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "flex-start" => JustifyContentValue::FlexStart,
+                    "flex-end" => JustifyContentValue::FlexEnd,
+                    "center" => JustifyContentValue::Center,
+                    "space-between" => JustifyContentValue::SpaceBetween,
+                    "space-around" => JustifyContentValue::SpaceAround,
+                    "space-evenly" => JustifyContentValue::SpaceEvenly,
+                    _ => return None,
+                };
+                Some(CssValue::JustifyContent(typed))
+            } else {
+                None
+            }
+        }
+        "align-items" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "stretch" => AlignItemsValue::Stretch,
+                    "flex-start" => AlignItemsValue::FlexStart,
+                    "flex-end" => AlignItemsValue::FlexEnd,
+                    "center" => AlignItemsValue::Center,
+                    "baseline" => AlignItemsValue::Baseline,
+                    _ => return None,
+                };
+                Some(CssValue::AlignItems(typed))
+            } else {
+                None
+            }
+        }
+        _ => Some(val),
     }
 }
 
@@ -454,5 +631,179 @@ mod tests {
             value: vec![],
         }];
         assert_eq!(parse_value(&components), None);
+    }
+
+    #[test]
+    fn test_parse_property_value_layout() {
+        // Test position
+        assert_eq!(
+            parse_property_value("position", &[token(CssToken::Ident("static".to_string()))]),
+            Some(CssValue::Position(PositionValue::Static))
+        );
+        assert_eq!(
+            parse_property_value(
+                "position",
+                &[token(CssToken::Ident("relative".to_string()))]
+            ),
+            Some(CssValue::Position(PositionValue::Relative))
+        );
+        assert_eq!(
+            parse_property_value(
+                "position",
+                &[token(CssToken::Ident("absolute".to_string()))]
+            ),
+            Some(CssValue::Position(PositionValue::Absolute))
+        );
+        assert_eq!(
+            parse_property_value("position", &[token(CssToken::Ident("fixed".to_string()))]),
+            Some(CssValue::Position(PositionValue::Fixed))
+        );
+        assert_eq!(
+            parse_property_value(
+                "position",
+                &[token(CssToken::Ident("invalid-pos".to_string()))]
+            ),
+            None
+        );
+
+        // Test overflow
+        assert_eq!(
+            parse_property_value("overflow", &[token(CssToken::Ident("visible".to_string()))]),
+            Some(CssValue::Overflow(OverflowValue::Visible))
+        );
+        assert_eq!(
+            parse_property_value("overflow", &[token(CssToken::Ident("hidden".to_string()))]),
+            Some(CssValue::Overflow(OverflowValue::Hidden))
+        );
+        assert_eq!(
+            parse_property_value("overflow", &[token(CssToken::Ident("scroll".to_string()))]),
+            Some(CssValue::Overflow(OverflowValue::Scroll))
+        );
+        assert_eq!(
+            parse_property_value("overflow", &[token(CssToken::Ident("auto".to_string()))]),
+            Some(CssValue::Overflow(OverflowValue::Auto))
+        );
+        assert_eq!(
+            parse_property_value(
+                "overflow",
+                &[token(CssToken::Ident("invalid-overflow".to_string()))]
+            ),
+            None
+        );
+
+        // Test box-sizing
+        assert_eq!(
+            parse_property_value(
+                "box-sizing",
+                &[token(CssToken::Ident("content-box".to_string()))]
+            ),
+            Some(CssValue::BoxSizing(BoxSizingValue::ContentBox))
+        );
+        assert_eq!(
+            parse_property_value(
+                "box-sizing",
+                &[token(CssToken::Ident("border-box".to_string()))]
+            ),
+            Some(CssValue::BoxSizing(BoxSizingValue::BorderBox))
+        );
+        assert_eq!(
+            parse_property_value(
+                "box-sizing",
+                &[token(CssToken::Ident("invalid-box-sizing".to_string()))]
+            ),
+            None
+        );
+
+        // Test display (with flex)
+        assert_eq!(
+            parse_property_value("display", &[token(CssToken::Ident("block".to_string()))]),
+            Some(CssValue::Display(DisplayValue::Block))
+        );
+        assert_eq!(
+            parse_property_value("display", &[token(CssToken::Ident("flex".to_string()))]),
+            Some(CssValue::Display(DisplayValue::Flex))
+        );
+        assert_eq!(
+            parse_property_value(
+                "display",
+                &[token(CssToken::Ident("invalid-display".to_string()))]
+            ),
+            None
+        );
+
+        // Test flex-direction
+        assert_eq!(
+            parse_property_value(
+                "flex-direction",
+                &[token(CssToken::Ident("row".to_string()))]
+            ),
+            Some(CssValue::FlexDirection(FlexDirectionValue::Row))
+        );
+        assert_eq!(
+            parse_property_value(
+                "flex-direction",
+                &[token(CssToken::Ident("column-reverse".to_string()))]
+            ),
+            Some(CssValue::FlexDirection(FlexDirectionValue::ColumnReverse))
+        );
+        assert_eq!(
+            parse_property_value(
+                "flex-direction",
+                &[token(CssToken::Ident("invalid-dir".to_string()))]
+            ),
+            None
+        );
+
+        // Test justify-content
+        assert_eq!(
+            parse_property_value(
+                "justify-content",
+                &[token(CssToken::Ident("flex-start".to_string()))]
+            ),
+            Some(CssValue::JustifyContent(JustifyContentValue::FlexStart))
+        );
+        assert_eq!(
+            parse_property_value(
+                "justify-content",
+                &[token(CssToken::Ident("space-between".to_string()))]
+            ),
+            Some(CssValue::JustifyContent(JustifyContentValue::SpaceBetween))
+        );
+        assert_eq!(
+            parse_property_value(
+                "justify-content",
+                &[token(CssToken::Ident("invalid-justify".to_string()))]
+            ),
+            None
+        );
+
+        // Test align-items
+        assert_eq!(
+            parse_property_value(
+                "align-items",
+                &[token(CssToken::Ident("stretch".to_string()))]
+            ),
+            Some(CssValue::AlignItems(AlignItemsValue::Stretch))
+        );
+        assert_eq!(
+            parse_property_value(
+                "align-items",
+                &[token(CssToken::Ident("baseline".to_string()))]
+            ),
+            Some(CssValue::AlignItems(AlignItemsValue::Baseline))
+        );
+        assert_eq!(
+            parse_property_value(
+                "align-items",
+                &[token(CssToken::Ident("invalid-align".to_string()))]
+            ),
+            None
+        );
+
+        // Test non-layout properties
+        assert_eq!(
+            parse_property_value("color", &[token(CssToken::Ident("red".to_string()))]),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
     }
 }
