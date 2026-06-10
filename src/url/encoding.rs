@@ -108,6 +108,59 @@ pub fn encode_query(pairs: &[(String, String)]) -> String {
     output
 }
 
+/// Normalizes newline characters in the input string to CRLF (CR followed by LF).
+///
+/// Under the HTML Standard:
+/// "Replace every occurrence of U+000D (CR) not followed by U+000A (LF), and every
+/// occurrence of U+000A (LF) not preceded by U+000D (CR)... with U+000D U+000A."
+pub fn normalize_newlines(input: &str) -> String {
+    let mut result = String::new();
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            if chars.peek() == Some(&'\n') {
+                result.push('\r');
+                result.push('\n');
+                chars.next();
+            } else {
+                result.push('\r');
+                result.push('\n');
+            }
+        } else if c == '\n' {
+            result.push('\r');
+            result.push('\n');
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Serializes key-value pairs into a query string in `application/x-www-form-urlencoded` format,
+/// including line break normalization as defined in the HTML Standard.
+///
+// spec: <https://url.spec.whatwg.org/#urlencoded-serializing>
+// and: <https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#urlencoded-form-dataing>
+pub fn serialize_form_urlencoded<K, V, I>(pairs: I) -> String
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    let mut output = String::new();
+    for (key, val) in pairs {
+        if !output.is_empty() {
+            output.push('&');
+        }
+        let normalized_key = normalize_newlines(key.as_ref());
+        let normalized_val = normalize_newlines(val.as_ref());
+        output.push_str(&encode_form_urlencoded(&normalized_key));
+        output.push('=');
+        output.push_str(&encode_form_urlencoded(&normalized_val));
+    }
+    output
+}
+
 fn encode_form_urlencoded(input: &str) -> String {
     let mut output = String::new();
     for b in input.as_bytes() {
@@ -266,5 +319,32 @@ mod tests {
             percent_encode("a*b-c.d_e~f!g'h(i)j", PercentEncodeSet::FormUrlencoded),
             "a*b-c.d_e%7Ef%21g%27h%28i%29j"
         );
+    }
+
+    #[test]
+    fn test_serialize_form_urlencoded_basic() {
+        let pairs = vec![("foo", "bar"), ("baz", "qux")];
+        assert_eq!(serialize_form_urlencoded(pairs), "foo=bar&baz=qux");
+    }
+
+    #[test]
+    fn test_serialize_form_urlencoded_special_chars() {
+        let pairs = vec![("a b", "c+d"), ("e&f", "g=h"), ("i?j", "k#l")];
+        assert_eq!(
+            serialize_form_urlencoded(pairs),
+            "a+b=c%2Bd&e%26f=g%3Dh&i%3Fj=k%23l"
+        );
+    }
+
+    #[test]
+    fn test_serialize_form_urlencoded_newlines() {
+        let pairs = vec![("a\nb", "c\rd\r\ne")];
+        assert_eq!(serialize_form_urlencoded(pairs), "a%0D%0Ab=c%0D%0Ad%0D%0Ae");
+    }
+
+    #[test]
+    fn test_serialize_form_urlencoded_utf8() {
+        let pairs = vec![("é", "😀")];
+        assert_eq!(serialize_form_urlencoded(pairs), "%C3%A9=%F0%9F%98%80");
     }
 }

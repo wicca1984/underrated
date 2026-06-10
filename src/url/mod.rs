@@ -4,7 +4,10 @@
 
 mod encoding;
 
-pub use encoding::{PercentEncodeSet, encode_query, parse_query, percent_decode, percent_encode};
+pub use encoding::{
+    PercentEncodeSet, encode_query, normalize_newlines, parse_query, percent_decode,
+    percent_encode, serialize_form_urlencoded,
+};
 
 /// A WHATWG URL.
 ///
