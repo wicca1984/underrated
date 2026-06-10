@@ -40,7 +40,6 @@ pub struct Dom {
     arena: Arena<Node>,
     document: NodeId,
     focused_node: std::cell::Cell<Option<NodeId>>,
-    routing_keyboard_event: std::cell::Cell<bool>,
     images: std::cell::RefCell<std::collections::HashMap<String, crate::image::DecodedImage>>,
 }
 
@@ -66,7 +65,6 @@ impl Dom {
             arena,
             document,
             focused_node: std::cell::Cell::new(None),
-            routing_keyboard_event: std::cell::Cell::new(false),
             images: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -83,14 +81,6 @@ impl Dom {
 
     /// Returns the NodeId of the Document root.
     pub fn document(&self) -> NodeId {
-        if self.routing_keyboard_event.get() {
-            self.routing_keyboard_event.set(false);
-            if let Some(focused) = self.focused_node.get()
-                && self.is_connected(focused)
-            {
-                return focused;
-            }
-        }
         self.document
     }
 
