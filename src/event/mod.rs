@@ -583,4 +583,326 @@ mod tests {
         assert_eq!(event.event_phase(), NONE);
         assert_eq!(event.current_target(), None);
     }
+
+    #[test]
+    fn test_dom_event_constructors_and_bubbles() {
+        let dom = Dom::new();
+        let node1 = dom.document();
+
+        let click_event = DomEvent::click(node1);
+        assert!(click_event.bubbles());
+        assert_eq!(click_event.target(), Some(node1));
+        if let DomEvent::Click { node, .. } = click_event {
+            assert_eq!(node, node1);
+        } else {
+            panic!("expected DomEvent::Click");
+        }
+
+        let input_event = DomEvent::input(node1, "hello_world".to_string());
+        assert!(input_event.bubbles());
+        assert_eq!(input_event.target(), Some(node1));
+        if let DomEvent::Input { node, value, .. } = input_event {
+            assert_eq!(node, node1);
+            assert_eq!(value, "hello_world");
+        } else {
+            panic!("expected DomEvent::Input");
+        }
+
+        let key_event = DomEvent::key_down("Escape".to_string());
+        assert!(key_event.bubbles());
+        assert_eq!(key_event.target(), None);
+        if let DomEvent::KeyDown { key, .. } = key_event {
+            assert_eq!(key, "Escape");
+        } else {
+            panic!("expected DomEvent::KeyDown");
+        }
+    }
+
+    #[test]
+    fn test_dispatch_to_explicit_target_propagation() {
+        let mut dom = Dom::new();
+        let root = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let child = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(root, parent);
+        dom.append_child(parent, child);
+
+        let mut registry = EventRegistry::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                true,
+                Box::new(move |_| log.borrow_mut().push("root capture")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |_| log.borrow_mut().push("root bubble")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                parent,
+                true,
+                Box::new(move |_| log.borrow_mut().push("parent capture")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                parent,
+                false,
+                Box::new(move |_| log.borrow_mut().push("parent bubble")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                child,
+                true,
+                Box::new(move |_| log.borrow_mut().push("child capture")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                child,
+                false,
+                Box::new(move |_| log.borrow_mut().push("child bubble")),
+            );
+        }
+
+        let event = DomEvent::key_down("Space".to_string());
+        let result = registry.dispatch_to(&dom, &event, child);
+
+        assert!(result);
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "root capture",
+                "parent capture",
+                "child capture",
+                "child bubble",
+                "parent bubble",
+                "root bubble"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_target_vs_current_target_during_dispatch() {
+        let mut dom = Dom::new();
+        let root = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let child = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(root, parent);
+        dom.append_child(parent, child);
+
+        let mut registry = EventRegistry::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        let target_node = parent;
+        let dispatch_target = child;
+
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                true,
+                Box::new(move |e| {
+                    assert_eq!(e.target(), Some(target_node));
+                    assert_eq!(e.current_target(), Some(root));
+                    log.borrow_mut().push("root capture");
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                parent,
+                true,
+                Box::new(move |e| {
+                    assert_eq!(e.target(), Some(target_node));
+                    assert_eq!(e.current_target(), Some(parent));
+                    log.borrow_mut().push("parent capture");
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                dispatch_target,
+                true,
+                Box::new(move |e| {
+                    assert_eq!(e.target(), Some(target_node));
+                    assert_eq!(e.current_target(), Some(dispatch_target));
+                    log.borrow_mut().push("child capture");
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                dispatch_target,
+                false,
+                Box::new(move |e| {
+                    assert_eq!(e.target(), Some(target_node));
+                    assert_eq!(e.current_target(), Some(dispatch_target));
+                    log.borrow_mut().push("child bubble");
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                parent,
+                false,
+                Box::new(move |e| {
+                    assert_eq!(e.target(), Some(target_node));
+                    assert_eq!(e.current_target(), Some(parent));
+                    log.borrow_mut().push("parent bubble");
+                }),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |e| {
+                    assert_eq!(e.target(), Some(target_node));
+                    assert_eq!(e.current_target(), Some(root));
+                    log.borrow_mut().push("root bubble");
+                }),
+            );
+        }
+
+        let event = DomEvent::click(target_node);
+        registry.dispatch_to(&dom, &event, dispatch_target);
+
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "root capture",
+                "parent capture",
+                "child capture",
+                "child bubble",
+                "parent bubble",
+                "root bubble"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_add_listener_registration_order_and_phases() {
+        let dom = Dom::new();
+        let root = dom.document();
+
+        let mut registry = EventRegistry::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |_| log.borrow_mut().push("bubble 1")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |_| log.borrow_mut().push("bubble 2")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                true,
+                Box::new(move |_| log.borrow_mut().push("capture 1")),
+            );
+        }
+        {
+            let log = log.clone();
+            registry.add_listener(
+                root,
+                true,
+                Box::new(move |_| log.borrow_mut().push("capture 2")),
+            );
+        }
+
+        let event = DomEvent::click(root);
+        registry.dispatch(&dom, &event);
+
+        assert_eq!(
+            *log.borrow(),
+            vec!["capture 1", "capture 2", "bubble 1", "bubble 2"]
+        );
+    }
+
+    #[test]
+    fn test_dispatch_return_value_semantics() {
+        let dom = Dom::new();
+        let root = dom.document();
+
+        {
+            let mut registry = EventRegistry::new();
+            let event = DomEvent::click(root);
+            let result = registry.dispatch(&dom, &event);
+            assert!(result);
+            assert!(!event.is_default_prevented());
+        }
+
+        {
+            let mut registry = EventRegistry::new();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |e| {
+                    e.prevent_default();
+                }),
+            );
+            let event = DomEvent::click(root);
+            let result = registry.dispatch(&dom, &event);
+            assert!(!result);
+            assert!(event.is_default_prevented());
+        }
+
+        {
+            let mut registry = EventRegistry::new();
+            registry.add_listener(
+                root,
+                false,
+                Box::new(move |e| {
+                    e.prevent_default();
+                }),
+            );
+            let event = DomEvent::click(root);
+            let result = registry.dispatch_to(&dom, &event, root);
+            assert!(!result);
+            assert!(event.is_default_prevented());
+        }
+    }
 }
