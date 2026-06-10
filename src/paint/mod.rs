@@ -260,38 +260,69 @@ pub fn build_display_list(
 
     // spec: iterative pre-order traversal (no unbounded recursion — I-6)
     while let Some(layout_box) = stack.pop() {
+        let mut skip_children = false;
+        let mut processed_as_button = false;
+
         if let Some((node_id, style)) = layout_box
             .node
             .and_then(|id| styles.get(&id).map(|s| (id, s)))
         {
-            // spec: if node has background-color -> SolidRect
-            if let Some(CssValue::Color(color)) = style.get("background-color") {
-                // TODO(spec): border/images/gradients/rasterization
-                items.push(DisplayItem::SolidRect {
-                    rect: layout_box.rect,
-                    color: color.clone(),
-                });
+            // Check if this node is a button or input[type=submit] (S-79)
+            let mut is_btn_or_submit = false;
+            let mut label_text = String::new();
+            if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
+                if name.eq_ignore_ascii_case("button") {
+                    label_text = dom.text_content(node_id);
+                    is_btn_or_submit = true;
+                } else if name.eq_ignore_ascii_case("input") {
+                    let type_attr = dom.get_attribute(node_id, "type");
+                    let is_submit = type_attr.is_some_and(|t| {
+                        t.eq_ignore_ascii_case("submit")
+                            || t.eq_ignore_ascii_case("button")
+                            || t.eq_ignore_ascii_case("reset")
+                    });
+                    if is_submit {
+                        label_text = dom
+                            .get_attribute(node_id, "value")
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "Submit".to_string());
+                        is_btn_or_submit = true;
+                    }
+                }
             }
 
-            // spec: S-39: read computed border widths
-            let border_top = get_border_width(style, "border-top-width");
-            let border_right = get_border_width(style, "border-right-width");
-            let border_bottom = get_border_width(style, "border-bottom-width");
-            let border_left = get_border_width(style, "border-left-width");
+            if is_btn_or_submit {
+                processed_as_button = true;
+                skip_children = true;
 
-            // If any border has a non-zero width, emit SolidRects for the active edges
-            if border_top > 0.0 || border_right > 0.0 || border_bottom > 0.0 || border_left > 0.0 {
+                // 1. Determine background color
+                let bg_color = match style.get("background-color") {
+                    Some(CssValue::Color(color)) => color.clone(),
+                    _ => Color::Rgba(239, 239, 239, 255), // light-grey UA default
+                };
+
+                // 2. Emit filled background rect
                 let rect = layout_box.rect;
-                let x = rect.origin.x;
-                let y = rect.origin.y;
-                let w = rect.size.width.max(0.0);
-                let h = rect.size.height.max(0.0);
+                items.push(DisplayItem::SolidRect {
+                    rect,
+                    color: bg_color,
+                });
 
-                // Clip/no-panic on weird sizes (I-6) by clamping border widths to fit within box dimensions
-                let t = border_top.max(0.0).min(h);
-                let b = border_bottom.max(0.0).min(h - t);
-                let l = border_left.max(0.0).min(w);
-                let r = border_right.max(0.0).min(w - l);
+                // 3. Determine border sizes and colors
+                let border_top = get_border_width(style, "border-top-width");
+                let border_right = get_border_width(style, "border-right-width");
+                let border_bottom = get_border_width(style, "border-bottom-width");
+                let border_left = get_border_width(style, "border-left-width");
+
+                let (t, r, b, l) = if border_top > 0.0
+                    || border_right > 0.0
+                    || border_bottom > 0.0
+                    || border_left > 0.0
+                {
+                    (border_top, border_right, border_bottom, border_left)
+                } else {
+                    (2.0, 2.0, 2.0, 2.0) // default 2px button border/bevel
+                };
 
                 let border_color = get_border_color(style);
                 let top_color = get_edge_color(style, "border-top-color", &border_color);
@@ -299,176 +330,303 @@ pub fn build_display_list(
                 let bottom_color = get_edge_color(style, "border-bottom-color", &border_color);
                 let left_color = get_edge_color(style, "border-left-color", &border_color);
 
-                // Emit 4 border edges as SolidRects, ensuring no empty or negative rects are painted
+                let (tc, rc, bc, lc) = if style.get("border-top-color").is_some()
+                    || style.get("border-right-color").is_some()
+                    || style.get("border-bottom-color").is_some()
+                    || style.get("border-left-color").is_some()
+                    || style.get("border-color").is_some()
+                    || style.get("border").is_some()
+                {
+                    (top_color, right_color, bottom_color, left_color)
+                } else {
+                    (
+                        Color::Rgba(240, 240, 240, 255), // top: light highlight
+                        Color::Rgba(140, 140, 140, 255), // right: dark shadow
+                        Color::Rgba(140, 140, 140, 255), // bottom: dark shadow
+                        Color::Rgba(240, 240, 240, 255), // left: light highlight
+                    )
+                };
+
+                let x = rect.origin.x;
+                let y = rect.origin.y;
+                let w = rect.size.width.max(0.0);
+                let h = rect.size.height.max(0.0);
+
+                let t_clamped = t.max(0.0).min(h);
+                let b_clamped = b.max(0.0).min(h - t_clamped);
+                let l_clamped = l.max(0.0).min(w);
+                let r_clamped = r.max(0.0).min(w - l_clamped);
+
                 // Top border strip
-                if t > 0.0 && w > 0.0 {
+                if t_clamped > 0.0 && w > 0.0 {
                     items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y, w, t),
-                        color: top_color,
+                        rect: Rect::new(x, y, w, t_clamped),
+                        color: tc,
                     });
                 }
                 // Bottom border strip
-                if b > 0.0 && w > 0.0 {
+                if b_clamped > 0.0 && w > 0.0 {
                     items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y + h - b, w, b),
-                        color: bottom_color,
+                        rect: Rect::new(x, y + h - b_clamped, w, b_clamped),
+                        color: bc,
                     });
                 }
                 // Left border strip
-                if l > 0.0 && h - t - b > 0.0 {
+                if l_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
                     items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y + t, l, h - t - b),
-                        color: left_color,
+                        rect: Rect::new(x, y + t_clamped, l_clamped, h - t_clamped - b_clamped),
+                        color: lc,
                     });
                 }
                 // Right border strip
-                if r > 0.0 && h - t - b > 0.0 {
+                if r_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
                     items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x + w - r, y + t, r, h - t - b),
-                        color: right_color,
+                        rect: Rect::new(
+                            x + w - r_clamped,
+                            y + t_clamped,
+                            r_clamped,
+                            h - t_clamped - b_clamped,
+                        ),
+                        color: rc,
                     });
                 }
-            }
 
-            // spec: if node is a Text node -> Text item
-            if let Some(NodeData::Text(text)) = dom.data(node_id) {
-                // spec: S-82: reliably resolve text color, defaulting to blue-ish for links
-                let color = resolve_text_color(dom, node_id, styles);
-
-                // spec: S-82: Correct text baseline vertical y positioning within line height.
-                // Center-align 8px font glyphs vertically inside the line box height.
+                // 4. Center the label text within the button box
                 let font = crate::font::BitmapFont::builtin();
-                let font_height = font.line_height() as f32;
-                let height = layout_box.rect.size.height;
-                let dy = ((height - font_height) / 2.0).max(0.0);
+                let text_w = font.measure(&label_text) as f32;
+                let text_h = font.line_height() as f32;
 
-                let corrected_rect = Rect::new(
-                    layout_box.rect.origin.x,
-                    layout_box.rect.origin.y + dy,
-                    layout_box.rect.size.width,
-                    font_height,
-                );
+                let text_x = x + ((w - text_w) / 2.0).max(0.0);
+                let text_y = y + ((h - text_h) / 2.0).max(0.0);
 
+                let text_color = match style.get("color") {
+                    Some(CssValue::Color(color)) => color.clone(),
+                    _ => Color::Rgba(0, 0, 0, 255), // default black label
+                };
+
+                let corrected_rect = Rect::new(text_x, text_y, text_w, text_h);
                 items.push(DisplayItem::Text {
                     rect: corrected_rect,
-                    text: text.clone(),
-                    color: color.clone(),
+                    text: label_text,
+                    color: text_color,
                 });
-
-                // spec: S-82: if computed text-decorations are present (underline, overline, line-through)
-                // or we are inside an <a> (and not explicitly styled text-decoration: none),
-                // emit the corresponding SolidRects.
-                let decorations = resolve_text_decorations(dom, node_id, styles);
-
-                let x = corrected_rect.origin.x;
-                let width = corrected_rect.size.width;
-
-                if decorations.underline {
-                    // Position underline relative to the baseline-corrected text position
-                    let underline_y = corrected_rect.origin.y + font_height - 1.0;
-                    let underline_rect = Rect::new(x, underline_y, width, 1.0);
-
-                    items.push(DisplayItem::SolidRect {
-                        rect: underline_rect,
-                        color: color.clone(),
-                    });
-                }
-
-                if decorations.overline {
-                    // Position overline at the top of the baseline-corrected text position
-                    let overline_y = corrected_rect.origin.y;
-                    let overline_rect = Rect::new(x, overline_y, width, 1.0);
-
-                    items.push(DisplayItem::SolidRect {
-                        rect: overline_rect,
-                        color: color.clone(),
-                    });
-                }
-
-                if decorations.line_through {
-                    // Position line-through in the middle of the baseline-corrected text position
-                    let line_through_y = corrected_rect.origin.y + (font_height / 2.0);
-                    let line_through_rect = Rect::new(x, line_through_y, width, 1.0);
-
-                    items.push(DisplayItem::SolidRect {
-                        rect: line_through_rect,
-                        color: color.clone(),
-                    });
-                }
             }
 
-            // spec: if node is an img Element node -> Image item (S-58)
-            if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
-                && name == "img"
-                && let Some(src) = dom.get_attribute(node_id, "src")
-            {
-                // Scan DOM for a <base href="..."> tag
-                let mut base_url = None;
-                for n_id in dom.descendants(dom.document()) {
-                    if let Some(NodeData::Element { name: el_name, .. }) = dom.data(n_id)
-                        && el_name.eq_ignore_ascii_case("base")
-                        && let Some(href) = dom.get_attribute(n_id, "href")
-                    {
-                        base_url = Some(href.to_string());
-                        break;
+            if !processed_as_button {
+                // spec: if node has background-color -> SolidRect
+                if let Some(CssValue::Color(color)) = style.get("background-color") {
+                    // TODO(spec): border/images/gradients/rasterization
+                    items.push(DisplayItem::SolidRect {
+                        rect: layout_box.rect,
+                        color: color.clone(),
+                    });
+                }
+
+                // spec: S-39: read computed border widths
+                let border_top = get_border_width(style, "border-top-width");
+                let border_right = get_border_width(style, "border-right-width");
+                let border_bottom = get_border_width(style, "border-bottom-width");
+                let border_left = get_border_width(style, "border-left-width");
+
+                // If any border has a non-zero width, emit SolidRects for the active edges
+                if border_top > 0.0
+                    || border_right > 0.0
+                    || border_bottom > 0.0
+                    || border_left > 0.0
+                {
+                    let rect = layout_box.rect;
+                    let x = rect.origin.x;
+                    let y = rect.origin.y;
+                    let w = rect.size.width.max(0.0);
+                    let h = rect.size.height.max(0.0);
+
+                    // Clip/no-panic on weird sizes (I-6) by clamping border widths to fit within box dimensions
+                    let t = border_top.max(0.0).min(h);
+                    let b = border_bottom.max(0.0).min(h - t);
+                    let l = border_left.max(0.0).min(w);
+                    let r = border_right.max(0.0).min(w - l);
+
+                    let border_color = get_border_color(style);
+                    let top_color = get_edge_color(style, "border-top-color", &border_color);
+                    let right_color = get_edge_color(style, "border-right-color", &border_color);
+                    let bottom_color = get_edge_color(style, "border-bottom-color", &border_color);
+                    let left_color = get_edge_color(style, "border-left-color", &border_color);
+
+                    // Emit 4 border edges as SolidRects, ensuring no empty or negative rects are painted
+                    // Top border strip
+                    if t > 0.0 && w > 0.0 {
+                        items.push(DisplayItem::SolidRect {
+                            rect: Rect::new(x, y, w, t),
+                            color: top_color,
+                        });
+                    }
+                    // Bottom border strip
+                    if b > 0.0 && w > 0.0 {
+                        items.push(DisplayItem::SolidRect {
+                            rect: Rect::new(x, y + h - b, w, b),
+                            color: bottom_color,
+                        });
+                    }
+                    // Left border strip
+                    if l > 0.0 && h - t - b > 0.0 {
+                        items.push(DisplayItem::SolidRect {
+                            rect: Rect::new(x, y + t, l, h - t - b),
+                            color: left_color,
+                        });
+                    }
+                    // Right border strip
+                    if r > 0.0 && h - t - b > 0.0 {
+                        items.push(DisplayItem::SolidRect {
+                            rect: Rect::new(x + w - r, y + t, r, h - t - b),
+                            color: right_color,
+                        });
                     }
                 }
 
-                let base_url_parsed = base_url
-                    .as_ref()
-                    .and_then(|b| crate::url::Url::parse(b).ok());
+                // spec: if node is a Text node -> Text item
+                if let Some(NodeData::Text(text)) = dom.data(node_id) {
+                    // spec: S-82: reliably resolve text color, defaulting to blue-ish for links
+                    let color = resolve_text_color(dom, node_id, styles);
 
-                if let Some(pre_decoded) = dom.get_image(src) {
-                    items.push(DisplayItem::Image {
-                        rect: layout_box.rect,
-                        src: src.to_string(),
-                        base_url,
-                        decoded: Some(pre_decoded),
+                    // spec: S-82: Correct text baseline vertical y positioning within line height.
+                    // Center-align 8px font glyphs vertically inside the line box height.
+                    let font = crate::font::BitmapFont::builtin();
+                    let font_height = font.line_height() as f32;
+                    let height = layout_box.rect.size.height;
+                    let dy = ((height - font_height) / 2.0).max(0.0);
+
+                    let corrected_rect = Rect::new(
+                        layout_box.rect.origin.x,
+                        layout_box.rect.origin.y + dy,
+                        layout_box.rect.size.width,
+                        font_height,
+                    );
+
+                    items.push(DisplayItem::Text {
+                        rect: corrected_rect,
+                        text: text.clone(),
+                        color: color.clone(),
                     });
-                } else {
-                    let mut painted_as_pixels = false;
-                    if let Some(bytes) =
-                        crate::loader::load_image_safely(src, base_url_parsed.as_ref())
-                        && let Some(decoded) = crate::image::decode_png(&bytes)
-                    {
-                        let rect_w = layout_box.rect.size.width;
-                        let rect_h = layout_box.rect.size.height;
-                        if rect_w > 0.0 && rect_h > 0.0 && decoded.width > 0 && decoded.height > 0 {
-                            painted_as_pixels = true;
-                            let sub_w = rect_w / decoded.width as f32;
-                            let sub_h = rect_h / decoded.height as f32;
-                            for y in 0..decoded.height {
-                                for x in 0..decoded.width {
-                                    let idx = ((y * decoded.width + x) * 4) as usize;
-                                    if idx + 3 < decoded.rgba.len() {
-                                        let r = decoded.rgba[idx];
-                                        let g = decoded.rgba[idx + 1];
-                                        let b = decoded.rgba[idx + 2];
-                                        let a = decoded.rgba[idx + 3];
-                                        let color = Color::Rgba(r, g, b, a);
-                                        let sub_rect = Rect::new(
-                                            layout_box.rect.origin.x + x as f32 * sub_w,
-                                            layout_box.rect.origin.y + y as f32 * sub_h,
-                                            sub_w,
-                                            sub_h,
-                                        );
-                                        items.push(DisplayItem::SolidRect {
-                                            rect: sub_rect,
-                                            color,
-                                        });
-                                    }
-                                }
-                            }
+
+                    // spec: S-82: if computed text-decorations are present (underline, overline, line-through)
+                    // or we are inside an <a> (and not explicitly styled text-decoration: none),
+                    // emit the corresponding SolidRects.
+                    let decorations = resolve_text_decorations(dom, node_id, styles);
+
+                    let x = corrected_rect.origin.x;
+                    let width = corrected_rect.size.width;
+
+                    if decorations.underline {
+                        // Position underline relative to the baseline-corrected text position
+                        let underline_y = corrected_rect.origin.y + font_height - 1.0;
+                        let underline_rect = Rect::new(x, underline_y, width, 1.0);
+
+                        items.push(DisplayItem::SolidRect {
+                            rect: underline_rect,
+                            color: color.clone(),
+                        });
+                    }
+
+                    if decorations.overline {
+                        // Position overline at the top of the baseline-corrected text position
+                        let overline_y = corrected_rect.origin.y;
+                        let overline_rect = Rect::new(x, overline_y, width, 1.0);
+
+                        items.push(DisplayItem::SolidRect {
+                            rect: overline_rect,
+                            color: color.clone(),
+                        });
+                    }
+
+                    if decorations.line_through {
+                        // Position line-through in the middle of the baseline-corrected text position
+                        let line_through_y = corrected_rect.origin.y + (font_height / 2.0);
+                        let line_through_rect = Rect::new(x, line_through_y, width, 1.0);
+
+                        items.push(DisplayItem::SolidRect {
+                            rect: line_through_rect,
+                            color: color.clone(),
+                        });
+                    }
+                }
+
+                // spec: if node is an img Element node -> Image item (S-58)
+                if let Some(NodeData::Element { name, .. }) = dom.data(node_id)
+                    && name == "img"
+                    && let Some(src) = dom.get_attribute(node_id, "src")
+                {
+                    // Scan DOM for a <base href="..."> tag
+                    let mut base_url = None;
+                    for n_id in dom.descendants(dom.document()) {
+                        if let Some(NodeData::Element { name: el_name, .. }) = dom.data(n_id)
+                            && el_name.eq_ignore_ascii_case("base")
+                            && let Some(href) = dom.get_attribute(n_id, "href")
+                        {
+                            base_url = Some(href.to_string());
+                            break;
                         }
                     }
 
-                    if !painted_as_pixels {
+                    let base_url_parsed = base_url
+                        .as_ref()
+                        .and_then(|b| crate::url::Url::parse(b).ok());
+
+                    if let Some(pre_decoded) = dom.get_image(src) {
                         items.push(DisplayItem::Image {
                             rect: layout_box.rect,
                             src: src.to_string(),
                             base_url,
-                            decoded: None,
+                            decoded: Some(pre_decoded),
                         });
+                    } else {
+                        let mut painted_as_pixels = false;
+                        if let Some(bytes) =
+                            crate::loader::load_image_safely(src, base_url_parsed.as_ref())
+                            && let Some(decoded) = crate::image::decode_png(&bytes)
+                        {
+                            let rect_w = layout_box.rect.size.width;
+                            let rect_h = layout_box.rect.size.height;
+                            if rect_w > 0.0
+                                && rect_h > 0.0
+                                && decoded.width > 0
+                                && decoded.height > 0
+                            {
+                                painted_as_pixels = true;
+                                let sub_w = rect_w / decoded.width as f32;
+                                let sub_h = rect_h / decoded.height as f32;
+                                for y in 0..decoded.height {
+                                    for x in 0..decoded.width {
+                                        let idx = ((y * decoded.width + x) * 4) as usize;
+                                        if idx + 3 < decoded.rgba.len() {
+                                            let r = decoded.rgba[idx];
+                                            let g = decoded.rgba[idx + 1];
+                                            let b = decoded.rgba[idx + 2];
+                                            let a = decoded.rgba[idx + 3];
+                                            let color = Color::Rgba(r, g, b, a);
+                                            let sub_rect = Rect::new(
+                                                layout_box.rect.origin.x + x as f32 * sub_w,
+                                                layout_box.rect.origin.y + y as f32 * sub_h,
+                                                sub_w,
+                                                sub_h,
+                                            );
+                                            items.push(DisplayItem::SolidRect {
+                                                rect: sub_rect,
+                                                color,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if !painted_as_pixels {
+                            items.push(DisplayItem::Image {
+                                rect: layout_box.rect,
+                                src: src.to_string(),
+                                base_url,
+                                decoded: None,
+                            });
+                        }
                     }
                 }
             }
@@ -476,8 +634,10 @@ pub fn build_display_list(
 
         // Pre-order traversal: process current, then children left-to-right.
         // Since we use a stack (LIFO), we push children in reverse order.
-        for child in layout_box.children.iter().rev() {
-            stack.push(child);
+        if !skip_children {
+            for child in layout_box.children.iter().rev() {
+                stack.push(child);
+            }
         }
     }
 
@@ -1408,5 +1568,186 @@ mod tests {
 
         // No underlines or overlines should be drawn for the child with none
         assert_eq!(solid_rects.len(), 0);
+    }
+
+    #[test]
+    fn test_paint_button_default_ua_chrome() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, btn);
+
+        let text = dom.create_node(NodeData::Text("Click me".into()));
+        dom.append_child(btn, text);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 100.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Items should be:
+        // 1. Filled background rect (light grey Color::Rgba(239, 239, 239, 255))
+        // 2-5. 4 border strips (beveled colors: Rgba(240, 240, 240, 255) and Rgba(140, 140, 140, 255))
+        // 6. Centered button label text DisplayItem::Text with black color
+
+        let background_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(239, 239, 239, 255)))
+            .collect();
+
+        let border_highlight_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(240, 240, 240, 255)))
+            .collect();
+
+        let border_shadow_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(140, 140, 140, 255)))
+            .collect();
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert_eq!(
+            background_items.len(),
+            1,
+            "Expected 1 default button background"
+        );
+        assert_eq!(
+            border_highlight_items.len(),
+            2,
+            "Expected 2 top/left border highlights"
+        );
+        assert_eq!(
+            border_shadow_items.len(),
+            2,
+            "Expected 2 bottom/right border shadows"
+        );
+        assert_eq!(text_items.len(), 1, "Expected 1 centered button text item");
+
+        if let DisplayItem::Text { text, color, rect } = text_items[0] {
+            assert_eq!(text, "Click me");
+            assert_eq!(color, &Color::Rgba(0, 0, 0, 255));
+            // Assert centered/correct offsets
+            assert!(rect.origin.x >= 0.0);
+            assert!(rect.origin.y >= 0.0);
+        } else {
+            panic!("Expected text item");
+        }
+    }
+
+    #[test]
+    fn test_paint_submit_input_default_ua_chrome() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let input = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "submit".into()),
+                ("value".into(), "Search Here".into()),
+            ],
+        });
+        dom.append_child(doc, input);
+
+        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 100.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let background_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(239, 239, 239, 255)))
+            .collect();
+
+        let border_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(240, 240, 240, 255) || color == &Color::Rgba(140, 140, 140, 255)))
+            .collect();
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert_eq!(background_items.len(), 1);
+        assert_eq!(border_items.len(), 4);
+        assert_eq!(text_items.len(), 1);
+
+        if let DisplayItem::Text { text, color, .. } = text_items[0] {
+            assert_eq!(text, "Search Here");
+            assert_eq!(color, &Color::Rgba(0, 0, 0, 255));
+        } else {
+            panic!("Expected text item");
+        }
+    }
+
+    #[test]
+    fn test_paint_button_custom_style_override() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, btn);
+
+        let text = dom.create_node(NodeData::Text("Custom".into()));
+        dom.append_child(btn, text);
+
+        let stylesheet = parse_stylesheet(
+            "button { background-color: rgb(255, 0, 0); border-color: rgb(0, 255, 0); color: rgb(0, 0, 255); }",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 100.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Custom styling should override defaults
+        let custom_bg_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(255, 0, 0, 255)))
+            .collect();
+
+        let custom_border_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(0, 255, 0, 255)))
+            .collect();
+
+        let custom_text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert_eq!(
+            custom_bg_items.len(),
+            1,
+            "Expected overridden custom red background"
+        );
+        assert!(
+            !custom_border_items.is_empty(),
+            "Expected overridden custom green borders"
+        );
+        assert_eq!(
+            custom_text_items.len(),
+            1,
+            "Expected centered overridden custom blue label text"
+        );
+
+        if let DisplayItem::Text { text, color, .. } = custom_text_items[0] {
+            assert_eq!(text, "Custom");
+            assert_eq!(color, &Color::Rgba(0, 0, 255, 255));
+        } else {
+            panic!("Expected text item");
+        }
     }
 }
