@@ -22,6 +22,7 @@ pub mod infra;
 pub mod layout;
 pub mod loader;
 pub mod net;
+pub mod oracle;
 pub mod paint;
 pub mod raster;
 pub mod script;
