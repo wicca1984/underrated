@@ -1338,4 +1338,104 @@ mod tests {
             box2.rect.origin.y
         );
     }
+
+    #[test]
+    fn test_auto_positioned_absolute_elements_in_flow_t0164b() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute; /* auto-positioned, no top or left */
+                height: 50px;
+                width: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // Since both div1 and div2 have position: absolute but no top/left specified,
+        // they should be kept in normal flow (as if position: static).
+        // They should NOT be collapsed to (0,0).
+        assert_eq!(body_box.children.len(), 2);
+
+        let box1 = &body_box.children[0];
+        let box2 = &body_box.children[1];
+
+        assert_eq!(box1.node, Some(div1));
+        assert!(approx_eq(box1.rect.origin.x, 0.0));
+        assert!(approx_eq(box1.rect.origin.y, 0.0));
+
+        assert_eq!(box2.node, Some(div2));
+        assert!(approx_eq(box2.rect.origin.x, 0.0));
+        assert!(approx_eq(box2.rect.origin.y, 50.0)); // Should be in-flow after box1
+    }
+
+    #[test]
+    fn test_explicit_absolute_positioned_elements_t0164b() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                top: 10px;
+                left: 15px;
+                height: 50px;
+                width: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // div has explicit top/left, so it should be out-of-flow and processed by layout_absolute_and_fixed_elements
+        let div_box = body_box
+            .children
+            .iter()
+            .find(|b| b.node == Some(div))
+            .expect("abs box should exist in layout tree");
+
+        assert!(approx_eq(div_box.rect.origin.x, 15.0));
+        assert!(approx_eq(div_box.rect.origin.y, 10.0));
+    }
 }
