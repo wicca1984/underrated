@@ -92,6 +92,13 @@ pub fn layout_flex_container(
         _ => AlignItems::Stretch,
     };
 
+    let align_content = match style.get("align-content") {
+        Some(CssValue::Keyword(kw)) if kw == "center" => AlignContent::Center,
+        Some(CssValue::Keyword(kw)) if kw == "space-between" => AlignContent::SpaceBetween,
+        // TODO(spec): stretch / space-around are OUT of scope
+        _ => AlignContent::FlexStart,
+    };
+
     let flex_wrap = match style.get("flex-wrap") {
         Some(CssValue::Keyword(kw)) if kw == "wrap" => FlexWrap::Wrap,
         Some(CssValue::Keyword(kw)) if kw == "wrap-reverse" => {
@@ -230,16 +237,45 @@ pub fn layout_flex_container(
         FlexDirection::Column => content_width.max(sum_of_each_line_max_cross_size),
     };
 
-    // Calculate cross offsets for each line
+    // Calculate cross offsets for each line based on align-content
+    let num_lines = lines.len();
     let mut line_cross_offsets = Vec::new();
-    let mut current_offset = 0.0;
-    for &size in &line_max_cross_sizes {
-        line_cross_offsets.push(current_offset);
-        current_offset += size;
+    let free_space = (container_cross_size - sum_of_each_line_max_cross_size).max(0.0);
+
+    if num_lines > 1 {
+        match align_content {
+            AlignContent::FlexStart => {
+                let mut current_offset = 0.0;
+                for &size in &line_max_cross_sizes {
+                    line_cross_offsets.push(current_offset);
+                    current_offset += size;
+                }
+            }
+            AlignContent::Center => {
+                let start_offset = free_space / 2.0;
+                let mut current_offset = start_offset;
+                for &size in &line_max_cross_sizes {
+                    line_cross_offsets.push(current_offset);
+                    current_offset += size;
+                }
+            }
+            AlignContent::SpaceBetween => {
+                let gap = free_space / (num_lines - 1) as f32;
+                let mut current_offset = 0.0;
+                for &size in &line_max_cross_sizes {
+                    line_cross_offsets.push(current_offset);
+                    current_offset += size + gap;
+                }
+            }
+        }
+    } else {
+        let mut current_offset = 0.0;
+        for &size in &line_max_cross_sizes {
+            line_cross_offsets.push(current_offset);
+            current_offset += size;
+        }
     }
 
-    // TODO(spec): align-content is OUT of scope
-    let num_lines = lines.len();
     let mut positioned_children = Vec::new();
 
     for (line_idx, mut line) in lines.into_iter().enumerate() {
@@ -395,6 +431,13 @@ enum AlignItems {
     Center,
     Stretch,
     Baseline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AlignContent {
+    FlexStart,
+    Center,
+    SpaceBetween,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1151,5 +1194,114 @@ mod tests {
 
         // Mapped to flex-start: 0.0 offset
         assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_align_content_center() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        for i in 0..4 {
+            let child = dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![("id".into(), format!("child{}", i))],
+            });
+            dom.append_child(container, child);
+        }
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                flex-wrap: wrap;
+                width: 200px;
+                height: 300px;
+                align-content: center;
+            }
+            div {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 4);
+
+        // Under align-content: center, free space of 200px (300 - 100) is split evenly (100px before, 100px after)
+        // First line: child0 and child1
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 100.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 100.0));
+
+        // Second line: child2 and child3
+        assert!(approx_eq(container_box.children[2].rect.origin.y, 150.0));
+        assert!(approx_eq(container_box.children[3].rect.origin.y, 150.0));
+    }
+
+    #[test]
+    fn test_align_content_space_between() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        for i in 0..4 {
+            let child = dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![("id".into(), format!("child{}", i))],
+            });
+            dom.append_child(container, child);
+        }
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                flex-wrap: wrap;
+                width: 200px;
+                height: 300px;
+                align-content: space-between;
+            }
+            div {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 4);
+
+        // Under align-content: space-between, free space of 200px (300 - 100) is placed between lines
+        // First line: child0 and child1 at top (y=0)
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 0.0));
+
+        // Second line: child2 and child3 at bottom (y=250)
+        assert!(approx_eq(container_box.children[2].rect.origin.y, 250.0));
+        assert!(approx_eq(container_box.children[3].rect.origin.y, 250.0));
+
+        // The gap between line 1 and line 2 is 200.0 (from y=50 to y=250), which is > sum of max_cross_sizes (100.0)
+        let line1_end = 50.0;
+        let line2_start = container_box.children[2].rect.origin.y;
+        let gap = line2_start - line1_end;
+        assert!(gap > 100.0);
+        assert!(approx_eq(gap, 200.0));
     }
 }
