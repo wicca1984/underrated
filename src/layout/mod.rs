@@ -20,7 +20,7 @@ pub struct LayoutBox {
     pub children: Vec<LayoutBox>,
 }
 
-pub(crate) const MAX_DEPTH: usize = 1000;
+pub(crate) const MAX_DEPTH: usize = 500;
 
 fn collapse_margins(m1: f32, m2: f32) -> f32 {
     if m1 >= 0.0 && m2 >= 0.0 {
@@ -132,8 +132,6 @@ pub(crate) fn layout_node(
     }
 
     // Get box model values
-    let margin_left = get_px(style, "margin-left", 0.0);
-    let margin_right = get_px(style, "margin-right", 0.0);
     let margin_top = get_px(style, "margin-top", 0.0);
 
     let padding_left = get_px(style, "padding-left", 0.0);
@@ -146,20 +144,29 @@ pub(crate) fn layout_node(
     let border_top = get_px(style, "border-top-width", 0.0);
     let border_bottom = get_px(style, "border-bottom-width", 0.0);
 
-    // Calculate content width
-    // width = containing-block width minus its own horizontal margin/padding/border
-    let auto_width = containing_width
-        - margin_left
-        - margin_right
-        - border_left
-        - border_right
-        - padding_left
-        - padding_right;
-    let mut content_width = get_px(style, "width", auto_width.max(0.0));
+    // Resolve horizontal margins and width
+    // TODO(spec): The <center> element should ideally be mapped to `display: block; text-align: center;`
+    // in the UA stylesheet (src/engine/mod.rs). Since we are restricted to src/layout/,
+    // we implement the layout-side behavior here by treating <center> as block-level (is_inline returns false)
+    // and resolving its text-align as "center" by default.
+    let is_inline = is_inline_level(styles, dom, node);
+    let (resolved_margin_left, resolved_margin_right, mut content_width, auto_width) =
+        resolve_margins_and_width(
+            style,
+            containing_width,
+            is_inline,
+            border_left,
+            border_right,
+            padding_left,
+            padding_right,
+        );
+    let _ = resolved_margin_right; // Silence unused warning
 
     // Position of the border box
-    let border_box_x = offset_x + margin_left;
+    let border_box_x = offset_x + resolved_margin_left;
     let border_box_y = offset_y + margin_top;
+
+    let text_align = get_text_align(dom, node, style);
 
     let mut children = Vec::new();
     // TODO(spec): Parent-child margin collapse (collapse-through) is out of scope.
@@ -186,6 +193,7 @@ pub(crate) fn layout_node(
             border_box_x + border_left + padding_left,
             child_cursor_y,
             depth,
+            text_align,
         );
         children.extend(line_boxes);
         child_cursor_y += total_height;
@@ -269,6 +277,7 @@ pub(crate) fn layout_node(
                     border_box_x + border_left + padding_left,
                     start_y,
                     depth,
+                    text_align,
                 );
                 if !line_boxes.is_empty() {
                     let anon_box = LayoutBox {
@@ -417,7 +426,10 @@ fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: No
     if let Some(data) = dom.data(child) {
         match data {
             NodeData::Text(_) => true,
-            NodeData::Element { .. } => {
+            NodeData::Element { name, .. } => {
+                if name == "center" {
+                    return false;
+                }
                 if let Some(style) = styles.get(&child) {
                     let disp = style.get("display");
                     matches!(disp, Some(CssValue::Keyword(kw)) if kw == "inline" || kw == "inline-block")
@@ -473,6 +485,155 @@ fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut
     }
 }
 
+fn resolve_margins_and_width(
+    style: &ComputedStyle,
+    containing_width: f32,
+    is_inline: bool,
+    border_left: f32,
+    border_right: f32,
+    padding_left: f32,
+    padding_right: f32,
+) -> (f32, f32, f32, f32) {
+    let margin_left_is_auto =
+        matches!(style.get("margin-left"), Some(CssValue::Keyword(kw)) if kw == "auto");
+    let margin_right_is_auto =
+        matches!(style.get("margin-right"), Some(CssValue::Keyword(kw)) if kw == "auto");
+
+    let mut resolved_margin_left = get_px(style, "margin-left", 0.0);
+    let mut resolved_margin_right = get_px(style, "margin-right", 0.0);
+    let content_width;
+
+    let auto_width = containing_width
+        - (if margin_left_is_auto {
+            0.0
+        } else {
+            resolved_margin_left
+        })
+        - (if margin_right_is_auto {
+            0.0
+        } else {
+            resolved_margin_right
+        })
+        - border_left
+        - border_right
+        - padding_left
+        - padding_right;
+
+    if !is_inline {
+        let has_definite_width = matches!(style.get("width"), Some(CssValue::Length(_, _)));
+
+        if !has_definite_width {
+            // width is auto. any auto margins are treated as 0.
+            if margin_left_is_auto {
+                resolved_margin_left = 0.0;
+            }
+            if margin_right_is_auto {
+                resolved_margin_right = 0.0;
+            }
+            content_width = (containing_width
+                - resolved_margin_left
+                - resolved_margin_right
+                - border_left
+                - border_right
+                - padding_left
+                - padding_right)
+                .max(0.0);
+        } else {
+            // width is definite
+            content_width = get_px(style, "width", 0.0);
+            let total_non_margin_width =
+                content_width + border_left + border_right + padding_left + padding_right;
+
+            let base_margin_left = if margin_left_is_auto {
+                0.0
+            } else {
+                resolved_margin_left
+            };
+            let base_margin_right = if margin_right_is_auto {
+                0.0
+            } else {
+                resolved_margin_right
+            };
+
+            if total_non_margin_width + base_margin_left + base_margin_right > containing_width {
+                // Over-constrained or negative space with auto margins -> treat auto as 0
+                resolved_margin_left = base_margin_left;
+                resolved_margin_right = base_margin_right;
+                if !margin_left_is_auto && !margin_right_is_auto {
+                    resolved_margin_right =
+                        containing_width - total_non_margin_width - resolved_margin_left;
+                }
+            } else {
+                // There is positive remaining space
+                if margin_left_is_auto && margin_right_is_auto {
+                    let extra_space = containing_width - total_non_margin_width;
+                    resolved_margin_left = extra_space / 2.0;
+                    resolved_margin_right = extra_space / 2.0;
+                } else if margin_left_is_auto {
+                    resolved_margin_left =
+                        containing_width - total_non_margin_width - base_margin_right;
+                    resolved_margin_right = base_margin_right;
+                } else if margin_right_is_auto {
+                    resolved_margin_left = base_margin_left;
+                    resolved_margin_right =
+                        containing_width - total_non_margin_width - base_margin_left;
+                } else {
+                    // Over-constrained: adjust margin_right
+                    resolved_margin_left = base_margin_left;
+                    resolved_margin_right =
+                        containing_width - total_non_margin_width - base_margin_left;
+                }
+            }
+        }
+    } else {
+        // For inline-level, auto margins are treated as 0
+        resolved_margin_left = if margin_left_is_auto {
+            0.0
+        } else {
+            resolved_margin_left
+        };
+        resolved_margin_right = if margin_right_is_auto {
+            0.0
+        } else {
+            resolved_margin_right
+        };
+        content_width = get_px(style, "width", auto_width.max(0.0));
+    }
+
+    (
+        resolved_margin_left,
+        resolved_margin_right,
+        content_width,
+        auto_width,
+    )
+}
+
+fn get_text_align(dom: &Dom, node: NodeId, style: &ComputedStyle) -> &'static str {
+    let is_center_element = matches!(
+        dom.data(node),
+        Some(NodeData::Element { name, .. }) if name == "center"
+    );
+    if is_center_element {
+        "center"
+    } else {
+        style
+            .get("text-align")
+            .and_then(|val| match val {
+                CssValue::Keyword(kw) => {
+                    if kw == "center" {
+                        Some("center")
+                    } else if kw == "right" {
+                        Some("right")
+                    } else {
+                        Some("left")
+                    }
+                }
+                _ => None,
+            })
+            .unwrap_or("left")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,6 +645,123 @@ mod tests {
 
     fn approx_eq(a: f32, b: f32) -> bool {
         (a - b).abs() < EPSILON
+    }
+
+    #[test]
+    fn test_text_align_center() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let text = dom.create_node(NodeData::Text("Hello".into())); // 5 characters = 40px
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div { display: block; text-align: center; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+        let line_box = &div_box.children[0];
+        let word_box = &line_box.children[0];
+
+        // Containing block width = 500px. Text width = 40px.
+        // Under text-align: center, the remaining space of 460px is halved.
+        // Therefore, the word_box should be shifted to x = 230.0px.
+        assert!(approx_eq(word_box.rect.origin.x, 230.0));
+    }
+
+    #[test]
+    fn test_margin_auto_centering() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                width: 300px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+
+        // Container is 500px. div width is 300px with auto margins.
+        // Remaining space is 200px. Left and right margins should be 100px.
+        // Therefore, div's border box should start at x = 100.0px.
+        assert!(approx_eq(div_box.rect.origin.x, 100.0));
+        assert!(approx_eq(div_box.rect.size.width, 300.0));
+    }
+
+    #[test]
+    fn test_center_element_behavior() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let center = dom.create_node(NodeData::Element {
+            name: "center".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, center);
+
+        let text = dom.create_node(NodeData::Text("Hello".into())); // 5 characters = 40px
+        dom.append_child(center, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+        let center_box = &body_box.children[0];
+        let line_box = &center_box.children[0];
+        let word_box = &line_box.children[0];
+
+        // <center> element is treated as block-level and behaves as text-align: center.
+        // Container = 500px. Text width = 40px.
+        // It should shift the word box to x = 230.0px.
+        assert!(approx_eq(word_box.rect.origin.x, 230.0));
     }
 
     #[test]
