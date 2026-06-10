@@ -85,10 +85,8 @@ impl Dom {
         registry: &mut crate::event::EventRegistry,
         event: &crate::event::DomEvent,
     ) -> bool {
-        self.routing_keyboard_event.set(true);
-        let res = registry.dispatch(self, event);
-        self.routing_keyboard_event.set(false);
-        res
+        let target = self.focused_node.get().unwrap_or(self.document);
+        registry.dispatch_to(self, event, target)
     }
 }
 
@@ -225,5 +223,38 @@ mod tests {
         // Should hit input (target) and bubble to div (ancestor)
         assert_eq!(input_received.borrow().as_slice(), &["Escape".to_string()]);
         assert_eq!(div_received.borrow().as_slice(), &["Escape".to_string()]);
+    }
+
+    #[test]
+    fn test_document_purity_during_dispatch() {
+        let mut dom = Dom::new();
+        let doc_id = dom.document();
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(doc_id, input_id);
+        dom.focus(input_id);
+
+        let mut registry = EventRegistry::new();
+        let purity_verified = Rc::new(RefCell::new(false));
+        let purity_verified_clone = purity_verified.clone();
+
+        let doc_id_outside = dom.document();
+
+        registry.add_listener(
+            input_id,
+            false,
+            Box::new(move |_event| {
+                *purity_verified_clone.borrow_mut() = true;
+            }),
+        );
+
+        let event = DomEvent::key_down("a".to_string());
+        dom.dispatch_keyboard_event(&mut registry, &event);
+
+        assert!(*purity_verified.borrow());
+        assert_eq!(dom.document(), doc_id_outside);
+        assert_eq!(dom.document(), doc_id);
     }
 }

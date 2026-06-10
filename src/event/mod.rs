@@ -258,7 +258,11 @@ impl EventRegistry {
             Some(t) => t,
             None => dom.document(),
         };
+        self.dispatch_to(dom, event, target)
+    }
 
+    /// Dispatches an event with an explicit target.
+    pub fn dispatch_to(&mut self, dom: &Dom, event: &DomEvent, target: NodeId) -> bool {
         // Build ancestor chain (excluding target)
         let mut ancestors = Vec::new();
         let mut curr = dom.parent(target);
