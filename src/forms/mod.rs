@@ -34,11 +34,29 @@ pub struct FormState {
     values: HashMap<NodeId, String>,
     checked: HashMap<NodeId, bool>,
     selected: HashMap<NodeId, bool>,
+    pub submitter: Option<NodeId>,
+    pub current_url: Option<String>,
 }
 
 impl FormState {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Sets the submitter button that initiated the submission.
+    pub fn set_submitter(&mut self, node: NodeId) {
+        self.submitter = Some(node);
+    }
+    /// Gets the submitter button.
+    pub fn submitter(&self) -> Option<NodeId> {
+        self.submitter
+    }
+    /// Sets the current document URL.
+    pub fn set_current_url(&mut self, url: &str) {
+        self.current_url = Some(url.to_string());
+    }
+    /// Gets the current document URL.
+    pub fn current_url(&self) -> Option<&str> {
+        self.current_url.as_deref()
     }
     /// Sets the current value of a text-like control.
     pub fn set_value(&mut self, node: NodeId, value: &str) {
@@ -207,34 +225,78 @@ fn is_radio_effectively_checked(dom: &Dom, form: NodeId, node: NodeId, values: &
 /// a `name`), serializing them as `application/x-www-form-urlencoded`.
 // spec: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-submission-algorithm
 pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationRequest> {
+    let fallback_url = values.current_url.as_deref().unwrap_or("");
+    submit_with_current_url(dom, form, values, fallback_url)
+}
+
+/// Submits `form` with an optional current URL context.
+/// Correctly collects successful controls, filters out disabled controls,
+/// and overrides any existing query string in the action URL for GET requests.
+pub fn submit_with_current_url(
+    dom: &Dom,
+    form: NodeId,
+    values: &FormState,
+    current_url: &str,
+) -> Option<NavigationRequest> {
     tag(dom, form)?; // must be an element
 
     let method = match attr(dom, form, "method") {
         Some(m) if m.eq_ignore_ascii_case("post") => Method::Post,
         _ => Method::Get,
     };
-    let action = attr(dom, form, "action").unwrap_or("").to_string();
+
+    let action = attr(dom, form, "action").unwrap_or("");
+    let action_url = if action.is_empty() {
+        if !current_url.is_empty() {
+            current_url.to_string()
+        } else {
+            "".to_string()
+        }
+    } else {
+        action.to_string()
+    };
 
     let mut pairs: Vec<String> = Vec::new();
     for node in dom.descendants(form) {
         let Some(t) = tag(dom, node) else { continue };
         let t = t.to_ascii_lowercase();
-        if !matches!(t.as_str(), "input" | "textarea" | "select") {
+        if !matches!(t.as_str(), "input" | "textarea" | "select" | "button") {
             continue;
         }
+
+        // Skip disabled controls.
+        if attr(dom, node, "disabled").is_some() {
+            continue;
+        }
+
         let Some(name) = attr(dom, node, "name") else {
             continue;
         };
-        let input_type = attr(dom, node, "type")
-            .unwrap_or("text")
-            .to_ascii_lowercase();
+
+        let input_type = if t.as_str() == "button" {
+            attr(dom, node, "type")
+                .unwrap_or("submit")
+                .to_ascii_lowercase()
+        } else {
+            attr(dom, node, "type")
+                .unwrap_or("text")
+                .to_ascii_lowercase()
+        };
 
         // Buttons and submit/reset/file controls are not successful here.
+        // Files and images are simplified and skipped with a comment.
+        // Submit buttons are only successful if they are the submitter.
         if matches!(
             input_type.as_str(),
             "submit" | "reset" | "button" | "file" | "image"
         ) {
-            continue;
+            if input_type.as_str() == "submit" {
+                if values.submitter != Some(node) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
         }
 
         if t.as_str() == "select" {
@@ -331,12 +393,15 @@ pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationR
 
     match method {
         Method::Get => {
-            let url = if query.is_empty() {
-                action
-            } else if action.contains('?') {
-                format!("{action}&{query}")
+            let base_action_url = if let Some(pos) = action_url.find('?') {
+                &action_url[..pos]
             } else {
-                format!("{action}?{query}")
+                &action_url
+            };
+            let url = if query.is_empty() {
+                base_action_url.to_string()
+            } else {
+                format!("{}?{}", base_action_url, query)
             };
             Some(NavigationRequest {
                 url,
@@ -346,7 +411,7 @@ pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationR
             })
         }
         Method::Post => Some(NavigationRequest {
-            url: action,
+            url: action_url,
             method,
             body: query,
             content_type: Some("application/x-www-form-urlencoded".to_string()),
@@ -419,34 +484,75 @@ pub fn submit_with_values(
     form: NodeId,
     edited_values: &HashMap<String, String>,
 ) -> Option<NavigationRequest> {
+    submit_with_values_and_current_url(dom, form, edited_values, "")
+}
+
+/// Submits `form` using a map/assoc of field name to current edited value
+/// with an optional current URL context.
+pub fn submit_with_values_and_current_url(
+    dom: &Dom,
+    form: NodeId,
+    edited_values: &HashMap<String, String>,
+    current_url: &str,
+) -> Option<NavigationRequest> {
     tag(dom, form)?; // must be an element
 
     let method = match attr(dom, form, "method") {
         Some(m) if m.eq_ignore_ascii_case("post") => Method::Post,
         _ => Method::Get,
     };
-    let action = attr(dom, form, "action").unwrap_or("").to_string();
+
+    let action = attr(dom, form, "action").unwrap_or("");
+    let action_url = if action.is_empty() {
+        if !current_url.is_empty() {
+            current_url.to_string()
+        } else {
+            "".to_string()
+        }
+    } else {
+        action.to_string()
+    };
 
     let mut pairs: Vec<String> = Vec::new();
     for node in dom.descendants(form) {
         let Some(t) = tag(dom, node) else { continue };
         let t = t.to_ascii_lowercase();
-        if !matches!(t.as_str(), "input" | "textarea" | "select") {
+        if !matches!(t.as_str(), "input" | "textarea" | "select" | "button") {
             continue;
         }
+
+        // Skip disabled controls.
+        if attr(dom, node, "disabled").is_some() {
+            continue;
+        }
+
         let Some(name) = attr(dom, node, "name") else {
             continue;
         };
-        let input_type = attr(dom, node, "type")
-            .unwrap_or("text")
-            .to_ascii_lowercase();
+
+        let input_type = if t.as_str() == "button" {
+            attr(dom, node, "type")
+                .unwrap_or("submit")
+                .to_ascii_lowercase()
+        } else {
+            attr(dom, node, "type")
+                .unwrap_or("text")
+                .to_ascii_lowercase()
+        };
 
         // Buttons and submit/reset/file controls are not successful here.
+        // Submit buttons are only successful if they are the submitter (in edited_values).
         if matches!(
             input_type.as_str(),
             "submit" | "reset" | "button" | "file" | "image"
         ) {
-            continue;
+            if input_type.as_str() == "submit" {
+                if !edited_values.contains_key(name) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
         }
 
         if t.as_str() == "select" {
@@ -539,12 +645,15 @@ pub fn submit_with_values(
 
     match method {
         Method::Get => {
-            let url = if query.is_empty() {
-                action
-            } else if action.contains('?') {
-                format!("{action}&{query}")
+            let base_action_url = if let Some(pos) = action_url.find('?') {
+                &action_url[..pos]
             } else {
-                format!("{action}?{query}")
+                &action_url
+            };
+            let url = if query.is_empty() {
+                base_action_url.to_string()
+            } else {
+                format!("{}?{}", base_action_url, query)
             };
             Some(NavigationRequest {
                 url,
@@ -554,7 +663,7 @@ pub fn submit_with_values(
             })
         }
         Method::Post => Some(NavigationRequest {
-            url: action,
+            url: action_url,
             method,
             body: query,
             content_type: Some("application/x-www-form-urlencoded".to_string()),
