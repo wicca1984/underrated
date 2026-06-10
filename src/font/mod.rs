@@ -21,9 +21,10 @@ impl BitmapFont {
         }
     }
 
-    /// Returns the advance width of a character in pixels.
+    /// Returns the fixed-cell monospace advance width of a character in pixels (8px).
     pub fn glyph_width(&self, c: char) -> u32 {
         // spec: S-72
+        // TODO(spec): true proportional advances (real S-72) deferred until a variable-width bitmap backend exists
         let index = if (0x20..=0x7E).contains(&(c as u32)) {
             (c as u32 - 0x20) as usize
         } else {
@@ -208,105 +209,105 @@ const BITMAPS: [u64; 96] = [
 ];
 
 // spec: S-72
-/// Proportional advance widths for printable ASCII (0x20-0x7E) plus the .notdef glyph.
+/// Fixed-cell monospace advance widths (8px) for printable ASCII (0x20-0x7E) plus the .notdef glyph.
 /// Index maps to (char as u32 - 0x20) with 95 as the .notdef fallback.
 const GLYPH_WIDTHS: [u8; 96] = [
-    8,  // 0x20 ' '
-    8,  // 0x21 '!'
-    8,  // 0x22 '"'
-    8,  // 0x23 '#'
-    8,  // 0x24 '$'
-    8,  // 0x25 '%'
-    8,  // 0x26 '&'
-    8,  // 0x27 '\''
-    8,  // 0x28 '('
-    8,  // 0x29 ')'
-    8,  // 0x2A '*'
-    8,  // 0x2B '+'
-    8,  // 0x2C ','
-    8,  // 0x2D '-'
-    8,  // 0x2E '.'
-    8,  // 0x2F '/'
-    8,  // 0x30 '0'
-    8,  // 0x31 '1'
-    8,  // 0x32 '2'
-    8,  // 0x33 '3'
-    8,  // 0x34 '4'
-    8,  // 0x35 '5'
-    8,  // 0x36 '6'
-    8,  // 0x37 '7'
-    8,  // 0x38 '8'
-    8,  // 0x39 '9'
-    4,  // 0x3A ':'
-    4,  // 0x3B ';'
-    8,  // 0x3C '<'
-    8,  // 0x3D '='
-    8,  // 0x3E '>'
-    8,  // 0x3F '?'
-    8,  // 0x40 '@'
-    8,  // 0x41 'A'
-    8,  // 0x42 'B'
-    8,  // 0x43 'C'
-    8,  // 0x44 'D'
-    8,  // 0x45 'E'
-    8,  // 0x46 'F'
-    8,  // 0x47 'G'
-    8,  // 0x48 'H'
-    4,  // 0x49 'I'
-    6,  // 0x4A 'J'
-    8,  // 0x4B 'K'
-    8,  // 0x4C 'L'
-    12, // 0x4D 'M'
-    8,  // 0x4E 'N'
-    8,  // 0x4F 'O'
-    8,  // 0x50 'P'
-    8,  // 0x51 'Q'
-    8,  // 0x52 'R'
-    8,  // 0x53 'S'
-    8,  // 0x54 'T'
-    8,  // 0x55 'U'
-    8,  // 0x56 'V'
-    8,  // 0x57 'W'
-    8,  // 0x58 'X'
-    8,  // 0x59 'Y'
-    8,  // 0x5A 'Z'
-    8,  // 0x5B '['
-    8,  // 0x5C '\\'
-    8,  // 0x5D ']'
-    8,  // 0x5E '^'
-    8,  // 0x5F '_'
-    8,  // 0x60 '`'
-    8,  // 0x61 'a'
-    8,  // 0x62 'b'
-    8,  // 0x63 'c'
-    8,  // 0x64 'd'
-    8,  // 0x65 'e'
-    5,  // 0x66 'f'
-    8,  // 0x67 'g'
-    8,  // 0x68 'h'
-    8,  // 0x69 'i'
-    4,  // 0x6A 'j'
-    8,  // 0x6B 'k'
-    8,  // 0x6C 'l'
-    12, // 0x6D 'm'
-    8,  // 0x6E 'n'
-    8,  // 0x6F 'o'
-    8,  // 0x70 'p'
-    8,  // 0x71 'q'
-    8,  // 0x72 'r'
-    8,  // 0x73 's'
-    8,  // 0x74 't'
-    8,  // 0x75 'u'
-    8,  // 0x76 'v'
-    8,  // 0x77 'w'
-    8,  // 0x78 'x'
-    8,  // 0x79 'y'
-    8,  // 0x7A 'z'
-    8,  // 0x7B '{'
-    8,  // 0x7C '|'
-    8,  // 0x7D '}'
-    8,  // 0x7E '~'
-    8,  // 0x7F .notdef
+    8, // 0x20 ' '
+    8, // 0x21 '!'
+    8, // 0x22 '"'
+    8, // 0x23 '#'
+    8, // 0x24 '$'
+    8, // 0x25 '%'
+    8, // 0x26 '&'
+    8, // 0x27 '\''
+    8, // 0x28 '('
+    8, // 0x29 ')'
+    8, // 0x2A '*'
+    8, // 0x2B '+'
+    8, // 0x2C ','
+    8, // 0x2D '-'
+    8, // 0x2E '.'
+    8, // 0x2F '/'
+    8, // 0x30 '0'
+    8, // 0x31 '1'
+    8, // 0x32 '2'
+    8, // 0x33 '3'
+    8, // 0x34 '4'
+    8, // 0x35 '5'
+    8, // 0x36 '6'
+    8, // 0x37 '7'
+    8, // 0x38 '8'
+    8, // 0x39 '9'
+    8, // 0x3A ':'
+    8, // 0x3B ';'
+    8, // 0x3C '<'
+    8, // 0x3D '='
+    8, // 0x3E '>'
+    8, // 0x3F '?'
+    8, // 0x40 '@'
+    8, // 0x41 'A'
+    8, // 0x42 'B'
+    8, // 0x43 'C'
+    8, // 0x44 'D'
+    8, // 0x45 'E'
+    8, // 0x46 'F'
+    8, // 0x47 'G'
+    8, // 0x48 'H'
+    8, // 0x49 'I'
+    8, // 0x4A 'J'
+    8, // 0x4B 'K'
+    8, // 0x4C 'L'
+    8, // 0x4D 'M'
+    8, // 0x4E 'N'
+    8, // 0x4F 'O'
+    8, // 0x50 'P'
+    8, // 0x51 'Q'
+    8, // 0x52 'R'
+    8, // 0x53 'S'
+    8, // 0x54 'T'
+    8, // 0x55 'U'
+    8, // 0x56 'V'
+    8, // 0x57 'W'
+    8, // 0x58 'X'
+    8, // 0x59 'Y'
+    8, // 0x5A 'Z'
+    8, // 0x5B '['
+    8, // 0x5C '\\'
+    8, // 0x5D ']'
+    8, // 0x5E '^'
+    8, // 0x5F '_'
+    8, // 0x60 '`'
+    8, // 0x61 'a'
+    8, // 0x62 'b'
+    8, // 0x63 'c'
+    8, // 0x64 'd'
+    8, // 0x65 'e'
+    8, // 0x66 'f'
+    8, // 0x67 'g'
+    8, // 0x68 'h'
+    8, // 0x69 'i'
+    8, // 0x6A 'j'
+    8, // 0x6B 'k'
+    8, // 0x6C 'l'
+    8, // 0x6D 'm'
+    8, // 0x6E 'n'
+    8, // 0x6F 'o'
+    8, // 0x70 'p'
+    8, // 0x71 'q'
+    8, // 0x72 'r'
+    8, // 0x73 's'
+    8, // 0x74 't'
+    8, // 0x75 'u'
+    8, // 0x76 'v'
+    8, // 0x77 'w'
+    8, // 0x78 'x'
+    8, // 0x79 'y'
+    8, // 0x7A 'z'
+    8, // 0x7B '{'
+    8, // 0x7C '|'
+    8, // 0x7D '}'
+    8, // 0x7E '~'
+    8, // 0x7F .notdef
 ];
 
 const BUILTIN_GLYPHS: [u8; 96 * 8 * 8] = expand_bitmaps(&BITMAPS);
@@ -414,40 +415,38 @@ mod tests {
     }
 
     #[test]
-    fn test_proportional_widths() {
+    fn test_monospace_widths() {
         let font = BitmapFont::builtin();
+        let cell_width = font.glyph_size().0;
+        assert_eq!(cell_width, 8);
 
-        // spec: S-72 Acceptance criteria
-        // 1. width('i') < width('m')
-        assert!(font.glyph_width('i') < font.glyph_width('m'));
-        assert!(font.glyph_width('I') < font.glyph_width('M'));
+        // spec: S-72 Acceptance criteria - Fixed-cell monospace
+        // Every printable ASCII character and the .notdef fallback must have an advance width of 8px.
+        // Representative set including previously-narrow and previously-wide chars.
+        let test_chars = [
+            'i', 'j', ':', ';', 'f', 'J', 'I', // previously narrow
+            'M', 'm', // previously wide
+            'A', 'a', '0', ' ', '🦀', // others and .notdef
+        ];
 
-        // Assert specific widths
-        assert_eq!(font.glyph_width('i'), 8);
-        assert_eq!(font.glyph_width('m'), 12);
-        assert_eq!(font.glyph_width('I'), 4);
-        assert_eq!(font.glyph_width('M'), 12);
-        assert_eq!(font.glyph_width('j'), 4);
-        assert_eq!(font.glyph_width('f'), 5);
-        assert_eq!(font.glyph_width(';'), 4);
+        for &c in &test_chars {
+            assert_eq!(
+                font.glyph_width(c),
+                cell_width,
+                "Character '{}' glyph_width must be exactly equal to cell width ({})",
+                c,
+                cell_width
+            );
+        }
 
-        // 2. measure sums per-char widths
-        assert_eq!(font.measure("i"), font.glyph_width('i'));
-        assert_eq!(font.measure("m"), font.glyph_width('m'));
-        assert_eq!(
-            font.measure("im"),
-            font.glyph_width('i') + font.glyph_width('m')
-        );
-        assert_eq!(
-            font.measure("ijfM"),
-            font.glyph_width('i')
-                + font.glyph_width('j')
-                + font.glyph_width('f')
-                + font.glyph_width('M')
-        );
-
-        // Sum containing non-ASCII / .notdef (width of non-ASCII is the fallback, which is 8)
-        assert_eq!(font.glyph_width('🦀'), 8);
-        assert_eq!(font.measure("🦀m"), 8 + font.glyph_width('m'));
+        // measure of an N-char ASCII string == 8 * N
+        assert_eq!(font.measure(""), 0);
+        assert_eq!(font.measure("i"), 8);
+        assert_eq!(font.measure("m"), 8);
+        assert_eq!(font.measure("im"), 16);
+        assert_eq!(font.measure("ijfM"), 32);
+        assert_eq!(font.measure("Hello, World!"), 8 * 13);
+        assert_eq!(font.measure("🦀"), 8);
+        assert_eq!(font.measure("🦀m"), 16);
     }
 }
