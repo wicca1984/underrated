@@ -33,14 +33,6 @@ i, em { font-style: italic; }\n\
 head, style, script, meta, link, title { display: none; }\n\
 ";
 
-
-
-
-
-
-
-
-
 fn load_image_safely_with_loader(
     loader: &dyn crate::loader::ResourceLoader,
     src: &str,
@@ -104,8 +96,6 @@ fn fetch_and_decode_images(
         }
     }
 }
-
-
 
 /// Renders a page with HTML, a base URL, a resource loader, and a viewport width.
 /// This includes hoisting `<style>`, loading `<link rel="stylesheet">` CSS via resolved URLs,
@@ -295,19 +285,38 @@ mod tests {
         fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
             Err(crate::loader::LoadError::NotFound)
         }
-        fn load_request(&self, _url: &crate::url::Url, _method: crate::loader::HttpMethod, _body: &[u8], _content_type: Option<&str>) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> {
+        fn load_request(
+            &self,
+            _url: &crate::url::Url,
+            _method: crate::loader::HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> {
             Err(crate::loader::LoadError::NotFound)
         }
     }
 
     fn render_for_test(html: &str, css: &str, viewport_width: f32) -> Page {
-        let combined = if css.is_empty() { html.to_string() } else { format!("{}<style>{}</style>", html, css) };
+        let combined = if css.is_empty() {
+            html.to_string()
+        } else {
+            format!("{}<style>{}</style>", html, css)
+        };
         let base_url = crate::url::Url::parse("http://localhost/").unwrap();
         render_page(&combined, &base_url, &DummyLoader, viewport_width)
     }
 
-    fn render_to_canvas_for_test(html: &str, css: &str, width: u32, height: u32) -> crate::raster::Canvas {
-        let combined = if css.is_empty() { html.to_string() } else { format!("{}<style>{}</style>", html, css) };
+    fn render_to_canvas_for_test(
+        html: &str,
+        css: &str,
+        width: u32,
+        height: u32,
+    ) -> crate::raster::Canvas {
+        let combined = if css.is_empty() {
+            html.to_string()
+        } else {
+            format!("{}<style>{}</style>", html, css)
+        };
         let base_url = crate::url::Url::parse("http://localhost/").unwrap();
         render_page_to_canvas(&combined, &base_url, &DummyLoader, width, height)
     }
@@ -317,11 +326,14 @@ mod tests {
         render_page(html, &base_url, &DummyLoader, viewport_width)
     }
 
-    fn render_html_to_canvas_for_test(html: &str, width: u32, height: u32) -> crate::raster::Canvas {
+    fn render_html_to_canvas_for_test(
+        html: &str,
+        width: u32,
+        height: u32,
+    ) -> crate::raster::Canvas {
         let base_url = crate::url::Url::parse("http://localhost/").unwrap();
         render_page_to_canvas(html, &base_url, &DummyLoader, width, height)
     }
-
 
     #[test]
     fn test_smoke_render_for_test() {
