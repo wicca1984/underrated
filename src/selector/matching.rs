@@ -292,6 +292,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
             false
         }
         Component::Not(compound) => !matches_compound(compound, dom, node),
+        Component::Is(list) | Component::Where(list) => matches(list, dom, node),
         Component::FirstChild => {
             if let Some(parent) = dom.parent(node) {
                 let children = dom.children(parent);
@@ -1283,5 +1284,97 @@ mod tests {
             &dom,
             span1
         ));
+    }
+
+    #[test]
+    fn test_matches_is_where() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Create a basic DOM structure for testing:
+        // <div>
+        //   <h1 class="title">Header 1</h1>
+        //   <h2>Header 2</h2>
+        //   <p class="title">Paragraph 1</p>
+        //   <p>Paragraph 2</p>
+        //   <a class="x">Link 1</a>
+        //   <a class="z">Link 2</a>
+        // </div>
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let h1 = dom.create_node(NodeData::Element {
+            name: "h1".into(),
+            attrs: vec![("class".into(), "title".into())],
+        });
+        dom.append_child(div, h1);
+
+        let h2 = dom.create_node(NodeData::Element {
+            name: "h2".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, h2);
+
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("class".into(), "title".into())],
+        });
+        dom.append_child(div, p1);
+
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, p2);
+
+        let a1 = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("class".into(), "x".into())],
+        });
+        dom.append_child(div, a1);
+
+        let a2 = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("class".into(), "z".into())],
+        });
+        dom.append_child(div, a2);
+
+        // 1. :is(h1, h2, .title) matches h1, h2, p1 but not p2
+        let sel_is = parse_selector_list(":is(h1, h2, .title)").unwrap();
+        assert!(matches(&sel_is, &dom, h1));
+        assert!(matches(&sel_is, &dom, h2));
+        assert!(matches(&sel_is, &dom, p1));
+        assert!(!matches(&sel_is, &dom, p2));
+
+        // 2. :where(h1, h2, .title) matches identically
+        let sel_where = parse_selector_list(":where(h1, h2, .title)").unwrap();
+        assert!(matches(&sel_where, &dom, h1));
+        assert!(matches(&sel_where, &dom, h2));
+        assert!(matches(&sel_where, &dom, p1));
+        assert!(!matches(&sel_where, &dom, p2));
+
+        // 3. combined with compound: a:is(.x, .y) matches a1 but not a2 or div
+        let sel_a_is = parse_selector_list("a:is(.x, .y)").unwrap();
+        assert!(matches(&sel_a_is, &dom, a1));
+        assert!(!matches(&sel_a_is, &dom, a2));
+        assert!(!matches(&sel_a_is, &dom, div));
+
+        // 4. combined with combinators: div :is(p, span) matches p1, p2 but not h1
+        let sel_div_is = parse_selector_list("div :is(p, span)").unwrap();
+        assert!(matches(&sel_div_is, &dom, p1));
+        assert!(matches(&sel_div_is, &dom, p2));
+        assert!(!matches(&sel_div_is, &dom, h1));
+
+        // 5. :not(:is(h1, h2)) matches p1, p2, a1, a2 but not h1, h2
+        let sel_not_is = parse_selector_list(":not(:is(h1, h2))").unwrap();
+        assert!(matches(&sel_not_is, &dom, p1));
+        assert!(matches(&sel_not_is, &dom, p2));
+        assert!(matches(&sel_not_is, &dom, a1));
+        assert!(matches(&sel_not_is, &dom, a2));
+        assert!(!matches(&sel_not_is, &dom, h1));
+        assert!(!matches(&sel_not_is, &dom, h2));
     }
 }

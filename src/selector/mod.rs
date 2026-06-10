@@ -21,6 +21,8 @@ pub enum Component {
     PseudoElement(String),
     NthChild(i32, i32),
     Not(Box<CompoundSelector>),
+    Is(SelectorList),
+    Where(SelectorList),
     FirstChild,
     LastChild,
 }
@@ -108,6 +110,77 @@ impl<'a> SelectorParser<'a> {
         while matches!(self.peek(), CssToken::Whitespace) {
             self.consume();
         }
+    }
+
+    fn skip_to_next_forgiving_item(&mut self) -> Result<bool, SelectorParseError> {
+        let mut depth = 0;
+        loop {
+            match self.peek() {
+                CssToken::LeftParen
+                | CssToken::Function(_)
+                | CssToken::LeftBracket
+                | CssToken::LeftBrace => {
+                    depth += 1;
+                    self.consume();
+                }
+                CssToken::RightParen | CssToken::RightBracket | CssToken::RightBrace => {
+                    if depth == 0 {
+                        return Ok(false);
+                    }
+                    depth -= 1;
+                    self.consume();
+                }
+                CssToken::Comma => {
+                    if depth == 0 {
+                        self.consume();
+                        return Ok(true);
+                    }
+                    self.consume();
+                }
+                CssToken::Eof => {
+                    return Err(SelectorParseError::UnexpectedEof);
+                }
+                _ => {
+                    self.consume();
+                }
+            }
+        }
+    }
+
+    fn parse_forgiving_selector_list(&mut self) -> Result<SelectorList, SelectorParseError> {
+        let mut selectors = Vec::new();
+        loop {
+            self.skip_whitespace();
+            if matches!(self.peek(), CssToken::RightParen) {
+                break;
+            }
+
+            match self.parse_complex_selector() {
+                Ok(selector) => {
+                    self.skip_whitespace();
+                    match self.peek() {
+                        CssToken::Comma => {
+                            self.consume();
+                            selectors.push(selector);
+                        }
+                        CssToken::RightParen => {
+                            selectors.push(selector);
+                        }
+                        _ => {
+                            if !self.skip_to_next_forgiving_item()? {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    if !self.skip_to_next_forgiving_item()? {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(SelectorList(selectors))
     }
 
     fn parse_selector_list(&mut self) -> Result<SelectorList, SelectorParseError> {
@@ -391,6 +464,20 @@ impl<'a> SelectorParser<'a> {
                             "nth-last-child({},{})",
                             a, b
                         )))
+                    }
+                    "is" => {
+                        let list = self.parse_forgiving_selector_list()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::Is(list))
+                    }
+                    "where" => {
+                        let list = self.parse_forgiving_selector_list()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::Where(list))
                     }
                     "not" => {
                         let compound = self.parse_compound_selector()?;
@@ -774,6 +861,111 @@ mod tests {
         assert_eq!(list.0[0].parts[0].1.components[0], Component::FirstChild);
         let list = parse_selector_list(":last-child").unwrap();
         assert_eq!(list.0[0].parts[0].1.components[0], Component::LastChild);
+    }
+
+    #[test]
+    fn test_parse_is_where() {
+        // Simple :is
+        let list = parse_selector_list(":is(h1, h2, .title)").unwrap();
+        if let Component::Is(sub_list) = &list.0[0].parts[0].1.components[0] {
+            assert_eq!(sub_list.0.len(), 3);
+            assert_eq!(
+                sub_list.0[0].parts[0].1.components[0],
+                Component::Type("h1".to_string())
+            );
+            assert_eq!(
+                sub_list.0[1].parts[0].1.components[0],
+                Component::Type("h2".to_string())
+            );
+            assert_eq!(
+                sub_list.0[2].parts[0].1.components[0],
+                Component::Class("title".to_string())
+            );
+        } else {
+            panic!("Expected Is component");
+        }
+
+        // Simple :where
+        let list = parse_selector_list(":where(h1, h2, .title)").unwrap();
+        if let Component::Where(sub_list) = &list.0[0].parts[0].1.components[0] {
+            assert_eq!(sub_list.0.len(), 3);
+            assert_eq!(
+                sub_list.0[0].parts[0].1.components[0],
+                Component::Type("h1".to_string())
+            );
+            assert_eq!(
+                sub_list.0[1].parts[0].1.components[0],
+                Component::Type("h2".to_string())
+            );
+            assert_eq!(
+                sub_list.0[2].parts[0].1.components[0],
+                Component::Class("title".to_string())
+            );
+        } else {
+            panic!("Expected Where component");
+        }
+
+        // Nesting inside :not
+        let list = parse_selector_list(":not(:is(div))").unwrap();
+        if let Component::Not(c) = &list.0[0].parts[0].1.components[0] {
+            if let Component::Is(sub_list) = &c.components[0] {
+                assert_eq!(
+                    sub_list.0[0].parts[0].1.components[0],
+                    Component::Type("div".to_string())
+                );
+            } else {
+                panic!("Expected Is component inside Not");
+            }
+        } else {
+            panic!("Expected Not component");
+        }
+
+        // Forgiving selector list: invalid selectors ignored
+        let list = parse_selector_list(":is(div, [attr=], p)").unwrap();
+        if let Component::Is(sub_list) = &list.0[0].parts[0].1.components[0] {
+            assert_eq!(sub_list.0.len(), 2);
+            assert_eq!(
+                sub_list.0[0].parts[0].1.components[0],
+                Component::Type("div".to_string())
+            );
+            assert_eq!(
+                sub_list.0[1].parts[0].1.components[0],
+                Component::Type("p".to_string())
+            );
+        } else {
+            panic!("Expected Is component");
+        }
+
+        // Forgiving selector list: empty selectors ignored
+        let list = parse_selector_list(":is(a, , b)").unwrap();
+        if let Component::Is(sub_list) = &list.0[0].parts[0].1.components[0] {
+            assert_eq!(sub_list.0.len(), 2);
+            assert_eq!(
+                sub_list.0[0].parts[0].1.components[0],
+                Component::Type("a".to_string())
+            );
+            assert_eq!(
+                sub_list.0[1].parts[0].1.components[0],
+                Component::Type("b".to_string())
+            );
+        } else {
+            panic!("Expected Is component");
+        }
+
+        // Empty :is() and :where()
+        let list1 = parse_selector_list(":is()").unwrap();
+        if let Component::Is(sub_list) = &list1.0[0].parts[0].1.components[0] {
+            assert!(sub_list.0.is_empty());
+        } else {
+            panic!("Expected Is component");
+        }
+
+        let list2 = parse_selector_list(":where()").unwrap();
+        if let Component::Where(sub_list) = &list2.0[0].parts[0].1.components[0] {
+            assert!(sub_list.0.is_empty());
+        } else {
+            panic!("Expected Where component");
+        }
     }
 
     #[test]
