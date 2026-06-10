@@ -260,6 +260,8 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "last-of-type" => is_last_of_type(dom, node),
                     "only-child" => is_only_child(dom, node),
                     "only-of-type" => is_only_of_type(dom, node),
+                    "empty" => is_empty(dom, node),
+                    "root" => is_root(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -440,6 +442,49 @@ fn is_only_of_type(dom: &Dom, node: NodeId) -> bool {
     } else {
         false
     }
+}
+
+fn is_empty(dom: &Dom, node: NodeId) -> bool {
+    // Matches an element that has no children at all, OR whose children are all nothing-but-whitespace text nodes.
+    // Comment and doctype nodes are ignored per typical CSS selector matching specs.
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+
+    let children = dom.children(node);
+    for &child in children {
+        match dom.data(child) {
+            Some(NodeData::Element { .. }) => {
+                // Element child means NOT empty
+                return false;
+            }
+            Some(NodeData::Text(s)) if !s.chars().all(ascii::is_html_whitespace) => {
+                // Non-whitespace text means NOT empty
+                return false;
+            }
+            _ => {}
+        }
+    }
+    // TODO(spec): check modern vs legacy empty behavior regarding comment nodes or CDATA if applicable, though currently comments are ignored.
+    true
+}
+
+fn is_root(dom: &Dom, node: NodeId) -> bool {
+    // Matches the element that is the root of the document.
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+
+    let doc = dom.document();
+    let children = dom.children(doc);
+    for &child in children {
+        if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+            return child == node;
+        }
+    }
+    false
 }
 
 fn get_previous_element_sibling(dom: &Dom, node: NodeId) -> Option<NodeId> {
@@ -1284,6 +1329,52 @@ mod tests {
             &dom,
             span1
         ));
+
+        // 4. Test :empty
+        // empty element (span1 currently has no children)
+        assert!(matches(
+            &parse_selector_list("span:empty").unwrap(),
+            &dom,
+            span1
+        ));
+
+        // add whitespace-only text node to span1
+        let text_ws = dom.create_node(NodeData::Text("   \n\t ".into()));
+        dom.append_child(span1, text_ws);
+        // whitespace-only text nodes are ignored per typical empty behavior, so span1 is still empty!
+        assert!(matches(
+            &parse_selector_list("span:empty").unwrap(),
+            &dom,
+            span1
+        ));
+
+        // add a non-whitespace text node to span1
+        let text_non_ws = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(span1, text_non_ws);
+        // now span1 is NOT empty
+        assert!(!matches(
+            &parse_selector_list("span:empty").unwrap(),
+            &dom,
+            span1
+        ));
+
+        // Let's test with a child element
+        // parent (div) has children p1, p2, span1, so it is NOT empty
+        assert!(!matches(
+            &parse_selector_list("div:empty").unwrap(),
+            &dom,
+            parent
+        ));
+
+        // 5. Test :root
+        // parent is the first Element child of doc, so it is the document root element!
+        assert!(matches(
+            &parse_selector_list(":root").unwrap(),
+            &dom,
+            parent
+        ));
+        assert!(!matches(&parse_selector_list(":root").unwrap(), &dom, p1));
+        assert!(!matches(&parse_selector_list("p:root").unwrap(), &dom, p1));
     }
 
     #[test]
