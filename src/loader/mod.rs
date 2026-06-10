@@ -339,6 +339,13 @@ pub fn sniff_response(
     (media_type, charset)
 }
 
+/// The HTTP method for a resource request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpMethod {
+    Get,
+    Post,
+}
+
 /// A trait for loading resources from a given URL.
 pub trait ResourceLoader {
     /// Loads the resource at the specified URL.
@@ -353,6 +360,20 @@ pub trait ResourceLoader {
             content_type,
             charset,
         })
+    }
+
+    /// Performs a request with a method, body, and content-type.
+    fn load_request(
+        &self,
+        url: &Url,
+        method: HttpMethod,
+        _body: &[u8],
+        _content_type: Option<&str>,
+    ) -> Result<LoaderResponse, LoadError> {
+        match method {
+            HttpMethod::Get => self.load_rich(url),
+            _ => Err(LoadError::UnsupportedScheme),
+        }
     }
 }
 
