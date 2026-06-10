@@ -176,7 +176,7 @@ pub fn layout_flex_container(
         }
     }
 
-    // Distribute free space along the main axis for each line separately (flex-grow)
+    // Distribute free space along the main axis for each line separately (flex-grow / flex-shrink)
     for line in &mut lines {
         let mut total_line_main_size = 0.0;
         let mut total_line_flex_grow = 0.0;
@@ -191,7 +191,11 @@ pub fn layout_flex_container(
             }
         }
 
-        let line_free_space = (main_size - total_line_main_size).max(0.0);
+        let line_free_space = main_size - total_line_main_size;
+        let has_explicit_main_size = match flex_direction {
+            FlexDirection::Row => true,
+            FlexDirection::Column => has_explicit_size(Some(style), "height"),
+        };
 
         if line_free_space > 0.0 && total_line_flex_grow > 0.0 {
             for child_box in &mut line.children {
@@ -204,10 +208,44 @@ pub fn layout_flex_container(
                     }
                 }
             }
+        } else if line_free_space < 0.0 && has_explicit_main_size {
+            let negative_free_space = -line_free_space;
+            let mut total_scaled_shrink = 0.0;
+
+            for child_box in &line.children {
+                if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
+                    let base_size = match flex_direction {
+                        FlexDirection::Row => child_box.rect.size.width,
+                        FlexDirection::Column => child_box.rect.size.height,
+                    };
+                    let shrink = get_number(child_style, "flex-shrink", 1.0);
+                    total_scaled_shrink += shrink * base_size;
+                }
+            }
+
+            if total_scaled_shrink > 0.0 {
+                for child_box in &mut line.children {
+                    if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
+                        let base_size = match flex_direction {
+                            FlexDirection::Row => child_box.rect.size.width,
+                            FlexDirection::Column => child_box.rect.size.height,
+                        };
+                        let shrink = get_number(child_style, "flex-shrink", 1.0);
+                        let scaled_shrink = shrink * base_size;
+                        let shrink_amount =
+                            (scaled_shrink / total_scaled_shrink) * negative_free_space;
+                        let new_size = (base_size - shrink_amount).max(0.0);
+                        match flex_direction {
+                            FlexDirection::Row => child_box.rect.size.width = new_size,
+                            FlexDirection::Column => child_box.rect.size.height = new_size,
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Calculate cross size and total main size for each line after flex-grow
+    // Calculate cross size and total main size for each line after flex-grow / flex-shrink
     let mut line_max_cross_sizes = Vec::new();
     let mut line_total_main_sizes = Vec::new();
 
@@ -681,7 +719,7 @@ mod tests {
                 display: flex;
                 flex-direction: column;
             }
-            div {
+            #container div {
                 height: 50px;
             }
         ",
@@ -1303,5 +1341,210 @@ mod tests {
         let gap = line2_start - line1_end;
         assert!(gap > 100.0);
         assert!(approx_eq(gap, 200.0));
+    }
+
+    #[test]
+    fn test_flex_shrink_basic() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+            }
+            #child1 {
+                width: 200px;
+                flex-shrink: 1;
+            }
+            #child2 {
+                width: 200px;
+                flex-shrink: 3;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Container: 300px. Children base width sum: 400px. Negative free space: 100px.
+        // Child 1 scaled shrink factor: 1 * 200 = 200.
+        // Child 2 scaled shrink factor: 3 * 200 = 600.
+        // Total scaled shrink: 800.
+        // Child 1 shrink: (200 / 800) * 100 = 25. New width: 200 - 25 = 175.
+        // Child 2 shrink: (600 / 800) * 100 = 75. New width: 200 - 75 = 125.
+        assert!(approx_eq(container_box.children[0].rect.size.width, 175.0));
+        assert!(approx_eq(container_box.children[1].rect.size.width, 125.0));
+    }
+
+    #[test]
+    fn test_flex_shrink_zero() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+            }
+            #child1 {
+                width: 200px;
+                flex-shrink: 0;
+            }
+            #child2 {
+                width: 200px;
+                flex-shrink: 1;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Child 1: width remains 200px.
+        // Child 2: absorbs all 100px negative space. Width: 200 - 100 = 100px.
+        assert!(approx_eq(container_box.children[0].rect.size.width, 200.0));
+        assert!(approx_eq(container_box.children[1].rect.size.width, 100.0));
+    }
+
+    #[test]
+    fn test_flex_shrink_default() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+            }
+            #child1 {
+                width: 250px;
+            }
+            #child2 {
+                width: 150px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Default flex-shrink is 1.
+        // Container: 300px. Children base width sum: 400px. Negative free space: 100px.
+        // Child 1 scaled shrink factor: 1 * 250 = 250.
+        // Child 2 scaled shrink factor: 1 * 150 = 150.
+        // Total scaled shrink: 400.
+        // Child 1 shrink: (250 / 400) * 100 = 62.5. New width: 250 - 62.5 = 187.5.
+        // Child 2 shrink: (150 / 400) * 100 = 37.5. New width: 150 - 37.5 = 112.5.
+        assert!(approx_eq(container_box.children[0].rect.size.width, 187.5));
+        assert!(approx_eq(container_box.children[1].rect.size.width, 112.5));
+    }
+
+    #[test]
+    fn test_flex_shrink_column() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: column;
+                height: 300px;
+            }
+            #child1 {
+                height: 200px;
+                flex-shrink: 1;
+            }
+            #child2 {
+                height: 200px;
+                flex-shrink: 3;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Height distribution
+        // Container: 300px. Children base height sum: 400px. Negative free space: 100px.
+        // Child 1 scaled shrink: (200 / 800) * 100 = 25. New height: 200 - 25 = 175.
+        // Child 2 scaled shrink: (600 / 800) * 100 = 75. New height: 200 - 75 = 125.
+        assert!(approx_eq(container_box.children[0].rect.size.height, 175.0));
+        assert!(approx_eq(container_box.children[1].rect.size.height, 125.0));
     }
 }
