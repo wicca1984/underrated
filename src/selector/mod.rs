@@ -465,6 +465,16 @@ impl<'a> SelectorParser<'a> {
                             a, b
                         )))
                     }
+                    "nth-last-of-type" => {
+                        let (a, b) = self.parse_nth()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::PseudoClass(format!(
+                            "nth-last-of-type({},{})",
+                            a, b
+                        )))
+                    }
                     "is" => {
                         let list = self.parse_forgiving_selector_list()?;
                         if !matches!(self.consume(), CssToken::RightParen) {
