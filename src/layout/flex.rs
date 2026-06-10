@@ -1,4 +1,4 @@
-use crate::css::values::CssValue;
+use crate::css::values::{AlignItemsValue, CssValue, JustifyContentValue};
 use crate::dom::Dom;
 use crate::geom::{Point, Rect};
 use crate::infra::NodeId;
@@ -53,14 +53,42 @@ pub fn layout_flex_container(
     };
 
     let justify_content = match style.get("justify-content") {
-        Some(CssValue::Keyword(kw)) if kw == "center" => JustifyContent::Center,
-        Some(CssValue::Keyword(kw)) if kw == "space-between" => JustifyContent::SpaceBetween,
+        Some(CssValue::JustifyContent(val)) => match val {
+            JustifyContentValue::FlexStart => JustifyContent::FlexStart,
+            JustifyContentValue::FlexEnd => JustifyContent::FlexEnd,
+            JustifyContentValue::Center => JustifyContent::Center,
+            JustifyContentValue::SpaceBetween => JustifyContent::SpaceBetween,
+            JustifyContentValue::SpaceAround => JustifyContent::SpaceAround,
+            JustifyContentValue::SpaceEvenly => JustifyContent::SpaceEvenly,
+        },
+        Some(CssValue::Keyword(kw)) => match kw.as_str() {
+            "flex-start" => JustifyContent::FlexStart,
+            "flex-end" => JustifyContent::FlexEnd,
+            "center" => JustifyContent::Center,
+            "space-between" => JustifyContent::SpaceBetween,
+            "space-around" => JustifyContent::SpaceAround,
+            "space-evenly" => JustifyContent::SpaceEvenly,
+            _ => JustifyContent::FlexStart,
+        },
         _ => JustifyContent::FlexStart,
     };
 
     let align_items = match style.get("align-items") {
-        Some(CssValue::Keyword(kw)) if kw == "flex-start" => AlignItems::FlexStart,
-        Some(CssValue::Keyword(kw)) if kw == "center" => AlignItems::Center,
+        Some(CssValue::AlignItems(val)) => match val {
+            AlignItemsValue::Stretch => AlignItems::Stretch,
+            AlignItemsValue::FlexStart => AlignItems::FlexStart,
+            AlignItemsValue::FlexEnd => AlignItems::FlexEnd,
+            AlignItemsValue::Center => AlignItems::Center,
+            AlignItemsValue::Baseline => AlignItems::Baseline,
+        },
+        Some(CssValue::Keyword(kw)) => match kw.as_str() {
+            "stretch" => AlignItems::Stretch,
+            "flex-start" => AlignItems::FlexStart,
+            "flex-end" => AlignItems::FlexEnd,
+            "center" => AlignItems::Center,
+            "baseline" => AlignItems::Baseline,
+            _ => AlignItems::Stretch,
+        },
         _ => AlignItems::Stretch,
     };
 
@@ -226,17 +254,40 @@ pub fn layout_flex_container(
         };
 
         // 3. Position children inside this line
-        let mut main_cursor = match justify_content {
-            JustifyContent::FlexStart => 0.0,
-            JustifyContent::Center => (main_size - line_total_main_size) / 2.0,
-            JustifyContent::SpaceBetween => 0.0,
-        };
-
-        let spacing = if justify_content == JustifyContent::SpaceBetween && line.children.len() > 1
-        {
-            ((main_size - line_total_main_size) / (line.children.len() - 1) as f32).max(0.0)
-        } else {
-            0.0
+        let (mut main_cursor, spacing) = match justify_content {
+            JustifyContent::FlexStart => (0.0, 0.0),
+            JustifyContent::FlexEnd => (main_size - line_total_main_size, 0.0),
+            JustifyContent::Center => ((main_size - line_total_main_size) / 2.0, 0.0),
+            JustifyContent::SpaceBetween => {
+                let spacing = if line.children.len() > 1 {
+                    ((main_size - line_total_main_size) / (line.children.len() - 1) as f32).max(0.0)
+                } else {
+                    0.0
+                };
+                (0.0, spacing)
+            }
+            JustifyContent::SpaceAround => {
+                if line.children.is_empty() {
+                    (0.0, 0.0)
+                } else if line.children.len() == 1 || main_size < line_total_main_size {
+                    ((main_size - line_total_main_size) / 2.0, 0.0)
+                } else {
+                    let free_space = main_size - line_total_main_size;
+                    let spacing = free_space / line.children.len() as f32;
+                    (spacing / 2.0, spacing)
+                }
+            }
+            JustifyContent::SpaceEvenly => {
+                if line.children.is_empty() {
+                    (0.0, 0.0)
+                } else if line.children.len() == 1 || main_size < line_total_main_size {
+                    ((main_size - line_total_main_size) / 2.0, 0.0)
+                } else {
+                    let free_space = main_size - line_total_main_size;
+                    let spacing = free_space / (line.children.len() + 1) as f32;
+                    (spacing, spacing)
+                }
+            }
         };
 
         for child_box in &mut line.children {
@@ -249,6 +300,7 @@ pub fn layout_flex_container(
 
             let cross_offset = match align_items {
                 AlignItems::FlexStart => 0.0,
+                AlignItems::FlexEnd => line_cross_size - child_cross_size,
                 AlignItems::Center => (line_cross_size - child_cross_size) / 2.0,
                 AlignItems::Stretch => {
                     let has_explicit = match flex_direction {
@@ -261,6 +313,11 @@ pub fn layout_flex_container(
                             FlexDirection::Column => child_box.rect.size.width = line_cross_size,
                         }
                     }
+                    0.0
+                }
+                AlignItems::Baseline => {
+                    // TODO(spec): True baseline alignment is not yet available.
+                    // Map baseline to flex-start for now.
                     0.0
                 }
             };
@@ -324,15 +381,20 @@ enum FlexDirection {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum JustifyContent {
     FlexStart,
+    FlexEnd,
     Center,
     SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AlignItems {
     FlexStart,
+    FlexEnd,
     Center,
     Stretch,
+    Baseline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -885,5 +947,209 @@ mod tests {
         // child4: 50 + 1/2 * 50 = 75
         assert!(approx_eq(container_box.children[2].rect.size.width, 225.0));
         assert!(approx_eq(container_box.children[3].rect.size.width, 75.0));
+    }
+
+    #[test]
+    fn test_justify_content_flex_end() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(container, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                width: 300px;
+                justify-content: flex-end;
+            }
+            div {
+                width: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // (300 - 100) = 200 offset
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 200.0));
+    }
+
+    #[test]
+    fn test_justify_content_space_around() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                width: 300px;
+                justify-content: space-around;
+            }
+            div {
+                width: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        // child1 starts at 50px
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 50.0));
+        // child2 starts at 200px
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 200.0));
+    }
+
+    #[test]
+    fn test_justify_content_space_evenly() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                width: 300px;
+                justify-content: space-evenly;
+            }
+            div {
+                width: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        // child1 starts at 66.66667
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 66.66667));
+        // child2 starts at 183.33333
+        assert!(approx_eq(
+            container_box.children[1].rect.origin.x,
+            183.33333
+        ));
+    }
+
+    #[test]
+    fn test_align_items_flex_end() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(container, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                height: 200px;
+                align-items: flex-end;
+            }
+            div {
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // (200 - 50) = 150 offset
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 150.0));
+    }
+
+    #[test]
+    fn test_align_items_baseline_fallback() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(container, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                height: 200px;
+                align-items: baseline;
+            }
+            div {
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Mapped to flex-start: 0.0 offset
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
     }
 }
