@@ -93,30 +93,48 @@ fn get_edge_color(style: &ComputedStyle, edge_prop: &str, border_color: &Color) 
     border_color.clone()
 }
 
-/// Helper to check if a ComputedStyle contains underline text decoration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TextDecorations {
+    underline: bool,
+    overline: bool,
+    line_through: bool,
+}
+
+/// Helper to get the set of text decorations from a ComputedStyle.
 /// spec: S-55
-fn has_underline(style: &ComputedStyle) -> bool {
+fn get_text_decorations(style: &ComputedStyle) -> TextDecorations {
+    let mut dec = TextDecorations::default();
+
     // spec: the `text-decoration` shorthand set to `none` clears the line,
-    // overriding any `underline` keyword (e.g. from `text-decoration-line`).
+    // overriding any keywords (e.g. from `text-decoration-line`).
     if let Some(CssValue::Keyword(s)) = style.get("text-decoration")
         && s.eq_ignore_ascii_case("none")
     {
-        return false;
+        return dec;
     }
+
     for prop in &["text-decoration", "text-decoration-line"] {
         if let Some(val) = style.get(prop) {
             match val {
                 CssValue::Keyword(s) => {
                     if s.eq_ignore_ascii_case("underline") {
-                        return true;
+                        dec.underline = true;
+                    } else if s.eq_ignore_ascii_case("overline") {
+                        dec.overline = true;
+                    } else if s.eq_ignore_ascii_case("line-through") {
+                        dec.line_through = true;
                     }
                 }
                 CssValue::Multiple(values) => {
                     for v in values {
-                        if let CssValue::Keyword(s) = v
-                            && s.eq_ignore_ascii_case("underline")
-                        {
-                            return true;
+                        if let CssValue::Keyword(s) = v {
+                            if s.eq_ignore_ascii_case("underline") {
+                                dec.underline = true;
+                            } else if s.eq_ignore_ascii_case("overline") {
+                                dec.overline = true;
+                            } else if s.eq_ignore_ascii_case("line-through") {
+                                dec.line_through = true;
+                            }
                         }
                     }
                 }
@@ -124,7 +142,7 @@ fn has_underline(style: &ComputedStyle) -> bool {
             }
         }
     }
-    false
+    dec
 }
 
 /// Helper to recursively check if a node or any of its DOM ancestors is an anchor `<a>` element.
@@ -137,26 +155,6 @@ fn is_inside_link(dom: &Dom, node_id: NodeId) -> bool {
     {
         if let Some(NodeData::Element { name, .. }) = dom.data(curr_id)
             && name.eq_ignore_ascii_case("a")
-        {
-            return true;
-        }
-        current = dom.parent(curr_id);
-        depth += 1;
-    }
-    false
-}
-
-/// Helper to recursively check if a node or any of its DOM ancestors explicitly sets `text-decoration: none`.
-/// spec: S-82
-fn has_explicit_none(dom: &Dom, node_id: NodeId, styles: &HashMap<NodeId, ComputedStyle>) -> bool {
-    let mut current = Some(node_id);
-    let mut depth = 0;
-    while let Some(curr_id) = current
-        && depth < 1000
-    {
-        if let Some(style) = styles.get(&curr_id)
-            && let Some(CssValue::Keyword(s)) = style.get("text-decoration")
-            && s.eq_ignore_ascii_case("none")
         {
             return true;
         }
@@ -197,29 +195,56 @@ fn resolve_text_color(
     Color::Rgba(0, 0, 0, 255) // Default fallback color is black
 }
 
-/// Helper to recursively check if a node or any of its DOM ancestors has computed text-decoration underline.
+/// Helper to recursively check and resolve the active text decorations for a node from its DOM ancestors.
 /// spec: S-55
-fn is_underlined(dom: &Dom, node_id: NodeId, styles: &HashMap<NodeId, ComputedStyle>) -> bool {
+fn resolve_text_decorations(
+    dom: &Dom,
+    node_id: NodeId,
+    styles: &HashMap<NodeId, ComputedStyle>,
+) -> TextDecorations {
+    let mut resolved = TextDecorations::default();
+    let is_link = is_inside_link(dom, node_id);
+
     let mut current = Some(node_id);
     let mut depth = 0;
+
+    let mut underline_blocked = false;
+    let mut overline_blocked = false;
+    let mut line_through_blocked = false;
+
     while let Some(curr_id) = current
         && depth < 1000
     {
         if let Some(style) = styles.get(&curr_id) {
-            // If the element explicitly sets text-decoration to none, it overrides parent underlines
             if let Some(CssValue::Keyword(s)) = style.get("text-decoration")
                 && s.eq_ignore_ascii_case("none")
             {
-                return false;
+                underline_blocked = true;
+                overline_blocked = true;
+                line_through_blocked = true;
             }
-            if has_underline(style) {
-                return true;
+
+            let local_dec = get_text_decorations(style);
+
+            if local_dec.underline && !underline_blocked {
+                resolved.underline = true;
+            }
+            if local_dec.overline && !overline_blocked {
+                resolved.overline = true;
+            }
+            if local_dec.line_through && !line_through_blocked {
+                resolved.line_through = true;
             }
         }
         current = dom.parent(curr_id);
         depth += 1;
     }
-    false
+
+    if is_link && !underline_blocked {
+        resolved.underline = true;
+    }
+
+    resolved
 }
 
 /// Builds a display list from the layout tree.
@@ -329,22 +354,43 @@ pub fn build_display_list(
                     color: color.clone(),
                 });
 
-                // spec: S-82: if computed underline is present or we are inside an <a> (and not explicitly styled text-decoration: none),
-                // emit an underline SolidRect beneath the text run.
-                let is_link = is_inside_link(dom, node_id);
-                let underlined = is_underlined(dom, node_id, styles)
-                    || (is_link && !has_explicit_none(dom, node_id, styles));
+                // spec: S-82: if computed text-decorations are present (underline, overline, line-through)
+                // or we are inside an <a> (and not explicitly styled text-decoration: none),
+                // emit the corresponding SolidRects.
+                let decorations = resolve_text_decorations(dom, node_id, styles);
 
-                if underlined {
-                    let x = corrected_rect.origin.x;
-                    let width = corrected_rect.size.width;
+                let x = corrected_rect.origin.x;
+                let width = corrected_rect.size.width;
 
+                if decorations.underline {
                     // Position underline relative to the baseline-corrected text position
                     let underline_y = corrected_rect.origin.y + font_height - 1.0;
                     let underline_rect = Rect::new(x, underline_y, width, 1.0);
 
                     items.push(DisplayItem::SolidRect {
                         rect: underline_rect,
+                        color: color.clone(),
+                    });
+                }
+
+                if decorations.overline {
+                    // Position overline at the top of the baseline-corrected text position
+                    let overline_y = corrected_rect.origin.y;
+                    let overline_rect = Rect::new(x, overline_y, width, 1.0);
+
+                    items.push(DisplayItem::SolidRect {
+                        rect: overline_rect,
+                        color: color.clone(),
+                    });
+                }
+
+                if decorations.line_through {
+                    // Position line-through in the middle of the baseline-corrected text position
+                    let line_through_y = corrected_rect.origin.y + (font_height / 2.0);
+                    let line_through_rect = Rect::new(x, line_through_y, width, 1.0);
+
+                    items.push(DisplayItem::SolidRect {
+                        rect: line_through_rect,
                         color: color.clone(),
                     });
                 }
@@ -1173,5 +1219,182 @@ mod tests {
                 assert_eq!(rect_rect.origin.y, text_rect.origin.y + 7.0);
             }
         }
+    }
+
+    #[test]
+    fn test_paint_text_overline() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("overlined".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet("p { text-decoration: overline; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(text_items.len(), 1);
+        assert_eq!(solid_rects.len(), 1);
+
+        if let DisplayItem::Text {
+            rect: text_rect, ..
+        } = text_items[0]
+        {
+            if let DisplayItem::SolidRect {
+                rect: rect_rect, ..
+            } = solid_rects[0]
+            {
+                assert_eq!(rect_rect.origin.y, text_rect.origin.y);
+                assert_eq!(rect_rect.size.height, 1.0);
+            } else {
+                panic!("Expected SolidRect");
+            }
+        } else {
+            panic!("Expected Text");
+        }
+    }
+
+    #[test]
+    fn test_paint_text_line_through() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("striked".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet("p { text-decoration: line-through; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(text_items.len(), 1);
+        assert_eq!(solid_rects.len(), 1);
+
+        if let DisplayItem::Text {
+            rect: text_rect, ..
+        } = text_items[0]
+        {
+            if let DisplayItem::SolidRect {
+                rect: rect_rect, ..
+            } = solid_rects[0]
+            {
+                assert_eq!(rect_rect.origin.y, text_rect.origin.y + 4.0);
+                assert_eq!(rect_rect.size.height, 1.0);
+            } else {
+                panic!("Expected SolidRect");
+            }
+        } else {
+            panic!("Expected Text");
+        }
+    }
+
+    #[test]
+    fn test_paint_text_multiple_decorations() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("all".into()));
+        dom.append_child(p, text);
+
+        let stylesheet =
+            parse_stylesheet("p { text-decoration: underline overline line-through; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(text_items.len(), 1);
+        assert_eq!(solid_rects.len(), 3);
+    }
+
+    #[test]
+    fn test_paint_text_decorations_override() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, p);
+
+        let text = dom.create_node(NodeData::Text("none".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { text-decoration: underline overline; }
+            p { text-decoration: none; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        // No underlines or overlines should be drawn for the child with none
+        assert_eq!(solid_rects.len(), 0);
     }
 }
