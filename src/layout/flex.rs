@@ -372,7 +372,9 @@ pub fn layout_flex_container(
                 FlexDirection::Column => child_box.rect.size.width,
             };
 
-            let cross_offset = match align_items {
+            let child_align = get_align_self(child_style, align_items);
+
+            let cross_offset = match child_align {
                 AlignItems::FlexStart => 0.0,
                 AlignItems::FlexEnd => line_cross_size - child_cross_size,
                 AlignItems::Center => (line_cross_size - child_cross_size) / 2.0,
@@ -503,6 +505,31 @@ fn has_explicit_size(style: Option<&ComputedStyle>, prop: &str) -> bool {
     }
 }
 
+fn get_align_self(style: Option<&ComputedStyle>, default: AlignItems) -> AlignItems {
+    let Some(style) = style else {
+        return default;
+    };
+    match style.get("align-self") {
+        Some(CssValue::AlignItems(val)) => match val {
+            AlignItemsValue::Stretch => AlignItems::Stretch,
+            AlignItemsValue::FlexStart => AlignItems::FlexStart,
+            AlignItemsValue::FlexEnd => AlignItems::FlexEnd,
+            AlignItemsValue::Center => AlignItems::Center,
+            AlignItemsValue::Baseline => AlignItems::Baseline,
+        },
+        Some(CssValue::Keyword(kw)) => match kw.to_ascii_lowercase().as_str() {
+            "auto" => default,
+            "stretch" => AlignItems::Stretch,
+            "flex-start" => AlignItems::FlexStart,
+            "flex-end" => AlignItems::FlexEnd,
+            "center" => AlignItems::Center,
+            "baseline" => AlignItems::Baseline,
+            _ => default,
+        },
+        _ => default,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +541,137 @@ mod tests {
 
     fn approx_eq(a: f32, b: f32) -> bool {
         (a - b).abs() < EPSILON
+    }
+
+    #[test]
+    fn test_align_self_overrides() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        dom.append_child(container, child1);
+
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child2);
+
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        dom.append_child(container, child3);
+
+        let child4 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child4".into())],
+        });
+        dom.append_child(container, child4);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                height: 200px;
+                align-items: flex-start;
+            }
+            div {
+                height: 50px;
+                width: 100px;
+            }
+            #child1 {
+                align-self: center;
+            }
+            #child2 {
+                align-self: flex-end;
+            }
+            #child3 {
+                align-self: auto;
+            }
+            /* child4 has no align-self property */
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 4);
+
+        // child1: align-self is center, so offset is (200 - 50) / 2 = 75.0
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 75.0));
+
+        // child2: align-self is flex-end, so offset is 200 - 50 = 150.0
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 150.0));
+
+        // child3: align-self is auto, so follows container's flex-start, which is 0.0
+        assert!(approx_eq(container_box.children[2].rect.origin.y, 0.0));
+
+        // child4: no align-self, so follows container's flex-start, which is 0.0
+        assert!(approx_eq(container_box.children[3].rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_align_self_stretch() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        dom.append_child(container, child1);
+
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                height: 200px;
+                align-items: flex-start;
+            }
+            div {
+                width: 100px;
+            }
+            #child1 {
+                align-self: stretch;
+            }
+            #child2 {
+                /* has no explicit height and no align-self, so matches align-items: flex-start and should NOT stretch (it will have height 0 as content height is 0) */
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+
+        // child1: align-self is stretch, so height is stretched to 200.0
+        assert!(approx_eq(container_box.children[0].rect.size.height, 200.0));
+
+        // child2: follows container's flex-start, height is not stretched
+        assert!(approx_eq(container_box.children[1].rect.size.height, 0.0));
     }
 
     #[test]
