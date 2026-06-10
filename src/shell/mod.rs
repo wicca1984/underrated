@@ -13,6 +13,203 @@ pub enum InputEvent {
     Key { key: String },
 }
 
+/// Represents the visual rendering geometry of the text insertion caret.
+/// spec: S-34, t0176
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaretGeometry {
+    /// The NodeId of the focused input element.
+    pub node_id: crate::infra::NodeId,
+    /// The character index of the caret within the text.
+    pub char_index: usize,
+    /// The computed horizontal coordinate of the caret.
+    pub x: f64,
+    /// The computed vertical coordinate of the caret.
+    pub y: f64,
+    /// The computed width of the caret.
+    pub width: f64,
+    /// The computed height of the caret.
+    pub height: f64,
+}
+
+/// Helper function to insert a character at a specific character index (UTF-8 safe).
+fn insert_char_at(s: &mut String, char_idx: usize, ch: char) -> usize {
+    let mut chars: Vec<char> = s.chars().collect();
+    let clamped_idx = char_idx.min(chars.len());
+    chars.insert(clamped_idx, ch);
+    *s = chars.into_iter().collect();
+    clamped_idx + 1
+}
+
+/// Helper function to delete a character before a specific character index (UTF-8 safe).
+fn delete_char_before(s: &mut String, char_idx: usize) -> Option<usize> {
+    if char_idx == 0 {
+        return None;
+    }
+    let mut chars: Vec<char> = s.chars().collect();
+    let clamped_idx = char_idx.min(chars.len());
+    chars.remove(clamped_idx - 1);
+    *s = chars.into_iter().collect();
+    Some(clamped_idx - 1)
+}
+
+/// Tracks focused text-input elements, routes keyboard inputs, and computes caret geometry.
+/// spec: S-34, t0176
+#[derive(Debug, Default, Clone)]
+pub struct ShellInputManager {
+    focused_element: Option<crate::infra::NodeId>,
+    text_buffers: std::collections::HashMap<crate::infra::NodeId, String>,
+    caret_positions: std::collections::HashMap<crate::infra::NodeId, usize>,
+}
+
+impl ShellInputManager {
+    /// Creates a new ShellInputManager.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the currently focused NodeId, if any.
+    pub fn focused_element(&self) -> Option<crate::infra::NodeId> {
+        self.focused_element
+    }
+
+    /// Focuses the given node.
+    pub fn focus(&mut self, node_id: crate::infra::NodeId) {
+        self.focused_element = Some(node_id);
+        // Initialize text buffer and caret position if not present
+        self.text_buffers.entry(node_id).or_default();
+        self.caret_positions.entry(node_id).or_insert(0);
+    }
+
+    /// Blurs the currently focused node.
+    pub fn blur(&mut self) {
+        self.focused_element = None;
+    }
+
+    /// Handles a click event. If a focus target (hit-test result) is provided, it is focused.
+    /// Otherwise, focus is cleared.
+    pub fn handle_click(&mut self, _x: f64, _y: f64, hit_test: Option<crate::infra::NodeId>) {
+        if let Some(node_id) = hit_test {
+            self.focus(node_id);
+        } else {
+            self.blur();
+        }
+    }
+
+    /// Gets the text buffer for the given node, or an empty string if none exists.
+    pub fn text_buffer(&self, node_id: crate::infra::NodeId) -> &str {
+        self.text_buffers
+            .get(&node_id)
+            .map(|s| s.as_str())
+            .unwrap_or("")
+    }
+
+    /// Sets the text buffer for the given node.
+    pub fn set_text_buffer(&mut self, node_id: crate::infra::NodeId, text: String) {
+        let len = text.chars().count();
+        self.text_buffers.insert(node_id, text);
+        if let Some(caret) = self.caret_positions.get_mut(&node_id) {
+            if *caret > len {
+                *caret = len;
+            }
+        } else {
+            self.caret_positions.insert(node_id, len);
+        }
+    }
+
+    /// Gets the caret position (as a character count) for the given node.
+    pub fn caret_position(&self, node_id: crate::infra::NodeId) -> usize {
+        *self.caret_positions.get(&node_id).unwrap_or(&0)
+    }
+
+    /// Sets the caret position for the given node.
+    pub fn set_caret_position(&mut self, node_id: crate::infra::NodeId, pos: usize) {
+        let text_len = self.text_buffer(node_id).chars().count();
+        self.caret_positions.insert(node_id, pos.min(text_len));
+    }
+
+    /// Handles a keyboard key press. Returns `true` if the key was consumed by the active text input,
+    /// or `false` if it should be passed through (e.g. for page scrolling or form submission).
+    pub fn handle_key(&mut self, key: &str) -> bool {
+        let Some(focused) = self.focused_element else {
+            return false;
+        };
+
+        match key {
+            "Backspace" => {
+                let mut text = self.text_buffer(focused).to_string();
+                let caret = self.caret_position(focused);
+                if let Some(new_caret) = delete_char_before(&mut text, caret) {
+                    self.text_buffers.insert(focused, text);
+                    self.caret_positions.insert(focused, new_caret);
+                }
+                true
+            }
+            "ArrowLeft" => {
+                let caret = self.caret_position(focused);
+                if caret > 0 {
+                    self.caret_positions.insert(focused, caret - 1);
+                }
+                true
+            }
+            "ArrowRight" => {
+                let caret = self.caret_position(focused);
+                let text_len = self.text_buffer(focused).chars().count();
+                if caret < text_len {
+                    self.caret_positions.insert(focused, caret + 1);
+                }
+                true
+            }
+            "Space" => {
+                let mut text = self.text_buffer(focused).to_string();
+                let caret = self.caret_position(focused);
+                let new_caret = insert_char_at(&mut text, caret, ' ');
+                self.text_buffers.insert(focused, text);
+                self.caret_positions.insert(focused, new_caret);
+                true
+            }
+            // Non-text control keys are passed through
+            "ArrowUp" | "ArrowDown" | "PageUp" | "PageDown" | "Enter" | "Escape" | "Tab" => false,
+            other => {
+                let mut chars = other.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) if !ch.is_control() => {
+                        let mut text = self.text_buffer(focused).to_string();
+                        let caret = self.caret_position(focused);
+                        let new_caret = insert_char_at(&mut text, caret, ch);
+                        self.text_buffers.insert(focused, text);
+                        self.caret_positions.insert(focused, new_caret);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        }
+    }
+
+    /// Computes caret geometry relative to the input field bounding box.
+    pub fn calculate_caret_geometry(
+        &self,
+        node_id: crate::infra::NodeId,
+        input_x: f64,
+        input_y: f64,
+        input_height: f64,
+        text_offset: f64,
+    ) -> Option<CaretGeometry> {
+        if self.focused_element != Some(node_id) {
+            return None;
+        }
+        let char_index = self.caret_position(node_id);
+        Some(CaretGeometry {
+            node_id,
+            char_index,
+            x: input_x + text_offset,
+            y: input_y,
+            width: 1.5,
+            height: input_height,
+        })
+    }
+}
+
 /// A port for windowing operations.
 /// spec: S-16
 pub trait Window {
@@ -693,5 +890,182 @@ mod tests {
             button: winit::event::MouseButton::Left,
         };
         assert_eq!(map_window_event(&event_released, (50.0, 100.0)), None);
+    }
+
+    #[test]
+    fn test_shell_input_manager_focus_and_click() {
+        let mut manager = ShellInputManager::new();
+        let mut arena = crate::infra::Arena::new();
+        let node_id_1 = arena.insert("input1");
+        let node_id_2 = arena.insert("input2");
+
+        // Set focus directly
+        manager.focus(node_id_1);
+        assert_eq!(manager.focused_element(), Some(node_id_1));
+
+        // Blur
+        manager.blur();
+        assert_eq!(manager.focused_element(), None);
+
+        // Click on an element focuses it
+        manager.handle_click(10.0, 20.0, Some(node_id_2));
+        assert_eq!(manager.focused_element(), Some(node_id_2));
+
+        // Click outside blurs
+        manager.handle_click(10.0, 20.0, None);
+        assert_eq!(manager.focused_element(), None);
+    }
+
+    #[test]
+    fn test_shell_input_manager_key_routing_and_backspace() {
+        let mut manager = ShellInputManager::new();
+        let mut arena = crate::infra::Arena::new();
+        let node_id = arena.insert("input");
+
+        // Focus the input
+        manager.focus(node_id);
+        assert_eq!(manager.text_buffer(node_id), "");
+        assert_eq!(manager.caret_position(node_id), 0);
+
+        // Type 'H'
+        let consumed = manager.handle_key("H");
+        assert!(consumed);
+        assert_eq!(manager.text_buffer(node_id), "H");
+        assert_eq!(manager.caret_position(node_id), 1);
+
+        // Type 'i'
+        let consumed = manager.handle_key("i");
+        assert!(consumed);
+        assert_eq!(manager.text_buffer(node_id), "Hi");
+        assert_eq!(manager.caret_position(node_id), 2);
+
+        // Backspace
+        let consumed = manager.handle_key("Backspace");
+        assert!(consumed);
+        assert_eq!(manager.text_buffer(node_id), "H");
+        assert_eq!(manager.caret_position(node_id), 1);
+
+        // Backspace again
+        let consumed = manager.handle_key("Backspace");
+        assert!(consumed);
+        assert_eq!(manager.text_buffer(node_id), "");
+        assert_eq!(manager.caret_position(node_id), 0);
+
+        // Backspace on empty shouldn't panic, should return true (consumed)
+        let consumed = manager.handle_key("Backspace");
+        assert!(consumed);
+        assert_eq!(manager.text_buffer(node_id), "");
+        assert_eq!(manager.caret_position(node_id), 0);
+    }
+
+    #[test]
+    fn test_shell_input_manager_arrow_navigation() {
+        let mut manager = ShellInputManager::new();
+        let mut arena = crate::infra::Arena::new();
+        let node_id = arena.insert("input");
+
+        manager.focus(node_id);
+        manager.handle_key("a");
+        manager.handle_key("b");
+        manager.handle_key("c");
+        assert_eq!(manager.text_buffer(node_id), "abc");
+        assert_eq!(manager.caret_position(node_id), 3);
+
+        // ArrowLeft moves caret left
+        let consumed = manager.handle_key("ArrowLeft");
+        assert!(consumed);
+        assert_eq!(manager.caret_position(node_id), 2);
+
+        // Insert 'x' at caret position 2 -> "abxc"
+        let consumed = manager.handle_key("x");
+        assert!(consumed);
+        assert_eq!(manager.text_buffer(node_id), "abxc");
+        assert_eq!(manager.caret_position(node_id), 3);
+
+        // ArrowRight moves caret right
+        let consumed = manager.handle_key("ArrowRight");
+        assert!(consumed);
+        assert_eq!(manager.caret_position(node_id), 4);
+
+        // ArrowRight at end does nothing
+        let consumed = manager.handle_key("ArrowRight");
+        assert!(consumed);
+        assert_eq!(manager.caret_position(node_id), 4);
+
+        // ArrowLeft multiple times
+        manager.handle_key("ArrowLeft");
+        manager.handle_key("ArrowLeft");
+        manager.handle_key("ArrowLeft");
+        manager.handle_key("ArrowLeft");
+        assert_eq!(manager.caret_position(node_id), 0);
+
+        // ArrowLeft at start does nothing
+        let consumed = manager.handle_key("ArrowLeft");
+        assert!(consumed);
+        assert_eq!(manager.caret_position(node_id), 0);
+    }
+
+    #[test]
+    fn test_shell_input_manager_control_and_space_keys() {
+        let mut manager = ShellInputManager::new();
+        let mut arena = crate::infra::Arena::new();
+        let node_id = arena.insert("input");
+
+        manager.focus(node_id);
+
+        // "Space" named key
+        let consumed = manager.handle_key("Space");
+        assert!(consumed);
+        assert_eq!(manager.text_buffer(node_id), " ");
+
+        // Control / submit keys should not be consumed by text input routing
+        let consumed = manager.handle_key("Enter");
+        assert!(!consumed);
+
+        let consumed = manager.handle_key("Escape");
+        assert!(!consumed);
+
+        let consumed = manager.handle_key("Tab");
+        assert!(!consumed);
+
+        let consumed = manager.handle_key("ArrowUp");
+        assert!(!consumed);
+
+        assert_eq!(manager.text_buffer(node_id), " ");
+    }
+
+    #[test]
+    fn test_shell_input_manager_unfocused_routing() {
+        let mut manager = ShellInputManager::new();
+        // Routing when nothing is focused returns false
+        let consumed = manager.handle_key("a");
+        assert!(!consumed);
+    }
+
+    #[test]
+    fn test_shell_input_manager_caret_geometry() {
+        let mut manager = ShellInputManager::new();
+        let mut arena = crate::infra::Arena::new();
+        let node_id_1 = arena.insert("input1");
+        let node_id_2 = arena.insert("input2");
+
+        manager.focus(node_id_1);
+        manager.handle_key("H");
+        manager.handle_key("i");
+
+        // Correct node caret geometry
+        let geom = manager.calculate_caret_geometry(node_id_1, 100.0, 50.0, 20.0, 15.5);
+        assert!(geom.is_some());
+        let g = geom.unwrap();
+        assert_eq!(g.node_id, node_id_1);
+        assert_eq!(g.char_index, 2);
+        assert_eq!(g.x, 115.5);
+        assert_eq!(g.y, 50.0);
+        assert_eq!(g.width, 1.5);
+        assert_eq!(g.height, 20.0);
+
+        // Unfocused node caret geometry should be None
+        let geom_unfocused = manager.calculate_caret_geometry(node_id_2, 100.0, 50.0, 20.0, 15.5);
+        assert!(geom_unfocused.is_none());
     }
 }
