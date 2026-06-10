@@ -1917,4 +1917,113 @@ mod tests {
         // Plus padding-left (5px) and padding-right (5px), total border box width should be 26.0px.
         assert!(approx_eq(span_box.rect.size.width, 26.0));
     }
+
+    #[test]
+    fn test_width_constrained_centered_container_text_wrapping_geometry() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, p);
+
+        // A long text: "This domain is for use in illustrative examples in documents."
+        // Under a 600px width minus 64px padding (536px content width),
+        // This text should fit on 1 or 2 lines, certainly NOT one word per line (which would be ~10 line boxes).
+        let text = dom.create_node(NodeData::Text(
+            "This domain is for use in illustrative examples in documents.".into(),
+        ));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 800px; }
+            div {
+                display: block;
+                width: 600px;
+                margin: 0 auto;
+                padding-left: 32px;
+                padding-right: 32px;
+            }
+            p {
+                display: block;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+        let p_box = &div_box.children[0];
+
+        // The container's definite width must thread down to the inline layout of
+        // its descendant <p>, so the paragraph keeps a usable content width and does
+        // not collapse to near-zero (which would wrap one word per line).
+
+        // Assert container starts centered in 800px body (origin x = 68px)
+        assert!(approx_eq(div_box.rect.origin.x, 68.0));
+        assert!(approx_eq(div_box.rect.size.width, 664.0)); // 600 + 32 + 32 = 664
+
+        // p content_width should be div content_width = 600.0
+        assert!(approx_eq(p_box.rect.size.width, 600.0));
+
+        // If it wrapped 1 word per line, there would be ~9 line boxes.
+        // If it wrapped correctly, it should easily fit on 1 or 2 line boxes.
+        assert!(
+            p_box.children.len() <= 2,
+            "Paragraph wrapped prematurely into {} lines",
+            p_box.children.len()
+        );
+    }
+
+    #[test]
+    fn test_width_constrained_centered_container_text_wrapping_via_render() {
+        let html = r#"
+            <div style="width:600px; margin:0 auto; padding:2em">
+                <h1>Example Domain</h1>
+                <p>This domain is for use in illustrative examples in documents. You may use this domain in literature without prior coordination or asking for permission.</p>
+            </div>
+        "#;
+        let page = crate::engine::render(html, "", 800.0);
+
+        // Find the paragraph box in the layout tree and inspect it!
+        let mut p_box = None;
+        let mut stack = vec![&page.layout];
+        while let Some(b) = stack.pop() {
+            if let Some(node_id) = b.node
+                && let Some(NodeData::Element { name, .. }) = page.dom.data(node_id)
+                && name == "p"
+            {
+                p_box = Some(b);
+                break;
+            }
+            for child in &b.children {
+                stack.push(child);
+            }
+        }
+
+        let p = p_box.expect("Paragraph box should exist in layout tree");
+
+        // Under 600px width minus 2em padding the paragraph wraps onto a few lines;
+        // it must NOT collapse to one word per line (~15+ line boxes for 20+ words).
+        assert!(
+            p.children.len() <= 3,
+            "Paragraph wrapped prematurely into {} lines",
+            p.children.len()
+        );
+    }
 }
