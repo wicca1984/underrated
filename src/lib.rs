@@ -21,6 +21,7 @@ pub mod image;
 pub mod infra;
 pub mod layout;
 pub mod loader;
+pub mod net;
 pub mod paint;
 pub mod raster;
 pub mod script;
