@@ -26,6 +26,14 @@ fn shift_y(layout_box: &mut LayoutBox, delta: f32) {
     }
 }
 
+fn shift_x(layout_box: &mut LayoutBox, delta: f32) {
+    layout_box.rect.origin.x += delta;
+    for child in &mut layout_box.children {
+        shift_x(child, delta);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn create_line_box_adjusted(
     mut children: Vec<LayoutBox>,
     offset_x: f32,
@@ -33,6 +41,8 @@ fn create_line_box_adjusted(
     width: f32,
     line_height: f32,
     styles: &HashMap<NodeId, ComputedStyle>,
+    text_align: &str,
+    containing_width: f32,
 ) -> LayoutBox {
     // For each child, adjust its Y position to align its bottom edge with the bottom of the line box.
     let line_box_bottom_y = offset_y + line_height;
@@ -60,6 +70,19 @@ fn create_line_box_adjusted(
         }
     }
 
+    // Adjust X positions based on text-align centering/right alignment
+    let delta_x = match text_align {
+        "center" => ((containing_width - width) / 2.0).max(0.0),
+        "right" => (containing_width - width).max(0.0),
+        _ => 0.0,
+    };
+
+    if delta_x != 0.0 {
+        for child in &mut children {
+            shift_x(child, delta_x);
+        }
+    }
+
     LayoutBox {
         node: None,
         rect: Rect {
@@ -79,6 +102,7 @@ fn create_line_box_adjusted(
 /// Layout inline content from a slice of children, wrapping text and display: inline boxes.
 ///
 /// spec: S-45
+#[allow(clippy::too_many_arguments)]
 pub fn layout_inline_run(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
@@ -87,6 +111,7 @@ pub fn layout_inline_run(
     offset_x: f32,
     offset_y: f32,
     depth: usize,
+    text_align: &str,
 ) -> (Vec<LayoutBox>, f32) {
     let font = crate::font::BitmapFont::builtin();
     let line_height = font.line_height() as f32;
@@ -113,6 +138,7 @@ pub fn layout_inline_run(
             line_height,
             &mut current_line_height,
             depth,
+            text_align,
         );
     }
 
@@ -124,6 +150,8 @@ pub fn layout_inline_run(
             cursor_x,
             current_line_height,
             styles,
+            text_align,
+            containing_width,
         ));
         cursor_y += current_line_height;
     }
@@ -134,6 +162,7 @@ pub fn layout_inline_run(
 /// Layout inline content for a single parent element, wrapping its children.
 ///
 /// spec: S-45
+#[allow(clippy::too_many_arguments)]
 pub fn layout_inline(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
@@ -142,6 +171,7 @@ pub fn layout_inline(
     offset_x: f32,
     offset_y: f32,
     depth: usize,
+    text_align: &str,
 ) -> (Vec<LayoutBox>, f32) {
     layout_inline_run(
         dom,
@@ -151,6 +181,7 @@ pub fn layout_inline(
         offset_x,
         offset_y,
         depth,
+        text_align,
     )
 }
 
@@ -170,6 +201,7 @@ fn layout_inline_child_recursive(
     line_height: f32,
     current_line_height: &mut f32,
     depth: usize,
+    text_align: &str,
 ) {
     if depth > crate::layout::MAX_DEPTH {
         return;
@@ -195,6 +227,8 @@ fn layout_inline_child_recursive(
                             *cursor_x,
                             *current_line_height,
                             styles,
+                            text_align,
+                            containing_width,
                         ));
                         *cursor_x = 0.0;
                         *cursor_y += *current_line_height;
@@ -263,6 +297,8 @@ fn layout_inline_child_recursive(
                                 *cursor_x,
                                 *current_line_height,
                                 styles,
+                                text_align,
+                                containing_width,
                             ));
                             *cursor_x = 0.0;
                             *cursor_y += *current_line_height;
@@ -314,6 +350,7 @@ fn layout_inline_child_recursive(
                                 line_height,
                                 current_line_height,
                                 depth + 1,
+                                text_align,
                             );
                         }
                     }
