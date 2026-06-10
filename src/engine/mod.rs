@@ -1,7 +1,9 @@
 use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
+use crate::loader::ResourceLoader;
 use crate::style::ComputedStyle;
+use crate::url::Url;
 use std::collections::HashMap;
 
 /// A rendered page containing the DOM, computed styles, and layout tree.
@@ -366,6 +368,54 @@ pub fn render_page(
     }
 }
 
+/// Navigates to a requested page from a form submission or similar action.
+/// Resolves forms::Method -> loader::HttpMethod, resolves req.url against base,
+/// loads request via load_request, resolves charset, and runs the existing render_page pipeline.
+/// On failure, returns an empty page.
+/// spec: S-89
+pub fn navigate(
+    req: &crate::forms::NavigationRequest,
+    base: &Url,
+    loader: &dyn ResourceLoader,
+    viewport_width: f32,
+) -> Page {
+    let resolved_url = match crate::url::resolve(base, &req.url) {
+        Some(url) => url,
+        None => return render_page("", base, loader, viewport_width),
+    };
+
+    let method = match req.method {
+        crate::forms::Method::Get => crate::loader::HttpMethod::Get,
+        crate::forms::Method::Post => crate::loader::HttpMethod::Post,
+    };
+
+    let response = match loader.load_request(
+        &resolved_url,
+        method,
+        req.body.as_bytes(),
+        req.content_type.as_deref(),
+    ) {
+        Ok(res) => res,
+        Err(_) => return render_page("", base, loader, viewport_width),
+    };
+
+    let charset = crate::encoding::sniff_charset(&response.bytes, response.charset.as_deref());
+    let mut offset = 0;
+    if response.bytes.starts_with(&[0xEF, 0xBB, 0xBF]) && charset == crate::encoding::Charset::Utf8
+    {
+        offset = 3;
+    } else if (response.bytes.starts_with(&[0xFE, 0xFF])
+        && charset == crate::encoding::Charset::Utf16Be)
+        || (response.bytes.starts_with(&[0xFF, 0xFE])
+            && charset == crate::encoding::Charset::Utf16Le)
+    {
+        offset = 2;
+    }
+    let decoded_html = crate::encoding::decode(&response.bytes[offset..], charset);
+
+    render_page(&decoded_html, &resolved_url, loader, viewport_width)
+}
+
 /// Renders HTML containing inline styles, external stylesheets, and inline scripts to a pixel canvas.
 /// spec: S-64
 pub fn render_page_to_canvas(
@@ -585,6 +635,54 @@ mod tests {
             } else {
                 Err(crate::loader::LoadError::NotFound)
             }
+        }
+
+        fn load_request(
+            &self,
+            url: &crate::url::Url,
+            method: crate::loader::HttpMethod,
+            body: &[u8],
+            content_type: Option<&str>,
+        ) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> {
+            let method_prefix = match method {
+                crate::loader::HttpMethod::Get => "GET",
+                crate::loader::HttpMethod::Post => "POST",
+            };
+            let lookup_key = format!(
+                "{}:{}|body:{:?}|ct:{:?}",
+                method_prefix,
+                url.serialize(),
+                body,
+                content_type
+            );
+            if let Some(res) = self.responses.get(&lookup_key) {
+                let bytes = match res {
+                    Ok(b) => b.clone(),
+                    Err(e) => {
+                        return Err(match e {
+                            crate::loader::LoadError::UnsupportedScheme => {
+                                crate::loader::LoadError::UnsupportedScheme
+                            }
+                            crate::loader::LoadError::NotFound => {
+                                crate::loader::LoadError::NotFound
+                            }
+                            crate::loader::LoadError::OutsideRoot => {
+                                crate::loader::LoadError::OutsideRoot
+                            }
+                            crate::loader::LoadError::Io(s) => {
+                                crate::loader::LoadError::Io(s.clone())
+                            }
+                        });
+                    }
+                };
+                return Ok(crate::loader::LoaderResponse {
+                    bytes,
+                    content_type: "text/html".to_string(),
+                    charset: Some("utf-8".to_string()),
+                });
+            }
+
+            self.load_rich(url)
         }
     }
 
@@ -930,5 +1028,168 @@ mod tests {
         } else {
             panic!("Expected white background color for body");
         }
+    }
+
+    #[test]
+    fn test_navigate_get_and_post_forms() {
+        use std::collections::HashMap;
+
+        // Base URL
+        let base_url = Url::parse("https://example.com/").unwrap();
+
+        // Prepare MockLoader with responses for GET and POST searches
+        let mut responses = HashMap::new();
+        // GET request URL: https://example.com/search?q=rust
+        responses.insert(
+            "https://example.com/search?q=rust".to_string(),
+            Ok(b"<html><body><h1>Search results: rust (GET)</h1></body></html>".to_vec()),
+        );
+
+        // POST request key: "POST:https://example.com/search|body:[113, 61, 114, 117, 115, 116]|ct:Some(\"application/x-www-form-urlencoded\")"
+        let post_body = b"q=rust";
+        let post_key = format!(
+            "POST:https://example.com/search|body:{:?}|ct:Some(\"application/x-www-form-urlencoded\")",
+            post_body
+        );
+        responses.insert(
+            post_key,
+            Ok(b"<html><body><h1>Search results: rust (POST)</h1></body></html>".to_vec()),
+        );
+
+        let loader = MockLoader { responses };
+
+        // Test GET navigation directly
+        let get_request = crate::forms::NavigationRequest {
+            url: "/search?q=rust".to_string(),
+            method: crate::forms::Method::Get,
+            body: String::new(),
+            content_type: None,
+        };
+
+        let page_get = navigate(&get_request, &base_url, &loader, 800.0);
+
+        // Assert DOM contains the header with search results
+        let mut found_get_text = false;
+        let doc_get = page_get.dom.document();
+        for id in page_get.dom.descendants(doc_get) {
+            if let Some(NodeData::Text(text)) = page_get.dom.data(id)
+                && text.contains("Search results: rust (GET)")
+            {
+                found_get_text = true;
+            }
+        }
+        assert!(
+            found_get_text,
+            "GET page should contain search results text"
+        );
+
+        // Test POST navigation directly
+        let post_request = crate::forms::NavigationRequest {
+            url: "/search".to_string(),
+            method: crate::forms::Method::Post,
+            body: "q=rust".to_string(),
+            content_type: Some("application/x-www-form-urlencoded".to_string()),
+        };
+
+        let page_post = navigate(&post_request, &base_url, &loader, 800.0);
+
+        // Assert DOM contains the header with search results
+        let mut found_post_text = false;
+        let doc_post = page_post.dom.document();
+        for id in page_post.dom.descendants(doc_post) {
+            if let Some(NodeData::Text(text)) = page_post.dom.data(id)
+                && text.contains("Search results: rust (POST)")
+            {
+                found_post_text = true;
+            }
+        }
+        assert!(
+            found_post_text,
+            "POST page should contain search results text"
+        );
+
+        // Let's create actual form structures in DOM and submit them to get NavigationRequests
+        let mut dom_get = Dom::new();
+        fn create_el(
+            dom: &mut Dom,
+            tag_name: &str,
+            attrs: &[(&str, &str)],
+        ) -> crate::infra::NodeId {
+            let attributes = attrs
+                .iter()
+                .map(|&(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            dom.create_node(NodeData::Element {
+                name: tag_name.to_string(),
+                attrs: attributes,
+            })
+        }
+
+        // Create a GET Form
+        let form_get = create_el(
+            &mut dom_get,
+            "form",
+            &[("action", "/search"), ("method", "get")],
+        );
+        let input_get = create_el(
+            &mut dom_get,
+            "input",
+            &[("type", "text"), ("name", "q"), ("value", "rust")],
+        );
+        dom_get.append_child(form_get, input_get);
+
+        let req_get =
+            crate::forms::submit(&dom_get, form_get, &crate::forms::FormState::new()).unwrap();
+        // Check that navigate successfully resolves and loads this request
+        let page_get_submitted = navigate(&req_get, &base_url, &loader, 800.0);
+        let mut found_get_submitted_text = false;
+        for id in page_get_submitted
+            .dom
+            .descendants(page_get_submitted.dom.document())
+        {
+            if let Some(NodeData::Text(text)) = page_get_submitted.dom.data(id)
+                && text.contains("Search results: rust (GET)")
+            {
+                found_get_submitted_text = true;
+            }
+        }
+        assert!(
+            found_get_submitted_text,
+            "Submitted GET page should contain search results text"
+        );
+
+        // Create a POST Form
+        let mut dom_post = Dom::new();
+        let form_post = create_el(
+            &mut dom_post,
+            "form",
+            &[("action", "/search"), ("method", "post")],
+        );
+        let input_post = create_el(
+            &mut dom_post,
+            "input",
+            &[("type", "text"), ("name", "q"), ("value", "rust")],
+        );
+        dom_post.append_child(form_post, input_post);
+
+        let req_post =
+            crate::forms::submit(&dom_post, form_post, &crate::forms::FormState::new()).unwrap();
+        // Check that navigate successfully resolves and loads this request
+        let page_post_submitted = navigate(&req_post, &base_url, &loader, 800.0);
+        let mut found_post_submitted_text = false;
+        for id in page_post_submitted
+            .dom
+            .descendants(page_post_submitted.dom.document())
+        {
+            if let Some(NodeData::Text(text)) = page_post_submitted.dom.data(id)
+                && text.contains("Search results: rust (POST)")
+            {
+                found_post_submitted_text = true;
+            }
+        }
+        assert!(
+            found_post_submitted_text,
+            "Submitted POST page should contain search results text"
+        );
     }
 }
