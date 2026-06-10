@@ -4,64 +4,95 @@
 
 # underrated
 
-An independent web browser engine, written from scratch in Rust (edition 2024) — no Gecko, WebKit, or Blink.
+**An ad-free browser where humans and AI agents work *side by side, on the same screen*.**
+Written from scratch in Rust — *by AI agents*, *for the OpenClaw era*.
 
-> **Status: early development.** `underrated` is a rendering **engine** being built one stage at a time
-> (HTML parsing → DOM → CSS → layout → paint). It is **not usable as a browser yet** — there is no
-> window and nothing is drawn; running it today only prints a placeholder line. This README is for
-> people who want to **build the engine from source** and follow or contribute to its development.
+> ⚠️ **Very early. But fast.**
+> `underrated` is a rendering engine built from zero that already runs the **full pipeline** —
+> HTML parsing → DOM → CSS → layout → paint → on-screen. It fetches real pages over the network
+> and draws them into a window. **It is not a daily-driver browser yet.**
+> We are right at the doorstep of the first north star — "**display the real Google and have search
+> actually work**" (2026-06).
+> <!-- ✅ When Google search works end-to-end, change this line to "achieved". -->
 
-## Prerequisites
+## Why build this
 
-- A Rust toolchain for **edition 2024 (Rust 1.85 or newer)**. The channel is pinned in
-  [`rust-toolchain.toml`](rust-toolchain.toml), so with [`rustup`](https://rustup.rs) installed the
-  correct toolchain (plus `rustfmt` and `clippy`) is selected automatically.
-- `git` (the test suite uses a submodule of conformance test data).
+Today's "AI browsers" (Comet / Atlas / Dia …) are Chromium forks designed so the **agent acts *for*
+you and the human steps aside**. `underrated` makes the opposite bet.
 
-## Building from source
+- 🤝 **Co-presence, not delegation.** Humans and LLMs operate on the *same page* at the *same time*.
+  The agent is a collaborator inside the tab, not your replacement.
+- 🚫 **Ad-free by construction.** Ads, trackers, and consent modals are **never built**, not blocked
+  after the fact — a page representation that is light and accurate for both humans and LLMs, at the
+  core level.
+- 🦞 **Agent-native.** Humans, agents, and automation share the *same NodeId and the same input path*
+  by design — aiming to be a first-class target for external agents like Claude / Gemini / OpenClaw.
+- 🛠️ **From scratch, in Rust.** No inherited Chromium debt. An engine designed for the agent era from
+  the start, not retrofitted into it.
 
-### Option A — Dev Container (recommended)
+> Why "underrated" — because ad-free × human-AI co-presence is, we think, the most *underrated*
+> direction in the agentic-browser race.
 
-Open the repository in a Dev Container (VS Code Dev Containers or Zed Remote). `postCreate`
-provisions the toolchain and runs `cargo fetch`. Then build:
+## Design principles
 
-```bash
-cargo build
-```
+Invariants enforced in the code from day one.
 
-### Option B — Local checkout
+- **Single source of truth.** Everything derives from the DOM (+ style + layout). The Markdown/JSON
+  projections for LLMs are derived views, not a *second* truth.
+- **Single address space.** Humans and agents point at the same element via the same `NodeId`.
+- **Single action path.** An agent's actions are semantic events that travel the *same* input path as
+  a human click — which is why "human-AI co-presence" needs no extra machinery.
+- **Deterministic core.** Non-determinism (IO, input, clock, randomness) is pushed to the edges — so a
+  session can be recorded and *replayed identically*: the basis for debugging, auditing, and trust.
+
+## Where it is, and where it's going
+
+| Stage | Status |
+|-------|--------|
+| Network fetch (HTTP/HTTPS, cookies/POST) | ✅ works |
+| HTML → DOM | ✅ end-to-end |
+| CSS (parsing, selectors, cascade, @media) | ✅ core + expanding |
+| Layout (block / inline wrapping / flexbox) | 🟡 expanding |
+| Paint & display (glyphs / images / scroll) | 🟡 maturing |
+| **North star: display real Google + working search** | 🔜 nearly there |
+| co-presence / ad-free / agent layer | 🌅 after the core stabilizes (the goal) |
+
+> The engine's *correctness* is tightened incrementally against oracles such as WPT.
+
+## How it's being built
+
+`underrated` is developed by **directing parallel LLM agents** — a human as director, multiple AIs as
+workers. It moves fast enough that the major engine stages stand up in a day, and **we show the
+process: the wins, the dead ends, and the rework.**
+<!-- TODO: link the dev log / newsletter -->
+
+## Build (for developers)
 
 ```bash
 git clone --recurse-submodules https://github.com/wicca1984/underrated
 cd underrated
-cargo build
-```
-
-> `--recurse-submodules` pulls the [html5lib-tests](https://github.com/html5lib/html5lib-tests)
-> data used by the parser tests. If you already cloned without it:
-> `git submodule update --init --recursive`.
-
-## Running
-
-```bash
 cargo run
 ```
 
-At this stage there is **no rendered output**: the binary prints a placeholder and exits. Real
-browsing (a window and painted pages) is a later milestone.
+- Requires: **Rust 1.85+ (edition 2024)** / `git` (the test suite uses a submodule, hence `--recurse-submodules`).
+- Discipline: **no `unsafe`**, **no `unwrap`/`expect` in production code**, **all CI gates green**
+  (`cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all --check`).
 
-## Development
-
-The same checks gate every push and pull request in CI:
+Runnable example — fetch a real page through the engine and report what it renders:
 
 ```bash
-cargo test                                  # unit + integration tests
-cargo clippy --all-targets -- -D warnings   # lint (warnings are errors)
-cargo fmt --all --check                     # formatting check
+cargo run --example render_url -- https://example.com/ out.ppm
+# prints DOM/raster stats and writes a PPM screenshot
 ```
 
-`unsafe` code is forbidden crate-wide, and `unwrap`/`expect` are denied in non-test code — these are
-enforced by the compiler and CI, not by convention.
+## Getting involved
+
+It's very early, so the best way to help right now is to **Watch / Star** and follow the process.
+A contribution policy will come later.
+
+- 🐦 X: <!-- TODO -->
+- 📰 Dev log (newsletter): <!-- TODO -->
+- 💛 Sponsor: [github.com/sponsors/wicca1984](https://github.com/sponsors/wicca1984)
 
 ## License
 
