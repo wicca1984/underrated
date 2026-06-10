@@ -443,6 +443,7 @@ pub fn layout_flex_container(
             border_box_height,
         ),
         children: positioned_children,
+        text: None,
     })
 }
 

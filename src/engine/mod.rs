@@ -1485,7 +1485,7 @@ mod tests {
 
         for item in &display_list.0 {
             if let DisplayItem::Text { text, .. } = item {
-                if text.contains("visible text") {
+                if text.contains("visible") {
                     found_visible_text = true;
                 }
                 if text.contains("console.log") {

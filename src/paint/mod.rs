@@ -653,9 +653,14 @@ pub fn build_display_list(
                         font_height,
                     );
 
+                    let display_text = match &layout_box.text {
+                        Some(fragment) => fragment.clone(),
+                        None => text.clone(),
+                    };
+
                     items.push(DisplayItem::Text {
                         rect: corrected_rect,
-                        text: text.clone(),
+                        text: display_text,
                         color: color.clone(),
                     });
 
@@ -838,7 +843,7 @@ mod tests {
         // 2. Text for "paint me"
 
         let mut found_rect = false;
-        let mut found_text = false;
+        let mut text_fragments = Vec::new();
 
         for item in &items {
             match item {
@@ -847,17 +852,15 @@ mod tests {
                         found_rect = true;
                     }
                 }
-                DisplayItem::Text { text, color, .. }
-                    if text == "paint me" && *color == Color::Rgba(0, 0, 255, 255) =>
-                {
-                    found_text = true;
+                DisplayItem::Text { text, color, .. } if *color == Color::Rgba(0, 0, 255, 255) => {
+                    text_fragments.push(text.clone());
                 }
                 _ => {}
             }
         }
 
         assert!(found_rect, "SolidRect for div not found");
-        assert!(found_text, "Text item for 'paint me' not found");
+        assert_eq!(text_fragments.concat(), "paint me");
     }
 
     #[test]
@@ -1073,8 +1076,8 @@ mod tests {
         // The expected order of display list items:
         // 1. SolidRect (background-color: red)
         // 2. SolidRect (border-color: text color blue, because border-color is absent)
-        // 3. Text ("paint me", color: blue) - fragment 1
-        // 4. Text ("paint me", color: blue) - fragment 2
+        // 3. Text ("paint ", color: blue) - fragment 1
+        // 4. Text ("me", color: blue) - fragment 2
 
         assert_eq!(items.len(), 4);
 
@@ -1094,7 +1097,7 @@ mod tests {
 
         // 3. Text - Fragment 1
         if let DisplayItem::Text { text, color, .. } = &items[2] {
-            assert_eq!(text, "paint me");
+            assert_eq!(text, "paint ");
             assert_eq!(color, &Color::Rgba(0, 0, 255, 255));
         } else {
             panic!("Expected Text item third");
@@ -1102,7 +1105,7 @@ mod tests {
 
         // 4. Text - Fragment 2
         if let DisplayItem::Text { text, color, .. } = &items[3] {
-            assert_eq!(text, "paint me");
+            assert_eq!(text, "me");
             assert_eq!(color, &Color::Rgba(0, 0, 255, 255));
         } else {
             panic!("Expected Text item fourth");
@@ -2064,5 +2067,62 @@ mod tests {
             4,
             "Expected overridden custom green borders"
         );
+    }
+
+    /// Guards the layout->paint text-fragment contract.
+    /// Ensures each inline word is painted once at its own x, preventing full-node-text duplication per word.
+    #[test]
+    fn test_inline_text_rendering_contract() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let text = dom.create_node(NodeData::Text("ab cd".into()));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { color: #0000ff; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let mut text_items: Vec<(f32, String)> = display_list
+            .0
+            .into_iter()
+            .filter_map(|item| {
+                if let DisplayItem::Text { rect, text, .. } = item {
+                    Some((rect.origin.x, text))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Order by their rect origin x
+        text_items.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        // Assert strictly increasing x origins (no two word fragments share the same x)
+        for i in 0..text_items.len() - 1 {
+            assert!(
+                text_items[i].0 < text_items[i + 1].0,
+                "x origins must be strictly increasing, but found adjacent coords: {} and {}",
+                text_items[i].0,
+                text_items[i + 1].0
+            );
+        }
+
+        // Concatenate their text fields
+        let concatenated_text: String = text_items.iter().map(|(_, t)| t.clone()).collect();
+
+        // Assert reconstruction of the original node text exactly once
+        assert_eq!(concatenated_text, "ab cd");
+        assert_ne!(concatenated_text, "ab cdab cd");
     }
 }

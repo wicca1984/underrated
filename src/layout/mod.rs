@@ -18,6 +18,9 @@ pub struct LayoutBox {
     pub node: Option<NodeId>,
     pub rect: Rect,
     pub children: Vec<LayoutBox>,
+    /// For inline text fragments, the exact substring this box paints (one word).
+    /// None for non-text/structural boxes; painters fall back to the node's full text.
+    pub text: Option<String>,
 }
 
 pub(crate) const MAX_DEPTH: usize = 500;
@@ -46,6 +49,7 @@ pub fn layout_document(
         node: Some(dom.document()),
         rect: Rect::new(0.0, 0.0, viewport_width, 0.0),
         children: Vec::new(),
+        text: None,
     };
 
     // The document's children (usually just <html>)
@@ -289,6 +293,7 @@ pub(crate) fn layout_node(
                             total_height,
                         ),
                         children: line_boxes,
+                        text: None,
                     };
 
                     last_child_box_max_y = Some(anon_box.rect.max_y());
@@ -363,6 +368,7 @@ pub(crate) fn layout_node(
             border_box_height,
         ),
         children,
+        text: None,
     })
 }
 
@@ -1263,12 +1269,15 @@ mod tests {
                         node: Some(node_nested),
                         rect: Rect::new(15.0, 15.0, 20.0, 20.0),
                         children: vec![],
+                        text: None,
                     }],
+                    text: None,
                 },
                 LayoutBox {
                     node: Some(node_child2),
                     rect: Rect::new(40.0, 10.0, 40.0, 40.0),
                     children: vec![],
+                    text: None,
                 },
                 LayoutBox {
                     node: None,
@@ -1277,9 +1286,12 @@ mod tests {
                         node: Some(node_nested_under_none),
                         rect: Rect::new(10.0, 85.0, 20.0, 10.0),
                         children: vec![],
+                        text: None,
                     }],
+                    text: None,
                 },
             ],
+            text: None,
         };
 
         // Point outside everything returns None

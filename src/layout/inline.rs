@@ -96,6 +96,7 @@ fn create_line_box_adjusted(
             },
         },
         children,
+        text: None,
     }
 }
 
@@ -254,6 +255,7 @@ fn layout_inline_child_recursive(
                             },
                         },
                         children: Vec::new(),
+                        text: Some(word.to_string()),
                     });
                     *cursor_x += word_width;
                 }
