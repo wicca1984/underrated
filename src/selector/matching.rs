@@ -251,6 +251,46 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     return false;
                 }
                 false
+            } else if name.starts_with("nth-last-of-type(") && name.ends_with(')') {
+                let content = &name["nth-last-of-type(".len()..name.len() - 1];
+                let mut parts = content.split(',');
+                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
+                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
+                });
+                if let Some((a, b)) = parsed {
+                    if let Some(parent) = dom.parent(node) {
+                        let current_tag_name = match dom.data(node) {
+                            Some(NodeData::Element { name, .. }) => name,
+                            _ => return false,
+                        };
+                        let children = dom.children(parent);
+                        let mut element_index = 0;
+                        for &child in children.iter().rev() {
+                            if child == node {
+                                let i = element_index + 1; // 1-indexed
+                                if a == 0 {
+                                    return i == b;
+                                }
+                                let diff = i - b;
+                                if a > 0 {
+                                    return diff >= 0 && diff % a == 0;
+                                } else {
+                                    return diff <= 0 && diff % a == 0;
+                                }
+                            }
+                            match dom.data(child) {
+                                Some(NodeData::Element { name, .. })
+                                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
+                                {
+                                    element_index += 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    return false;
+                }
+                false
             } else {
                 match name.to_ascii_lowercase().as_str() {
                     "hover" => get_node_state(node).hover,
@@ -1007,6 +1047,87 @@ mod tests {
             &dom,
             p2
         ));
+    }
+
+    #[test]
+    fn test_nth_last_of_type() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, parent);
+
+        // Children structure: span1, p1, span2, p2, p3
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let span2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let p3 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+
+        dom.append_child(parent, span1);
+        dom.append_child(parent, p1);
+        dom.append_child(parent, span2);
+        dom.append_child(parent, p2);
+        dom.append_child(parent, p3);
+
+        // p:nth-last-of-type(1) -> last p (p3)
+        assert!(matches(
+            &parse_selector_list("p:nth-last-of-type(1)").unwrap(),
+            &dom,
+            p3
+        ));
+        assert!(!matches(
+            &parse_selector_list("p:nth-last-of-type(1)").unwrap(),
+            &dom,
+            p2
+        ));
+
+        // p:nth-last-of-type(2) -> second to last p (p2)
+        assert!(matches(
+            &parse_selector_list("p:nth-last-of-type(2)").unwrap(),
+            &dom,
+            p2
+        ));
+        assert!(!matches(
+            &parse_selector_list("p:nth-last-of-type(2)").unwrap(),
+            &dom,
+            p1
+        ));
+
+        // span:nth-last-of-type(1) -> last span (span2)
+        assert!(matches(
+            &parse_selector_list("span:nth-last-of-type(1)").unwrap(),
+            &dom,
+            span2
+        ));
+        assert!(!matches(
+            &parse_selector_list("span:nth-last-of-type(1)").unwrap(),
+            &dom,
+            span1
+        ));
+
+        // an+b form: e.g. 2n+1 (odd elements from the end: p3 (1st from end), p1 (3rd from end))
+        let odd_selector = parse_selector_list("p:nth-last-of-type(2n+1)").unwrap();
+        assert!(matches(&odd_selector, &dom, p3)); // index 1 from end
+        assert!(!matches(&odd_selector, &dom, p2)); // index 2 from end
+        assert!(matches(&odd_selector, &dom, p1)); // index 3 from end
     }
 
     #[test]
