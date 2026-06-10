@@ -4,7 +4,7 @@ mod position;
 
 pub(crate) use position::is_absolute_or_fixed;
 
-use crate::css::values::{CssValue, LengthUnit};
+use crate::css::values::{CssValue, DisplayValue, LengthUnit};
 use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
@@ -155,7 +155,7 @@ pub(crate) fn layout_node(
         - border_right
         - padding_left
         - padding_right;
-    let content_width = get_px(style, "width", auto_width.max(0.0));
+    let mut content_width = get_px(style, "width", auto_width.max(0.0));
 
     // Position of the border box
     let border_box_x = offset_x + margin_left;
@@ -328,6 +328,15 @@ pub(crate) fn layout_node(
         }
     }
 
+    if let Some(w) = calculate_shrink_to_fit_width(
+        style,
+        &children,
+        border_box_x + border_left + padding_left,
+        auto_width,
+    ) {
+        content_width = w;
+    }
+
     // Calculate height
     let content_height = child_cursor_y - (border_box_y + border_top + padding_top);
     let border_box_height = get_px(style, "height", content_height)
@@ -379,13 +388,44 @@ fn get_layoutable_children(
     result
 }
 
+fn calculate_shrink_to_fit_width(
+    style: &ComputedStyle,
+    children: &[LayoutBox],
+    content_start_x: f32,
+    auto_width: f32,
+) -> Option<f32> {
+    let is_inline_blk = matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline-block")
+        || matches!(
+            style.get("display"),
+            Some(CssValue::Display(DisplayValue::InlineBlock))
+        );
+    if is_inline_blk && !matches!(style.get("width"), Some(CssValue::Length(_, _))) {
+        let mut max_child_right = 0.0_f32;
+        for child in children {
+            let child_right = child.rect.max_x() - content_start_x;
+            if child_right > max_child_right {
+                max_child_right = child_right;
+            }
+        }
+        Some(max_child_right.min(auto_width.max(0.0)))
+    } else {
+        None
+    }
+}
+
 fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: NodeId) -> bool {
     if let Some(data) = dom.data(child) {
         match data {
             NodeData::Text(_) => true,
             NodeData::Element { .. } => {
                 if let Some(style) = styles.get(&child) {
-                    matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline")
+                    let disp = style.get("display");
+                    matches!(disp, Some(CssValue::Keyword(kw)) if kw == "inline" || kw == "inline-block")
+                        || matches!(
+                            disp,
+                            Some(CssValue::Display(DisplayValue::Inline))
+                                | Some(CssValue::Display(DisplayValue::InlineBlock))
+                        )
                 } else {
                     false
                 }
@@ -1437,5 +1477,154 @@ mod tests {
 
         assert!(approx_eq(div_box.rect.origin.x, 15.0));
         assert!(approx_eq(div_box.rect.origin.y, 10.0));
+    }
+
+    #[test]
+    fn test_inline_block_sits_beside_text() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let ib = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ib);
+
+        let inner_text = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(ib, inner_text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            span {
+                display: inline-block;
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        // The body should contain one anonymous line box
+        assert_eq!(body_box.children.len(), 1);
+        let line_box = &body_box.children[0];
+
+        // The line box should contain the span (inline-block) box
+        assert_eq!(line_box.children.len(), 1);
+        let span_box = &line_box.children[0];
+
+        assert_eq!(span_box.node, Some(ib));
+        assert!(approx_eq(span_box.rect.size.width, 100.0));
+        assert!(approx_eq(span_box.rect.size.height, 50.0));
+        // The inline-block should contain its own laid out text node child
+        assert_eq!(span_box.children.len(), 1);
+    }
+
+    #[test]
+    fn test_inline_block_wrapping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let ib1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ib1);
+
+        let ib2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ib2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 150px; }
+            span {
+                display: inline-block;
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 150.0);
+        let body_box = &layout_tree.children[0];
+
+        // Since body is 150px wide and each span is 100px wide, they cannot fit on the same line.
+        // Therefore, we should have 2 line boxes.
+        assert_eq!(body_box.children.len(), 2);
+
+        let line_box1 = &body_box.children[0];
+        let line_box2 = &body_box.children[1];
+
+        assert_eq!(line_box1.children.len(), 1);
+        assert_eq!(line_box2.children.len(), 1);
+
+        let box1 = &line_box1.children[0];
+        let box2 = &line_box2.children[0];
+
+        assert_eq!(box1.node, Some(ib1));
+        assert_eq!(box2.node, Some(ib2));
+
+        // The second box should be positioned below the first one
+        assert!(box2.rect.origin.y >= box1.rect.origin.y + 50.0);
+    }
+
+    #[test]
+    fn test_inline_block_shrink_to_fit() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let ib = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ib);
+
+        let text = dom.create_node(NodeData::Text("ab".into())); // word of 20px
+        dom.append_child(ib, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            span {
+                display: inline-block;
+                padding-left: 5px;
+                padding-right: 5px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 1);
+        let line_box = &body_box.children[0];
+        let span_box = &line_box.children[0];
+
+        // "ab" is measured by font as 16px wide (8px per character).
+        // Plus padding-left (5px) and padding-right (5px), total border box width should be 26.0px.
+        assert!(approx_eq(span_box.rect.size.width, 26.0));
     }
 }
