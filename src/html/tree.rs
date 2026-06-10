@@ -93,7 +93,7 @@ impl TreeBuilder {
             InsertionMode::InHeadNoscript => self.handle_in_body(token), // TODO(spec)
             InsertionMode::AfterHead => self.handle_after_head(token),
             InsertionMode::InBody => self.handle_in_body(token),
-            InsertionMode::Text => self.handle_in_body(token), // TODO(spec)
+            InsertionMode::Text => self.handle_text(token),
             InsertionMode::InTable => self.handle_in_table(token),
             InsertionMode::InTableText => self.handle_in_table(token), // TODO(spec)
             InsertionMode::InCaption => self.handle_in_caption(token),
@@ -248,7 +248,36 @@ impl TreeBuilder {
                     self_closing: false,
                 });
             }
-            // TODO(spec): base, basefont, bgsound, link, meta, title, noscript, style, script
+            Token::StartTag { name, attrs, .. }
+                if name == "base"
+                    || name == "basefont"
+                    || name == "bgsound"
+                    || name == "link"
+                    || name == "meta" =>
+            {
+                self.create_and_insert_element(name, attrs);
+            }
+            Token::StartTag { name, attrs, .. } if name == "title" => {
+                let node = self.create_and_insert_element(name.clone(), attrs);
+                self.stack_of_open_elements.push(node);
+                self.tokenizer.set_initial_state("RCDATA state");
+                self.tokenizer.set_last_start_tag(&name);
+                self.insertion_mode = InsertionMode::Text;
+            }
+            Token::StartTag { name, attrs, .. } if name == "style" || name == "noscript" => {
+                let node = self.create_and_insert_element(name.clone(), attrs);
+                self.stack_of_open_elements.push(node);
+                self.tokenizer.set_initial_state("RAWTEXT state");
+                self.tokenizer.set_last_start_tag(&name);
+                self.insertion_mode = InsertionMode::Text;
+            }
+            Token::StartTag { name, attrs, .. } if name == "script" => {
+                let node = self.create_and_insert_element(name.clone(), attrs);
+                self.stack_of_open_elements.push(node);
+                self.tokenizer.set_initial_state("Script data state");
+                self.tokenizer.set_last_start_tag(&name);
+                self.insertion_mode = InsertionMode::Text;
+            }
             Token::StartTag { name, attrs, .. } if name == "template" => {
                 let node = self.create_and_insert_element(name, attrs);
                 self.stack_of_open_elements.push(node);
@@ -324,7 +353,33 @@ impl TreeBuilder {
                     self_closing: false,
                 });
             }
-            // TODO(spec): frameset, base, basefont, bgsound, link, meta, noframes, script, style, title
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } if name == "base"
+                || name == "basefont"
+                || name == "bgsound"
+                || name == "link"
+                || name == "meta"
+                || name == "noframes"
+                || name == "script"
+                || name == "style"
+                || name == "title" =>
+            {
+                if let Some(head_id) = self.head_element_pointer {
+                    self.stack_of_open_elements.push(head_id);
+                    let old_mode = self.insertion_mode;
+                    self.insertion_mode = InsertionMode::InHead;
+                    self.process_token(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                    self.stack_of_open_elements.retain(|&id| id != head_id);
+                    self.insertion_mode = old_mode;
+                }
+            }
             Token::EndTag { ref name, .. } if name != "body" && name != "html" && name != "br" => {
                 // Parse error. Ignore the token.
             }
@@ -334,6 +389,26 @@ impl TreeBuilder {
                 self.insertion_mode = InsertionMode::InBody;
                 self.process_token(token);
             }
+        }
+    }
+
+    // spec: §13.2.6.4.8 The "text" insertion mode
+    fn handle_text(&mut self, token: Token) {
+        match token {
+            Token::Character(c) => {
+                self.insert_character(c);
+            }
+            Token::Eof => {
+                // Parse error.
+                self.stack_of_open_elements.pop();
+                self.reset_insertion_mode_appropriately();
+                self.process_token(token);
+            }
+            Token::EndTag { .. } => {
+                self.stack_of_open_elements.pop();
+                self.reset_insertion_mode_appropriately();
+            }
+            _ => {}
         }
     }
 
@@ -351,6 +426,9 @@ impl TreeBuilder {
                 // Parse error. Ignore the token.
             }
             Token::StartTag { name, attrs, .. } => match name.as_str() {
+                "html" | "head" | "body" => {
+                    // Parse error. Ignore the token.
+                }
                 "p" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
@@ -1558,5 +1636,42 @@ mod tests {
             Some(&NodeData::Text("b".to_string())),
             "third child of p should be text 'b'"
         );
+    }
+
+    #[test]
+    fn test_head_body_insertion_modes() {
+        let html = "<html><head><title>T</title><meta><style>s</style></head><body><div><p>x</p></div></body></html>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+
+        let head_node = dom
+            .query_selector(dom.document(), "head")
+            .expect("<head> exists");
+        let head_children = dom.children(head_node);
+        let head_child_names: Vec<String> = head_children
+            .iter()
+            .map(|&id| match dom.data(id) {
+                Some(NodeData::Element { name, .. }) => name.clone(),
+                _ => "non-element".to_string(),
+            })
+            .collect();
+        assert_eq!(head_child_names, vec!["title", "meta", "style"]);
+
+        let body_nodes = dom.query_selector_all(dom.document(), "body");
+        assert_eq!(
+            body_nodes.len(),
+            1,
+            "There should be EXACTLY ONE body node in the DOM"
+        );
+
+        let body_node = body_nodes[0];
+        let body_children = dom.children(body_node);
+        let body_child_names: Vec<String> = body_children
+            .iter()
+            .map(|&id| match dom.data(id) {
+                Some(NodeData::Element { name, .. }) => name.clone(),
+                _ => "non-element".to_string(),
+            })
+            .collect();
+        assert_eq!(body_child_names, vec!["div"]);
     }
 }
