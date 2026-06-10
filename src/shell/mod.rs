@@ -248,6 +248,9 @@ mod winit_adapter {
                 _context,
                 surface,
             });
+            if let Some(state) = &self.state {
+                state.window.request_redraw();
+            }
         }
 
         fn window_event(
@@ -356,11 +359,7 @@ mod winit_adapter {
             }
         }
 
-        fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-            if let Some(state) = &self.state {
-                state.window.request_redraw();
-            }
-        }
+        fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
     }
 
     struct AppWithInput<F, G> {
@@ -414,6 +413,9 @@ mod winit_adapter {
                 _context,
                 surface,
             });
+            if let Some(state) = &self.state {
+                state.window.request_redraw();
+            }
         }
 
         fn window_event(
@@ -537,11 +539,7 @@ mod winit_adapter {
             }
         }
 
-        fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-            if let Some(state) = &self.state {
-                state.window.request_redraw();
-            }
-        }
+        fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
     }
 }
 
