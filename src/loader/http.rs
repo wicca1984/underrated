@@ -1,4 +1,4 @@
-use crate::loader::{LoadError, ResourceLoader};
+use crate::loader::{HttpMethod, LoadError, ResourceLoader};
 use crate::url::Url;
 use std::io::Read;
 use std::sync::Mutex;
@@ -287,6 +287,31 @@ impl ResourceLoader for HttpLoader {
             charset,
         })
     }
+
+    fn load_request(
+        &self,
+        url: &Url,
+        method: HttpMethod,
+        body: &[u8],
+        content_type: Option<&str>,
+    ) -> Result<crate::loader::LoaderResponse, LoadError> {
+        match method {
+            HttpMethod::Get => self.load_rich(url),
+            HttpMethod::Post => {
+                if url.scheme != "http" && url.scheme != "https" {
+                    return Err(LoadError::UnsupportedScheme);
+                }
+                let ct = content_type.unwrap_or("application/x-www-form-urlencoded");
+                let bytes = self.post(url, body, ct)?;
+                let (content_type, charset) = crate::loader::sniff_response(&bytes, url, None);
+                Ok(crate::loader::LoaderResponse {
+                    bytes,
+                    content_type,
+                    charset,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -425,5 +450,76 @@ mod tests {
             .post(&url, body, "application/x-www-form-urlencoded")
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&res), "post-ok");
+    }
+
+    #[test]
+    fn test_load_request_default_and_get() {
+        // A simple custom ResourceLoader that implements only load()
+        struct SimpleMockLoader;
+        impl ResourceLoader for SimpleMockLoader {
+            fn load(&self, _url: &Url) -> Result<Vec<u8>, LoadError> {
+                Ok(b"hello-world".to_vec())
+            }
+        }
+
+        let loader = SimpleMockLoader;
+        let url = Url::parse("http://example.com/").unwrap();
+
+        // GET request via load_request should succeed and return sniffed LoaderResponse
+        let res = loader
+            .load_request(&url, HttpMethod::Get, &[], None)
+            .unwrap();
+        assert_eq!(res.bytes, b"hello-world");
+        assert_eq!(res.content_type, "text/html");
+
+        // Any non-GET request (like POST) via the default implementation should return UnsupportedScheme
+        let res_post = loader.load_request(&url, HttpMethod::Post, &[], None);
+        assert_eq!(res_post, Err(LoadError::UnsupportedScheme));
+    }
+
+    #[test]
+    fn test_http_loader_load_request_post() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let request_str = read_http_request(&mut stream);
+
+                // Verify request is POST, has correct content-type, and contains the body
+                let is_post = request_str.starts_with("POST ");
+                let has_ct = request_str
+                    .to_lowercase()
+                    .contains("content-type: application/custom-test");
+                let has_body = request_str.contains("my-body-content");
+
+                if is_post && has_ct && has_body {
+                    let response = "HTTP/1.1 200 OK\r\n\
+                                    Content-Type: text/plain\r\n\
+                                    Content-Length: 9\r\n\r\n\
+                                    custom-ok";
+                    stream.write_all(response.as_bytes()).unwrap();
+                } else {
+                    let response = "HTTP/1.1 400 Bad Request\r\n\
+                                    Content-Length: 9\r\n\r\n\
+                                    post-fail";
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            }
+        });
+
+        let loader = HttpLoader;
+        let url = Url::parse(&format!("http://127.0.0.1:{}/submit", port)).unwrap();
+        let body = b"my-body-content";
+        let res = loader
+            .load_request(
+                &url,
+                HttpMethod::Post,
+                body,
+                Some("application/custom-test"),
+            )
+            .unwrap();
+        assert_eq!(res.bytes, b"custom-ok");
+        assert_eq!(res.content_type, "text/html");
     }
 }
