@@ -391,6 +391,7 @@ pub(crate) fn layout_node(
     let height_is_auto_or_absent = match style.get("height") {
         None => true,
         Some(CssValue::Keyword(kw)) if kw == "auto" => true,
+        Some(CssValue::Number(n)) if *n != 0.0 => true,
         _ => false,
     };
     if height_is_auto_or_absent && let Some(r) = get_aspect_ratio(style) {
@@ -606,7 +607,9 @@ fn calculate_shrink_to_fit_width(
             style.get("display"),
             Some(CssValue::Display(DisplayValue::InlineBlock))
         );
-    if is_inline_blk && !matches!(style.get("width"), Some(CssValue::Length(_, _))) {
+    let has_width = matches!(style.get("width"), Some(CssValue::Length(_, _)))
+        || matches!(style.get("width"), Some(CssValue::Number(n)) if *n == 0.0);
+    if is_inline_blk && !has_width {
         let mut max_child_right = 0.0_f32;
         if let Some(label) = get_form_control_button_label(dom, node) {
             max_child_right = crate::font::BitmapFont::builtin().measure(&label) as f32;
@@ -653,6 +656,7 @@ fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: No
 pub(crate) fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
     match style.get(prop) {
         Some(CssValue::Length(v, LengthUnit::Px)) => *v,
+        Some(CssValue::Number(n)) if *n == 0.0 => 0.0,
         _ => default,
     }
 }
@@ -694,6 +698,11 @@ fn clamp_width(style: &ComputedStyle, mut width: f32, containing_width: f32) -> 
                     width = *v;
                 }
             }
+            CssValue::Number(n) if *n == 0.0 => {
+                if width > 0.0 {
+                    width = 0.0;
+                }
+            }
             CssValue::Length(p, LengthUnit::Percent) => {
                 let max_width = containing_width * p / 100.0;
                 if width > max_width {
@@ -708,6 +717,11 @@ fn clamp_width(style: &ComputedStyle, mut width: f32, containing_width: f32) -> 
             CssValue::Length(v, LengthUnit::Px) => {
                 if width < *v {
                     width = *v;
+                }
+            }
+            CssValue::Number(n) if *n == 0.0 => {
+                if width < 0.0 {
+                    width = 0.0;
                 }
             }
             CssValue::Length(p, LengthUnit::Percent) => {
@@ -770,13 +784,21 @@ fn get_aspect_ratio(style: &ComputedStyle) -> Option<f32> {
 }
 
 fn clamp_height(style: &ComputedStyle, mut height: f32) -> f32 {
-    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("max-height") {
+    let has_max_height = matches!(
+        style.get("max-height"),
+        Some(CssValue::Length(_, LengthUnit::Px))
+    ) || matches!(style.get("max-height"), Some(CssValue::Number(n)) if *n == 0.0);
+    if has_max_height {
         let max_height = get_px(style, "max-height", 0.0);
         if height > max_height {
             height = max_height;
         }
     }
-    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("min-height") {
+    let has_min_height = matches!(
+        style.get("min-height"),
+        Some(CssValue::Length(_, LengthUnit::Px))
+    ) || matches!(style.get("min-height"), Some(CssValue::Number(n)) if *n == 0.0);
+    if has_min_height {
         let min_height = get_px(style, "min-height", 0.0);
         if height < min_height {
             height = min_height;
@@ -820,7 +842,8 @@ pub(crate) fn resolve_margins_and_width(
         - padding_right;
 
     if !is_inline {
-        let has_definite_width = matches!(style.get("width"), Some(CssValue::Length(_, _)));
+        let has_definite_width = matches!(style.get("width"), Some(CssValue::Length(_, _)))
+            || matches!(style.get("width"), Some(CssValue::Number(n)) if *n == 0.0);
 
         if !has_definite_width {
             // width is auto. any auto margins are treated as 0.
@@ -1968,6 +1991,84 @@ mod tests {
         let body_box = &layout_tree.children[0];
         let div_box = &body_box.children[0];
         assert!(approx_eq(div_box.rect.size.height, 100.0));
+    }
+
+    #[test]
+    fn test_unitless_zero_dimensions() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // Div 1: width:0, height:20px.
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "z1".into())],
+        });
+        dom.append_child(body, div1);
+
+        // Div 2: width:0px (control), height:20px.
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "z2".into())],
+        });
+        dom.append_child(body, div2);
+
+        // Div 3: width:200px, height:0.
+        let div3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "z3".into())],
+        });
+        dom.append_child(body, div3);
+
+        // Div 4: width:200px, height:0px (control).
+        let div4 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "z4".into())],
+        });
+        dom.append_child(body, div4);
+
+        // Div 5: invalid unitless non-zero (width: 5). Should stay auto (== containing block, 400px).
+        let div5 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "z5".into())],
+        });
+        dom.append_child(body, div5);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 400px; }
+            .z1 { display: block; width: 0; height: 20px; }
+            .z2 { display: block; width: 0px; height: 20px; }
+            .z3 { display: block; width: 200px; height: 0; }
+            .z4 { display: block; width: 200px; height: 0px; }
+            .z5 { display: block; width: 5; height: 20px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 400.0);
+        let body_box = &layout_tree.children[0];
+
+        let div1_box = &body_box.children[0];
+        let div2_box = &body_box.children[1];
+        let div3_box = &body_box.children[2];
+        let div4_box = &body_box.children[3];
+        let div5_box = &body_box.children[4];
+
+        // width:0 vs width:0px (both 0.0)
+        assert!(approx_eq(div1_box.rect.size.width, 0.0));
+        assert!(approx_eq(div2_box.rect.size.width, 0.0));
+
+        // height:0 vs height:0px (both 0.0)
+        assert!(approx_eq(div3_box.rect.size.height, 0.0));
+        assert!(approx_eq(div4_box.rect.size.height, 0.0));
+
+        // width:5 (invalid) stays auto (== 400.0)
+        assert!(approx_eq(div5_box.rect.size.width, 400.0));
     }
 
     #[test]
