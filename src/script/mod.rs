@@ -876,6 +876,18 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    // TODO(spec): input.value dirty-value-flag / live IDL value vs content attribute (see HTML spec)
+                    Object.defineProperty(node, 'value', {
+                        get() {
+                            return this.getAttribute('value') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('value', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'classList', {
                         get() {
                             if (!this.__classList__) {
@@ -4133,6 +4145,41 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|foo bar|x y|test-class,test-class".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_value() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. An <input> that has a `value` attribute exposes it via `.value`
+            let input = document.createElement('input');
+            input.setAttribute('value', 'initial-val');
+            let res1 = input.value;
+
+            // 2. An element with no `value` attribute returns the empty string `''` from `.value`
+            let select = document.createElement('select');
+            let res2 = select.value;
+
+            // 3. Setting el.value = 'hello' makes el.getAttribute('value') === 'hello' and el.value === 'hello'
+            let textarea = document.createElement('textarea');
+            textarea.value = 'hello';
+            let res3_attr = textarea.getAttribute('value');
+            let res3_val = textarea.value;
+
+            // 4. Setting a non-string (e.g. a number) coerces via String() — el.value = 42; el.value === '42'
+            let button = document.createElement('button');
+            button.value = 42;
+            let res4_attr = button.getAttribute('value');
+            let res4_val = button.value;
+
+            [res1, res2, res3_attr, res3_val, res4_attr, res4_val].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("initial-val||hello|hello|42|42".to_string())
         );
     }
 
