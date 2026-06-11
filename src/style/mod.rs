@@ -553,6 +553,8 @@ fn is_presentational_hint_element(name: &str) -> bool {
         || name.eq_ignore_ascii_case("th")
         || name.eq_ignore_ascii_case("col")
         || name.eq_ignore_ascii_case("colgroup")
+        || name.eq_ignore_ascii_case("tr")
+        || name.eq_ignore_ascii_case("body")
 }
 
 fn map_presentational_dimension(val: &str) -> Option<String> {
@@ -615,6 +617,98 @@ fn collect_presentational_hints(
                 specificity: (0, 0, 0, 0),
                 source_order: ua_rules_count,
             });
+        }
+
+        // 1. bgcolor on <table>, <td>, <th>, <tr>, <body> -> CSS background-color
+        if (name.eq_ignore_ascii_case("table")
+            || name.eq_ignore_ascii_case("td")
+            || name.eq_ignore_ascii_case("th")
+            || name.eq_ignore_ascii_case("tr")
+            || name.eq_ignore_ascii_case("body"))
+            && let Some((_, bgcolor_val)) = attrs
+                .iter()
+                .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("bgcolor"))
+        {
+            let trimmed = bgcolor_val.trim();
+            let is_hex = if let Some(hex_part) = trimmed.strip_prefix('#') {
+                (hex_part.len() == 3 || hex_part.len() == 6)
+                    && hex_part.chars().all(|c| c.is_ascii_hexdigit())
+            } else {
+                false
+            };
+            let is_named = !is_hex && crate::css::colors::named_color(trimmed).is_some();
+
+            if is_hex || is_named {
+                let components = crate::css::parser::parse_component_values(trimmed);
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "background-color".to_string(),
+                        value: components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+            } else {
+                // TODO(spec): HTML 'rules for parsing a legacy colour value' allows mapping bare legacy color values (e.g. "ccc") which are not valid CSS hex or named colors, but we do not guess for now.
+            }
+        }
+
+        // 2. align on <td>, <th>, <tr>, <table>, <col>, <colgroup> -> CSS text-align
+        if (name.eq_ignore_ascii_case("td")
+            || name.eq_ignore_ascii_case("th")
+            || name.eq_ignore_ascii_case("tr")
+            || name.eq_ignore_ascii_case("table")
+            || name.eq_ignore_ascii_case("col")
+            || name.eq_ignore_ascii_case("colgroup"))
+            && let Some((_, align_val)) = attrs
+                .iter()
+                .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("align"))
+        {
+            let trimmed = align_val.trim();
+            if trimmed.eq_ignore_ascii_case("left")
+                || trimmed.eq_ignore_ascii_case("right")
+                || trimmed.eq_ignore_ascii_case("center")
+            {
+                let css_val_str = trimmed.to_ascii_lowercase();
+                let components = crate::css::parser::parse_component_values(&css_val_str);
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "text-align".to_string(),
+                        value: components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+            }
+        }
+
+        // 3. valign on <td>, <th>, <tr> -> CSS vertical-align
+        if (name.eq_ignore_ascii_case("td")
+            || name.eq_ignore_ascii_case("th")
+            || name.eq_ignore_ascii_case("tr"))
+            && let Some((_, valign_val)) = attrs
+                .iter()
+                .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("valign"))
+        {
+            let trimmed = valign_val.trim();
+            if trimmed.eq_ignore_ascii_case("top")
+                || trimmed.eq_ignore_ascii_case("middle")
+                || trimmed.eq_ignore_ascii_case("bottom")
+            {
+                let css_val_str = trimmed.to_ascii_lowercase();
+                let components = crate::css::parser::parse_component_values(&css_val_str);
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "vertical-align".to_string(),
+                        value: components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+            }
         }
     }
 }
@@ -1889,6 +1983,178 @@ mod tests {
         assert_eq!(
             img_style.get("width"),
             Some(&CssValue::Length(5.0, LengthUnit::Px))
+        );
+    }
+
+    #[test]
+    fn test_presentational_hints_bgcolor_valid() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("bgcolor".into(), "#ff0000".into())],
+        });
+        dom.append_child(doc, td);
+
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("bgcolor".into(), "blue".into())],
+        });
+        dom.append_child(doc, table);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let td_style = styles.get(&td).unwrap();
+        let table_style = styles.get(&table).unwrap();
+
+        assert_eq!(
+            td_style.get("background-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255
+            )))
+        );
+        assert_eq!(
+            table_style.get("background-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            )))
+        );
+    }
+
+    #[test]
+    fn test_presentational_hints_bgcolor_invalid() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("bgcolor".into(), "ccc".into())], // invalid: no '#' or not a named color
+        });
+        dom.append_child(doc, td);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let td_style = styles.get(&td).unwrap();
+
+        assert_eq!(td_style.get("background-color"), None);
+    }
+
+    #[test]
+    fn test_presentational_hints_align() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("align".into(), "center".into())],
+        });
+        dom.append_child(doc, td);
+
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![("align".into(), "right".into())],
+        });
+        dom.append_child(doc, tr);
+
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("align".into(), "left".into())],
+        });
+        dom.append_child(doc, table);
+
+        // invalid align value should be ignored
+        let col = dom.create_node(NodeData::Element {
+            name: "col".into(),
+            attrs: vec![("align".into(), "justify".into())],
+        });
+        dom.append_child(doc, col);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        assert_eq!(
+            styles.get(&td).unwrap().get("text-align"),
+            Some(&CssValue::Keyword("center".to_string()))
+        );
+        assert_eq!(
+            styles.get(&tr).unwrap().get("text-align"),
+            Some(&CssValue::Keyword("right".to_string()))
+        );
+        assert_eq!(
+            styles.get(&table).unwrap().get("text-align"),
+            Some(&CssValue::Keyword("left".to_string()))
+        );
+        assert_eq!(
+            styles.get(&col).unwrap().get("text-align"),
+            Some(&CssValue::Keyword("left".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_presentational_hints_valign() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("valign".into(), "top".into())],
+        });
+        dom.append_child(doc, td);
+
+        let th = dom.create_node(NodeData::Element {
+            name: "th".into(),
+            attrs: vec![("valign".into(), "middle".into())],
+        });
+        dom.append_child(doc, th);
+
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![("valign".into(), "bottom".into())],
+        });
+        dom.append_child(doc, tr);
+
+        // invalid valign value should be ignored
+        let invalid_td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("valign".into(), "baseline".into())],
+        });
+        dom.append_child(doc, invalid_td);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        assert_eq!(
+            styles.get(&td).unwrap().get("vertical-align"),
+            Some(&CssValue::Keyword("top".to_string()))
+        );
+        assert_eq!(
+            styles.get(&th).unwrap().get("vertical-align"),
+            Some(&CssValue::Keyword("middle".to_string()))
+        );
+        assert_eq!(
+            styles.get(&tr).unwrap().get("vertical-align"),
+            Some(&CssValue::Keyword("bottom".to_string()))
+        );
+        assert_eq!(styles.get(&invalid_td).unwrap().get("vertical-align"), None);
+    }
+
+    #[test]
+    fn test_presentational_hints_bgcolor_overrides() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("bgcolor".into(), "red".into())],
+        });
+        dom.append_child(doc, td);
+
+        // Author style should override presentational hint
+        let stylesheet = parse_stylesheet("td { background-color: blue; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let td_style = styles.get(&td).unwrap();
+
+        assert_eq!(
+            td_style.get("background-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            )))
         );
     }
 }
