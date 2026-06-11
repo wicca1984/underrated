@@ -4,6 +4,7 @@
 //! to execute scripts. The current implementation uses the `boa_engine` crate.
 
 pub mod storage;
+pub mod timer;
 
 use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
@@ -113,6 +114,9 @@ impl BoaHost {
 
         // Setup Web Storage bindings (localStorage / sessionStorage)
         storage::setup_storage(&mut context);
+
+        // Setup timer built-ins (setTimeout, clearTimeout, setInterval, clearInterval)
+        let _ = timer::register_timer_builtins(&mut context);
 
         Self { context }
     }
