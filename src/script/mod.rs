@@ -957,6 +957,43 @@ impl BoaHost {
                 }
                 window.DOMStringMap = DOMStringMap;
 
+                function isEqualNodeHelper(node, other) {
+                    if (!other) return false;
+                    if (node === other) return true;
+                    if (node.nodeType !== other.nodeType) return false;
+                    if (node.nodeName !== other.nodeName) return false;
+
+                    if (node.nodeType === 1) { // ELEMENT_NODE
+                        const thisAttrs = node.getAttributeNames();
+                        const otherAttrs = other.getAttributeNames();
+                        if (thisAttrs.length !== otherAttrs.length) return false;
+                        for (let i = 0; i < thisAttrs.length; i++) {
+                            const attr = thisAttrs[i];
+                            if (node.getAttribute(attr) !== other.getAttribute(attr)) {
+                                return false;
+                            }
+                        }
+                    }
+
+                    if (node.nodeType === 3 || node.nodeType === 8) { // Text or Comment
+                        // TODO(spec): comment text is currently not fully exposed in Rust text_content.
+                        if (node.textContent !== other.textContent) {
+                            return false;
+                        }
+                    }
+
+                    const thisChildren = node.childNodes;
+                    const otherChildren = other.childNodes;
+                    if (thisChildren.length !== otherChildren.length) return false;
+                    for (let i = 0; i < thisChildren.length; i++) {
+                        if (!isEqualNodeHelper(thisChildren[i], otherChildren[i])) {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                }
+
                 function getOrCreateNode(key) {
                     if (!key) return null;
                     if (registry[key]) {
@@ -1167,6 +1204,14 @@ impl BoaHost {
 
                     node.contains = function(otherNode) {
                         return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
+                    };
+
+                    node.isSameNode = function(otherNode) {
+                        return this === otherNode;
+                    };
+
+                    node.isEqualNode = function(otherNode) {
+                        return isEqualNodeHelper(this, otherNode);
                     };
 
                     Object.defineProperty(node, 'childNodes', {
@@ -1538,6 +1583,14 @@ impl BoaHost {
 
                 document.contains = function(otherNode) {
                     return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
+                };
+
+                document.isSameNode = function(otherNode) {
+                    return this === otherNode;
+                };
+
+                document.isEqualNode = function(otherNode) {
+                    return isEqualNodeHelper(this, otherNode);
                 };
 
                 Object.defineProperty(document, 'childNodes', {
@@ -4732,6 +4785,139 @@ mod tests {
         // 7. document does NOT contain nodes outside it (not appended, or null)
         let res_document_contains_null = host.eval_with_dom("document.contains(null)", &mut dom);
         assert_eq!(res_document_contains_null, Ok("false".to_string()));
+    }
+
+    #[test]
+    fn test_node_is_equal_and_is_same() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Let's build some nodes in DOM:
+        // div1 with class "x" and child text "hello"
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("id".to_string(), "div1".to_string()),
+                ("class".to_string(), "x".to_string()),
+            ],
+        });
+        let text1 = dom.create_node(NodeData::Text("hello".to_string()));
+        dom.append_child(div1, text1);
+        dom.append_child(document, div1);
+
+        // div2 with class "x" and child text "hello"
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("id".to_string(), "div2".to_string()),
+                ("class".to_string(), "x".to_string()),
+            ],
+        });
+        let text2 = dom.create_node(NodeData::Text("hello".to_string()));
+        dom.append_child(div2, text2);
+        dom.append_child(document, div2);
+
+        // div3 with class "y" (different attribute) and child text "hello"
+        let div3 = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("id".to_string(), "div3".to_string()),
+                ("class".to_string(), "y".to_string()),
+            ],
+        });
+        let text3 = dom.create_node(NodeData::Text("hello".to_string()));
+        dom.append_child(div3, text3);
+        dom.append_child(document, div3);
+
+        // div4 with class "x" but child text "world" (different text)
+        let div4 = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("id".to_string(), "div4".to_string()),
+                ("class".to_string(), "x".to_string()),
+            ],
+        });
+        let text4 = dom.create_node(NodeData::Text("world".to_string()));
+        dom.append_child(div4, text4);
+        dom.append_child(document, div4);
+
+        // span1 with class "x" and child text "hello" (different tagName)
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![
+                ("id".to_string(), "span1".to_string()),
+                ("class".to_string(), "x".to_string()),
+            ],
+        });
+        let text_span = dom.create_node(NodeData::Text("hello".to_string()));
+        dom.append_child(span1, text_span);
+        dom.append_child(document, span1);
+
+        let mut host = BoaHost::new();
+
+        // 1. isSameNode assertions
+        let res_same_self = host.eval_with_dom(
+            "document.getElementById('div1').isSameNode(document.getElementById('div1'))",
+            &mut dom,
+        );
+        assert_eq!(res_same_self, Ok("true".to_string()));
+
+        let res_same_other = host.eval_with_dom(
+            "document.getElementById('div1').isSameNode(document.getElementById('div2'))",
+            &mut dom,
+        );
+        assert_eq!(res_same_other, Ok("false".to_string()));
+
+        let res_same_null =
+            host.eval_with_dom("document.getElementById('div1').isSameNode(null)", &mut dom);
+        assert_eq!(res_same_null, Ok("false".to_string()));
+
+        let res_doc_same_self = host.eval_with_dom("document.isSameNode(document)", &mut dom);
+        assert_eq!(res_doc_same_self, Ok("true".to_string()));
+
+        let res_doc_same_other = host.eval_with_dom(
+            "document.isSameNode(document.getElementById('div1'))",
+            &mut dom,
+        );
+        assert_eq!(res_doc_same_other, Ok("false".to_string()));
+
+        // 2. isEqualNode assertions
+        // Same structural content but separate elements:
+        // Wait, div1 and div2 have different "id" attributes (div1 vs div2),
+        // so they are NOT equal as elements if we compare all attributes!
+        // To make a perfect comparison, let's create two elements dynamically inside JS
+        // that have exactly the same attributes and structure, OR compare child nodes directly.
+        // Let's do both! First, evaluate some JS code that creates nodes:
+        let res_js_equal = host.eval_with_dom(
+            "const d1 = document.createElement('div'); d1.setAttribute('class', 'x'); d1.appendChild(document.createTextNode('hello')); const d2 = document.createElement('div'); d2.setAttribute('class', 'x'); d2.appendChild(document.createTextNode('hello')); d1.isEqualNode(d2)",
+            &mut dom,
+        );
+        assert_eq!(res_js_equal, Ok("true".to_string()));
+
+        // Now test differing attributes
+        let res_js_diff_attr = host.eval_with_dom(
+            "const d3 = document.createElement('div'); d3.setAttribute('class', 'x'); const d4 = document.createElement('div'); d4.setAttribute('class', 'y'); d3.isEqualNode(d4)",
+            &mut dom,
+        );
+        assert_eq!(res_js_diff_attr, Ok("false".to_string()));
+
+        // Test differing children length/structure
+        let res_js_diff_children = host.eval_with_dom(
+            "const d5 = document.createElement('div'); d5.appendChild(document.createTextNode('hello')); const d6 = document.createElement('div'); d5.isEqualNode(d6)",
+            &mut dom,
+        );
+        assert_eq!(res_js_diff_children, Ok("false".to_string()));
+
+        // Test null/undefined
+        let res_js_null = host.eval_with_dom(
+            "document.getElementById('div1').isEqualNode(null)",
+            &mut dom,
+        );
+        assert_eq!(res_js_null, Ok("false".to_string()));
+
+        // Test document isEqualNode
+        let res_doc_equal_self = host.eval_with_dom("document.isEqualNode(document)", &mut dom);
+        assert_eq!(res_doc_equal_self, Ok("true".to_string()));
     }
 
     #[test]
