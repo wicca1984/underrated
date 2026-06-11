@@ -11,6 +11,8 @@ use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+pub mod navigator;
+
 /// Errors that can occur during script execution.
 #[derive(Debug, PartialEq)]
 pub enum ScriptError {
@@ -245,6 +247,13 @@ impl BoaHost {
         let _ = context.register_global_property(
             JsString::from("document"),
             document,
+            Attribute::all(),
+        );
+
+        let navigator = navigator::create_navigator(context);
+        let _ = context.register_global_property(
+            JsString::from("navigator"),
+            navigator,
             Attribute::all(),
         );
 
@@ -1739,6 +1748,24 @@ mod tests {
         let result = host.eval("console.log(");
         assert!(result.is_err());
         assert!(matches!(result, Err(ScriptError::Syntax(_))));
+    }
+
+    #[test]
+    fn test_navigator_properties() {
+        let mut host = BoaHost::new();
+        assert!(
+            host.eval("if (navigator.userAgent !== 'underrated/1.0') throw 'userAgent mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (navigator.platform !== 'Rust') throw 'platform mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (navigator.language !== 'en-US') throw 'language mismatch';")
+                .is_ok()
+        );
+        assert!(host.eval("if (window.navigator.userAgent !== 'underrated/1.0') throw 'window userAgent mismatch';").is_ok());
     }
 
     #[test]
