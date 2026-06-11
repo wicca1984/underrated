@@ -258,6 +258,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_contains),
+                JsString::from("contains"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_child_nodes),
                 JsString::from("childNodes"),
                 1,
@@ -1133,6 +1138,10 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    node.contains = function(otherNode) {
+                        return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
+                    };
+
                     Object.defineProperty(node, 'childNodes', {
                         get() {
                             const keys = bridge.childNodes(this.__key__);
@@ -1368,6 +1377,10 @@ impl BoaHost {
                     enumerable: true,
                     configurable: true
                 });
+
+                document.contains = function(otherNode) {
+                    return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
+                };
 
                 Object.defineProperty(document, 'childNodes', {
                     get() {
@@ -2984,6 +2997,65 @@ fn bridge_parent_node(
     }
 }
 
+fn bridge_contains(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    // TODO(spec): Node.contains v1 handles inclusive-descendant containment within a single document tree; cross-document, shadow-root, and DocumentFragment host edge cases are out of scope.
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let other_key = if let Some(arg) = args.get(1) {
+        if arg.is_null() || arg.is_undefined() {
+            None
+        } else {
+            let key_str = arg.to_string(context)?.to_std_string().unwrap_or_default();
+            if key_str.is_empty() || key_str == "null" || key_str == "undefined" {
+                None
+            } else {
+                Some(key_str)
+            }
+        }
+    } else {
+        None
+    };
+
+    let other_key = match other_key {
+        Some(k) => k,
+        None => return Ok(JsValue::from(false)),
+    };
+
+    let contains = with_dom(|dom, key_to_node| {
+        let this_id = match key_to_node.get(&node_key).copied() {
+            Some(id) => id,
+            None => return false,
+        };
+        let other_id = match key_to_node.get(&other_key).copied() {
+            Some(id) => id,
+            None => return false,
+        };
+
+        if this_id == other_id {
+            return true;
+        }
+
+        let mut curr = other_id;
+        while let Some(parent_id) = dom.parent(curr) {
+            if parent_id == this_id {
+                return true;
+            }
+            curr = parent_id;
+        }
+        false
+    })?;
+
+    Ok(JsValue::from(contains))
+}
+
 fn bridge_child_nodes(
     _this: &JsValue,
     args: &[JsValue],
@@ -4113,6 +4185,110 @@ mod tests {
         let res_doc_prev_sibling =
             host.eval_with_dom("document.previousSibling === null", &mut dom);
         assert_eq!(res_doc_prev_sibling, Ok("true".to_string()));
+    }
+
+    #[test]
+    fn test_node_contains() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Build a DOM tree:
+        // document -> parent_div (div) -> child_span (span) -> grandchild_text
+        // also sibling_div (div)
+        let parent_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent".to_string())],
+        });
+        let child_id = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![("id".to_string(), "child".to_string())],
+        });
+        let grandchild_id = dom.create_node(NodeData::Text("grandchild".to_string()));
+        let sibling_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "sibling".to_string())],
+        });
+
+        dom.append_child(child_id, grandchild_id);
+        dom.append_child(parent_id, child_id);
+        dom.append_child(parent_id, sibling_id);
+        dom.append_child(document, parent_id);
+
+        let mut host = BoaHost::new();
+
+        // 1. A node contains itself (inclusive-descendant)
+        let res_self_parent = host.eval_with_dom(
+            "document.getElementById('parent').contains(document.getElementById('parent'))",
+            &mut dom,
+        );
+        assert_eq!(res_self_parent, Ok("true".to_string()));
+
+        let res_self_child = host.eval_with_dom(
+            "document.getElementById('child').contains(document.getElementById('child'))",
+            &mut dom,
+        );
+        assert_eq!(res_self_child, Ok("true".to_string()));
+
+        // 2. A parent element contains its direct child
+        let res_parent_contains_child = host.eval_with_dom(
+            "document.getElementById('parent').contains(document.getElementById('child'))",
+            &mut dom,
+        );
+        assert_eq!(res_parent_contains_child, Ok("true".to_string()));
+
+        // 3. A node contains a deeper (grand-child) descendant
+        // Note: grandchild is a text node, which we don't directly have getElementById for,
+        // but we can access it via firstChild of child.
+        let res_parent_contains_grandchild = host.eval_with_dom(
+            "document.getElementById('parent').contains(document.getElementById('child').firstChild)",
+            &mut dom,
+        );
+        assert_eq!(res_parent_contains_grandchild, Ok("true".to_string()));
+
+        // 4. A node does NOT contain an unrelated sibling or ancestor
+        let res_child_contains_parent = host.eval_with_dom(
+            "document.getElementById('child').contains(document.getElementById('parent'))",
+            &mut dom,
+        );
+        assert_eq!(res_child_contains_parent, Ok("false".to_string()));
+
+        let res_sibling_contains_child = host.eval_with_dom(
+            "document.getElementById('sibling').contains(document.getElementById('child'))",
+            &mut dom,
+        );
+        assert_eq!(res_sibling_contains_child, Ok("false".to_string()));
+
+        // 5. Node.contains(null) and Node.contains(undefined) return false (and do not throw)
+        let res_contains_null =
+            host.eval_with_dom("document.getElementById('parent').contains(null)", &mut dom);
+        assert_eq!(res_contains_null, Ok("false".to_string()));
+
+        let res_contains_undefined = host.eval_with_dom(
+            "document.getElementById('parent').contains(undefined)",
+            &mut dom,
+        );
+        assert_eq!(res_contains_undefined, Ok("false".to_string()));
+
+        // 6. document contains nodes under it
+        let res_document_contains_parent = host.eval_with_dom(
+            "document.contains(document.getElementById('parent'))",
+            &mut dom,
+        );
+        assert_eq!(res_document_contains_parent, Ok("true".to_string()));
+
+        let res_document_contains_child = host.eval_with_dom(
+            "document.contains(document.getElementById('child'))",
+            &mut dom,
+        );
+        assert_eq!(res_document_contains_child, Ok("true".to_string()));
+
+        let res_document_contains_self =
+            host.eval_with_dom("document.contains(document)", &mut dom);
+        assert_eq!(res_document_contains_self, Ok("true".to_string()));
+
+        // 7. document does NOT contain nodes outside it (not appended, or null)
+        let res_document_contains_null = host.eval_with_dom("document.contains(null)", &mut dom);
+        assert_eq!(res_document_contains_null, Ok("false".to_string()));
     }
 
     #[test]
