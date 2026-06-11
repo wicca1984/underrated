@@ -1294,6 +1294,48 @@ impl BoaHost {
                         writable: true
                     });
 
+                    // TODO(spec): ParentNode.append()/prepend() v1 — Node and string (->Text) args only; DocumentFragment expansion and other edge cases out of scope.
+                    Object.defineProperty(node, 'append', {
+                        value: function(...args) {
+                            for (let i = 0; i < args.length; i++) {
+                                let arg = args[i];
+                                let n;
+                                if (typeof arg === 'string') {
+                                    n = document.createTextNode(arg);
+                                } else if (arg && arg.__key__) {
+                                    n = arg;
+                                } else {
+                                    throw new TypeError("Argument must be a Node or a string");
+                                }
+                                this.appendChild(n);
+                            }
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+
+                    Object.defineProperty(node, 'prepend', {
+                        value: function(...args) {
+                            const refNode = this.firstChild;
+                            for (let i = 0; i < args.length; i++) {
+                                let arg = args[i];
+                                let n;
+                                if (typeof arg === 'string') {
+                                    n = document.createTextNode(arg);
+                                } else if (arg && arg.__key__) {
+                                    n = arg;
+                                } else {
+                                    throw new TypeError("Argument must be a Node or a string");
+                                }
+                                this.insertBefore(n, refNode);
+                            }
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+
                     // TODO(spec): ChildNode.remove() v1 — single-node removal only; DocumentFragment / cross-document host edge cases out of scope.
                     Object.defineProperty(node, 'remove', {
                         value: function() {
@@ -5521,6 +5563,55 @@ mod tests {
         assert_eq!(dom.text_content(parent_children[1]), "ref");
         assert_eq!(dom.text_content(parent_children[2]), "after");
         assert_eq!(dom.text_content(parent_children[3]), "last");
+    }
+
+    #[test]
+    fn test_dom_parentnode_append_prepend() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let parent = document.createElement('div');
+            document.appendChild(parent);
+
+            let a = document.createElement('span');
+            a.textContent = 'a';
+            let b = document.createElement('span');
+            b.textContent = 'b';
+            parent.append(a, b);
+
+            let c = document.createElement('span');
+            c.textContent = 'c';
+            parent.append(c);
+
+            let z = document.createElement('span');
+            z.textContent = 'z';
+            parent.prepend(z);
+
+            parent.append('hi');
+
+            let x = document.createElement('span');
+            x.textContent = 'x';
+            let y = document.createElement('span');
+            y.textContent = 'y';
+            parent.prepend(x, y);
+        ";
+        assert!(host.eval_with_dom(script, &mut dom).is_ok());
+
+        // Verify the DOM structure from the Rust side
+        let doc_children = dom.children(dom.document());
+        assert_eq!(doc_children.len(), 1);
+        let parent_id = doc_children[0];
+        let parent_children = dom.children(parent_id);
+
+        assert_eq!(parent_children.len(), 7);
+        assert_eq!(dom.text_content(parent_children[0]), "x");
+        assert_eq!(dom.text_content(parent_children[1]), "y");
+        assert_eq!(dom.text_content(parent_children[2]), "z");
+        assert_eq!(dom.text_content(parent_children[3]), "a");
+        assert_eq!(dom.text_content(parent_children[4]), "b");
+        assert_eq!(dom.text_content(parent_children[5]), "c");
+        assert_eq!(dom.text_content(parent_children[6]), "hi");
     }
 
     #[test]
