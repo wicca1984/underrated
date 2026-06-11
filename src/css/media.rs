@@ -298,19 +298,49 @@ pub fn media_matches(query: &str, viewport_w: f32) -> bool {
     false
 }
 
-/// Recursively extracts all active qualified rules from a stylesheet under the given viewport width.
-pub fn extract_matched_rules(stylesheet: &Stylesheet, viewport_w: f32) -> Vec<QualifiedRule> {
-    let mut matched = Vec::new();
-    extract_matched_rules_recursive(&stylesheet.rules, viewport_w, &mut matched);
-    matched
+/// Hostile stylesheets can nest @media rules arbitrarily deep.
+/// To prevent resource exhaustion and stack overflow, we restrict depth.
+const MAX_MEDIA_NEST_DEPTH: usize = 32;
+
+enum RulesSource<'a> {
+    Borrowed(&'a [Rule]),
+    Owned(Vec<Rule>),
 }
 
-fn extract_matched_rules_recursive(
-    rules: &[Rule],
-    viewport_w: f32,
-    matched: &mut Vec<QualifiedRule>,
-) {
-    for rule in rules {
+impl<'a> RulesSource<'a> {
+    fn as_slice(&self) -> &[Rule] {
+        match self {
+            RulesSource::Borrowed(s) => s,
+            RulesSource::Owned(v) => v,
+        }
+    }
+}
+
+struct Frame<'a> {
+    rules: RulesSource<'a>,
+    index: usize,
+    depth: usize,
+}
+
+/// Iteratively extracts all active qualified rules from a stylesheet under the given viewport width.
+pub fn extract_matched_rules(stylesheet: &Stylesheet, viewport_w: f32) -> Vec<QualifiedRule> {
+    let mut matched = Vec::new();
+    let mut stack = vec![Frame {
+        rules: RulesSource::Borrowed(&stylesheet.rules),
+        index: 0,
+        depth: 0,
+    }];
+
+    while let Some(frame) = stack.last_mut() {
+        let rules_slice = frame.rules.as_slice();
+        if frame.index >= rules_slice.len() {
+            stack.pop();
+            continue;
+        }
+
+        let rule = &rules_slice[frame.index];
+        frame.index += 1;
+
         match rule {
             Rule::Qualified(qualified) => {
                 matched.push(qualified.clone());
@@ -320,9 +350,21 @@ fn extract_matched_rules_recursive(
                 if media_matches(&query_str, viewport_w)
                     && let Some(block) = &at_rule.block
                 {
+                    let next_depth = frame.depth + 1;
+                    if next_depth > MAX_MEDIA_NEST_DEPTH {
+                        eprintln!(
+                            "css: @media nesting exceeded {MAX_MEDIA_NEST_DEPTH}, skipping deeper rules"
+                        );
+                        continue;
+                    }
+
                     let inner_css = serialize_component_values(block);
                     let inner_stylesheet = crate::css::parser::parse_stylesheet(&inner_css);
-                    extract_matched_rules_recursive(&inner_stylesheet.rules, viewport_w, matched);
+                    stack.push(Frame {
+                        rules: RulesSource::Owned(inner_stylesheet.rules),
+                        index: 0,
+                        depth: next_depth,
+                    });
                 }
             }
             _ => {
@@ -330,6 +372,8 @@ fn extract_matched_rules_recursive(
             }
         }
     }
+
+    matched
 }
 
 #[cfg(test)]
@@ -446,5 +490,65 @@ mod tests {
         // At 700.0 width, nested p rule does not match
         let matched_700 = extract_matched_rules(&stylesheet, 700.0);
         assert!(matched_700.is_empty());
+    }
+
+    #[test]
+    fn test_extract_nested_media_preserves_order() {
+        let stylesheet = crate::css::parser::parse_stylesheet(
+            "
+            .top-start { color: red; }
+            @media (min-width: 1px) {
+                .inner-1 { color: green; }
+                .inner-2 { color: blue; }
+            }
+            .top-end { color: yellow; }
+        ",
+        );
+
+        let matched = extract_matched_rules(&stylesheet, 500.0);
+        assert_eq!(matched.len(), 4);
+        assert_eq!(
+            serialize_component_values(&matched[0].prelude),
+            ".top-start "
+        );
+        assert_eq!(serialize_component_values(&matched[1].prelude), ".inner-1 ");
+        assert_eq!(serialize_component_values(&matched[2].prelude), ".inner-2 ");
+        assert_eq!(serialize_component_values(&matched[3].prelude), ".top-end ");
+    }
+
+    #[test]
+    fn test_extract_unmatched_media_skipped() {
+        let stylesheet = crate::css::parser::parse_stylesheet(
+            "
+            @media (min-width: 1px) {
+                .outer { color: red; }
+                @media (min-width: 1000px) {
+                    .inner { color: green; }
+                }
+            }
+        ",
+        );
+
+        let matched = extract_matched_rules(&stylesheet, 500.0);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(serialize_component_values(&matched[0].prelude), ".outer ");
+    }
+
+    #[test]
+    fn test_extract_deeply_nested_media_no_overflow() {
+        let mut css = String::new();
+        for _ in 0..2000 {
+            css.push_str("@media (min-width: 1px) { ");
+        }
+        css.push_str(".deepest { color: red; }");
+        for _ in 0..2000 {
+            css.push('}');
+        }
+
+        let stylesheet = crate::css::parser::parse_stylesheet(&css);
+        let matched = extract_matched_rules(&stylesheet, 500.0);
+        // Assert it successfully executed without stack overflow.
+        // It might be empty or some rules depending on depth guard, which is correct.
+        let _ = matched;
     }
 }
