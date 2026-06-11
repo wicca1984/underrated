@@ -91,7 +91,7 @@ fn fetch_and_decode_images(
             && name.eq_ignore_ascii_case("img")
             && let Some(src) = dom.get_attribute(n_id, "src")
             && let Some(bytes) = load_image_safely_with_loader(loader, src, Some(&effective_base))
-            && let Some(decoded) = crate::image::decode_png(&bytes)
+            && let Some(decoded) = crate::image::decode_image(&bytes)
         {
             dom.add_image(src.to_string(), decoded);
         }
@@ -1321,5 +1321,70 @@ mod tests {
             !found_hidden_style_text,
             "Style source text should not be visible in display list"
         );
+    }
+
+    #[test]
+    fn test_remote_jpeg_fetch_decode_blit() {
+        use crate::paint::DisplayItem;
+        use std::collections::HashMap;
+
+        // 1. JPEG base64 (corresponds to JPEG_BASE64_2 from image tests)
+        let jpeg_base64 = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
+        let data_uri = format!("data:image/jpeg;base64,{}", jpeg_base64);
+
+        // 2. Set up MockLoader
+        let loader = MockLoader {
+            responses: HashMap::new(),
+        };
+
+        // 3. Render HTML containing JPEG data URI
+        let html = format!(
+            r#"<html>
+                <body>
+                    <img id="img_jpeg" src="{}" style="width: 4px; height: 4px;">
+                </body>
+            </html>"#,
+            data_uri
+        );
+
+        let base_url = crate::url::Url::parse("http://example.com/").unwrap();
+        let page = render_page(&html, &base_url, &loader, 800.0);
+
+        // 4. Verify JPEG is in the page DOM as a decoded image
+        let image_items = page.dom.get_image(&data_uri);
+        assert!(
+            image_items.is_some(),
+            "JPEG image should be present and decoded in the DOM"
+        );
+        let decoded_img = image_items.unwrap();
+        assert_eq!(decoded_img.width, 1);
+        assert_eq!(decoded_img.height, 1);
+        assert_eq!(decoded_img.rgba.len(), 4);
+
+        // Also build display list and verify it contains the Image item
+        let display_list = crate::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+        let items = display_list.0;
+
+        let image_items_list: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        assert_eq!(
+            image_items_list.len(),
+            1,
+            "Should have 1 image display item in the display list"
+        );
+
+        if let DisplayItem::Image { src, decoded, .. } = image_items_list[0] {
+            assert_eq!(src, &data_uri);
+            let decoded_img = decoded
+                .as_ref()
+                .expect("JPEG image should have a decoded DecodedImage in display list");
+            assert_eq!(decoded_img.width, 1);
+            assert_eq!(decoded_img.height, 1);
+        } else {
+            panic!("Expected DisplayItem::Image");
+        }
     }
 }
