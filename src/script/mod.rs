@@ -1363,6 +1363,14 @@ impl BoaHost {
                         return this === otherNode;
                     };
 
+                    node.getRootNode = function(options) {
+                        let curr = this;
+                        while (curr.parentNode) {
+                            curr = curr.parentNode;
+                        }
+                        return curr;
+                    };
+
                     node.isEqualNode = function(otherNode) {
                         return isEqualNodeHelper(this, otherNode);
                     };
@@ -1772,6 +1780,14 @@ impl BoaHost {
 
                 document.isSameNode = function(otherNode) {
                     return this === otherNode;
+                };
+
+                document.getRootNode = function(options) {
+                    let curr = this;
+                    while (curr.parentNode) {
+                        curr = curr.parentNode;
+                    }
+                    return curr;
                 };
 
                 document.isEqualNode = function(otherNode) {
@@ -5195,6 +5211,57 @@ mod tests {
         ";
         let res = host.eval_with_dom(script, &mut dom);
         assert_eq!(res, Ok("false,true".to_string()));
+    }
+
+    #[test]
+    fn test_node_get_root_node() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Create an element and append to document
+        let parent_div = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent".to_string())],
+        });
+        let child_span = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![("id".to_string(), "child".to_string())],
+        });
+        dom.append_child(parent_div, child_span);
+        dom.append_child(document, parent_div);
+
+        let mut host = BoaHost::new();
+
+        // a. An element appended into the document returns document:
+        let res_child_root = host.eval_with_dom(
+            "document.getElementById('child').getRootNode() === document",
+            &mut dom,
+        );
+        assert_eq!(res_child_root, Ok("true".to_string()));
+
+        let res_parent_root = host.eval_with_dom(
+            "document.getElementById('parent').getRootNode() === document",
+            &mut dom,
+        );
+        assert_eq!(res_parent_root, Ok("true".to_string()));
+
+        // b. document.getRootNode() === document
+        let res_doc_root = host.eval_with_dom("document.getRootNode() === document", &mut dom);
+        assert_eq!(res_doc_root, Ok("true".to_string()));
+
+        // c. A freshly created, NOT-yet-appended node returns itself
+        let res_fresh_root = host.eval_with_dom(
+            "const n = document.createElement('div'); n.getRootNode() === n",
+            &mut dom,
+        );
+        assert_eq!(res_fresh_root, Ok("true".to_string()));
+
+        // d. A nested element (grandchild) returns the same root as its parent
+        let res_nested_detached = host.eval_with_dom(
+            "const p = document.createElement('div'); const c = document.createElement('span'); const gc = document.createElement('a'); c.appendChild(gc); p.appendChild(c); gc.getRootNode() === p",
+            &mut dom,
+        );
+        assert_eq!(res_nested_detached, Ok("true".to_string()));
     }
 
     #[test]
