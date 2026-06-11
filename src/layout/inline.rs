@@ -33,8 +33,59 @@ fn shift_x(layout_box: &mut LayoutBox, delta: f32) {
     }
 }
 
+fn get_font_size(style: &ComputedStyle) -> f32 {
+    match style.get("font-size") {
+        Some(crate::css::values::CssValue::Length(px, _)) => *px,
+        _ => 16.0,
+    }
+}
+
+#[allow(clippy::collapsible_if)]
+fn get_vertical_align_shift(
+    node: NodeId,
+    block_container: Option<NodeId>,
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    line_height: f32,
+    border_box_height: f32,
+) -> f32 {
+    let mut current = Some(node);
+    let mut total_shift = 0.0;
+
+    while let Some(curr_node) = current {
+        if Some(curr_node) == block_container {
+            break;
+        }
+
+        if let Some(style) = styles.get(&curr_node) {
+            if let Some(crate::css::values::CssValue::Keyword(kw)) = style.get("vertical-align") {
+                let font_size = get_font_size(style);
+                let shift = match kw.as_str() {
+                    "baseline" => 0.0,
+                    "sub" => 0.2 * font_size,
+                    "super" => -0.2 * font_size,
+                    "text-top" | "top" => -line_height + border_box_height,
+                    "text-bottom" | "bottom" => 0.0,
+                    "middle" => -0.25 * font_size + (border_box_height / 2.0),
+                    _ => {
+                        // TODO(spec): <percentage> and <length> vertical-align values and precise font-metric-based x-height/text-top/text-bottom are out of scope for v1
+                        0.0
+                    }
+                };
+                total_shift += shift;
+            }
+        }
+
+        current = dom.parent(curr_node);
+    }
+
+    total_shift
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_line_box_adjusted(
+    dom: &Dom,
+    block_container: Option<NodeId>,
     mut children: Vec<LayoutBox>,
     offset_x: f32,
     offset_y: f32,
@@ -49,22 +100,33 @@ fn create_line_box_adjusted(
     let line_box_bottom_y = offset_y + line_height;
 
     for child in &mut children {
+        let mut target_y;
+        let border_box_height = child.rect.size.height;
+
         if let Some(style) = child
             .node
             .filter(|&id| is_inline_block(styles, id))
             .and_then(|id| styles.get(&id))
         {
             let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
-            let border_box_height = child.rect.size.height;
-            let target_y = line_box_bottom_y - margin_bottom - border_box_height;
-            let delta = target_y - child.rect.origin.y;
-            if delta != 0.0 {
-                shift_y(child, delta);
-            }
-            continue;
+            target_y = line_box_bottom_y - margin_bottom - border_box_height;
+        } else {
+            target_y = line_box_bottom_y - border_box_height;
         }
-        let border_box_height = child.rect.size.height;
-        let target_y = line_box_bottom_y - border_box_height;
+
+        // Apply vertical-align shift
+        if let Some(node_id) = child.node {
+            let shift = get_vertical_align_shift(
+                node_id,
+                block_container,
+                dom,
+                styles,
+                line_height,
+                border_box_height,
+            );
+            target_y += shift;
+        }
+
         let delta = target_y - child.rect.origin.y;
         if delta != 0.0 {
             shift_y(child, delta);
@@ -134,6 +196,8 @@ pub fn layout_inline_run(
 ) -> (Vec<LayoutBox>, f32) {
     let font = crate::font::BitmapFont::builtin();
     let line_height = font.line_height() as f32;
+
+    let block_container = children.first().and_then(|&child| dom.parent(child));
 
     let mut line_boxes = Vec::new();
     let mut current_line_children = Vec::new();
@@ -207,6 +271,8 @@ pub fn layout_inline_run(
                         if i > 0 {
                             // Force a line break!
                             line_boxes.push(create_line_box_adjusted(
+                                dom,
+                                block_container,
                                 std::mem::take(&mut current_line_children),
                                 offset_x,
                                 offset_y + cursor_y,
@@ -285,6 +351,8 @@ pub fn layout_inline_run(
                                         // Not even the first character fits in the remaining space.
                                         // Flush the current line.
                                         line_boxes.push(create_line_box_adjusted(
+                                            dom,
+                                            block_container,
                                             std::mem::take(&mut current_line_children),
                                             offset_x,
                                             offset_y + cursor_y,
@@ -349,6 +417,8 @@ pub fn layout_inline_run(
 
                                     // Since we didn't fit the whole rem_word, we must flush the line now.
                                     line_boxes.push(create_line_box_adjusted(
+                                        dom,
+                                        block_container,
                                         std::mem::take(&mut current_line_children),
                                         offset_x,
                                         offset_y + cursor_y,
@@ -370,6 +440,8 @@ pub fn layout_inline_run(
                                 {
                                     // Flush current line
                                     line_boxes.push(create_line_box_adjusted(
+                                        dom,
+                                        block_container,
                                         std::mem::take(&mut current_line_children),
                                         offset_x,
                                         offset_y + cursor_y,
@@ -449,6 +521,8 @@ pub fn layout_inline_run(
                             if cursor_x + margin_box_width > containing_width && cursor_x > 0.0 {
                                 // Flush line
                                 line_boxes.push(create_line_box_adjusted(
+                                    dom,
+                                    block_container,
                                     std::mem::take(&mut current_line_children),
                                     offset_x,
                                     offset_y + cursor_y,
@@ -509,6 +583,8 @@ pub fn layout_inline_run(
 
     if !current_line_children.is_empty() {
         line_boxes.push(create_line_box_adjusted(
+            dom,
+            block_container,
             current_line_children,
             offset_x,
             offset_y + cursor_y,
@@ -1366,5 +1442,205 @@ mod tests {
 
         // Under normal word-break, single word overflows and stays on a single line
         assert_eq!(line_boxes_normal.len(), 1);
+    }
+
+    #[test]
+    fn test_vertical_align_baseline() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let s1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, s1);
+
+        let t1 = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(s1, t1);
+
+        let s2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, s2);
+
+        let t2 = dom.create_node(NodeData::Text("world".into()));
+        dom.append_child(s2, t2);
+
+        let stylesheet = parse_stylesheet("span { display: inline; vertical-align: baseline; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 2);
+        let box1 = &line.children[0];
+        let box2 = &line.children[1];
+
+        // Their y coordinates should be identical (both align with baseline)
+        assert_eq!(box1.rect.origin.y, box2.rect.origin.y);
+    }
+
+    #[test]
+    fn test_vertical_align_super_sub() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let s1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "sup-class".into())],
+        });
+        dom.append_child(div, s1);
+
+        let t1 = dom.create_node(NodeData::Text("sup".into()));
+        dom.append_child(s1, t1);
+
+        let s2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, s2);
+
+        let t2 = dom.create_node(NodeData::Text("base".into()));
+        dom.append_child(s2, t2);
+
+        let s3 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "sub-class".into())],
+        });
+        dom.append_child(div, s3);
+
+        let t3 = dom.create_node(NodeData::Text("sub".into()));
+        dom.append_child(s3, t3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            span { display: inline; font-size: 20px; }
+            .sup-class { vertical-align: super; }
+            .sub-class { vertical-align: sub; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 3);
+
+        let box_sup = &line.children[0];
+        let box_base = &line.children[1];
+        let box_sub = &line.children[2];
+
+        // super shifts UP relative to baseline, so its Y is smaller (since Y increases downwards)
+        assert!(box_sup.rect.origin.y < box_base.rect.origin.y);
+
+        // sub shifts DOWN relative to baseline, so its Y is larger
+        assert!(box_sub.rect.origin.y > box_base.rect.origin.y);
+    }
+
+    #[test]
+    fn test_vertical_align_middle_top() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let s1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "mid-class".into())],
+        });
+        dom.append_child(div, s1);
+
+        let t1 = dom.create_node(NodeData::Text("mid".into()));
+        dom.append_child(s1, t1);
+
+        let s2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, s2);
+
+        let t2 = dom.create_node(NodeData::Text("base".into()));
+        dom.append_child(s2, t2);
+
+        let s3 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "top-class".into())],
+        });
+        dom.append_child(div, s3);
+
+        let t3 = dom.create_node(NodeData::Text("top".into()));
+        dom.append_child(s3, t3);
+
+        // Put an inline-block with height 50px on the line box to force line_height to be large (50px).
+        // That way text-top has a distinct effect (aligns top of text with top of the line box).
+        let s4 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "ib-class".into())],
+        });
+        dom.append_child(div, s4);
+
+        let t4 = dom.create_node(NodeData::Text("ib".into()));
+        dom.append_child(s4, t4);
+
+        let stylesheet = parse_stylesheet(
+            "
+            span { display: inline; }
+            .mid-class { vertical-align: middle; font-size: 24px; }
+            .top-class { vertical-align: text-top; }
+            .ib-class { display: inline-block; height: 50px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        // 4 elements on the line
+        assert_eq!(line.children.len(), 4);
+
+        let box_mid = &line.children[0];
+        let box_base = &line.children[1];
+        let box_top = &line.children[2];
+
+        // text-top alignments should place the top of the fragment at the top of the line box (which is y = 0.0)
+        assert_eq!(box_top.rect.origin.y, 0.0);
+
+        // baseline aligns its bottom with bottom of line box (which is y = 50.0), so its top (y) is at 50.0 - 8.0 = 42.0
+        assert_eq!(box_base.rect.origin.y, 42.0);
+
+        // middle should align its vertical center with baseline - 0.25 * font_size
+        // Since font_size = 24px, 0.25 * 24.0 = 6px.
+        // Baseline of parent is line_box_bottom_y = 50.0.
+        // Target vertical center is 50.0 - 6.0 = 44.0.
+        // Fragment height is 8.0.
+        // So target y is 44.0 - 4.0 = 40.0.
+        // We can assert target y is 40.0, which is smaller than base (42.0) and larger than top (0.0)
+        assert_eq!(box_mid.rect.origin.y, 40.0);
     }
 }
