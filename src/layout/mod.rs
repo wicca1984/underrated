@@ -425,9 +425,18 @@ pub(crate) fn layout_node(
                 let marker_y = first_line_center_y - side / 2.0;
 
                 // TODO(spec): disc marker needs a paint-side fill primitive — layout cannot emit a fill for a node without background-color
-                // As a fallback to actually paint a visible bullet, we render an ASCII '*' character using the first text node.
+                // As a fallback to actually paint a visible bullet, we render a Unicode bullet glyph per list-style-type.
+                let bullet = match list_style_type {
+                    Some(CssValue::Keyword(kw)) => match kw.as_str() {
+                        "circle" => "\u{25E6}",
+                        "square" => "\u{25AA}",
+                        _ => "\u{2022}",
+                    },
+                    _ => "\u{2022}",
+                };
+
                 let text_node = find_first_text_node(dom, node);
-                let marker_text = text_node.map(|_| String::from("*"));
+                let marker_text = text_node.map(|_| bullet.to_string());
 
                 let marker_box = LayoutBox {
                     node: text_node.or(Some(node)),
@@ -1138,6 +1147,7 @@ mod tests {
         // Size is 0.4em of font-size 16px = 6.4px
         assert!(approx_eq(li_a_marker.rect.size.width, 6.4));
         assert!(approx_eq(li_a_marker.rect.size.height, 6.4));
+        assert_eq!(li_a_marker.text.as_deref(), Some("\u{2022}"));
 
         // li_b_box also has 2 children
         assert_eq!(li_b_box.children.len(), 2);
@@ -1291,6 +1301,95 @@ mod tests {
         let li_r2_marker = &ol_roman_box.children[1].children[1];
         assert_eq!(li_r1_marker.text.as_deref(), Some("I."));
         assert_eq!(li_r2_marker.text.as_deref(), Some("II."));
+    }
+
+    #[test]
+    fn test_unordered_list_marker_styles() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // UL with list-style-type: disc
+        let ul_disc = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![("style".into(), "list-style-type: disc;".into())],
+        });
+        dom.append_child(body, ul_disc);
+
+        let li_disc = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul_disc, li_disc);
+        let text_disc = dom.create_node(NodeData::Text("disc".into()));
+        dom.append_child(li_disc, text_disc);
+
+        // UL with list-style-type: circle
+        let ul_circle = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![("style".into(), "list-style-type: circle;".into())],
+        });
+        dom.append_child(body, ul_circle);
+
+        let li_circle = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul_circle, li_circle);
+        let text_circle = dom.create_node(NodeData::Text("circle".into()));
+        dom.append_child(li_circle, text_circle);
+
+        // UL with list-style-type: square
+        let ul_square = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![("style".into(), "list-style-type: square;".into())],
+        });
+        dom.append_child(body, ul_square);
+
+        let li_square = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul_square, li_square);
+        let text_square = dom.create_node(NodeData::Text("square".into()));
+        dom.append_child(li_square, text_square);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            ul, ol { display: block; padding-left: 40px; margin-top: 16px; margin-bottom: 16px; }
+            li { display: block; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 3);
+        let ul_disc_box = &body_box.children[0];
+        let ul_circle_box = &body_box.children[1];
+        let ul_square_box = &body_box.children[2];
+
+        // Verify disc marker
+        assert_eq!(ul_disc_box.children.len(), 1);
+        let marker_disc = &ul_disc_box.children[0].children[1];
+        assert_eq!(marker_disc.text.as_deref(), Some("\u{2022}"));
+
+        // Verify circle marker
+        assert_eq!(ul_circle_box.children.len(), 1);
+        let marker_circle = &ul_circle_box.children[0].children[1];
+        assert_eq!(marker_circle.text.as_deref(), Some("\u{25E6}"));
+
+        // Verify square marker
+        assert_eq!(ul_square_box.children.len(), 1);
+        let marker_square = &ul_square_box.children[0].children[1];
+        assert_eq!(marker_square.text.as_deref(), Some("\u{25AA}"));
     }
 
     #[test]
