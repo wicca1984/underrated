@@ -287,6 +287,11 @@ impl BoaHost {
                 JsString::from("nodeType"),
                 1,
             )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_clone_node),
+                JsString::from("cloneNode"),
+                2,
+            )
             .build();
 
         let _ = context.register_global_property(
@@ -744,6 +749,11 @@ impl BoaHost {
                             bridge.replaceChild(this.__key__, newChild.__key__, oldChild.__key__);
                             return oldChild;
                         },
+                        cloneNode(deep) {
+                            const isDeep = deep !== undefined ? Boolean(deep) : false;
+                            const clonedKey = bridge.cloneNode(this.__key__, isDeep);
+                            return getOrCreateNode(clonedKey);
+                        },
                         setAttribute(name, value) {
                             bridge.setAttribute(this.__key__, String(name), String(value));
                         },
@@ -980,6 +990,12 @@ impl BoaHost {
                     }
                     bridge.replaceChild(this.__key__, newChild.__key__, oldChild.__key__);
                     return oldChild;
+                };
+
+                document.cloneNode = function(deep) {
+                    const isDeep = deep !== undefined ? Boolean(deep) : false;
+                    const clonedKey = bridge.cloneNode(this.__key__, isDeep);
+                    return getOrCreateNode(clonedKey);
                 };
 
                 Object.setPrototypeOf(document, EventTarget.prototype);
@@ -2301,6 +2317,66 @@ fn bridge_node_type(
     }
 }
 
+fn clone_node_recursive(dom: &mut Dom, node_id: NodeId, deep: bool) -> NodeId {
+    let node_data = if let Some(data) = dom.data(node_id) {
+        data.clone()
+    } else {
+        NodeData::Comment(String::new())
+    };
+
+    let cloned_node_id = dom.create_node(node_data);
+
+    if deep {
+        let children: Vec<NodeId> = dom.children(node_id).to_vec();
+        for child_id in children {
+            let cloned_child_id = clone_node_recursive(dom, child_id, true);
+            dom.append_child(cloned_node_id, cloned_child_id);
+        }
+    }
+
+    cloned_node_id
+}
+
+fn bridge_clone_node(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let deep = if let Some(arg) = args.get(1) {
+        arg.to_boolean()
+    } else {
+        false
+    };
+
+    // TODO(spec): Cloning does not copy event listeners registered with addEventListener or JS expando properties.
+    // TODO(spec): Doctype / Document cloning special cases beyond returning a detached copy.
+    // TODO(spec): id deduplication.
+    // TODO(spec): live-collection effects.
+
+    let cloned_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            let cloned_node_id = clone_node_recursive(dom, node_id, deep);
+            let k = format!("{:?}", cloned_node_id);
+            key_to_node.insert(k.clone(), cloned_node_id);
+            Some(k)
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(cloned_key) = cloned_key_opt {
+        Ok(JsValue::from(JsString::from(cloned_key)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
 impl Default for BoaHost {
     fn default() -> Self {
         Self::new()
@@ -2430,6 +2506,75 @@ mod tests {
             host.eval("if (document.title !== 'New Title') throw 'Title not updated';")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn test_clone_node_behavior() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Build:
+        // <div id="parent" class="test-class">
+        //   <span>Hello</span>
+        // </div>
+        let parent_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("id".to_string(), "parent".to_string()),
+                ("class".to_string(), "test-class".to_string()),
+            ],
+        });
+        let span_id = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![],
+        });
+        let text_id = dom.create_node(NodeData::Text("Hello".to_string()));
+        dom.append_child(span_id, text_id);
+        dom.append_child(parent_id, span_id);
+        dom.append_child(document, parent_id);
+
+        let mut host = BoaHost::new();
+
+        let res = host.eval_with_dom(
+            r#"
+            const parent = document.getElementById('parent');
+            
+            // 1. Shallow clone
+            const cloneShallow = parent.cloneNode(false);
+            const tagShallowOk = cloneShallow.tagName === 'DIV';
+            const idShallowOk = cloneShallow.getAttribute('id') === 'parent';
+            const classShallowOk = cloneShallow.getAttribute('class') === 'test-class';
+            const childShallowLenOk = cloneShallow.childNodes.length === 0;
+            const parentShallowNodeOk = cloneShallow.parentNode === null;
+            const shallowOk = tagShallowOk && idShallowOk && classShallowOk && childShallowLenOk && parentShallowNodeOk;
+
+            // 2. Deep clone
+            const cloneDeep = parent.cloneNode(true);
+            const tagDeepOk = cloneDeep.tagName === 'DIV';
+            const idDeepOk = cloneDeep.getAttribute('id') === 'parent';
+            const hasChildrenDeepOk = cloneDeep.childNodes.length === 1;
+            const firstChildSpanDeepOk = cloneDeep.firstChild.tagName === 'SPAN';
+            const nestedTextDeepOk = cloneDeep.firstChild.firstChild.textContent === 'Hello';
+            const parentDeepNodeOk = cloneDeep.parentNode === null;
+            const deepOk = tagDeepOk && idDeepOk && hasChildrenDeepOk && firstChildSpanDeepOk && nestedTextDeepOk && parentDeepNodeOk;
+
+            // 3. Text node clone
+            const span = parent.firstChild;
+            const textNode = span.firstChild;
+            const textClone = textNode.cloneNode(true);
+            const textCloneOk = textClone.textContent === 'Hello' && textClone.parentNode === null;
+
+            // 4. Original subtree unchanged
+            const origChildrenLenOk = parent.childNodes.length === 1;
+            const origSpanTagOk = parent.firstChild.tagName === 'SPAN';
+            const origTextOk = parent.firstChild.firstChild.textContent === 'Hello';
+            const originalOk = origChildrenLenOk && origSpanTagOk && origTextOk;
+
+            shallowOk && deepOk && textCloneOk && originalOk;
+            "#,
+            &mut dom
+        );
+        assert_eq!(res, Ok("true".to_string()));
     }
 
     #[test]
