@@ -43,6 +43,7 @@ fn create_line_box_adjusted(
     styles: &HashMap<NodeId, ComputedStyle>,
     text_align: &str,
     containing_width: f32,
+    is_last_line: bool,
 ) -> LayoutBox {
     // For each child, adjust its Y position to align its bottom edge with the bottom of the line box.
     let line_box_bottom_y = offset_y + line_height;
@@ -80,6 +81,21 @@ fn create_line_box_adjusted(
     if delta_x != 0.0 {
         for child in &mut children {
             shift_x(child, delta_x);
+        }
+    }
+
+    // TODO(spec): text-align justify v1 — distributes slack across inter-word gaps on non-last lines only; last-line/forced-break detection is simple word-count based; RTL, percentage widths, hyphenation, and justify-by-character are out of scope.
+    if text_align == "justify" && !is_last_line && children.len() >= 2 {
+        let slack = containing_width - width;
+        if slack > 0.0 {
+            let n = children.len();
+            let gap_increment = slack / (n - 1) as f32;
+            for (i, child) in children.iter_mut().enumerate() {
+                let shift = (i as f32) * gap_increment;
+                if shift > 0.0 {
+                    shift_x(child, shift);
+                }
+            }
         }
     }
 
@@ -186,6 +202,7 @@ pub fn layout_inline_run(
                                 styles,
                                 text_align,
                                 containing_width,
+                                true,
                             ));
                             cursor_x = 0.0;
                             cursor_y += current_line_height;
@@ -217,6 +234,7 @@ pub fn layout_inline_run(
                                     styles,
                                     text_align,
                                     containing_width,
+                                    false,
                                 ));
                                 cursor_x = 0.0;
                                 cursor_y += current_line_height;
@@ -294,6 +312,7 @@ pub fn layout_inline_run(
                                     styles,
                                     text_align,
                                     containing_width,
+                                    false,
                                 ));
                                 cursor_x = 0.0;
                                 cursor_y += current_line_height;
@@ -353,6 +372,7 @@ pub fn layout_inline_run(
             styles,
             text_align,
             containing_width,
+            true,
         ));
         cursor_y += current_line_height;
     }
@@ -1056,5 +1076,86 @@ mod tests {
             line_boxes_single_0[0].children[0].rect.size.width,
             line_boxes_single_10[0].children[0].rect.size.width
         );
+    }
+
+    #[test]
+    fn test_text_align_justify_distributes_gaps() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // "hello world wrap now" has 4 words.
+        // monospaced width of each character is 8px.
+        // "hello " has 6 chars -> 48px
+        // "world " has 6 chars -> 48px
+        // "wrap " has 5 chars -> 40px
+        // "now" has 3 chars -> 24px
+        // Let's set containing_width to 120px.
+        // - Line 1: "hello " (48px) + "world " (48px) = 96px <= 120px. Fits.
+        // - "wrap " would make it 96px + 40px = 136px > 120px. Overflows, so wraps.
+        // - Line 2: "wrap " (40px) + "now" (24px) = 64px <= 120px. Fits. This is the last line.
+        let t = dom.create_node(NodeData::Text("hello world wrap now".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-align: justify; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+
+        // Run layout with justify
+        let (line_boxes_justify, _) = layout_inline_run(
+            &dom, &styles, children, 120.0, 0.0, 0.0, 0, "justify", 0.0, 0.0,
+        );
+
+        // Run layout with left for baseline comparison
+        let children2 = dom.children(div);
+        let (line_boxes_left, _) = layout_inline_run(
+            &dom, &styles, children2, 120.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes_justify.len(), 2);
+        assert_eq!(line_boxes_left.len(), 2);
+
+        // --- LINE 1 Verification ---
+        // Justified line 1 should have "hello " and "world ".
+        let leaf_texts_j1 = collect_leaf_texts(&line_boxes_justify[0]);
+        assert_eq!(leaf_texts_j1, vec!["hello ", "world "]);
+
+        // "hello " should start at x = 0.0.
+        let word1_j = &line_boxes_justify[0].children[0];
+        let word2_j = &line_boxes_justify[0].children[1];
+        assert_eq!(word1_j.rect.origin.x, 0.0);
+
+        // The last word's right edge ("world ") must meet containing_width (120px).
+        let last_word_right_edge_j = word2_j.rect.origin.x + word2_j.rect.size.width;
+        assert!((last_word_right_edge_j - 120.0).abs() < 1.0);
+
+        // Compare with left layout
+        let word1_l = &line_boxes_left[0].children[0];
+        let word2_l = &line_boxes_left[0].children[1];
+        assert_eq!(word1_l.rect.origin.x, 0.0);
+        assert_eq!(word2_l.rect.origin.x, 48.0);
+
+        // Gap in left: word2_l.x - (word1_l.x + word1_l.width) = 48.0 - 48.0 = 0.0.
+        // Gap in justify: word2_j.x - (word1_j.x + word1_j.width) = 72.0 - 48.0 = 24.0.
+        let left_gap = word2_l.rect.origin.x - (word1_l.rect.origin.x + word1_l.rect.size.width);
+        let justify_gap = word2_j.rect.origin.x - (word1_j.rect.origin.x + word1_j.rect.size.width);
+        assert!(justify_gap > left_gap);
+
+        // --- LINE 2 Verification (Last Line) ---
+        // Justified line 2 is the last line, so it must stay left-aligned (no stretching).
+        let word3_j = &line_boxes_justify[1].children[0];
+        let word4_j = &line_boxes_justify[1].children[1];
+
+        let word3_l = &line_boxes_left[1].children[0];
+        let word4_l = &line_boxes_left[1].children[1];
+
+        // Position of words in justified line 2 should match left-aligned layout.
+        assert_eq!(word3_j.rect.origin.x, word3_l.rect.origin.x);
+        assert_eq!(word4_j.rect.origin.x, word4_l.rect.origin.x);
     }
 }
