@@ -1096,6 +1096,15 @@ impl BoaHost {
                         insertAdjacentHTML(position, html) {
                             if (this.nodeType !== 1) return;
                             bridge.insertAdjacentHTML(this.__key__, String(position), String(html));
+                        },
+                        insertAdjacentText(position, data) {
+                            if (this.nodeType !== 1) return;
+                            const pos = String(position).trim().toLowerCase();
+                            if (pos !== "beforebegin" && pos !== "afterbegin" && pos !== "beforeend" && pos !== "afterend") {
+                                throw new DOMException("SyntaxError: The position provided is not one of the allowed values.", "SyntaxError");
+                            }
+                            const textNode = document.createTextNode(String(data));
+                            bridge.insertAdjacentElement(this.__key__, pos, textNode.__key__);
                         }
                     };
 
@@ -7462,5 +7471,52 @@ mod tests {
             res,
             "<li>z</li><li>pre</li><li id=\"a\">a</li><li>post</li><li>b</li><li>case</li>|true|<li>z</li><li>pre</li><li id=\"a\">a</li><li>post</li><li>b</li><li>case</li><li>new</li>|null|null|null|<li>z</li><li>pre</li><li id=\"a\">a</li><li>post</li><li>b</li><li>case</li><li>new</li>"
         );
+    }
+
+    #[test]
+    fn test_element_insert_adjacent_text() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let setup_script = r#"
+            let container = document.createElement('div');
+            container.innerHTML = "<div id='L'><span id='a'>a</span></div>";
+            document.appendChild(container);
+
+            let L = document.getElementById('L');
+            let a = document.getElementById('a');
+
+            // 1. insertAdjacentText 'beforeend'
+            L.insertAdjacentText('beforeend', 'b');
+
+            // 2. insertAdjacentText 'afterbegin'
+            L.insertAdjacentText('afterbegin', 'z');
+
+            // 3. insertAdjacentText 'beforebegin' on 'a'
+            a.insertAdjacentText('beforebegin', 'pre');
+
+            // 4. insertAdjacentText 'afterend' on 'a'
+            a.insertAdjacentText('afterend', 'post');
+
+            // 5. Case insensitivity and whitespace trimming
+            L.insertAdjacentText('  BeFoReEnD  ', 'case');
+
+            let textContent1 = L.textContent;
+
+            // 6. Test invalid position throwing SyntaxError DOMException
+            let threwSyntaxError = false;
+            try {
+                L.insertAdjacentText('nope', 'invalid');
+            } catch (e) {
+                if (e instanceof DOMException && e.name === 'SyntaxError') {
+                    threwSyntaxError = true;
+                }
+            }
+
+            [textContent1, String(threwSyntaxError)].join('|');
+        "#;
+
+        let res = host.eval_with_dom(setup_script, &mut dom).unwrap();
+        assert_eq!(res, "zpreapostbcase|true");
     }
 }
