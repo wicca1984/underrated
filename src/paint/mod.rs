@@ -64,6 +64,121 @@ fn get_outline_offset(style: &ComputedStyle) -> f32 {
     }
 }
 
+/// Helper to paint standard solid outline strips on all four sides.
+fn paint_outline_strips(
+    items: &mut Vec<DisplayItem>,
+    rect: Rect,
+    ow: f32,
+    offset: f32,
+    color: Color,
+) {
+    let x = rect.origin.x;
+    let y = rect.origin.y;
+    let w = rect.size.width.max(0.0);
+    let h = rect.size.height.max(0.0);
+    let d = offset + ow;
+
+    // Top strip
+    let top_rect = Rect::new(x - d, y - d, w + 2.0 * d, ow);
+    if top_rect.size.width > 0.0 && top_rect.size.height > 0.0 {
+        items.push(DisplayItem::SolidRect {
+            rect: top_rect,
+            color: color.clone(),
+        });
+    }
+
+    // Bottom strip
+    let bottom_rect = Rect::new(x - d, y + h + offset, w + 2.0 * d, ow);
+    if bottom_rect.size.width > 0.0 && bottom_rect.size.height > 0.0 {
+        items.push(DisplayItem::SolidRect {
+            rect: bottom_rect,
+            color: color.clone(),
+        });
+    }
+
+    // Left strip
+    let left_rect = Rect::new(x - d, y - offset, ow, h + 2.0 * offset);
+    if left_rect.size.width > 0.0 && left_rect.size.height > 0.0 {
+        items.push(DisplayItem::SolidRect {
+            rect: left_rect,
+            color: color.clone(),
+        });
+    }
+
+    // Right strip
+    let right_rect = Rect::new(x + w + offset, y - offset, ow, h + 2.0 * offset);
+    if right_rect.size.width > 0.0 && right_rect.size.height > 0.0 {
+        items.push(DisplayItem::SolidRect {
+            rect: right_rect,
+            color,
+        });
+    }
+}
+
+/// Helper to paint a dotted or dashed segmented outline edge.
+fn paint_segmented_outline_edge(
+    items: &mut Vec<DisplayItem>,
+    horizontal: bool,
+    edge_rect: Rect,
+    dash_gap: (f32, f32),
+    color: Color,
+) {
+    let (length, gap) = dash_gap;
+    if horizontal {
+        let start_coord = edge_rect.origin.x;
+        let cross_coord = edge_rect.origin.y;
+        let total_len = edge_rect.size.width;
+        let ow = edge_rect.size.height;
+
+        if total_len <= 0.0 || ow <= 0.0 {
+            return;
+        }
+
+        let mut current_x = start_coord;
+        let end_x = start_coord + total_len;
+        while current_x < end_x {
+            let current_width = if current_x + length > end_x {
+                end_x - current_x
+            } else {
+                length
+            };
+            if current_width > 0.0 {
+                items.push(DisplayItem::SolidRect {
+                    rect: Rect::new(current_x, cross_coord, current_width, ow),
+                    color: color.clone(),
+                });
+            }
+            current_x += length + gap;
+        }
+    } else {
+        let start_coord = edge_rect.origin.y;
+        let cross_coord = edge_rect.origin.x;
+        let total_len = edge_rect.size.height;
+        let ow = edge_rect.size.width;
+
+        if total_len <= 0.0 || ow <= 0.0 {
+            return;
+        }
+
+        let mut current_y = start_coord;
+        let end_y = start_coord + total_len;
+        while current_y < end_y {
+            let current_height = if current_y + length > end_y {
+                end_y - current_y
+            } else {
+                length
+            };
+            if current_height > 0.0 {
+                items.push(DisplayItem::SolidRect {
+                    rect: Rect::new(cross_coord, current_y, ow, current_height),
+                    color: color.clone(),
+                });
+            }
+            current_y += length + gap;
+        }
+    }
+}
+
 /// Helper to recursively find any `Color` value inside a CSS property.
 /// spec: S-39
 fn find_color(value: &CssValue) -> Option<Color> {
@@ -756,7 +871,7 @@ pub fn build_display_list(
                         let w = rect.size.width.max(0.0);
                         let h = rect.size.height.max(0.0);
 
-                        // TODO(spec): outline non-solid styles and color:invert are not implemented (solid frame, color falls back to text color).
+                        // TODO(spec): outline color:invert and groove/ridge/inset/outset are not implemented (solid frame fallback, color falls back to text color). double/dotted/dashed are implemented.
 
                         let mut outline_color = Color::Rgba(0, 0, 0, 255);
                         let mut resolved = false;
@@ -780,41 +895,118 @@ pub fn build_display_list(
 
                         let scaled_color = scale_color_alpha(&outline_color, effective_opacity);
 
-                        // Top strip
-                        let top_rect = Rect::new(x - d, y - d, w + 2.0 * d, ow);
-                        if top_rect.size.width > 0.0 && top_rect.size.height > 0.0 {
-                            items.push(DisplayItem::SolidRect {
-                                rect: top_rect,
-                                color: scaled_color.clone(),
-                            });
-                        }
+                        let style_keyword = match outline_style {
+                            Some(CssValue::Keyword(s)) => s.to_ascii_lowercase(),
+                            _ => "solid".to_string(),
+                        };
 
-                        // Bottom strip
-                        let bottom_rect = Rect::new(x - d, y + h + offset, w + 2.0 * d, ow);
-                        if bottom_rect.size.width > 0.0 && bottom_rect.size.height > 0.0 {
-                            items.push(DisplayItem::SolidRect {
-                                rect: bottom_rect,
-                                color: scaled_color.clone(),
-                            });
-                        }
-
-                        // Left strip
-                        let left_rect = Rect::new(x - d, y - offset, ow, h + 2.0 * offset);
-                        if left_rect.size.width > 0.0 && left_rect.size.height > 0.0 {
-                            items.push(DisplayItem::SolidRect {
-                                rect: left_rect,
-                                color: scaled_color.clone(),
-                            });
-                        }
-
-                        // Right strip
-                        let right_rect =
-                            Rect::new(x + w + offset, y - offset, ow, h + 2.0 * offset);
-                        if right_rect.size.width > 0.0 && right_rect.size.height > 0.0 {
-                            items.push(DisplayItem::SolidRect {
-                                rect: right_rect,
-                                color: scaled_color.clone(),
-                            });
+                        match style_keyword.as_str() {
+                            "double" => {
+                                let t_inner = (ow / 3.0).round().max(1.0);
+                                let t_outer = (ow / 3.0).round().max(1.0);
+                                let t_gap = ow - t_inner - t_outer;
+                                if t_gap <= 0.0 || t_inner + t_outer >= ow {
+                                    // fall back to solid
+                                    paint_outline_strips(
+                                        &mut items,
+                                        rect,
+                                        ow,
+                                        offset,
+                                        scaled_color,
+                                    );
+                                } else {
+                                    // outer frame
+                                    paint_outline_strips(
+                                        &mut items,
+                                        rect,
+                                        t_outer,
+                                        offset + ow - t_outer,
+                                        scaled_color.clone(),
+                                    );
+                                    // inner frame
+                                    paint_outline_strips(
+                                        &mut items,
+                                        rect,
+                                        t_inner,
+                                        offset,
+                                        scaled_color,
+                                    );
+                                }
+                            }
+                            "dotted" => {
+                                let dash_gap = (ow, ow);
+                                // Top
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    true,
+                                    Rect::new(x - d, y - d, w + 2.0 * d, ow),
+                                    dash_gap,
+                                    scaled_color.clone(),
+                                );
+                                // Bottom
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    true,
+                                    Rect::new(x - d, y + h + offset, w + 2.0 * d, ow),
+                                    dash_gap,
+                                    scaled_color.clone(),
+                                );
+                                // Left
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    false,
+                                    Rect::new(x - d, y - offset, ow, h + 2.0 * offset),
+                                    dash_gap,
+                                    scaled_color.clone(),
+                                );
+                                // Right
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    false,
+                                    Rect::new(x + w + offset, y - offset, ow, h + 2.0 * offset),
+                                    dash_gap,
+                                    scaled_color,
+                                );
+                            }
+                            "dashed" => {
+                                let dash_gap = (3.0 * ow, 3.0 * ow);
+                                // Top
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    true,
+                                    Rect::new(x - d, y - d, w + 2.0 * d, ow),
+                                    dash_gap,
+                                    scaled_color.clone(),
+                                );
+                                // Bottom
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    true,
+                                    Rect::new(x - d, y + h + offset, w + 2.0 * d, ow),
+                                    dash_gap,
+                                    scaled_color.clone(),
+                                );
+                                // Left
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    false,
+                                    Rect::new(x - d, y - offset, ow, h + 2.0 * offset),
+                                    dash_gap,
+                                    scaled_color.clone(),
+                                );
+                                // Right
+                                paint_segmented_outline_edge(
+                                    &mut items,
+                                    false,
+                                    Rect::new(x + w + offset, y - offset, ow, h + 2.0 * offset),
+                                    dash_gap,
+                                    scaled_color,
+                                );
+                            }
+                            _ => {
+                                // Fall back to solid for groove/ridge/inset/outset etc.
+                                paint_outline_strips(&mut items, rect, ow, offset, scaled_color);
+                            }
                         }
                     }
                 }
@@ -1451,6 +1643,167 @@ mod tests {
             right_found,
             "Right outline rect mismatch with negative offset"
         );
+    }
+
+    #[test]
+    fn test_paint_outline_double() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                width: 100px;
+                height: 100px;
+                outline: 6px double blue;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        // 2 concentric frames * 4 strips each = 8 strips total
+        assert_eq!(rects.len(), 8, "Expected exactly 8 double outline strips");
+
+        let blue = Color::Rgba(0, 0, 255, 255);
+        let mut outer_top_found = false;
+        let mut inner_top_found = false;
+
+        for item in rects {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                assert_eq!(color, &blue);
+                // Outer top rect: x = -6.0, y = -6.0, width = 112.0, height = 2.0
+                if rect.origin.x == -6.0
+                    && rect.origin.y == -6.0
+                    && rect.size.width == 112.0
+                    && rect.size.height == 2.0
+                {
+                    outer_top_found = true;
+                }
+                // Inner top rect: x = -2.0, y = -2.0, width = 104.0, height = 2.0
+                else if rect.origin.x == -2.0
+                    && rect.origin.y == -2.0
+                    && rect.size.width == 104.0
+                    && rect.size.height == 2.0
+                {
+                    inner_top_found = true;
+                }
+            }
+        }
+
+        assert!(
+            outer_top_found,
+            "Expected outer top strip of double outline"
+        );
+        assert!(
+            inner_top_found,
+            "Expected inner top strip of double outline"
+        );
+    }
+
+    #[test]
+    fn test_paint_outline_dotted() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                width: 100px;
+                height: 100px;
+                outline: 4px dotted green;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        // Should have many small dot rects
+        assert!(
+            rects.len() > 10,
+            "Expected dotted outline to produce many dot rects"
+        );
+
+        let green = Color::Rgba(0, 128, 0, 255);
+        for item in rects {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                assert_eq!(color, &green);
+                // The dots should have thickness 4.0 in either height or width
+                assert!(rect.size.width <= 4.0 || rect.size.height <= 4.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_paint_outline_dashed() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                width: 100px;
+                height: 100px;
+                outline: 2px dashed red;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        // Should have many dash rects
+        assert!(
+            rects.len() > 10,
+            "Expected dashed outline to produce many dash rects"
+        );
+
+        let red = Color::Rgba(255, 0, 0, 255);
+        for item in rects {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                assert_eq!(color, &red);
+                // Dash length should be at most 3.0 * ow = 6.0
+                assert!(rect.size.width <= 6.0 || rect.size.height <= 6.0);
+            }
+        }
     }
 
     #[test]
