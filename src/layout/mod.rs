@@ -402,7 +402,7 @@ pub(crate) fn layout_node(
         let suppress_marker =
             matches!(list_style_type, Some(CssValue::Keyword(val)) if val == "none");
 
-        // TODO(spec): support other list-style-type values like circle, square, lower-alpha, roman
+        // TODO(spec): support other list-style-type values like circle, square
         // TODO(spec): support list-style-position: inside
         // TODO(spec): support list-style-image
         // TODO(spec): support start, value, and reversed attributes for list numbering
@@ -439,7 +439,17 @@ pub(crate) fn layout_node(
                 children.push(marker_box);
             } else if list_name == "ol" {
                 let index = get_li_decimal_index(dom, node, list_node);
-                let marker_text = format!("{}.", index);
+                let formatted = match list_style_type {
+                    Some(CssValue::Keyword(kw)) => match kw.as_str() {
+                        "lower-alpha" | "lower-latin" => to_alpha(index, false),
+                        "upper-alpha" | "upper-latin" => to_alpha(index, true),
+                        "lower-roman" => to_roman(index, false),
+                        "upper-roman" => to_roman(index, true),
+                        _ => index.to_string(),
+                    },
+                    _ => index.to_string(),
+                };
+                let marker_text = format!("{formatted}.");
 
                 let marker_width = 8.0 * marker_text.len() as f32;
                 let marker_height = first_line_h;
@@ -812,6 +822,70 @@ fn get_font_size(style: &ComputedStyle) -> f32 {
     }
 }
 
+fn to_alpha(mut n: usize, upper: bool) -> String {
+    if n == 0 {
+        return "0".to_string();
+    }
+    let mut result = String::new();
+    let base_char = if upper { b'A' } else { b'a' };
+    while n > 0 {
+        n -= 1;
+        let rem = n % 26;
+        let c = (base_char + rem as u8) as char;
+        result.push(c);
+        n /= 26;
+    }
+    result.chars().rev().collect()
+}
+
+fn to_roman(mut n: usize, upper: bool) -> String {
+    if n == 0 {
+        return "0".to_string();
+    }
+    let mut result = String::new();
+    let mappings = if upper {
+        &[
+            (1000, "M"),
+            (900, "CM"),
+            (500, "D"),
+            (400, "CD"),
+            (100, "C"),
+            (90, "XC"),
+            (50, "L"),
+            (40, "XL"),
+            (10, "X"),
+            (9, "IX"),
+            (5, "V"),
+            (4, "IV"),
+            (1, "I"),
+        ]
+    } else {
+        &[
+            (1000, "m"),
+            (900, "cm"),
+            (500, "d"),
+            (400, "cd"),
+            (100, "c"),
+            (90, "xc"),
+            (50, "l"),
+            (40, "xl"),
+            (10, "x"),
+            (9, "ix"),
+            (5, "v"),
+            (4, "iv"),
+            (1, "i"),
+        ]
+    };
+
+    for &(val, sym) in mappings {
+        while n >= val {
+            result.push_str(sym);
+            n -= val;
+        }
+    }
+    result
+}
+
 fn get_li_decimal_index(dom: &Dom, li_node: NodeId, list_node: NodeId) -> usize {
     let mut lis = Vec::new();
     find_li_descendants(dom, list_node, list_node, &mut lis);
@@ -1053,6 +1127,121 @@ mod tests {
         // Since list-style-type is none, there should be NO marker box!
         // Only 1 child (the text line box) should exist
         assert_eq!(li_none_box.children.len(), 1);
+    }
+
+    #[test]
+    fn test_to_alpha() {
+        assert_eq!(to_alpha(1, false), "a");
+        assert_eq!(to_alpha(26, false), "z");
+        assert_eq!(to_alpha(27, false), "aa");
+        assert_eq!(to_alpha(1, true), "A");
+        assert_eq!(to_alpha(26, true), "Z");
+        assert_eq!(to_alpha(27, true), "AA");
+        assert_eq!(to_alpha(52, false), "az");
+        assert_eq!(to_alpha(53, false), "ba");
+        assert_eq!(to_alpha(0, false), "0");
+    }
+
+    #[test]
+    fn test_to_roman() {
+        assert_eq!(to_roman(1, false), "i");
+        assert_eq!(to_roman(4, false), "iv");
+        assert_eq!(to_roman(9, false), "ix");
+        assert_eq!(to_roman(40, false), "xl");
+        assert_eq!(to_roman(90, false), "xc");
+        assert_eq!(to_roman(400, false), "cd");
+        assert_eq!(to_roman(900, false), "cm");
+        assert_eq!(to_roman(1990, true), "MCMXC");
+        assert_eq!(to_roman(0, false), "0");
+        assert_eq!(to_roman(3, true), "III");
+    }
+
+    #[test]
+    fn test_ordered_list_marker_styles() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // OL with lower-alpha
+        let ol_alpha = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![("style".into(), "list-style-type: lower-alpha;".into())],
+        });
+        dom.append_child(body, ol_alpha);
+
+        let li_a1 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_alpha, li_a1);
+        let text_a1 = dom.create_node(NodeData::Text("a1".into()));
+        dom.append_child(li_a1, text_a1);
+
+        let li_a2 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_alpha, li_a2);
+        let text_a2 = dom.create_node(NodeData::Text("a2".into()));
+        dom.append_child(li_a2, text_a2);
+
+        // OL with upper-roman
+        let ol_roman = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![("style".into(), "list-style-type: upper-roman;".into())],
+        });
+        dom.append_child(body, ol_roman);
+
+        let li_r1 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_roman, li_r1);
+        let text_r1 = dom.create_node(NodeData::Text("r1".into()));
+        dom.append_child(li_r1, text_r1);
+
+        let li_r2 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_roman, li_r2);
+        let text_r2 = dom.create_node(NodeData::Text("r2".into()));
+        dom.append_child(li_r2, text_r2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            ol { display: block; padding-left: 40px; margin-top: 16px; margin-bottom: 16px; }
+            li { display: block; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let ol_alpha_box = &body_box.children[0];
+        let ol_roman_box = &body_box.children[1];
+
+        // Verify alpha markers
+        assert_eq!(ol_alpha_box.children.len(), 2);
+        let li_a1_marker = &ol_alpha_box.children[0].children[1];
+        let li_a2_marker = &ol_alpha_box.children[1].children[1];
+        assert_eq!(li_a1_marker.text.as_deref(), Some("a."));
+        assert_eq!(li_a2_marker.text.as_deref(), Some("b."));
+
+        // Verify roman markers
+        assert_eq!(ol_roman_box.children.len(), 2);
+        let li_r1_marker = &ol_roman_box.children[0].children[1];
+        let li_r2_marker = &ol_roman_box.children[1].children[1];
+        assert_eq!(li_r1_marker.text.as_deref(), Some("I."));
+        assert_eq!(li_r2_marker.text.as_deref(), Some("II."));
     }
 
     #[test]
