@@ -13,6 +13,7 @@ use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+pub mod event;
 pub mod navigator;
 
 /// Errors that can occur during script execution.
@@ -117,6 +118,9 @@ impl BoaHost {
     }
 
     fn setup_experimental_dom(context: &mut Context) {
+        let _ = context.register_global_class::<event::EventTarget>();
+        let _ = context.register_global_class::<event::Event>();
+
         let bridge = ObjectInitializer::new(context)
             .function(
                 NativeFunction::from_fn_ptr(bridge_create_element),
@@ -214,9 +218,19 @@ impl BoaHost {
                 1,
             )
             .function(
-                NativeFunction::from_fn_ptr(add_event_listener),
+                NativeFunction::from_fn_ptr(event::add_event_listener),
                 JsString::from("addEventListener"),
                 2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(event::remove_event_listener),
+                JsString::from("removeEventListener"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(event::dispatch_event),
+                JsString::from("dispatchEvent"),
+                1,
             )
             .function(
                 NativeFunction::from_fn_ptr(bridge_tag_name),
@@ -316,7 +330,10 @@ impl BoaHost {
                         }
                     };
 
+                    Object.setPrototypeOf(node, EventTarget.prototype);
                     node.addEventListener = bridge.addEventListener;
+                    node.removeEventListener = bridge.removeEventListener;
+                    node.dispatchEvent = bridge.dispatchEvent;
 
                     Object.defineProperty(node, 'textContent', {
                         get() {
@@ -489,7 +506,10 @@ impl BoaHost {
                     return newNode;
                 };
 
+                Object.setPrototypeOf(document, EventTarget.prototype);
                 document.addEventListener = bridge.addEventListener;
+                document.removeEventListener = bridge.removeEventListener;
+                document.dispatchEvent = bridge.dispatchEvent;
 
                 Object.defineProperty(document, 'parentNode', {
                     get() {
@@ -804,24 +824,32 @@ impl BoaHost {
                 .map_err(|e| ScriptError::Runtime(e.to_string()))?;
 
             if let Some(handler_obj) = handler_val.as_object() {
-                // Construct a mock Event object: { target: elem_obj, type: event_type }
-                let event_obj = ObjectInitializer::new(&mut self.context)
-                    .property(
-                        JsString::from("target"),
-                        JsValue::from(elem_obj.clone()),
-                        Attribute::all(),
+                // Construct a real Event object
+                let event_ctor_val = self
+                    .context
+                    .global_object()
+                    .get(JsString::from("Event"), &mut self.context)
+                    .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+                let event_ctor = event_ctor_val.as_object().ok_or_else(|| {
+                    ScriptError::Runtime("Event constructor not found".to_string())
+                })?;
+                let event_val = event_ctor
+                    .construct(
+                        &[JsValue::from(JsString::from(event_type))],
+                        None,
+                        &mut self.context,
                     )
-                    .property(
-                        JsString::from("type"),
-                        JsString::from(event_type),
-                        Attribute::all(),
-                    )
-                    .build();
+                    .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+
+                if let Some(event) = event_val.downcast_ref::<event::Event>() {
+                    *event.target.borrow_mut() = Some(JsValue::from(elem_obj.clone()));
+                    *event.current_target.borrow_mut() = Some(JsValue::from(elem_obj.clone()));
+                }
 
                 handler_obj
                     .call(
                         &JsValue::from(elem_obj.clone()),
-                        &[JsValue::from(event_obj)],
+                        &[JsValue::from(event_val)],
                         &mut self.context,
                     )
                     .map_err(map_boa_error)?;
@@ -1492,72 +1520,6 @@ fn bridge_previous_sibling(
     } else {
         Ok(JsValue::null())
     }
-}
-
-fn add_event_listener(
-    this: &JsValue,
-    args: &[JsValue],
-    context: &mut Context,
-) -> Result<JsValue, JsError> {
-    // TODO(spec): Support optional third argument (options: { capture: bool, once: bool, passive: bool }).
-    let event_type = if let Some(arg) = args.first() {
-        arg.to_string(context)?.to_std_string().unwrap_or_default()
-    } else {
-        return Ok(JsValue::undefined());
-    };
-
-    let handler = if let Some(arg) = args.get(1) {
-        arg.clone()
-    } else {
-        return Ok(JsValue::undefined());
-    };
-
-    if let Some(this_obj) = this.as_object() {
-        let events_prop = JsString::from("__events__");
-        let mut events_val = this_obj.get(events_prop.clone(), context)?;
-        if events_val.is_undefined() || events_val.is_null() {
-            let new_events_obj = ObjectInitializer::new(context).build();
-            this_obj.set(
-                events_prop.clone(),
-                JsValue::from(new_events_obj.clone()),
-                false,
-                context,
-            )?;
-            events_val = JsValue::from(new_events_obj);
-        }
-
-        if let Some(events_obj) = events_val.as_object() {
-            let type_prop = JsString::from(event_type.as_str());
-            let mut handlers_val = events_obj.get(type_prop.clone(), context)?;
-            if handlers_val.is_undefined() || handlers_val.is_null() {
-                let array_constructor = context
-                    .global_object()
-                    .get(JsString::from("Array"), context)?;
-                let array_obj = array_constructor.as_object().ok_or_else(|| {
-                    JsError::from_opaque(JsValue::from(JsString::from(
-                        "Array constructor not found",
-                    )))
-                })?;
-                let array_val = array_obj.construct(&[], None, context)?;
-                events_obj.set(
-                    type_prop.clone(),
-                    JsValue::from(array_val.clone()),
-                    false,
-                    context,
-                )?;
-                handlers_val = JsValue::from(array_val);
-            }
-
-            if let Some(handlers_obj) = handlers_val.as_object() {
-                let push_val = handlers_obj.get(JsString::from("push"), context)?;
-                if let Some(push_fn) = push_val.as_object() {
-                    push_fn.call(&handlers_val, &[handler], context)?;
-                }
-            }
-        }
-    }
-
-    Ok(JsValue::undefined())
 }
 
 fn bridge_tag_name(
@@ -2793,5 +2755,58 @@ mod tests {
         // Restore defaults
         set_limits_enabled(true);
         set_max_script_length(5000);
+    }
+
+    #[test]
+    fn test_event_target_and_event_classes() {
+        let mut host = BoaHost::new();
+
+        // 1. Basic properties and prototype of Event and EventTarget
+        let script = r#"
+            const target = new EventTarget();
+            const event = new Event('click');
+
+            if (event.type !== 'click') throw new Error('Expected click type');
+            if (event.target !== null) throw new Error('Expected target to be null initially');
+            if (event.currentTarget !== null) throw new Error('Expected currentTarget to be null initially');
+            if (event.defaultPrevented !== false) throw new Error('Expected defaultPrevented to be false');
+
+            event.preventDefault();
+            if (event.defaultPrevented !== true) throw new Error('Expected defaultPrevented to be true after preventDefault()');
+
+            let callbackCalled = false;
+            target.addEventListener('click', (e) => {
+                callbackCalled = true;
+                if (e.type !== 'click') throw new Error('Expected event click inside handler');
+                if (e.target !== target) throw new Error('Expected target to be the event target');
+                if (e.currentTarget !== target) throw new Error('Expected currentTarget to be the event target');
+            });
+
+            const dispatchResult = target.dispatchEvent(event);
+            if (!callbackCalled) throw new Error('Expected callback to be called');
+            if (dispatchResult !== false) throw new Error('Expected dispatchResult to be false since defaultPrevented is true');
+            if (event.currentTarget !== null) throw new Error('Expected currentTarget to be null after dispatching');
+        "#;
+        assert!(host.eval(script).is_ok());
+    }
+
+    #[test]
+    fn test_event_target_remove_event_listener() {
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const target = new EventTarget();
+            let count = 0;
+            const listener = () => { count++; };
+
+            target.addEventListener('custom', listener);
+            target.dispatchEvent(new Event('custom'));
+            if (count !== 1) throw new Error('Expected count to be 1');
+
+            target.removeEventListener('custom', listener);
+            target.dispatchEvent(new Event('custom'));
+            if (count !== 1) throw new Error('Expected count to be 1 after removing');
+        "#;
+        assert!(host.eval(script).is_ok());
     }
 }
