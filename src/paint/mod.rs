@@ -248,6 +248,31 @@ fn resolve_text_decorations(
     resolved
 }
 
+/// Resolve element opacity from style.
+/// spec: <https://www.w3.org/TR/css-color-3/#transparency>
+/// TODO(spec): True group/stacking-context opacity (compositing the element subtree as a single group, so overlapping descendants do not double-blend) is NOT implemented — this uses a multiplicative per-element alpha approximation.
+fn get_opacity(style: &ComputedStyle) -> f32 {
+    match style.get("opacity") {
+        Some(CssValue::Number(v)) => v.clamp(0.0, 1.0),
+        Some(CssValue::Length(p, crate::css::values::LengthUnit::Percent)) => {
+            (p / 100.0).clamp(0.0, 1.0)
+        }
+        _ => 1.0,
+    }
+}
+
+/// Scale a color's alpha channel by an effective opacity factor.
+/// spec: <https://www.w3.org/TR/css-color-3/#transparency>
+fn scale_color_alpha(color: &Color, factor: f32) -> Color {
+    match color {
+        Color::Rgba(r, g, b, a) => {
+            let new_alpha = ((*a as f32) * factor).round();
+            let new_alpha_clamped = new_alpha.clamp(0.0, 255.0) as u8;
+            Color::Rgba(*r, *g, *b, new_alpha_clamped)
+        }
+    }
+}
+
 /// Builds a display list from the layout tree.
 /// spec: S-12
 pub fn build_display_list(
@@ -256,16 +281,20 @@ pub fn build_display_list(
     styles: &HashMap<NodeId, ComputedStyle>,
 ) -> DisplayList {
     let mut items = Vec::new();
-    let mut stack = vec![layout];
+    let mut stack = vec![(layout, 1.0)];
 
     // spec: iterative pre-order traversal (no unbounded recursion — I-6)
-    while let Some(layout_box) = stack.pop() {
+    while let Some((layout_box, inherited_opacity)) = stack.pop() {
         let mut skip_children = false;
+
+        let mut effective_opacity = inherited_opacity;
 
         if let Some((node_id, style)) = layout_box
             .node
             .and_then(|id| styles.get(&id).map(|s| (id, s)))
         {
+            let own_opacity = get_opacity(style);
+            effective_opacity = inherited_opacity * own_opacity;
             // Treat `collapse` the same as `hidden` for this task.
             // TODO(spec): S-12 visibility: collapse differs from hidden for table-row/column content.
             let node_hidden = matches!(
@@ -352,7 +381,7 @@ pub fn build_display_list(
                 btn_label_item = Some(DisplayItem::Text {
                     rect: corrected_rect,
                     text: label_text,
-                    color: text_color,
+                    color: scale_color_alpha(&text_color, effective_opacity),
                 });
             } else if is_text_input {
                 skip_children = true;
@@ -365,7 +394,7 @@ pub fn build_display_list(
                     // TODO(spec): border/images/gradients/rasterization
                     items.push(DisplayItem::SolidRect {
                         rect: layout_box.rect,
-                        color: color.clone(),
+                        color: scale_color_alpha(color, effective_opacity),
                     });
                 }
 
@@ -419,28 +448,28 @@ pub fn build_display_list(
                     if t > 0.0 && w > 0.0 {
                         items.push(DisplayItem::SolidRect {
                             rect: Rect::new(x, y, w, t),
-                            color: top_color,
+                            color: scale_color_alpha(&top_color, effective_opacity),
                         });
                     }
                     // Bottom border strip
                     if b > 0.0 && w > 0.0 {
                         items.push(DisplayItem::SolidRect {
                             rect: Rect::new(x, y + h - b, w, b),
-                            color: bottom_color,
+                            color: scale_color_alpha(&bottom_color, effective_opacity),
                         });
                     }
                     // Left border strip
                     if l > 0.0 && h - t - b > 0.0 {
                         items.push(DisplayItem::SolidRect {
                             rect: Rect::new(x, y + t, l, h - t - b),
-                            color: left_color,
+                            color: scale_color_alpha(&left_color, effective_opacity),
                         });
                     }
                     // Right border strip
                     if r > 0.0 && h - t - b > 0.0 {
                         items.push(DisplayItem::SolidRect {
                             rect: Rect::new(x + w - r, y + t, r, h - t - b),
-                            color: right_color,
+                            color: scale_color_alpha(&right_color, effective_opacity),
                         });
                     }
                 }
@@ -472,7 +501,7 @@ pub fn build_display_list(
                     items.push(DisplayItem::Text {
                         rect: corrected_rect,
                         text: display_text,
-                        color: color.clone(),
+                        color: scale_color_alpha(&color, effective_opacity),
                     });
 
                     // spec: S-82: if computed text-decorations are present (underline, overline, line-through)
@@ -490,7 +519,7 @@ pub fn build_display_list(
 
                         items.push(DisplayItem::SolidRect {
                             rect: underline_rect,
-                            color: color.clone(),
+                            color: scale_color_alpha(&color, effective_opacity),
                         });
                     }
 
@@ -501,7 +530,7 @@ pub fn build_display_list(
 
                         items.push(DisplayItem::SolidRect {
                             rect: overline_rect,
-                            color: color.clone(),
+                            color: scale_color_alpha(&color, effective_opacity),
                         });
                     }
 
@@ -512,7 +541,7 @@ pub fn build_display_list(
 
                         items.push(DisplayItem::SolidRect {
                             rect: line_through_rect,
-                            color: color.clone(),
+                            color: scale_color_alpha(&color, effective_opacity),
                         });
                     }
                 }
@@ -578,7 +607,7 @@ pub fn build_display_list(
                                             );
                                             items.push(DisplayItem::SolidRect {
                                                 rect: sub_rect,
-                                                color,
+                                                color: scale_color_alpha(&color, effective_opacity),
                                             });
                                         }
                                     }
@@ -607,7 +636,7 @@ pub fn build_display_list(
         // Since we use a stack (LIFO), we push children in reverse order.
         if !skip_children {
             for child in layout_box.children.iter().rev() {
-                stack.push(child);
+                stack.push((child, effective_opacity));
             }
         }
     }
@@ -2252,5 +2281,239 @@ mod tests {
 
         assert!(found_rect, "Should paint background for visible div");
         assert_eq!(text_fragments.concat(), "visible text");
+    }
+
+    #[test]
+    fn test_paint_opacity_basic() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { opacity: 0.5; background-color: #ff0000; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_bg = false;
+        for item in &items {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                let Color::Rgba(r, g, b, alpha) = color;
+                if *r == 255 && *g == 0 && *b == 0 {
+                    found_bg = true;
+                    assert!(
+                        (*alpha as i32 - 127).abs() <= 1,
+                        "Expected alpha close to 127, got {}",
+                        alpha
+                    );
+                }
+            }
+        }
+        assert!(found_bg, "Background SolidRect should be present");
+    }
+
+    #[test]
+    fn test_paint_opacity_nested() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, parent);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(parent, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .parent { opacity: 0.5; }
+            .child { opacity: 0.5; background-color: #ff0000; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_child_bg = false;
+        for item in &items {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                let Color::Rgba(r, g, b, alpha) = color;
+                if *r == 255 && *g == 0 && *b == 0 {
+                    found_child_bg = true;
+                    assert!(
+                        (*alpha as i32 - 64).abs() <= 1,
+                        "Expected nested child alpha close to 64, got {}",
+                        alpha
+                    );
+                }
+            }
+        }
+        assert!(
+            found_child_bg,
+            "Child background SolidRect should be present"
+        );
+    }
+
+    #[test]
+    fn test_paint_opacity_one_and_absent() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "div1".into())],
+        });
+        dom.append_child(body, div1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "div2".into())],
+        });
+        dom.append_child(body, div2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .div1 { opacity: 1.0; background-color: #ff0000; }
+            .div2 { background-color: #00ff00; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_div1 = false;
+        let mut found_div2 = false;
+
+        for item in &items {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                let Color::Rgba(r, g, b, alpha) = color;
+                if *r == 255 && *g == 0 && *b == 0 {
+                    found_div1 = true;
+                    assert_eq!(*alpha, 255, "div1 with opacity 1.0 should have alpha 255");
+                } else if *r == 0 && *g == 255 && *b == 0 {
+                    found_div2 = true;
+                    assert_eq!(*alpha, 255, "div2 without opacity should have alpha 255");
+                }
+            }
+        }
+        assert!(found_div1 && found_div2, "Both divs should be rendered");
+    }
+
+    #[test]
+    fn test_paint_opacity_zero() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { opacity: 0; background-color: #ff0000; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_bg = false;
+        for item in &items {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                let Color::Rgba(r, g, b, alpha) = color;
+                if *r == 255 && *g == 0 && *b == 0 {
+                    found_bg = true;
+                    assert_eq!(*alpha, 0, "div with opacity 0 should have alpha 0");
+                }
+            }
+        }
+        assert!(found_bg, "Background SolidRect should be present");
+    }
+
+    #[test]
+    fn test_paint_opacity_percentage() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { opacity: 50%; background-color: #ff0000; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_bg = false;
+        for item in &items {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                let Color::Rgba(r, g, b, alpha) = color;
+                if *r == 255 && *g == 0 && *b == 0 {
+                    found_bg = true;
+                    assert!(
+                        (*alpha as i32 - 127).abs() <= 1,
+                        "Expected percentage opacity alpha close to 127, got {}",
+                        alpha
+                    );
+                }
+            }
+        }
+        assert!(found_bg, "Background SolidRect should be present");
     }
 }
