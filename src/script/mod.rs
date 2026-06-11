@@ -1782,20 +1782,22 @@ impl BoaHost {
             *cell.borrow_mut() = Some(styles.clone());
         });
 
-        // 2. Set readyState to 'complete'
+        // 2. Set readyState to 'complete'. This is best-effort: any failure must NOT
+        // early-return, because `dom` has been taken out via `mem::take` above and the
+        // caller would otherwise receive an empty `Dom` (control must always reach the
+        // step-5 restore below).
         let global = self.context.global_object().clone();
-        let document_val = global
-            .get(JsString::from("document"), &mut self.context)
-            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+        let document_val = match global.get(JsString::from("document"), &mut self.context) {
+            Ok(val) => val,
+            Err(_) => JsValue::undefined(),
+        };
         if let Some(document_obj) = document_val.as_object() {
-            document_obj
-                .set(
-                    JsString::from("__readyState__"),
-                    JsValue::from(JsString::from("complete")),
-                    false,
-                    &mut self.context,
-                )
-                .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+            let _ = document_obj.set(
+                JsString::from("__readyState__"),
+                JsValue::from(JsString::from("complete")),
+                false,
+                &mut self.context,
+            );
         }
 
         // 3. Dispatch DOMContentLoaded at document then window
