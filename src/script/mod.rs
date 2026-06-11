@@ -1266,6 +1266,34 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'before', {
+                        value: function(newNode) {
+                            // TODO(spec): ChildNode.before/after — DOMString args and variadic nodes not yet supported
+                            if (!this.parentNode) return;
+                            if (!newNode || !newNode.__key__) {
+                                throw new TypeError("newNode must be a Node");
+                            }
+                            this.parentNode.insertBefore(newNode, this);
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+
+                    Object.defineProperty(node, 'after', {
+                        value: function(newNode) {
+                            // TODO(spec): ChildNode.before/after — DOMString args and variadic nodes not yet supported
+                            if (!this.parentNode) return;
+                            if (!newNode || !newNode.__key__) {
+                                throw new TypeError("newNode must be a Node");
+                            }
+                            this.parentNode.insertBefore(newNode, this.nextSibling);
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+
                     registry[key] = node;
                     return node;
                 }
@@ -5416,6 +5444,56 @@ mod tests {
         assert_eq!(dom.text_content(parent_children[0]), "inserted");
         assert_eq!(dom.text_content(parent_children[1]), "two");
         assert_eq!(dom.text_content(parent_children[2]), "last");
+    }
+
+    #[test]
+    fn test_dom_childnode_before_after() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let parent = document.createElement('div');
+            document.appendChild(parent);
+
+            let refNode = document.createElement('span');
+            refNode.textContent = 'ref';
+            parent.appendChild(refNode);
+
+            // 1. before: insert a node before refNode
+            let beforeNode = document.createElement('span');
+            beforeNode.textContent = 'before';
+            refNode.before(beforeNode);
+
+            // 2. after (with next sibling): insert a node after refNode but before any subsequent node
+            let afterNode = document.createElement('span');
+            afterNode.textContent = 'after';
+            refNode.after(afterNode);
+
+            // 3. after (when refNode's next sibling is now 'afterNode', and we target 'afterNode' which is the last child)
+            let lastNode = document.createElement('span');
+            lastNode.textContent = 'last';
+            afterNode.after(lastNode);
+
+            // 4. before / after on a node with null parentNode is a no-op (should not throw)
+            let detached = document.createElement('span');
+            let dummy = document.createElement('span');
+            detached.before(dummy);
+            detached.after(dummy);
+        ";
+        assert!(host.eval_with_dom(script, &mut dom).is_ok());
+
+        // Verify the DOM structure from the Rust side
+        let doc_children = dom.children(dom.document());
+        assert_eq!(doc_children.len(), 1);
+        let parent_id = doc_children[0];
+        let parent_children = dom.children(parent_id);
+
+        // Order should be: before, ref, after, last
+        assert_eq!(parent_children.len(), 4);
+        assert_eq!(dom.text_content(parent_children[0]), "before");
+        assert_eq!(dom.text_content(parent_children[1]), "ref");
+        assert_eq!(dom.text_content(parent_children[2]), "after");
+        assert_eq!(dom.text_content(parent_children[3]), "last");
     }
 
     #[test]
