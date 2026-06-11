@@ -3,6 +3,8 @@
 //! This module implements the `ScriptHost` port, allowing the browser engine
 //! to execute scripts. The current implementation uses the `boa_engine` crate.
 
+pub mod storage;
+
 use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
 use boa_engine::object::ObjectInitializer;
@@ -107,6 +109,9 @@ impl BoaHost {
 
         // Setup DOM bindings including the write APIs
         Self::setup_experimental_dom(&mut context);
+
+        // Setup Web Storage bindings (localStorage / sessionStorage)
+        storage::setup_storage(&mut context);
 
         Self { context }
     }
