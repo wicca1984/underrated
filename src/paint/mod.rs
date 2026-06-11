@@ -55,6 +55,15 @@ fn get_outline_width(style: &ComputedStyle) -> f32 {
     }
 }
 
+/// Helper to extract outline offset from computed styles in px, defaulting to 0.0px.
+fn get_outline_offset(style: &ComputedStyle) -> f32 {
+    match style.get("outline-offset") {
+        Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
+        Some(CssValue::Number(v)) => *v,
+        _ => 0.0,
+    }
+}
+
 /// Helper to recursively find any `Color` value inside a CSS property.
 /// spec: S-39
 fn find_color(value: &CssValue) -> Option<Color> {
@@ -496,13 +505,15 @@ pub fn build_display_list(
                 if has_outline {
                     let ow = get_outline_width(style);
                     if ow > 0.0 {
+                        let offset = get_outline_offset(style);
+                        let d = offset + ow;
                         let rect = layout_box.rect;
                         let x = rect.origin.x;
                         let y = rect.origin.y;
                         let w = rect.size.width.max(0.0);
                         let h = rect.size.height.max(0.0);
 
-                        // TODO(spec): outline non-solid styles, outline-offset != 0, and color:invert are not implemented (solid frame, zero offset, color falls back to text color).
+                        // TODO(spec): outline non-solid styles and color:invert are not implemented (solid frame, color falls back to text color).
 
                         let mut outline_color = Color::Rgba(0, 0, 0, 255);
                         let mut resolved = false;
@@ -527,7 +538,7 @@ pub fn build_display_list(
                         let scaled_color = scale_color_alpha(&outline_color, effective_opacity);
 
                         // Top strip
-                        let top_rect = Rect::new(x - ow, y - ow, w + 2.0 * ow, ow);
+                        let top_rect = Rect::new(x - d, y - d, w + 2.0 * d, ow);
                         if top_rect.size.width > 0.0 && top_rect.size.height > 0.0 {
                             items.push(DisplayItem::SolidRect {
                                 rect: top_rect,
@@ -536,7 +547,7 @@ pub fn build_display_list(
                         }
 
                         // Bottom strip
-                        let bottom_rect = Rect::new(x - ow, y + h, w + 2.0 * ow, ow);
+                        let bottom_rect = Rect::new(x - d, y + h + offset, w + 2.0 * d, ow);
                         if bottom_rect.size.width > 0.0 && bottom_rect.size.height > 0.0 {
                             items.push(DisplayItem::SolidRect {
                                 rect: bottom_rect,
@@ -545,7 +556,7 @@ pub fn build_display_list(
                         }
 
                         // Left strip
-                        let left_rect = Rect::new(x - ow, y, ow, h);
+                        let left_rect = Rect::new(x - d, y - offset, ow, h + 2.0 * offset);
                         if left_rect.size.width > 0.0 && left_rect.size.height > 0.0 {
                             items.push(DisplayItem::SolidRect {
                                 rect: left_rect,
@@ -554,7 +565,8 @@ pub fn build_display_list(
                         }
 
                         // Right strip
-                        let right_rect = Rect::new(x + w, y, ow, h);
+                        let right_rect =
+                            Rect::new(x + w + offset, y - offset, ow, h + 2.0 * offset);
                         if right_rect.size.width > 0.0 && right_rect.size.height > 0.0 {
                             items.push(DisplayItem::SolidRect {
                                 rect: right_rect,
@@ -1013,6 +1025,178 @@ mod tests {
             rects_none.len(),
             0,
             "Expected no outline rects with outline-style: none"
+        );
+    }
+
+    #[test]
+    fn test_paint_outline_with_positive_offset() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                width: 100px;
+                height: 100px;
+                outline: 2px solid red;
+                outline-offset: 4px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(rects.len(), 4, "Expected exactly 4 outline strips");
+
+        let red = Color::Rgba(255, 0, 0, 255);
+
+        let mut top_found = false;
+        let mut bottom_found = false;
+        let mut left_found = false;
+        let mut right_found = false;
+
+        for item in rects {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                assert_eq!(color, &red);
+                if rect.origin.x == -6.0
+                    && rect.origin.y == -6.0
+                    && rect.size.width == 112.0
+                    && rect.size.height == 2.0
+                {
+                    top_found = true;
+                } else if rect.origin.x == -6.0
+                    && rect.origin.y == 104.0
+                    && rect.size.width == 112.0
+                    && rect.size.height == 2.0
+                {
+                    bottom_found = true;
+                } else if rect.origin.x == -6.0
+                    && rect.origin.y == -4.0
+                    && rect.size.width == 2.0
+                    && rect.size.height == 108.0
+                {
+                    left_found = true;
+                } else if rect.origin.x == 104.0
+                    && rect.origin.y == -4.0
+                    && rect.size.width == 2.0
+                    && rect.size.height == 108.0
+                {
+                    right_found = true;
+                }
+            }
+        }
+
+        assert!(top_found, "Top outline rect mismatch with positive offset");
+        assert!(
+            bottom_found,
+            "Bottom outline rect mismatch with positive offset"
+        );
+        assert!(
+            left_found,
+            "Left outline rect mismatch with positive offset"
+        );
+        assert!(
+            right_found,
+            "Right outline rect mismatch with positive offset"
+        );
+    }
+
+    #[test]
+    fn test_paint_outline_with_negative_offset() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                width: 100px;
+                height: 100px;
+                outline: 2px solid red;
+                outline-offset: -3px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(rects.len(), 4, "Expected exactly 4 outline strips");
+
+        let red = Color::Rgba(255, 0, 0, 255);
+
+        let mut top_found = false;
+        let mut bottom_found = false;
+        let mut left_found = false;
+        let mut right_found = false;
+
+        for item in rects {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                assert_eq!(color, &red);
+                if rect.origin.x == 1.0
+                    && rect.origin.y == 1.0
+                    && rect.size.width == 98.0
+                    && rect.size.height == 2.0
+                {
+                    top_found = true;
+                } else if rect.origin.x == 1.0
+                    && rect.origin.y == 97.0
+                    && rect.size.width == 98.0
+                    && rect.size.height == 2.0
+                {
+                    bottom_found = true;
+                } else if rect.origin.x == 1.0
+                    && rect.origin.y == 3.0
+                    && rect.size.width == 2.0
+                    && rect.size.height == 94.0
+                {
+                    left_found = true;
+                } else if rect.origin.x == 97.0
+                    && rect.origin.y == 3.0
+                    && rect.size.width == 2.0
+                    && rect.size.height == 94.0
+                {
+                    right_found = true;
+                }
+            }
+        }
+
+        assert!(top_found, "Top outline rect mismatch with negative offset");
+        assert!(
+            bottom_found,
+            "Bottom outline rect mismatch with negative offset"
+        );
+        assert!(
+            left_found,
+            "Left outline rect mismatch with negative offset"
+        );
+        assert!(
+            right_found,
+            "Right outline rect mismatch with negative offset"
         );
     }
 
