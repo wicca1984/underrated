@@ -90,6 +90,7 @@ const JS_LOOP_ITERATION_LIMIT: u64 = 100_000_000;
 /// A `ScriptHost` implementation using the Boa JavaScript engine.
 pub struct BoaHost {
     context: Context,
+    document_url: Option<String>,
 }
 
 thread_local! {
@@ -125,7 +126,10 @@ impl BoaHost {
             eprintln!("Failed to register XMLHttpRequest: {:?}", e);
         }
 
-        Self { context }
+        Self {
+            context,
+            document_url: None,
+        }
     }
 
     fn setup_experimental_dom(context: &mut Context) {
@@ -387,6 +391,50 @@ impl BoaHost {
                 const bridge = window.__dom_bridge__;
                 const registry = {};
                 document.__node_registry__ = registry;
+
+                window.__document_location__ = {
+                    href: "",
+                    protocol: "",
+                    host: "",
+                    hostname: "",
+                    port: "",
+                    pathname: "",
+                    search: "",
+                    hash: "",
+                    origin: ""
+                };
+
+                const locationObj = {
+                    get href() { return window.__document_location__.href; },
+                    get protocol() { return window.__document_location__.protocol; },
+                    get host() { return window.__document_location__.host; },
+                    get hostname() { return window.__document_location__.hostname; },
+                    get port() { return window.__document_location__.port; },
+                    get pathname() { return window.__document_location__.pathname; },
+                    get search() { return window.__document_location__.search; },
+                    get hash() { return window.__document_location__.hash; },
+                    get origin() { return window.__document_location__.origin; },
+
+                    set href(val) {
+                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                    },
+                    assign(url) {
+                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                    },
+                    replace(url) {
+                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                    },
+                    reload() {
+                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                    },
+
+                    toString() {
+                        return this.href;
+                    }
+                };
+
+                window.location = locationObj;
+                document.location = locationObj;
 
                 class DOMException extends Error {
                     constructor(message, name) {
@@ -1343,6 +1391,121 @@ impl BoaHost {
         let source = Source::from_bytes(setup_code.as_bytes());
         if let Err(e) = context.eval(source) {
             eprintln!("Failed to initialize DOM bindings: {:?}", e);
+        }
+    }
+
+    /// Sets the current document's URL.
+    pub fn set_document_url(&mut self, url: &str) {
+        self.document_url = Some(url.to_string());
+
+        let parsed_url = crate::url::Url::parse(url);
+
+        let mut href = String::new();
+        let mut protocol = String::new();
+        let mut host = String::new();
+        let mut hostname = String::new();
+        let mut port = String::new();
+        let mut pathname = String::new();
+        let mut search = String::new();
+        let mut hash = String::new();
+        let mut origin = String::new();
+
+        if let Ok(u) = parsed_url {
+            href = u.serialize();
+            protocol = format!("{}:", u.scheme);
+            if let Some(h) = &u.host {
+                hostname = h.clone();
+                if let Some(p) = u.port {
+                    port = p.to_string();
+                    host = format!("{}:{}", h, p);
+                } else {
+                    host = h.clone();
+                }
+            }
+            pathname = u.path.clone();
+            if let Some(q) = &u.query
+                && !q.is_empty()
+            {
+                search = format!("?{}", q);
+            }
+            if let Some(f) = &u.fragment
+                && !f.is_empty()
+            {
+                hash = format!("#{}", f);
+            }
+            if u.scheme == "file" {
+                origin = "file://".to_string();
+            } else if let Some(h) = &u.host {
+                let mut orig = format!("{}://{}", u.scheme, h);
+                if let Some(p) = u.port {
+                    orig.push_str(&format!(":{}", p));
+                }
+                origin = orig;
+            } else {
+                origin = "null".to_string();
+            }
+        }
+
+        // Get window.__document_location__ and update its fields
+        let global = self.context.global_object().clone();
+        if let Ok(doc_loc_val) =
+            global.get(JsString::from("__document_location__"), &mut self.context)
+            && let Some(doc_loc_obj) = doc_loc_val.as_object()
+        {
+            let _ = doc_loc_obj.set(
+                JsString::from("href"),
+                JsValue::from(JsString::from(href)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("protocol"),
+                JsValue::from(JsString::from(protocol)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("host"),
+                JsValue::from(JsString::from(host)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("hostname"),
+                JsValue::from(JsString::from(hostname)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("port"),
+                JsValue::from(JsString::from(port)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("pathname"),
+                JsValue::from(JsString::from(pathname)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("search"),
+                JsValue::from(JsString::from(search)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("hash"),
+                JsValue::from(JsString::from(hash)),
+                false,
+                &mut self.context,
+            );
+            let _ = doc_loc_obj.set(
+                JsString::from("origin"),
+                JsValue::from(JsString::from(origin)),
+                false,
+                &mut self.context,
+            );
         }
     }
 
@@ -5086,6 +5249,133 @@ mod tests {
         assert_eq!(
             res6,
             Ok("<span title=\"a &quot; b &amp; c\">&lt;test&gt;</span>".to_string())
+        );
+    }
+
+    #[test]
+    fn test_location_uninitialized() {
+        let mut host = BoaHost::new();
+        assert!(
+            host.eval("if (window.location.href !== '') throw 'href mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.protocol !== '') throw 'protocol mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.host !== '') throw 'host mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.hostname !== '') throw 'hostname mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.port !== '') throw 'port mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.pathname !== '') throw 'pathname mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.search !== '') throw 'search mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.hash !== '') throw 'hash mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.origin !== '') throw 'origin mismatch';")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_location_initialized() {
+        let mut host = BoaHost::new();
+        host.set_document_url("https://example.com:8080/path/to/page?q=foo#frag");
+        assert!(host.eval("if (window.location.href !== 'https://example.com:8080/path/to/page?q=foo#frag') throw 'href mismatch';").is_ok());
+        assert!(
+            host.eval("if (window.location.protocol !== 'https:') throw 'protocol mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.hostname !== 'example.com') throw 'hostname mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.port !== '8080') throw 'port mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.host !== 'example.com:8080') throw 'host mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval(
+                "if (window.location.pathname !== '/path/to/page') throw 'pathname mismatch';"
+            )
+            .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.search !== '?q=foo') throw 'search mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.hash !== '#frag') throw 'hash mismatch';")
+                .is_ok()
+        );
+        assert!(host.eval("if (window.location.origin !== 'https://example.com:8080') throw 'origin mismatch';").is_ok());
+        assert!(host.eval("if (document.location !== window.location) throw 'document.location !== window.location';").is_ok());
+        assert!(host.eval("if (window.location.toString() !== 'https://example.com:8080/path/to/page?q=foo#frag') throw 'toString mismatch';").is_ok());
+    }
+
+    #[test]
+    fn test_location_no_port_or_search_or_hash() {
+        let mut host = BoaHost::new();
+        host.set_document_url("http://example.org/home");
+        assert!(
+            host.eval(
+                "if (window.location.href !== 'http://example.org/home') throw 'href mismatch';"
+            )
+            .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.protocol !== 'http:') throw 'protocol mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.hostname !== 'example.org') throw 'hostname mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.port !== '') throw 'port mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.host !== 'example.org') throw 'host mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.pathname !== '/home') throw 'pathname mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.search !== '') throw 'search mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.hash !== '') throw 'hash mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval(
+                "if (window.location.origin !== 'http://example.org') throw 'origin mismatch';"
+            )
+            .is_ok()
         );
     }
 }
