@@ -1,6 +1,10 @@
 use crate::css::values::Color;
 use crate::paint::{DisplayItem, DisplayList};
 
+thread_local! {
+    static FONT_STACK_8: crate::font::FontStack = crate::font::FontStack::new(8);
+}
+
 /// A pixel buffer for software software rasterization.
 /// Each pixel is stored as a u32 in 0xAARRGGBB format.
 /// spec: S-14
@@ -88,31 +92,73 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                 let mut cursor_x = rect.origin.x;
                 let cursor_y = rect.origin.y;
 
-                for c in text.chars() {
-                    let coverage = font.glyph_coverage(c);
-                    let (gw, gh) = font.glyph_size();
+                FONT_STACK_8.with(|stack| {
+                    for c in text.chars() {
+                        if c.is_ascii() {
+                            let coverage = font.glyph_coverage(c);
+                            let (gw, gh) = font.glyph_size();
 
-                    for gy in 0..gh {
-                        for gx in 0..gw {
-                            let c_x = (cursor_x.floor() as i32) + gx as i32;
-                            let c_y = (cursor_y.floor() as i32) + gy as i32;
+                            for gy in 0..gh {
+                                for gx in 0..gw {
+                                    let c_x = (cursor_x.floor() as i32) + gx as i32;
+                                    let c_y = (cursor_y.floor() as i32) + gy as i32;
 
-                            // Clip to canvas bounds
-                            if c_x >= 0 && c_x < width as i32 && c_y >= 0 && c_y < height as i32 {
-                                let cov = coverage[(gy * gw + gx) as usize];
-                                if cov > 0 {
-                                    // Scale foreground alpha by glyph coverage
-                                    let alpha = ((a_f as u32 * cov as u32 + 127) / 255) as u8;
-                                    let index = (c_y as usize) * (width as usize) + (c_x as usize);
-                                    if let Some(pixel) = canvas.pixels.get_mut(index) {
-                                        *pixel = blend((r_f, g_f, b_f, alpha), *pixel);
+                                    // Clip to canvas bounds
+                                    if c_x >= 0
+                                        && c_x < width as i32
+                                        && c_y >= 0
+                                        && c_y < height as i32
+                                    {
+                                        let cov = coverage[(gy * gw + gx) as usize];
+                                        if cov > 0 {
+                                            // Scale foreground alpha by glyph coverage
+                                            let alpha =
+                                                ((a_f as u32 * cov as u32 + 127) / 255) as u8;
+                                            let index =
+                                                (c_y as usize) * (width as usize) + (c_x as usize);
+                                            if let Some(pixel) = canvas.pixels.get_mut(index) {
+                                                *pixel = blend((r_f, g_f, b_f, alpha), *pixel);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            let glyph = stack.rasterize(c);
+                            let baseline_y = cursor_y + 8.0;
+                            let start_x = cursor_x + glyph.bearing_x as f32;
+                            let start_y = baseline_y - glyph.bearing_y as f32;
+
+                            for gy in 0..glyph.height {
+                                for gx in 0..glyph.width {
+                                    let c_x = (start_x.floor() as i32) + gx as i32;
+                                    let c_y = (start_y.floor() as i32) + gy as i32;
+
+                                    // Clip to canvas bounds
+                                    if c_x >= 0
+                                        && c_x < width as i32
+                                        && c_y >= 0
+                                        && c_y < height as i32
+                                    {
+                                        let idx = (gy * glyph.width + gx) as usize;
+                                        let cov = glyph.coverage.get(idx).copied().unwrap_or(0);
+                                        if cov > 0 {
+                                            // Scale foreground alpha by glyph coverage
+                                            let alpha =
+                                                ((a_f as u32 * cov as u32 + 127) / 255) as u8;
+                                            let index =
+                                                (c_y as usize) * (width as usize) + (c_x as usize);
+                                            if let Some(pixel) = canvas.pixels.get_mut(index) {
+                                                *pixel = blend((r_f, g_f, b_f, alpha), *pixel);
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
+                        cursor_x += font.glyph_width(c) as f32;
                     }
-                    cursor_x += font.glyph_width(c) as f32;
-                }
+                });
             }
             DisplayItem::Image {
                 rect,
@@ -703,6 +749,71 @@ mod tests {
         // 8x8 glyph will go to (26, 26).
         // It should not panic.
         let _canvas = rasterize(&list, 20, 20);
+    }
+
+    #[test]
+    fn test_rasterize_ascii_regression() {
+        let items = vec![DisplayItem::Text {
+            rect: Rect::new(0.0, 0.0, 16.0, 16.0),
+            text: "A".into(),
+            color: Color::Rgba(0, 0, 0, 255), // Black
+        }];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 16, 16);
+
+        let mut found_non_bg = false;
+        for y in 0..16 {
+            for x in 0..16 {
+                if canvas.pixel(x, y) != 0xFFFFFFFF {
+                    found_non_bg = true;
+                }
+            }
+        }
+        assert!(
+            found_non_bg,
+            "Should find at least one non-background pixel for ASCII text 'A'"
+        );
+    }
+
+    #[test]
+    fn test_rasterize_non_ascii_hiragana() {
+        let items = vec![DisplayItem::Text {
+            rect: Rect::new(2.0, 2.0, 28.0, 28.0),
+            text: "あ".into(),
+            color: Color::Rgba(0, 0, 0, 255), // Black
+        }];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 32, 32);
+
+        // This should not panic and should draw at least one non-background pixel.
+        // Whether a fallback font exists or .notdef (tofu) is drawn, it should produce some pixels.
+        let mut found_non_bg = false;
+        for y in 0..32 {
+            for x in 0..32 {
+                if canvas.pixel(x, y) != 0xFFFFFFFF {
+                    found_non_bg = true;
+                }
+            }
+        }
+        assert!(
+            found_non_bg,
+            "Should find at least one non-background pixel for non-ASCII 'あ'"
+        );
+    }
+
+    #[test]
+    fn test_rasterize_robustness() {
+        // Control char (e.g. \u{0001}) or unassigned codepoint on a tiny canvas
+        let items = vec![DisplayItem::Text {
+            rect: Rect::new(1.0, 1.0, 2.0, 2.0),
+            text: "\u{0001}\u{E000}".into(), // control + private use area
+            color: Color::Rgba(0, 0, 0, 255),
+        }];
+        let list = DisplayList(items);
+        // Canvas is tiny (e.g. 2x2), should not panic and should stay in bounds.
+        let canvas = rasterize(&list, 2, 2);
+        assert_eq!(canvas.width, 2);
+        assert_eq!(canvas.height, 2);
     }
 
     #[test]
