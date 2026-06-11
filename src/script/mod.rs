@@ -74,6 +74,12 @@ pub fn set_max_yields(yields: usize) {
     MAX_YIELDS.with(|cell| *cell.borrow_mut() = yields);
 }
 
+/// Sane recursion limit well under the native stack budget to prevent stack overflow on hostile deep JS (I-6 compliance).
+const JS_RECURSION_LIMIT: usize = 256;
+
+/// Generous but finite loop iteration limit to prevent pathological infinite loops from hanging.
+const JS_LOOP_ITERATION_LIMIT: u64 = 100_000_000;
+
 /// A `ScriptHost` implementation using the Boa JavaScript engine.
 pub struct BoaHost {
     context: Context,
@@ -88,6 +94,14 @@ impl BoaHost {
     /// Creates a new `BoaHost` with an empty context.
     pub fn new() -> Self {
         let mut context = Context::default();
+
+        // Set safe recursion and loop iteration limits to prevent native stack overflow and infinite loops.
+        context
+            .runtime_limits_mut()
+            .set_recursion_limit(JS_RECURSION_LIMIT);
+        context
+            .runtime_limits_mut()
+            .set_loop_iteration_limit(JS_LOOP_ITERATION_LIMIT);
 
         // Setup DOM bindings including the write APIs
         Self::setup_experimental_dom(&mut context);
@@ -893,6 +907,26 @@ pub fn run_inline_scripts(mut dom: Dom) -> Dom {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_deep_recursive_js_does_not_overflow() {
+        let mut host = BoaHost::new();
+        let recursive_script = "function f() { return f(); } f();";
+        let res = host.eval(recursive_script);
+        assert!(res.is_err(), "Recursive script did not return an error");
+        match res {
+            Err(ScriptError::Runtime(msg)) => {
+                assert!(
+                    msg.contains("RangeError")
+                        || msg.contains("recursion")
+                        || msg.contains("RuntimeLimit"),
+                    "Error message should mention RangeError, RuntimeLimit, or recursion, got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected a Runtime error, got {:?}", other),
+        }
+    }
 
     #[test]
     fn test_boa_eval_basic() {
