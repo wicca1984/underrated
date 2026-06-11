@@ -5,6 +5,7 @@
 
 pub mod storage;
 pub mod timer;
+pub mod xhr;
 
 use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
@@ -117,6 +118,11 @@ impl BoaHost {
 
         // Setup timer built-ins (setTimeout, clearTimeout, setInterval, clearInterval)
         let _ = timer::register_timer_builtins(&mut context);
+
+        // Register XMLHttpRequest stub (t0242)
+        if let Err(e) = xhr::register_xhr(&mut context) {
+            eprintln!("Failed to register XMLHttpRequest: {:?}", e);
+        }
 
         Self { context }
     }
