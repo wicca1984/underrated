@@ -385,6 +385,23 @@ pub(crate) fn layout_node(
     if get_form_control_button_label(dom, node).is_some() && children.is_empty() {
         content_height = crate::font::BitmapFont::builtin().line_height() as f32;
     }
+
+    // Apply aspect-ratio if height is not explicitly set (i.e. is auto or absent)
+    // TODO(spec): The inverse direction (width-from-height using aspect-ratio) is ambiguous/not implemented in our simplified model.
+    let height_is_auto_or_absent = match style.get("height") {
+        None => true,
+        Some(CssValue::Keyword(kw)) if kw == "auto" => true,
+        _ => false,
+    };
+    if height_is_auto_or_absent && let Some(r) = get_aspect_ratio(style) {
+        let border_box_width =
+            content_width + padding_left + padding_right + border_left + border_right;
+        let derived_border_box_height = border_box_width / r;
+        content_height =
+            (derived_border_box_height - padding_top - padding_bottom - border_top - border_bottom)
+                .max(0.0);
+    }
+
     // TODO(spec): min/max-height clamp box-sizing interaction follows the existing height treatment; percentage min/max sizes are not resolved.
     let border_box_height = clamp_height(style, get_px(style, "height", content_height))
         + padding_top
@@ -703,6 +720,53 @@ fn clamp_width(style: &ComputedStyle, mut width: f32, containing_width: f32) -> 
         }
     }
     width.max(0.0)
+}
+
+fn get_aspect_ratio(style: &ComputedStyle) -> Option<f32> {
+    if let Some(val) = style.get("aspect-ratio") {
+        match val {
+            CssValue::Number(r) => {
+                if *r > 0.0 {
+                    return Some(*r);
+                }
+            }
+            CssValue::Keyword(kw) => {
+                if kw == "auto" {
+                    return None;
+                }
+                if let Some(pos) = kw.find('/') {
+                    let w_str = &kw[..pos];
+                    let h_str = &kw[pos + 1..];
+                    if let (Ok(w), Ok(h)) =
+                        (w_str.trim().parse::<f32>(), h_str.trim().parse::<f32>())
+                        && w > 0.0
+                        && h > 0.0
+                    {
+                        return Some(w / h);
+                    }
+                } else if let Ok(r) = kw.trim().parse::<f32>()
+                    && r > 0.0
+                {
+                    return Some(r);
+                }
+            }
+            CssValue::Multiple(vals) if vals.len() == 3 => {
+                if let (
+                    Some(CssValue::Number(w)),
+                    Some(CssValue::Keyword(op)),
+                    Some(CssValue::Number(h)),
+                ) = (vals.first(), vals.get(1), vals.get(2))
+                    && op == "/"
+                    && *w > 0.0
+                    && *h > 0.0
+                {
+                    return Some(*w / *h);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn clamp_height(style: &ComputedStyle, mut height: f32) -> f32 {
@@ -2321,6 +2385,125 @@ mod tests {
             hit_test(&root_box, 15.0, 90.0),
             Some(node_nested_under_none)
         );
+    }
+
+    #[test]
+    fn test_aspect_ratio_sizing() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // Case 1: A block with a fixed width (200px), height auto, aspect-ratio: 2 / 1 -> height ≈ 100px
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div1);
+
+        // Case 2: Single-number form aspect-ratio: 4 with width 200px, height auto -> height ≈ 50px
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div2);
+
+        // Case 3: A block with BOTH height: 30px and aspect-ratio: 2 / 1 -> height stays 30px
+        let div3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div3);
+
+        // Case 4: No aspect-ratio (regression guard) -> height should be 0px as it is empty
+        let div4 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div4);
+
+        let mut styles = std::collections::HashMap::new();
+
+        // Style for body
+        let mut body_style = ComputedStyle::default();
+        body_style.insert(
+            "display".to_string(),
+            CssValue::Keyword("block".to_string()),
+        );
+        body_style.insert("width".to_string(), CssValue::Length(500.0, LengthUnit::Px));
+        styles.insert(body, body_style);
+
+        // Style for div1: width 200px, aspect-ratio: 2 / 1 (as Keyword)
+        let mut style1 = ComputedStyle::default();
+        style1.insert(
+            "display".to_string(),
+            CssValue::Keyword("block".to_string()),
+        );
+        style1.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        style1.insert(
+            "aspect-ratio".to_string(),
+            CssValue::Keyword("2 / 1".to_string()),
+        );
+        styles.insert(div1, style1);
+
+        // Style for div2: width 200px, aspect-ratio: 4 (as Number)
+        let mut style2 = ComputedStyle::default();
+        style2.insert(
+            "display".to_string(),
+            CssValue::Keyword("block".to_string()),
+        );
+        style2.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        style2.insert("aspect-ratio".to_string(), CssValue::Number(4.0));
+        styles.insert(div2, style2);
+
+        // Style for div3: width 200px, height 30px, aspect-ratio: 2 / 1
+        let mut style3 = ComputedStyle::default();
+        style3.insert(
+            "display".to_string(),
+            CssValue::Keyword("block".to_string()),
+        );
+        style3.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        style3.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        style3.insert(
+            "aspect-ratio".to_string(),
+            CssValue::Keyword("2 / 1".to_string()),
+        );
+        styles.insert(div3, style3);
+
+        // Style for div4: width 200px, no aspect-ratio
+        let mut style4 = ComputedStyle::default();
+        style4.insert(
+            "display".to_string(),
+            CssValue::Keyword("block".to_string()),
+        );
+        style4.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        styles.insert(div4, style4);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        // Verify Case 1
+        let box1 = &body_box.children[0];
+        assert!(approx_eq(box1.rect.size.width, 200.0));
+        assert!(approx_eq(box1.rect.size.height, 100.0));
+
+        // Verify Case 2
+        let box2 = &body_box.children[1];
+        assert!(approx_eq(box2.rect.size.width, 200.0));
+        assert!(approx_eq(box2.rect.size.height, 50.0));
+
+        // Verify Case 3
+        let box3 = &body_box.children[2];
+        assert!(approx_eq(box3.rect.size.width, 200.0));
+        assert!(approx_eq(box3.rect.size.height, 30.0));
+
+        // Verify Case 4
+        let box4 = &body_box.children[3];
+        assert!(approx_eq(box4.rect.size.width, 200.0));
+        assert!(approx_eq(box4.rect.size.height, 0.0));
     }
 
     #[test]
