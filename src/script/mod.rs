@@ -1016,6 +1016,84 @@ impl BoaHost {
                     return true;
                 }
 
+                function compareDocumentPositionHelper(node, other) {
+                    // TODO(spec): Attribute nodes and shadow roots are not yet supported or exposed, so some advanced edge cases are simplified.
+                    const DOCUMENT_POSITION_DISCONNECTED = 1;
+                    const DOCUMENT_POSITION_PRECEDING = 2;
+                    const DOCUMENT_POSITION_FOLLOWING = 4;
+                    const DOCUMENT_POSITION_CONTAINS = 8;
+                    const DOCUMENT_POSITION_CONTAINED_BY = 16;
+                    const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 32;
+
+                    if (!other || !other.__key__) {
+                        return DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC | DOCUMENT_POSITION_PRECEDING;
+                    }
+
+                    if (node === other) {
+                        return 0;
+                    }
+
+                    // Check containment first
+                    if (other.contains(node)) {
+                        return DOCUMENT_POSITION_CONTAINS | DOCUMENT_POSITION_PRECEDING;
+                    }
+                    if (node.contains(other)) {
+                        return DOCUMENT_POSITION_CONTAINED_BY | DOCUMENT_POSITION_FOLLOWING;
+                    }
+
+                    // Traverse up to find common ancestor
+                    const thisAncestors = [];
+                    let curr = node;
+                    while (curr) {
+                        thisAncestors.push(curr);
+                        curr = curr.parentNode;
+                    }
+
+                    const otherAncestors = [];
+                    let currOther = other;
+                    while (currOther) {
+                        otherAncestors.push(currOther);
+                        currOther = currOther.parentNode;
+                    }
+
+                    const thisRoot = thisAncestors[thisAncestors.length - 1];
+                    const otherRoot = otherAncestors[otherAncestors.length - 1];
+
+                    if (thisRoot !== otherRoot) {
+                        // Different trees
+                        return DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC | DOCUMENT_POSITION_PRECEDING;
+                    }
+
+                    // Find lowest common ancestor
+                    let i = thisAncestors.length - 1;
+                    let j = otherAncestors.length - 1;
+                    let lca = null;
+                    while (i >= 0 && j >= 0 && thisAncestors[i] === otherAncestors[j]) {
+                        lca = thisAncestors[i];
+                        i--;
+                        j--;
+                    }
+
+                    if (!lca) {
+                        return DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC | DOCUMENT_POSITION_PRECEDING;
+                    }
+
+                    // Determine document order of the children of the LCA
+                    const children = lca.childNodes;
+                    const indexThis = children.indexOf(thisAncestors[i]);
+                    const indexOther = children.indexOf(otherAncestors[j]);
+
+                    if (indexThis === -1 || indexOther === -1) {
+                        return DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC | DOCUMENT_POSITION_PRECEDING;
+                    }
+
+                    if (indexThis < indexOther) {
+                        return DOCUMENT_POSITION_FOLLOWING;
+                    } else {
+                        return DOCUMENT_POSITION_PRECEDING;
+                    }
+                }
+
                 function getOrCreateNode(key) {
                     if (!key) return null;
                     if (registry[key]) {
@@ -1256,6 +1334,17 @@ impl BoaHost {
                     node.isEqualNode = function(otherNode) {
                         return isEqualNodeHelper(this, otherNode);
                     };
+
+                    node.compareDocumentPosition = function(otherNode) {
+                        return compareDocumentPositionHelper(this, otherNode);
+                    };
+
+                    Object.defineProperty(node, 'DOCUMENT_POSITION_DISCONNECTED', { value: 1, enumerable: true });
+                    Object.defineProperty(node, 'DOCUMENT_POSITION_PRECEDING', { value: 2, enumerable: true });
+                    Object.defineProperty(node, 'DOCUMENT_POSITION_FOLLOWING', { value: 4, enumerable: true });
+                    Object.defineProperty(node, 'DOCUMENT_POSITION_CONTAINS', { value: 8, enumerable: true });
+                    Object.defineProperty(node, 'DOCUMENT_POSITION_CONTAINED_BY', { value: 16, enumerable: true });
+                    Object.defineProperty(node, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
 
                     Object.defineProperty(node, 'childNodes', {
                         get() {
@@ -1652,6 +1741,17 @@ impl BoaHost {
                 document.isEqualNode = function(otherNode) {
                     return isEqualNodeHelper(this, otherNode);
                 };
+
+                document.compareDocumentPosition = function(otherNode) {
+                    return compareDocumentPositionHelper(this, otherNode);
+                };
+
+                Object.defineProperty(document, 'DOCUMENT_POSITION_DISCONNECTED', { value: 1, enumerable: true });
+                Object.defineProperty(document, 'DOCUMENT_POSITION_PRECEDING', { value: 2, enumerable: true });
+                Object.defineProperty(document, 'DOCUMENT_POSITION_FOLLOWING', { value: 4, enumerable: true });
+                Object.defineProperty(document, 'DOCUMENT_POSITION_CONTAINS', { value: 8, enumerable: true });
+                Object.defineProperty(document, 'DOCUMENT_POSITION_CONTAINED_BY', { value: 16, enumerable: true });
+                Object.defineProperty(document, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
 
                 Object.defineProperty(document, 'childNodes', {
                     get() {
@@ -4940,6 +5040,102 @@ mod tests {
         // 7. document does NOT contain nodes outside it (not appended, or null)
         let res_document_contains_null = host.eval_with_dom("document.contains(null)", &mut dom);
         assert_eq!(res_document_contains_null, Ok("false".to_string()));
+    }
+
+    #[test]
+    fn test_node_compare_document_position() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Build a DOM tree:
+        // document -> parent (div) -> child1 (span), child2 (div)
+        let parent_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent".to_string())],
+        });
+        let child1_id = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![("id".to_string(), "child1".to_string())],
+        });
+        let child2_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "child2".to_string())],
+        });
+
+        dom.append_child(parent_id, child1_id);
+        dom.append_child(parent_id, child2_id);
+        dom.append_child(document, parent_id);
+
+        let mut host = BoaHost::new();
+
+        // 1. A node compared to itself returns 0
+        let res_self = host.eval_with_dom(
+            "document.getElementById('parent').compareDocumentPosition(document.getElementById('parent'))",
+            &mut dom,
+        );
+        assert_eq!(res_self, Ok("0".to_string()));
+
+        // 2. Parent.compareDocumentPosition(child) returns 20 (CONTAINED_BY | FOLLOWING)
+        let res_parent_child = host.eval_with_dom(
+            "document.getElementById('parent').compareDocumentPosition(document.getElementById('child1'))",
+            &mut dom,
+        );
+        assert_eq!(res_parent_child, Ok("20".to_string()));
+
+        // 3. Child.compareDocumentPosition(parent) returns 10 (CONTAINS | PRECEDING)
+        let res_child_parent = host.eval_with_dom(
+            "document.getElementById('child1').compareDocumentPosition(document.getElementById('parent'))",
+            &mut dom,
+        );
+        assert_eq!(res_child_parent, Ok("10".to_string()));
+
+        // 4. Sibling comparison: child1 (earlier) and child2 (later)
+        // child1.compareDocumentPosition(child2) should return 4 (DOCUMENT_POSITION_FOLLOWING)
+        let res_sibling_following = host.eval_with_dom(
+            "document.getElementById('child1').compareDocumentPosition(document.getElementById('child2'))",
+            &mut dom,
+        );
+        assert_eq!(res_sibling_following, Ok("4".to_string()));
+
+        // child2.compareDocumentPosition(child1) should return 2 (DOCUMENT_POSITION_PRECEDING)
+        let res_sibling_preceding = host.eval_with_dom(
+            "document.getElementById('child2').compareDocumentPosition(document.getElementById('child1'))",
+            &mut dom,
+        );
+        assert_eq!(res_sibling_preceding, Ok("2".to_string()));
+
+        // 5. Freshly-created, unattached node has DISCONNECTED (1) bit set (returns 35: DISCONNECTED | IMPLEMENTATION_SPECIFIC | PRECEDING)
+        let res_unattached = host.eval_with_dom(
+            "const unattached = document.createElement('div'); document.getElementById('parent').compareDocumentPosition(unattached)",
+            &mut dom,
+        );
+        assert_eq!(res_unattached, Ok("35".to_string()));
+
+        // 6. null and undefined compared to a node should return 35
+        let res_null = host.eval_with_dom(
+            "document.getElementById('parent').compareDocumentPosition(null)",
+            &mut dom,
+        );
+        assert_eq!(res_null, Ok("35".to_string()));
+
+        let res_undefined = host.eval_with_dom(
+            "document.getElementById('parent').compareDocumentPosition(undefined)",
+            &mut dom,
+        );
+        assert_eq!(res_undefined, Ok("35".to_string()));
+
+        // 7. Verify constant properties exist on node instances and document
+        let res_const_on_node = host.eval_with_dom(
+            "const p = document.getElementById('parent'); p.DOCUMENT_POSITION_DISCONNECTED === 1 && p.DOCUMENT_POSITION_PRECEDING === 2 && p.DOCUMENT_POSITION_FOLLOWING === 4 && p.DOCUMENT_POSITION_CONTAINS === 8 && p.DOCUMENT_POSITION_CONTAINED_BY === 16 && p.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC === 32",
+            &mut dom,
+        );
+        assert_eq!(res_const_on_node, Ok("true".to_string()));
+
+        let res_const_on_doc = host.eval_with_dom(
+            "document.DOCUMENT_POSITION_DISCONNECTED === 1 && document.DOCUMENT_POSITION_PRECEDING === 2 && document.DOCUMENT_POSITION_FOLLOWING === 4 && document.DOCUMENT_POSITION_CONTAINS === 8 && document.DOCUMENT_POSITION_CONTAINED_BY === 16 && document.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC === 32",
+            &mut dom,
+        );
+        assert_eq!(res_const_on_doc, Ok("true".to_string()));
     }
 
     #[test]
