@@ -132,6 +132,16 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_get_elements_by_tag_name),
+                JsString::from("getElementsByTagName"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_get_elements_by_class_name),
+                JsString::from("getElementsByClassName"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_append_child),
                 JsString::from("appendChild"),
                 2,
@@ -269,6 +279,18 @@ impl BoaHost {
 
                 document.querySelectorAll = function(selector) {
                     const keys = bridge.querySelectorAll(String(selector));
+                    if (!keys) return [];
+                    return keys.map(key => getOrCreateNode(key));
+                };
+
+                document.getElementsByTagName = function(tagName) {
+                    const keys = bridge.getElementsByTagName(String(tagName));
+                    if (!keys) return [];
+                    return keys.map(key => getOrCreateNode(key));
+                };
+
+                document.getElementsByClassName = function(className) {
+                    const keys = bridge.getElementsByClassName(String(className));
                     if (!keys) return [];
                     return keys.map(key => getOrCreateNode(key));
                 };
@@ -676,20 +698,13 @@ fn bridge_query_selector(
     }
 }
 
-fn bridge_query_selector_all(
-    _this: &JsValue,
-    args: &[JsValue],
+fn execute_dom_query_to_js_array(
+    selector: &str,
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
-    let selector_val = if let Some(arg) = args.first() {
-        arg.to_string(context)?.to_std_string().unwrap_or_default()
-    } else {
-        String::new()
-    };
-
     let keys = with_dom(|dom, key_to_node| {
         let mut keys_list = Vec::new();
-        for node_id in dom.query_selector_all(&selector_val) {
+        for node_id in dom.query_selector_all(selector) {
             let k = format!("{:?}", node_id);
             key_to_node.insert(k.clone(), node_id);
             keys_list.push(k);
@@ -717,6 +732,74 @@ fn bridge_query_selector_all(
     }
 
     Ok(JsValue::from(array_val))
+}
+
+fn bridge_query_selector_all(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let selector_val = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    execute_dom_query_to_js_array(&selector_val, context)
+}
+
+fn bridge_get_elements_by_tag_name(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let tag_name = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Case-insensitivity: getElementsByTagName tag matching in HTML is ASCII-case-insensitive.
+    // HTML tag names are conventionally lowercase in the parsed DOM.
+    let selector = if tag_name == "*" {
+        // Special-case the wildcard "*" by passing "*" through to query_selector_all.
+        // TODO(spec): Check if query_selector_all supports "*" as a universal selector.
+        "*".to_string()
+    } else {
+        tag_name.to_ascii_lowercase()
+    };
+
+    execute_dom_query_to_js_array(&selector, context)
+}
+
+fn bridge_get_elements_by_class_name(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let cls = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let tokens: Vec<&str> = cls
+        .split_ascii_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    if tokens.is_empty() {
+        // If there are no class tokens, pass an empty selector which will fail to parse
+        // and safely return an empty array.
+        execute_dom_query_to_js_array("", context)
+    } else {
+        // Map ["a", "b"] to ".a.b"
+        let selector = tokens
+            .iter()
+            .map(|t| format!(".{}", t))
+            .collect::<Vec<String>>()
+            .join("");
+        execute_dom_query_to_js_array(&selector, context)
+    }
 }
 
 fn bridge_append_child(
@@ -1144,6 +1227,103 @@ mod tests {
         let res_invalid_qsa =
             host.eval_with_dom("document.querySelectorAll('div > > p').length", &mut dom);
         assert_eq!(res_invalid_qsa, Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_get_elements_by_tag_name() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let p1_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![("id".to_string(), "p1".to_string())],
+        });
+        let p2_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![("id".to_string(), "p2".to_string())],
+        });
+        let text1 = dom.create_node(NodeData::Text("First".to_string()));
+        let text2 = dom.create_node(NodeData::Text("Second".to_string()));
+        dom.append_child(p1_id, text1);
+        dom.append_child(p2_id, text2);
+        dom.append_child(document, p1_id);
+        dom.append_child(document, p2_id);
+
+        let mut host = BoaHost::new();
+
+        // Check normal case
+        let res_len = host.eval_with_dom("document.getElementsByTagName('p').length", &mut dom);
+        assert_eq!(res_len, Ok("2".to_string()));
+
+        let res_content = host.eval_with_dom(
+            "[document.getElementsByTagName('p')[0].textContent, document.getElementsByTagName('p')[1].textContent].join(',')",
+            &mut dom,
+        );
+        assert_eq!(res_content, Ok("First,Second".to_string()));
+
+        // Case-insensitivity test (HTML tag name matching is ASCII case-insensitive)
+        let res_case = host.eval_with_dom("document.getElementsByTagName('P').length", &mut dom);
+        assert_eq!(res_case, Ok("2".to_string()));
+
+        // Wildcard tag name "*" test
+        let res_wildcard =
+            host.eval_with_dom("document.getElementsByTagName('*').length", &mut dom);
+        assert_eq!(res_wildcard, Ok("2".to_string()));
+
+        // Non-existent tags should return an empty array (length 0), not null/undefined
+        let res_nonexistent =
+            host.eval_with_dom("document.getElementsByTagName('div').length", &mut dom);
+        assert_eq!(res_nonexistent, Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_get_elements_by_class_name() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div1_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("class".to_string(), "foo bar".to_string())],
+        });
+        let div2_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("class".to_string(), "foo baz".to_string())],
+        });
+        dom.append_child(document, div1_id);
+        dom.append_child(document, div2_id);
+
+        let mut host = BoaHost::new();
+
+        // Single class matching
+        let res_single =
+            host.eval_with_dom("document.getElementsByClassName('foo').length", &mut dom);
+        assert_eq!(res_single, Ok("2".to_string()));
+
+        let res_baz = host.eval_with_dom("document.getElementsByClassName('baz').length", &mut dom);
+        assert_eq!(res_baz, Ok("1".to_string()));
+
+        // Multiple classes (multi-token compound class selector)
+        let res_multi = host.eval_with_dom(
+            "document.getElementsByClassName('foo bar').length",
+            &mut dom,
+        );
+        assert_eq!(res_multi, Ok("1".to_string()));
+
+        // Class list with extra spaces and different token order
+        let res_spaces = host.eval_with_dom(
+            "document.getElementsByClassName('  bar   foo  ').length",
+            &mut dom,
+        );
+        assert_eq!(res_spaces, Ok("1".to_string()));
+
+        // Non-matching class returns empty array (length 0)
+        let res_nonexistent =
+            host.eval_with_dom("document.getElementsByClassName('qux').length", &mut dom);
+        assert_eq!(res_nonexistent, Ok("0".to_string()));
+
+        // Empty class name returns empty array (length 0)
+        let res_empty = host.eval_with_dom("document.getElementsByClassName('').length", &mut dom);
+        assert_eq!(res_empty, Ok("0".to_string()));
     }
 
     #[test]
