@@ -177,6 +177,26 @@ impl BoaHost {
                 2,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_parent_node),
+                JsString::from("parentNode"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_child_nodes),
+                JsString::from("childNodes"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_first_child),
+                JsString::from("firstChild"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_next_sibling),
+                JsString::from("nextSibling"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(add_event_listener),
                 JsString::from("addEventListener"),
                 2,
@@ -292,6 +312,40 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'parentNode', {
+                        get() {
+                            return getOrCreateNode(bridge.parentNode(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'childNodes', {
+                        get() {
+                            const keys = bridge.childNodes(this.__key__);
+                            if (!keys) return [];
+                            return keys.map(key => getOrCreateNode(key));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'firstChild', {
+                        get() {
+                            return getOrCreateNode(bridge.firstChild(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'nextSibling', {
+                        get() {
+                            return getOrCreateNode(bridge.nextSibling(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     registry[key] = node;
                     return node;
                 }
@@ -357,6 +411,40 @@ impl BoaHost {
                 };
 
                 document.addEventListener = bridge.addEventListener;
+
+                Object.defineProperty(document, 'parentNode', {
+                    get() {
+                        return getOrCreateNode(bridge.parentNode(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'childNodes', {
+                    get() {
+                        const keys = bridge.childNodes(this.__key__);
+                        if (!keys) return [];
+                        return keys.map(key => getOrCreateNode(key));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'firstChild', {
+                    get() {
+                        return getOrCreateNode(bridge.firstChild(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'nextSibling', {
+                    get() {
+                        return getOrCreateNode(bridge.nextSibling(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
 
                 document.__elements__ = new Proxy({}, {
                     get(target, prop) {
@@ -1083,6 +1171,145 @@ fn bridge_set_text_content(
     Ok(JsValue::undefined())
 }
 
+fn bridge_parent_node(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let parent_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(p_id) = dom.parent(n_id)
+        {
+            let k = format!("{:?}", p_id);
+            key_to_node.insert(k.clone(), p_id);
+            Some(k)
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(parent_key) = parent_key_opt {
+        Ok(JsValue::from(JsString::from(parent_key)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_child_nodes(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let child_keys = with_dom(|dom, key_to_node| {
+        let mut keys = Vec::new();
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            for &c_id in dom.children(n_id) {
+                let k = format!("{:?}", c_id);
+                key_to_node.insert(k.clone(), c_id);
+                keys.push(k);
+            }
+        }
+        keys
+    })?;
+
+    let array_constructor = context
+        .global_object()
+        .get(JsString::from("Array"), context)?;
+    let array_obj = array_constructor.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("Array constructor not found")))
+    })?;
+    let array_val = array_obj.construct(&[], None, context)?;
+
+    let push_val = array_val.get(JsString::from("push"), context)?;
+    if let Some(push_fn) = push_val.as_object() {
+        for key in child_keys {
+            push_fn.call(
+                &JsValue::from(array_val.clone()),
+                &[JsValue::from(JsString::from(key))],
+                context,
+            )?;
+        }
+    }
+
+    Ok(JsValue::from(array_val))
+}
+
+fn bridge_first_child(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let first_child_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(&first_id) = dom.children(n_id).first()
+        {
+            let k = format!("{:?}", first_id);
+            key_to_node.insert(k.clone(), first_id);
+            Some(k)
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(k) = first_child_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_next_sibling(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let next_sibling_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(p_id) = dom.parent(n_id)
+        {
+            let children = dom.children(p_id);
+            if let Some(pos) = children.iter().position(|&id| id == n_id)
+                && let Some(&next_id) = children.get(pos + 1)
+            {
+                let k = format!("{:?}", next_id);
+                key_to_node.insert(k.clone(), next_id);
+                return Some(k);
+            }
+        }
+        None
+    })?;
+
+    if let Some(k) = next_sibling_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
 fn add_event_listener(
     this: &JsValue,
     args: &[JsValue],
@@ -1278,6 +1505,156 @@ mod tests {
         let mut host = BoaHost::new();
         let res = host.eval_with_dom("document.getElementById('greeting').textContent", &mut dom);
         assert_eq!(res, Ok("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_tree_navigation() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Let's build a small tree:
+        // document -> parent_div -> (child_p1, child_p2)
+        let parent_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent".to_string())],
+        });
+        let child1_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![("id".to_string(), "child1".to_string())],
+        });
+        let child2_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![("id".to_string(), "child2".to_string())],
+        });
+        dom.append_child(parent_id, child1_id);
+        dom.append_child(parent_id, child2_id);
+        dom.append_child(document, parent_id);
+
+        let mut host = BoaHost::new();
+
+        // 1. For a parent with two element children, parent.childNodes.length === 2 and parent.firstChild.__key__ equals the first child.
+        let res_len = host.eval_with_dom(
+            "document.getElementById('parent').childNodes.length",
+            &mut dom,
+        );
+        assert_eq!(res_len, Ok("2".to_string()));
+
+        let res_first_child_matches = host.eval_with_dom(
+            "document.getElementById('parent').firstChild === document.getElementById('child1')",
+            &mut dom,
+        );
+        assert_eq!(res_first_child_matches, Ok("true".to_string()));
+
+        // 2. child.parentNode.__key__ equals the parent's key (round-trips back).
+        let res_parent_round_trip = host.eval_with_dom(
+            "document.getElementById('child1').parentNode === document.getElementById('parent')",
+            &mut dom,
+        );
+        assert_eq!(res_parent_round_trip, Ok("true".to_string()));
+
+        // 3. firstChild.nextSibling.__key__ equals the second child; the last child's nextSibling === null.
+        let res_next_sibling = host.eval_with_dom(
+            "document.getElementById('child1').nextSibling === document.getElementById('child2')",
+            &mut dom,
+        );
+        assert_eq!(res_next_sibling, Ok("true".to_string()));
+
+        let res_last_child_next_sibling = host.eval_with_dom(
+            "document.getElementById('child2').nextSibling === null",
+            &mut dom,
+        );
+        assert_eq!(res_last_child_next_sibling, Ok("true".to_string()));
+
+        // 4. A node with no children has firstChild === null and childNodes.length === 0; the root/document's relevant case behaves sanely.
+        let res_no_child_first = host.eval_with_dom(
+            "document.getElementById('child1').firstChild === null",
+            &mut dom,
+        );
+        assert_eq!(res_no_child_first, Ok("true".to_string()));
+
+        let res_no_child_len = host.eval_with_dom(
+            "document.getElementById('child1').childNodes.length",
+            &mut dom,
+        );
+        assert_eq!(res_no_child_len, Ok("0".to_string()));
+
+        // Document's child is parent, document has no parentNode, nextSibling is null
+        let res_doc_parent = host.eval_with_dom("document.parentNode === null", &mut dom);
+        assert_eq!(res_doc_parent, Ok("true".to_string()));
+
+        let res_doc_next_sibling = host.eval_with_dom("document.nextSibling === null", &mut dom);
+        assert_eq!(res_doc_next_sibling, Ok("true".to_string()));
+
+        let res_doc_first_child = host.eval_with_dom(
+            "document.firstChild === document.getElementById('parent')",
+            &mut dom,
+        );
+        assert_eq!(res_doc_first_child, Ok("true".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_js_created_tree_navigation() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        // Build tree dynamically using script
+        let script = r#"
+            const container = document.createElement('div');
+            container.setAttribute('id', 'js-container');
+            const item1 = document.createElement('span');
+            item1.setAttribute('id', 'js-item1');
+            const item2 = document.createElement('span');
+            item2.setAttribute('id', 'js-item2');
+
+            container.appendChild(item1);
+            container.appendChild(item2);
+            document.appendChild(container);
+
+            // Verify tree navigation on newly created nodes in JS
+            const verification = {
+                containerParent: container.parentNode === document,
+                item1Parent: item1.parentNode === container,
+                item2Parent: item2.parentNode === container,
+                firstChild: container.firstChild === item1,
+                nextSibling: item1.nextSibling === item2,
+                lastChildNextSibling: item2.nextSibling === null,
+                childNodesLength: container.childNodes.length
+            };
+            JSON.stringify(verification);
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok(
+                r#"{"containerParent":true,"item1Parent":true,"item2Parent":true,"firstChild":true,"nextSibling":true,"lastChildNextSibling":true,"childNodesLength":2}"#
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_eval_with_dom_descriptors() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const div = document.createElement('div');
+            const desc = Object.getOwnPropertyDescriptor(div, 'parentNode');
+            const descChildren = Object.getOwnPropertyDescriptor(div, 'childNodes');
+            const verification = {
+                enumerable: desc.enumerable === true && descChildren.enumerable === true,
+                configurable: desc.configurable === true && descChildren.configurable === true,
+                readOnly: desc.set === undefined && descChildren.set === undefined
+            };
+            JSON.stringify(verification);
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok(r#"{"enumerable":true,"configurable":true,"readOnly":true}"#.to_string())
+        );
     }
 
     #[test]
