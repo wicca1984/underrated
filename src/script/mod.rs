@@ -259,6 +259,41 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_first_element_child),
+                JsString::from("firstElementChild"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_last_element_child),
+                JsString::from("lastElementChild"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_next_element_sibling),
+                JsString::from("nextElementSibling"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_previous_element_sibling),
+                JsString::from("previousElementSibling"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_children),
+                JsString::from("children"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_child_element_count),
+                JsString::from("childElementCount"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_parent_element),
+                JsString::from("parentElement"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(event::add_event_listener),
                 JsString::from("addEventListener"),
                 2,
@@ -894,6 +929,64 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'firstElementChild', {
+                        get() {
+                            return getOrCreateNode(bridge.firstElementChild(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'lastElementChild', {
+                        get() {
+                            return getOrCreateNode(bridge.lastElementChild(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'nextElementSibling', {
+                        get() {
+                            return getOrCreateNode(bridge.nextElementSibling(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'previousElementSibling', {
+                        get() {
+                            return getOrCreateNode(bridge.previousElementSibling(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'children', {
+                        get() {
+                            const keys = bridge.children(this.__key__);
+                            if (!keys) return [];
+                            return keys.map(key => getOrCreateNode(key));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'childElementCount', {
+                        get() {
+                            return bridge.childElementCount(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'parentElement', {
+                        get() {
+                            return getOrCreateNode(bridge.parentElement(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'tagName', {
                         get() {
                             return bridge.tagName(this.__key__);
@@ -1054,6 +1147,64 @@ impl BoaHost {
                 Object.defineProperty(document, 'previousSibling', {
                     get() {
                         return getOrCreateNode(bridge.previousSibling(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'firstElementChild', {
+                    get() {
+                        return getOrCreateNode(bridge.firstElementChild(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'lastElementChild', {
+                    get() {
+                        return getOrCreateNode(bridge.lastElementChild(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'nextElementSibling', {
+                    get() {
+                        return getOrCreateNode(bridge.nextElementSibling(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'previousElementSibling', {
+                    get() {
+                        return getOrCreateNode(bridge.previousElementSibling(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'children', {
+                    get() {
+                        const keys = bridge.children(this.__key__);
+                        if (!keys) return [];
+                        return keys.map(key => getOrCreateNode(key));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'childElementCount', {
+                    get() {
+                        return bridge.childElementCount(this.__key__);
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'parentElement', {
+                    get() {
+                        return getOrCreateNode(bridge.parentElement(this.__key__));
                     },
                     enumerable: true,
                     configurable: true
@@ -2260,6 +2411,244 @@ fn bridge_previous_sibling(
     }
 }
 
+fn bridge_first_element_child(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let first_child_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            for &child_id in dom.children(n_id) {
+                if matches!(dom.data(child_id), Some(NodeData::Element { .. })) {
+                    let k = format!("{:?}", child_id);
+                    key_to_node.insert(k.clone(), child_id);
+                    return Some(k);
+                }
+            }
+        }
+        None
+    })?;
+
+    if let Some(k) = first_child_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_last_element_child(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let last_child_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            for &child_id in dom.children(n_id).iter().rev() {
+                if matches!(dom.data(child_id), Some(NodeData::Element { .. })) {
+                    let k = format!("{:?}", child_id);
+                    key_to_node.insert(k.clone(), child_id);
+                    return Some(k);
+                }
+            }
+        }
+        None
+    })?;
+
+    if let Some(k) = last_child_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_next_element_sibling(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let next_sibling_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(p_id) = dom.parent(n_id)
+        {
+            let children = dom.children(p_id);
+            if let Some(pos) = children.iter().position(|&id| id == n_id) {
+                for &sibling_id in &children[(pos + 1)..] {
+                    if matches!(dom.data(sibling_id), Some(NodeData::Element { .. })) {
+                        let k = format!("{:?}", sibling_id);
+                        key_to_node.insert(k.clone(), sibling_id);
+                        return Some(k);
+                    }
+                }
+            }
+        }
+        None
+    })?;
+
+    if let Some(k) = next_sibling_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_previous_element_sibling(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let previous_sibling_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(p_id) = dom.parent(n_id)
+        {
+            let children = dom.children(p_id);
+            if let Some(pos) = children.iter().position(|&id| id == n_id) {
+                for &sibling_id in children[..pos].iter().rev() {
+                    if matches!(dom.data(sibling_id), Some(NodeData::Element { .. })) {
+                        let k = format!("{:?}", sibling_id);
+                        key_to_node.insert(k.clone(), sibling_id);
+                        return Some(k);
+                    }
+                }
+            }
+        }
+        None
+    })?;
+
+    if let Some(k) = previous_sibling_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_children(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let child_keys = with_dom(|dom, key_to_node| {
+        let mut keys = Vec::new();
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            for &c_id in dom.children(n_id) {
+                if matches!(dom.data(c_id), Some(NodeData::Element { .. })) {
+                    let k = format!("{:?}", c_id);
+                    key_to_node.insert(k.clone(), c_id);
+                    keys.push(k);
+                }
+            }
+        }
+        keys
+    })?;
+
+    let array_constructor = context
+        .global_object()
+        .get(JsString::from("Array"), context)?;
+    let array_obj = array_constructor.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("Array constructor not found")))
+    })?;
+    let array_val = array_obj.construct(&[], None, context)?;
+
+    let push_val = array_val.get(JsString::from("push"), context)?;
+    if let Some(push_fn) = push_val.as_object() {
+        for key in child_keys {
+            push_fn.call(
+                &JsValue::from(array_val.clone()),
+                &[JsValue::from(JsString::from(key))],
+                context,
+            )?;
+        }
+    }
+
+    Ok(JsValue::from(array_val))
+}
+
+fn bridge_child_element_count(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(0));
+    };
+
+    let count = with_dom(|dom, key_to_node| {
+        let mut cnt = 0;
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            for &c_id in dom.children(n_id) {
+                if matches!(dom.data(c_id), Some(NodeData::Element { .. })) {
+                    cnt += 1;
+                }
+            }
+        }
+        cnt
+    })?;
+
+    Ok(JsValue::from(count))
+}
+
+fn bridge_parent_element(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let parent_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(p_id) = dom.parent(n_id)
+            && matches!(dom.data(p_id), Some(NodeData::Element { .. }))
+        {
+            let k = format!("{:?}", p_id);
+            key_to_node.insert(k.clone(), p_id);
+            Some(k)
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(parent_key) = parent_key_opt {
+        Ok(JsValue::from(JsString::from(parent_key)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
 fn bridge_tag_name(
     _this: &JsValue,
     args: &[JsValue],
@@ -2926,6 +3315,135 @@ mod tests {
         let res_doc_prev_sibling =
             host.eval_with_dom("document.previousSibling === null", &mut dom);
         assert_eq!(res_doc_prev_sibling, Ok("true".to_string()));
+    }
+
+    #[test]
+    fn test_element_only_dom_traversal_accessors() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Build:
+        // document -> parent_div (div) -> (text1, span_a, text2, b_b, text3)
+        let parent_div = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent".to_string())],
+        });
+        let text1 = dom.create_node(NodeData::Text("text1".to_string()));
+        let span_a = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![("id".to_string(), "a".to_string())],
+        });
+        let text2 = dom.create_node(NodeData::Text("text2".to_string()));
+        let b_b = dom.create_node(NodeData::Element {
+            name: "b".to_string(),
+            attrs: vec![("id".to_string(), "b".to_string())],
+        });
+        let text3 = dom.create_node(NodeData::Text("text3".to_string()));
+
+        dom.append_child(parent_div, text1);
+        dom.append_child(parent_div, span_a);
+        dom.append_child(parent_div, text2);
+        dom.append_child(parent_div, b_b);
+        dom.append_child(parent_div, text3);
+        dom.append_child(document, parent_div);
+
+        let mut host = BoaHost::new();
+
+        // Let's assert the expected properties of the parent div:
+        // firstElementChild is span#a
+        assert_eq!(
+            host.eval_with_dom("document.getElementById('parent').firstElementChild === document.getElementById('a')", &mut dom),
+            Ok("true".to_string())
+        );
+
+        // lastElementChild is b#b
+        assert_eq!(
+            host.eval_with_dom("document.getElementById('parent').lastElementChild === document.getElementById('b')", &mut dom),
+            Ok("true".to_string())
+        );
+
+        // childElementCount is 2
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('parent').childElementCount",
+                &mut dom
+            ),
+            Ok("2".to_string())
+        );
+
+        // children has length 2 and consists of [span_a, b_b] in order
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('parent').children.length",
+                &mut dom
+            ),
+            Ok("2".to_string())
+        );
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('parent').children[0] === document.getElementById('a')",
+                &mut dom
+            ),
+            Ok("true".to_string())
+        );
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('parent').children[1] === document.getElementById('b')",
+                &mut dom
+            ),
+            Ok("true".to_string())
+        );
+
+        // From the span:
+        // nextElementSibling is the <b> (skipping the text node)
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('a').nextElementSibling === document.getElementById('b')",
+                &mut dom
+            ),
+            Ok("true".to_string())
+        );
+        // previousElementSibling is null
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('a').previousElementSibling === null",
+                &mut dom
+            ),
+            Ok("true".to_string())
+        );
+
+        // parentElement of the span is the div
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('a').parentElement === document.getElementById('parent')",
+                &mut dom
+            ),
+            Ok("true".to_string())
+        );
+
+        // parentElement of an element whose parent is the document node is null
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('parent').parentElement === null",
+                &mut dom
+            ),
+            Ok("true".to_string())
+        );
+
+        // from b_b:
+        // previousElementSibling is span_a
+        assert_eq!(
+            host.eval_with_dom("document.getElementById('b').previousElementSibling === document.getElementById('a')", &mut dom),
+            Ok("true".to_string())
+        );
+        // nextElementSibling is null
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementById('b').nextElementSibling === null",
+                &mut dom
+            ),
+            Ok("true".to_string())
+        );
     }
 
     #[test]
