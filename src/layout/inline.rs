@@ -137,27 +137,43 @@ pub fn layout_inline_run(
         if let Some(data) = dom.data(node) {
             match data {
                 NodeData::Text(text) => {
-                    let collapsed = collapse_whitespace(text);
+                    let style_ws = if let Some(style) = styles.get(&node) {
+                        style.get("white-space")
+                    } else {
+                        None
+                    };
+
+                    let (collapse, preserve_newlines, allow_wrap) = match style_ws {
+                        Some(crate::css::values::CssValue::Keyword(kw)) => match kw.as_str() {
+                            "nowrap" => (true, false, false),
+                            "pre" => (false, true, false),
+                            "pre-wrap" => (false, true, true),
+                            "pre-line" => (true, true, true),
+                            _ => (true, false, true),
+                        },
+                        _ => (true, false, true),
+                    };
+
+                    let preprocessed = preprocess_text(text, collapse, preserve_newlines);
+
                     let transformed = if let Some(style) = styles.get(&node) {
                         if let Some(crate::css::values::CssValue::Keyword(kw)) =
                             style.get("text-transform")
                         {
-                            apply_text_transform(&collapsed, &kw.to_ascii_lowercase())
+                            apply_text_transform(&preprocessed, &kw.to_ascii_lowercase())
                         } else {
-                            collapsed
+                            preprocessed
                         }
                     } else {
-                        collapsed
+                        preprocessed
                     };
-                    let words = transformed.split_inclusive(' ');
 
-                    for word in words {
-                        // Measure the word with the font's measure helper.
-                        // spec: S-45, S-57
-                        let word_width = font.measure(word) as f32;
+                    // spec: CSS Text Module Level 3, §3 (White Space Processing)
+                    let segments: Vec<&str> = transformed.split('\n').collect();
 
-                        if cursor_x + word_width > containing_width && cursor_x > 0.0 {
-                            // Flush current line
+                    for (i, segment) in segments.iter().enumerate() {
+                        if i > 0 {
+                            // Force a line break!
                             line_boxes.push(create_line_box_adjusted(
                                 std::mem::take(&mut current_line_children),
                                 offset_x,
@@ -173,28 +189,60 @@ pub fn layout_inline_run(
                             current_line_height = line_height;
                         }
 
-                        // Skip leading whitespace on a new line
-                        if cursor_x == 0.0 && word == " " {
-                            continue;
-                        }
+                        let words = segment.split_inclusive(' ');
 
-                        // Add word to current line
-                        current_line_children.push(LayoutBox {
-                            node: Some(node),
-                            rect: Rect {
-                                origin: Point {
-                                    x: offset_x + cursor_x,
-                                    y: offset_y + cursor_y,
+                        for word in words {
+                            if word.is_empty() {
+                                continue;
+                            }
+
+                            // Measure the word with the font's measure helper.
+                            // spec: S-45, S-57
+                            let word_width = font.measure(word) as f32;
+
+                            if allow_wrap
+                                && cursor_x + word_width > containing_width
+                                && cursor_x > 0.0
+                            {
+                                // Flush current line
+                                line_boxes.push(create_line_box_adjusted(
+                                    std::mem::take(&mut current_line_children),
+                                    offset_x,
+                                    offset_y + cursor_y,
+                                    cursor_x,
+                                    current_line_height,
+                                    styles,
+                                    text_align,
+                                    containing_width,
+                                ));
+                                cursor_x = 0.0;
+                                cursor_y += current_line_height;
+                                current_line_height = line_height;
+                            }
+
+                            // Skip leading whitespace on a new line (only if collapsing whitespace)
+                            if collapse && cursor_x == 0.0 && word == " " {
+                                continue;
+                            }
+
+                            // Add word to current line
+                            current_line_children.push(LayoutBox {
+                                node: Some(node),
+                                rect: Rect {
+                                    origin: Point {
+                                        x: offset_x + cursor_x,
+                                        y: offset_y + cursor_y,
+                                    },
+                                    size: Size {
+                                        width: word_width,
+                                        height: line_height,
+                                    },
                                 },
-                                size: Size {
-                                    width: word_width,
-                                    height: line_height,
-                                },
-                            },
-                            children: Vec::new(),
-                            text: Some(word.to_string()),
-                        });
-                        cursor_x += word_width;
+                                children: Vec::new(),
+                                text: Some(word.to_string()),
+                            });
+                            cursor_x += word_width;
+                        }
                     }
                 }
                 NodeData::Element { .. } => {
@@ -347,6 +395,46 @@ fn collapse_whitespace(s: &str) -> String {
         }
     }
 
+    result
+}
+
+fn preprocess_text(text: &str, collapse: bool, preserve_newlines: bool) -> String {
+    if collapse && !preserve_newlines {
+        return collapse_whitespace(text);
+    }
+
+    let mut result = String::with_capacity(text.len());
+    let mut last_was_whitespace = false;
+
+    for c in text.chars() {
+        if c == '\n' {
+            if preserve_newlines {
+                result.push('\n');
+                last_was_whitespace = false;
+            } else {
+                if collapse {
+                    if !last_was_whitespace {
+                        result.push(' ');
+                        last_was_whitespace = true;
+                    }
+                } else {
+                    result.push(' ');
+                }
+            }
+        } else if is_html_whitespace(c) {
+            if collapse {
+                if !last_was_whitespace {
+                    result.push(' ');
+                    last_was_whitespace = true;
+                }
+            } else {
+                result.push(c);
+            }
+        } else {
+            result.push(c);
+            last_was_whitespace = false;
+        }
+    }
     result
 }
 
@@ -583,6 +671,177 @@ mod tests {
             leaf_texts.extend(collect_leaf_texts(line));
         }
 
+        assert_eq!(leaf_texts, vec!["hello ", "world"]);
+    }
+
+    #[test]
+    fn test_white_space_nowrap() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // A long string of text that would wrap normally at a width of 100px.
+        let t = dom.create_node(NodeData::Text(
+            "this is a very long text that should not wrap".into(),
+        ));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { white-space: nowrap; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Container width is 100px.
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 100.0, 0.0, 0.0, 0, "left");
+
+        // Since white-space is nowrap, it must be on a single line.
+        assert_eq!(line_boxes.len(), 1);
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+        // Verify all words are kept on that single line.
+        assert_eq!(
+            leaf_texts,
+            vec![
+                "this ", "is ", "a ", "very ", "long ", "text ", "that ", "should ", "not ", "wrap"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_white_space_pre_preserves_consecutive_spaces() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello   world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { white-space: pre; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        // Under white-space: pre, consecutive spaces should not collapse.
+        // Rust's split_inclusive(' ') on "hello   world" will split into: "hello ", " ", " ", "world".
+        assert_eq!(leaf_texts, vec!["hello ", " ", " ", "world"]);
+    }
+
+    #[test]
+    fn test_white_space_pre_forced_newline() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello\nworld\n".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { white-space: pre; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        // Embedded newlines must produce forced line breaks.
+        // "hello\nworld\n" -> segments "hello", "world", "".
+        // First line: "hello"
+        // Second line: "world"
+        // Third line: empty (not flushed because current_line_children is empty)
+        // Total line boxes flushed: 2.
+        assert_eq!(line_boxes.len(), 2);
+
+        let line_texts: Vec<Vec<String>> = line_boxes.iter().map(collect_leaf_texts).collect();
+
+        assert_eq!(line_texts[0], vec!["hello"]);
+        assert_eq!(line_texts[1], vec!["world"]);
+    }
+
+    #[test]
+    fn test_white_space_pre_line_collapses_and_forces_newlines() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello   \n   world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { white-space: pre-line; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        // Under pre-line:
+        // - Multiple spaces collapse to one.
+        // - Newlines are preserved as forced breaks.
+        // "hello   \n   world" collapses non-newline whitespace, so:
+        // Before newline, "hello   " collapses to "hello ".
+        // After newline, "   world" collapses to " world" (Wait, " " + "world").
+        // Since collapse is true, skip leading whitespace on a new line is active.
+        // So the " " before "world" on the new line gets skipped.
+        assert_eq!(line_boxes.len(), 2);
+
+        let line_texts: Vec<Vec<String>> = line_boxes.iter().map(collect_leaf_texts).collect();
+
+        assert_eq!(line_texts[0], vec!["hello "]);
+        assert_eq!(line_texts[1], vec!["world"]);
+    }
+
+    #[test]
+    fn test_white_space_normal_regression_guard() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello   \n   world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { white-space: normal; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        // Under normal:
+        // - All spaces/newlines collapse to a single space.
+        // - Soft wrapping is allowed.
+        // "hello   \n   world" collapses completely to "hello world".
+        // Line count should be 1.
+        assert_eq!(line_boxes.len(), 1);
+
+        let leaf_texts = collect_leaf_texts(&line_boxes[0]);
         assert_eq!(leaf_texts, vec!["hello ", "world"]);
     }
 }
