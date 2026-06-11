@@ -114,6 +114,7 @@ pub fn layout_inline_run(
     depth: usize,
     text_align: &str,
     text_indent: f32,
+    word_spacing: f32,
 ) -> (Vec<LayoutBox>, f32) {
     let font = crate::font::BitmapFont::builtin();
     let line_height = font.line_height() as f32;
@@ -244,6 +245,10 @@ pub fn layout_inline_run(
                                 text: Some(word.to_string()),
                             });
                             cursor_x += word_width;
+                            // TODO(spec): word-spacing v1 adds a fixed advance after each word that carries a trailing space; interaction with text-align justify, percentage values, and full Unicode space-separator handling are out of scope.
+                            if word.ends_with(" ") {
+                                cursor_x += word_spacing;
+                            }
                         }
                     }
                 }
@@ -369,6 +374,7 @@ pub fn layout_inline(
     depth: usize,
     text_align: &str,
     text_indent: f32,
+    word_spacing: f32,
 ) -> (Vec<LayoutBox>, f32) {
     layout_inline_run(
         dom,
@@ -380,6 +386,7 @@ pub fn layout_inline(
         depth,
         text_align,
         text_indent,
+        word_spacing,
     )
 }
 
@@ -519,8 +526,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -560,8 +568,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
         // The call must complete without stack overflow.
         let _ = line_boxes;
     }
@@ -583,8 +592,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -611,8 +621,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -639,8 +650,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -667,8 +679,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -699,8 +712,9 @@ mod tests {
 
         let children = dom.children(div);
         // Container width is 100px.
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 100.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 100.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         // Since white-space is nowrap, it must be on a single line.
         assert_eq!(line_boxes.len(), 1);
@@ -735,8 +749,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -765,8 +780,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         // Embedded newlines must produce forced line breaks.
         // "hello\nworld\n" -> segments "hello", "world", "".
@@ -799,8 +815,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         // Under pre-line:
         // - Multiple spaces collapse to one.
@@ -835,8 +852,9 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
 
         // Under normal:
         // - All spaces/newlines collapse to a single space.
@@ -867,8 +885,9 @@ mod tests {
 
         let children = dom.children(div);
 
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 40.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 40.0, 0.0,
+        );
 
         assert!(!line_boxes.is_empty());
         let first_line = &line_boxes[0];
@@ -895,8 +914,9 @@ mod tests {
 
         let children = dom.children(div);
 
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 120.0, 10.0, 20.0, 0, "left", 40.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 120.0, 10.0, 20.0, 0, "left", 40.0, 0.0,
+        );
 
         assert!(line_boxes.len() >= 2);
 
@@ -927,13 +947,114 @@ mod tests {
 
         let children = dom.children(div);
 
-        let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 0.0);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 0.0, 0.0,
+        );
 
         assert!(!line_boxes.is_empty());
         let first_line = &line_boxes[0];
         assert!(!first_line.children.is_empty());
         let first_fragment = &first_line.children[0];
         assert_eq!(first_fragment.rect.origin.x, 10.0);
+    }
+
+    #[test]
+    fn test_word_spacing_behavior() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { word-spacing: 10px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+
+        // 1. With word_spacing = 0.0
+        let (line_boxes_0, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 0.0, 0.0,
+        );
+        assert!(!line_boxes_0.is_empty());
+        let line_0 = &line_boxes_0[0];
+        assert_eq!(line_0.children.len(), 2);
+        let first_word_0 = &line_0.children[0];
+        let second_word_0 = &line_0.children[1];
+
+        // 2. With word_spacing = 10.0
+        let (line_boxes_10, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 0.0, 10.0,
+        );
+        assert!(!line_boxes_10.is_empty());
+        let line_10 = &line_boxes_10[0];
+        assert_eq!(line_10.children.len(), 2);
+        let first_word_10 = &line_10.children[0];
+        let second_word_10 = &line_10.children[1];
+
+        // Assert the first word is in the same position and has the same width
+        assert_eq!(first_word_0.rect.origin.x, first_word_10.rect.origin.x);
+        assert_eq!(first_word_0.rect.size.width, first_word_10.rect.size.width);
+
+        // Assert the second word fragment x for word_spacing=10.0 is exactly 10.0 greater
+        assert_eq!(
+            second_word_10.rect.origin.x,
+            second_word_0.rect.origin.x + 10.0
+        );
+
+        // 3. A single word with no trailing space produces the SAME layout
+        let mut dom_single = Dom::new();
+        let doc_single = dom_single.document();
+        let div_single = dom_single.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom_single.append_child(doc_single, div_single);
+
+        let t_single = dom_single.create_node(NodeData::Text("hello".into()));
+        dom_single.append_child(div_single, t_single);
+
+        let styles_single = compute_styles(&dom_single, &stylesheet);
+        let children_single = dom_single.children(div_single);
+
+        let (line_boxes_single_0, _) = layout_inline_run(
+            &dom_single,
+            &styles_single,
+            children_single,
+            800.0,
+            10.0,
+            20.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        let (line_boxes_single_10, _) = layout_inline_run(
+            &dom_single,
+            &styles_single,
+            children_single,
+            800.0,
+            10.0,
+            20.0,
+            0,
+            "left",
+            0.0,
+            10.0,
+        );
+
+        assert_eq!(line_boxes_single_0.len(), 1);
+        assert_eq!(line_boxes_single_10.len(), 1);
+        assert_eq!(
+            line_boxes_single_0[0].children[0].rect.origin.x,
+            line_boxes_single_10[0].children[0].rect.origin.x
+        );
+        assert_eq!(
+            line_boxes_single_0[0].children[0].rect.size.width,
+            line_boxes_single_10[0].children[0].rect.size.width
+        );
     }
 }
