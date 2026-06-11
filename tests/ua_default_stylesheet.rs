@@ -96,4 +96,25 @@ fn test_ua_default_stylesheet_list_indentation() {
         .expect("li element should have a layout box");
 
     assert_eq!(li_box.rect.origin.x, 40.0);
+
+    // Also assert the <ul> itself receives the UA margin: 1em 0 rule.
+    let doc = page.dom.document();
+    let mut ul_style = None;
+    for id in page.dom.descendants(doc) {
+        if let Some(underrated::dom::NodeData::Element { name, .. }) = page.dom.data(id)
+            && name == "ul"
+        {
+            ul_style = page.styles.get(&id);
+            break;
+        }
+    }
+    let ul_s = ul_style.expect("ul should have styles");
+    assert_eq!(
+        ul_s.get("margin-top"),
+        Some(&CssValue::Length(1.0, LengthUnit::Em))
+    );
+    assert_eq!(
+        ul_s.get("margin-bottom"),
+        Some(&CssValue::Length(1.0, LengthUnit::Em))
+    );
 }
