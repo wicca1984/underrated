@@ -302,6 +302,191 @@ impl BoaHost {
                 const registry = {};
                 document.__node_registry__ = registry;
 
+                class DOMException extends Error {
+                    constructor(message, name) {
+                        super(message);
+                        this.name = name || "DOMException";
+                    }
+                }
+                window.DOMException = DOMException;
+
+                function getTokens(element) {
+                    const value = element.getAttribute('class');
+                    if (!value) return [];
+                    const rawTokens = value.split(/[\t\n\r\f ]+/);
+                    const tokens = [];
+                    const seen = new Set();
+                    for (const t of rawTokens) {
+                        if (t !== "" && !seen.has(t)) {
+                            seen.add(t);
+                            tokens.push(t);
+                        }
+                    }
+                    return tokens;
+                }
+
+                function setTokens(element, tokens) {
+                    element.setAttribute('class', tokens.join(' '));
+                }
+
+                function validateToken(token) {
+                    if (token === undefined || token === null) {
+                        token = String(token);
+                    }
+                    if (token === "") {
+                        throw new DOMException("The token provided must not be empty", "SyntaxError");
+                    }
+                    if (/[\t\n\r\f ]/.test(token)) {
+                        throw new DOMException("The token provided contains whitespace", "InvalidCharacterError");
+                    }
+                }
+
+                class DOMTokenList {
+                    constructor(element) {
+                        this.__element__ = element;
+                        return new Proxy(this, {
+                            get(target, prop, receiver) {
+                                if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+                                    const index = parseInt(prop, 10);
+                                    const tokens = getTokens(target.__element__);
+                                    return index < tokens.length ? tokens[index] : undefined;
+                                }
+                                const value = Reflect.get(target, prop, receiver);
+                                if (typeof value === 'function') {
+                                    return value.bind(target);
+                                }
+                                return value;
+                            }
+                        });
+                    }
+
+                    get length() {
+                        return getTokens(this.__element__).length;
+                    }
+
+                    get value() {
+                        return this.__element__.getAttribute('class') || '';
+                    }
+
+                    set value(val) {
+                        this.__element__.setAttribute('class', String(val));
+                    }
+
+                    item(index) {
+                        const idx = Number(index) >>> 0;
+                        const tokens = getTokens(this.__element__);
+                        if (idx >= tokens.length) {
+                            return null;
+                        }
+                        return tokens[idx];
+                    }
+
+                    contains(token) {
+                        validateToken(token);
+                        const tokens = getTokens(this.__element__);
+                        return tokens.includes(String(token));
+                    }
+
+                    add(...tokens) {
+                        for (const t of tokens) {
+                            validateToken(t);
+                        }
+                        const current = getTokens(this.__element__);
+                        let changed = false;
+                        for (const t of tokens) {
+                            const s = String(t);
+                            if (!current.includes(s)) {
+                                current.push(s);
+                                changed = true;
+                            }
+                        }
+                        if (changed) {
+                            setTokens(this.__element__, current);
+                        }
+                    }
+
+                    remove(...tokens) {
+                        for (const t of tokens) {
+                            validateToken(t);
+                        }
+                        const current = getTokens(this.__element__);
+                        let changed = false;
+                        for (const t of tokens) {
+                            const s = String(t);
+                            const idx = current.indexOf(s);
+                            if (idx !== -1) {
+                                current.splice(idx, 1);
+                                changed = true;
+                            }
+                        }
+                        if (changed) {
+                            setTokens(this.__element__, current);
+                        }
+                    }
+
+                    toggle(token, force) {
+                        validateToken(token);
+                        const s = String(token);
+                        const current = getTokens(this.__element__);
+                        const idx = current.indexOf(s);
+                        const present = idx !== -1;
+
+                        if (arguments.length >= 2) {
+                            if (force) {
+                                if (!present) {
+                                    current.push(s);
+                                    setTokens(this.__element__, current);
+                                }
+                                return true;
+                            } else {
+                                if (present) {
+                                    current.splice(idx, 1);
+                                    setTokens(this.__element__, current);
+                                }
+                                return false;
+                            }
+                        } else {
+                            if (present) {
+                                current.splice(idx, 1);
+                                setTokens(this.__element__, current);
+                                return false;
+                            } else {
+                                current.push(s);
+                                setTokens(this.__element__, current);
+                                return true;
+                            }
+                        }
+                    }
+
+                    replace(oldToken, newToken) {
+                        validateToken(oldToken);
+                        validateToken(newToken);
+                        const current = getTokens(this.__element__);
+                        const index = current.indexOf(String(oldToken));
+                        if (index === -1) {
+                            return false;
+                        }
+                        const replaceIndex = current.indexOf(String(newToken));
+                        if (replaceIndex !== -1) {
+                            if (replaceIndex > index) {
+                                current[index] = String(newToken);
+                                current.splice(replaceIndex, 1);
+                            } else {
+                                current.splice(index, 1);
+                            }
+                        } else {
+                            current[index] = String(newToken);
+                        }
+                        setTokens(this.__element__, current);
+                        return true;
+                    }
+
+                    toString() {
+                        return this.__element__.getAttribute('class') || '';
+                    }
+                }
+                window.DOMTokenList = DOMTokenList;
+
                 function getOrCreateNode(key) {
                     if (!key) return null;
                     if (registry[key]) {
@@ -373,6 +558,17 @@ impl BoaHost {
                         },
                         set(val) {
                             this.setAttribute('class', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'classList', {
+                        get() {
+                            if (!this.__classList__) {
+                                this.__classList__ = new DOMTokenList(this);
+                            }
+                            return this.__classList__;
                         },
                         enumerable: true,
                         configurable: true
@@ -2427,6 +2623,93 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|foo bar|x y|test-class,test-class".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_classlist() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            const div = document.createElement('div');
+            
+            // 1. Initial state
+            const r1 = div.classList ? div.classList.length : 'no-classlist';
+            const r2 = div.classList ? div.classList.value : 'no-classlist';
+            
+            // 2. Add
+            if (div.classList) div.classList.add('a', 'b', 'a');
+            const r3 = div.classList ? div.classList.length : 0;
+            const r4 = div.classList ? div.classList.value : '';
+            const r5 = div.getAttribute('class') || '';
+            const r6 = div.className;
+            
+            // 3. Contains & item & bracket indexing
+            const r7 = div.classList ? (div.classList.contains('a') && !div.classList.contains('c')) : false;
+            const r8 = div.classList ? div.classList.item(0) : null;
+            const r9 = div.classList ? div.classList.item(1) : null;
+            const r10 = div.classList ? div.classList.item(2) : null;
+            const r11 = div.classList ? div.classList[0] : undefined;
+            const r12 = div.classList ? div.classList[2] : undefined;
+            
+            // 4. Remove
+            if (div.classList) div.classList.remove('b', 'c');
+            const r13 = div.classList ? div.classList.value : '';
+            
+            // 5. Toggle without force
+            const r14 = div.classList ? div.classList.toggle('a') : false;
+            const r15 = div.classList ? div.classList.value : '';
+            const r16 = div.classList ? div.classList.toggle('b') : false;
+            const r17 = div.classList ? div.classList.value : '';
+            
+            // 6. Toggle with force
+            const r18 = div.classList ? div.classList.toggle('b', true) : false;
+            const r19 = div.classList ? div.classList.value : '';
+            const r20 = div.classList ? div.classList.toggle('b', false) : false;
+            const r21 = div.classList ? div.classList.value : '';
+            
+            // 7. Replace
+            if (div.classList) div.classList.add('x', 'y');
+            const r22 = div.classList ? div.classList.replace('x', 'z') : false;
+            const r23 = div.classList ? div.classList.value : '';
+            const r24 = div.classList ? div.classList.replace('w', 'z') : false;
+            
+            // 8. Deduplication in parsing
+            div.setAttribute('class', '  p  q   p  ');
+            const r25 = div.classList ? div.classList.length : 0;
+            const r26 = div.classList ? div.classList.item(0) : null;
+            const r27 = div.classList ? div.classList.item(1) : null;
+            
+            // 9. Value assignment consistency
+            if (div.classList) div.classList.value = 'hello world';
+            const r28 = div.className;
+            const r29 = div.classList ? div.classList.length : 0;
+
+            // 10. Identity
+            const r30 = div.classList ? (div.classList === div.classList) : false;
+
+            // 11. Exception throwing behavior
+            let r31 = 'no-error';
+            try {
+                if (div.classList) div.classList.add('');
+            } catch (e) {
+                r31 = e.name;
+            }
+            let r32 = 'no-error';
+            try {
+                if (div.classList) div.classList.add('a b');
+            } catch (e) {
+                r32 = e.name;
+            }
+
+            [
+                r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, r29, r30, r31, r32
+            ].map(String).join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("0||2|a b|a b|a b|true|a|b|null|a|undefined|a|false||true|b|true|b|false||true|z y|false|2|p|q|hello world|2|true|SyntaxError|InvalidCharacterError".to_string())
         );
     }
 
