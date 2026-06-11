@@ -816,6 +816,25 @@ impl BoaHost {
                         },
                         getAttributeNames() {
                             return bridge.getAttributeNames(this.__key__);
+                        },
+                        matches(selector) {
+                            // TODO(spec): detached-node matching and :scope are not yet supported because matching is document-rooted.
+                            if (this.nodeType !== 1) return false;
+                            const sel = String(selector);
+                            const all = document.querySelectorAll(sel);
+                            for (let i = 0; i < all.length; i++) {
+                                if (all[i] && all[i].__key__ === this.__key__) return true;
+                            }
+                            return false;
+                        },
+                        closest(selector) {
+                            const sel = String(selector);
+                            let el = this;
+                            while (el && el.nodeType === 1) {
+                                if (el.matches(sel)) return el;
+                                el = el.parentElement;
+                            }
+                            return null;
                         }
                     };
 
@@ -3677,6 +3696,66 @@ mod tests {
         let res_invalid_qsa =
             host.eval_with_dom("document.querySelectorAll('div > > p').length", &mut dom);
         assert_eq!(res_invalid_qsa, Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_matches_and_closest() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Build structure: <div class="x" id="d1"><p id="t">hi</p></div>
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("class".to_string(), "x".to_string()),
+                ("id".to_string(), "d1".to_string()),
+            ],
+        });
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![("id".to_string(), "t".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("hi".to_string()));
+
+        dom.append_child(p_id, text_id);
+        dom.append_child(div_id, p_id);
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        // matches positive: tag/class selector
+        let res_matches_pos = host.eval_with_dom(
+            "document.getElementById('t').matches('div.x > p')",
+            &mut dom,
+        );
+        assert_eq!(res_matches_pos, Ok("true".to_string()));
+
+        // matches negative
+        let res_matches_neg =
+            host.eval_with_dom("document.getElementById('t').matches('a')", &mut dom);
+        assert_eq!(res_matches_neg, Ok("false".to_string()));
+
+        // closest hit: find ancestor <div> by its class selector
+        let res_closest_hit_class =
+            host.eval_with_dom("document.getElementById('t').closest('div.x').id", &mut dom);
+        assert_eq!(res_closest_hit_class, Ok("d1".to_string()));
+
+        // closest hit: find ancestor <div> by tag selector
+        let res_closest_hit_tag =
+            host.eval_with_dom("document.getElementById('t').closest('div').id", &mut dom);
+        assert_eq!(res_closest_hit_tag, Ok("d1".to_string()));
+
+        // closest self: matches itself
+        let res_closest_self =
+            host.eval_with_dom("document.getElementById('t').closest('p').id", &mut dom);
+        assert_eq!(res_closest_self, Ok("t".to_string()));
+
+        // closest miss: does not exist
+        let res_closest_miss = host.eval_with_dom(
+            "document.getElementById('t').closest('table') === null",
+            &mut dom,
+        );
+        assert_eq!(res_closest_miss, Ok("true".to_string()));
     }
 
     #[test]
