@@ -385,6 +385,76 @@ pub(crate) fn layout_node(
         + border_top
         + border_bottom;
 
+    let mut is_li = false;
+    if let Some(crate::dom::NodeData::Element { name, .. }) = dom.data(node)
+        && name == "li"
+    {
+        is_li = true;
+    }
+
+    if is_li
+        && let Some(list_node) = find_nearest_list_ancestor_node(dom, node)
+        && let Some(crate::dom::NodeData::Element {
+            name: list_name, ..
+        }) = dom.data(list_node)
+    {
+        let list_style_type = style.get("list-style-type");
+        let suppress_marker =
+            matches!(list_style_type, Some(CssValue::Keyword(val)) if val == "none");
+
+        // TODO(spec): support other list-style-type values like circle, square, lower-alpha, roman
+        // TODO(spec): support list-style-position: inside
+        // TODO(spec): support list-style-image
+        // TODO(spec): support start, value, and reversed attributes for list numbering
+        // TODO(spec): support numbering restart edge cases
+        // TODO(spec): support nested-list interactions beyond nearest ancestor
+        // TODO(spec): support exact browser baseline/metrics of the marker
+
+        if !suppress_marker {
+            let (first_line_y, first_line_h) = find_first_line_rect_and_height(
+                &children,
+                border_box_y + border_top + padding_top,
+                crate::font::BitmapFont::builtin().line_height() as f32,
+            );
+            let first_line_center_y = first_line_y + first_line_h / 2.0;
+
+            let fs = get_font_size(style);
+
+            if list_name == "ul" {
+                let side = 0.4 * fs;
+                let marker_x = border_box_x - 20.0 - side / 2.0;
+                let marker_y = first_line_center_y - side / 2.0;
+
+                let marker_box = LayoutBox {
+                    node: Some(node),
+                    rect: Rect::new(marker_x, marker_y, side, side),
+                    children: Vec::new(),
+                    text: None,
+                };
+                children.push(marker_box);
+            } else if list_name == "ol" {
+                let index = get_li_decimal_index(dom, node, list_node);
+                let marker_text = format!("{}.", index);
+
+                let marker_width = 8.0 * marker_text.len() as f32;
+                let marker_height = first_line_h;
+
+                let content_start_x = border_box_x + border_left + padding_left;
+                let marker_x = content_start_x - marker_width - 8.0;
+                let marker_y = first_line_y;
+
+                let text_node = find_first_text_node(dom, node);
+                let marker_box = LayoutBox {
+                    node: text_node,
+                    rect: Rect::new(marker_x, marker_y, marker_width, marker_height),
+                    children: Vec::new(),
+                    text: Some(marker_text),
+                };
+                children.push(marker_box);
+            }
+        }
+    }
+
     Some(LayoutBox {
         node: Some(node),
         rect: Rect::new(
@@ -694,6 +764,86 @@ fn get_text_align(dom: &Dom, node: NodeId, style: &ComputedStyle) -> &'static st
     }
 }
 
+fn find_nearest_list_ancestor_node(dom: &Dom, node: NodeId) -> Option<NodeId> {
+    let mut current = dom.parent(node);
+    let mut depth = 0;
+    while let Some(curr_id) = current {
+        if depth > MAX_DEPTH {
+            break;
+        }
+        if let Some(NodeData::Element { name, .. }) = dom.data(curr_id)
+            && (name == "ul" || name == "ol")
+        {
+            return Some(curr_id);
+        }
+        current = dom.parent(curr_id);
+        depth += 1;
+    }
+    None
+}
+
+fn find_first_line_rect_and_height(
+    children: &[LayoutBox],
+    default_y: f32,
+    default_h: f32,
+) -> (f32, f32) {
+    if children.is_empty() {
+        return (default_y, default_h);
+    }
+    let mut current = &children[0];
+    while !current.children.is_empty() {
+        if current.node.is_none() {
+            return (current.rect.origin.y, current.rect.size.height);
+        }
+        current = &current.children[0];
+    }
+    (current.rect.origin.y, current.rect.size.height)
+}
+
+fn get_font_size(style: &ComputedStyle) -> f32 {
+    match style.get("font-size") {
+        Some(CssValue::Length(px, LengthUnit::Px)) => *px,
+        _ => 16.0,
+    }
+}
+
+fn get_li_decimal_index(dom: &Dom, li_node: NodeId, list_node: NodeId) -> usize {
+    let mut lis = Vec::new();
+    find_li_descendants(dom, list_node, list_node, &mut lis);
+    lis.iter()
+        .position(|&id| id == li_node)
+        .map(|pos| pos + 1)
+        .unwrap_or(1)
+}
+
+fn find_li_descendants(dom: &Dom, current: NodeId, list_node: NodeId, lis: &mut Vec<NodeId>) {
+    for &child in dom.children(current) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if name == "li" {
+                if find_nearest_list_ancestor_node(dom, child) == Some(list_node) {
+                    lis.push(child);
+                }
+            } else if name != "ul" && name != "ol" {
+                find_li_descendants(dom, child, list_node, lis);
+            }
+        } else {
+            find_li_descendants(dom, child, list_node, lis);
+        }
+    }
+}
+
+fn find_first_text_node(dom: &Dom, node: NodeId) -> Option<NodeId> {
+    if let Some(NodeData::Text(_)) = dom.data(node) {
+        return Some(node);
+    }
+    for &child in dom.children(node) {
+        if let Some(found) = find_first_text_node(dom, child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,6 +894,160 @@ mod tests {
         // Under text-align: center, the remaining space of 460px is halved.
         // Therefore, the word_box should be shifted to x = 230.0px.
         assert!(approx_eq(word_box.rect.origin.x, 230.0));
+    }
+
+    #[test]
+    fn test_list_item_markers() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // 1. UL List
+        let ul = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ul);
+
+        let li_a = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul, li_a);
+        let text_a = dom.create_node(NodeData::Text("a".into()));
+        dom.append_child(li_a, text_a);
+
+        let li_b = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul, li_b);
+        let text_b = dom.create_node(NodeData::Text("b".into()));
+        dom.append_child(li_b, text_b);
+
+        // 2. OL List
+        let ol = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ol);
+
+        let li_x = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol, li_x);
+        let text_x = dom.create_node(NodeData::Text("x".into()));
+        dom.append_child(li_x, text_x);
+
+        let li_y = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol, li_y);
+        let text_y = dom.create_node(NodeData::Text("y".into()));
+        dom.append_child(li_y, text_y);
+
+        // 3. UL List with list-style-type: none
+        let ul_none = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![("style".into(), "list-style-type: none;".into())],
+        });
+        dom.append_child(body, ul_none);
+
+        let li_none = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul_none, li_none);
+        let text_none = dom.create_node(NodeData::Text("none".into()));
+        dom.append_child(li_none, text_none);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            ul, ol { display: block; padding-left: 40px; margin-top: 16px; margin-bottom: 16px; }
+            li { display: block; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        // Body has three children: ul, ol, ul_none
+        assert_eq!(body_box.children.len(), 3);
+
+        let ul_box = &body_box.children[0];
+        let ol_box = &body_box.children[1];
+        let ul_none_box = &body_box.children[2];
+
+        // --- 1. Verify UL list (disc markers) ---
+        // ul_box has 2 children (li_a, li_b)
+        assert_eq!(ul_box.children.len(), 2);
+        let li_a_box = &ul_box.children[0];
+        let li_b_box = &ul_box.children[1];
+
+        // li starts at x = 40.0 (ul's padding-left)
+        assert!(approx_eq(li_a_box.rect.origin.x, 40.0));
+        assert!(approx_eq(li_b_box.rect.origin.x, 40.0));
+
+        // li_a_box should have 2 children: the text line box, and the disc marker box!
+        assert_eq!(li_a_box.children.len(), 2);
+        let _li_a_line = &li_a_box.children[0];
+        let li_a_marker = &li_a_box.children[1];
+
+        // Marker box is left of the content (in padding area)
+        // Its center x should be around 20.0 (since li starts at 40.0, and marker center x is border_box_x - 20px)
+        let marker_center_x = li_a_marker.rect.origin.x + li_a_marker.rect.size.width / 2.0;
+        assert!(approx_eq(marker_center_x, 20.0));
+
+        // Size is 0.4em of font-size 16px = 6.4px
+        assert!(approx_eq(li_a_marker.rect.size.width, 6.4));
+        assert!(approx_eq(li_a_marker.rect.size.height, 6.4));
+
+        // li_b_box also has 2 children
+        assert_eq!(li_b_box.children.len(), 2);
+        let li_b_marker = &li_b_box.children[1];
+        let marker_b_center_x = li_b_marker.rect.origin.x + li_b_marker.rect.size.width / 2.0;
+        assert!(approx_eq(marker_b_center_x, 20.0));
+
+        // --- 2. Verify OL list (decimal markers) ---
+        // ol_box has 2 children (li_x, li_y)
+        assert_eq!(ol_box.children.len(), 2);
+        let li_x_box = &ol_box.children[0];
+        let li_y_box = &ol_box.children[1];
+
+        // Each has 2 children: line box, and marker box
+        assert_eq!(li_x_box.children.len(), 2);
+        assert_eq!(li_y_box.children.len(), 2);
+
+        let li_x_marker = &li_x_box.children[1];
+        let li_y_marker = &li_y_box.children[1];
+
+        // Decimal markers should be "1." and "2."
+        assert_eq!(li_x_marker.text.as_deref(), Some("1."));
+        assert_eq!(li_y_marker.text.as_deref(), Some("2."));
+
+        // Height of marker should match line height
+        assert!(approx_eq(
+            li_x_marker.rect.size.height,
+            li_x_box.children[0].rect.size.height
+        ));
+
+        // --- 3. Verify list-style-type: none ---
+        // ul_none_box has 1 child (li_none)
+        assert_eq!(ul_none_box.children.len(), 1);
+        let li_none_box = &ul_none_box.children[0];
+
+        // Since list-style-type is none, there should be NO marker box!
+        // Only 1 child (the text line box) should exist
+        assert_eq!(li_none_box.children.len(), 1);
     }
 
     #[test]
