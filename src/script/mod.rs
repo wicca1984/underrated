@@ -1180,6 +1180,9 @@ impl BoaHost {
                         hasAttribute(name) {
                             return bridge.hasAttribute(this.__key__, String(name));
                         },
+                        hasAttributes() {
+                            return this.getAttributeNames().length > 0;
+                        },
                         removeAttribute(name) {
                             bridge.removeAttribute(this.__key__, String(name));
                         },
@@ -6849,6 +6852,34 @@ mod tests {
         ";
         let res = host.eval_with_dom(script, &mut dom);
         assert_eq!(res, Ok("true,false".to_string()));
+    }
+
+    #[test]
+    fn test_element_has_attributes() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            const div = document.createElement('div');
+            div.setAttribute('id', 'x');
+            div.setAttribute('class', 'y');
+            document.appendChild(div);
+
+            const r1 = document.getElementById('x').hasAttributes() === true;
+
+            const n = document.createElement('span');
+            const r2 = n.hasAttributes() === false;
+
+            const m = document.createElement('p');
+            const before = m.hasAttributes() === false;
+            m.setAttribute('data-k', 'v');
+            const after = m.hasAttributes() === true;
+            const r3 = before && after;
+
+            [r1, r2, r3].join(',');
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(res, Ok("true,true,true".to_string()));
     }
 
     #[test]
