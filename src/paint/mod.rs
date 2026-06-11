@@ -132,12 +132,21 @@ fn get_edge_color(style: &ComputedStyle, edge_prop: &str, border_color: &Color) 
     border_color.clone()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextDecorationStyle {
+    Solid,
+    Double,
+    Dotted,
+    Dashed,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 struct TextDecorations {
     underline: bool,
     overline: bool,
     line_through: bool,
     color: Option<Color>,
+    style: Option<TextDecorationStyle>,
 }
 
 /// Helper to get the set of text decorations from a ComputedStyle.
@@ -189,6 +198,52 @@ fn get_text_decorations(style: &ComputedStyle) -> TextDecorations {
     // per-line distinct colors are out of scope.
     if let Some(val) = style.get("text-decoration-color") {
         dec.color = find_color(val);
+    }
+
+    // Parse text-decoration-style property
+    if let Some(CssValue::Keyword(s)) = style.get("text-decoration-style") {
+        if s.eq_ignore_ascii_case("solid") {
+            dec.style = Some(TextDecorationStyle::Solid);
+        } else if s.eq_ignore_ascii_case("double") {
+            dec.style = Some(TextDecorationStyle::Double);
+        } else if s.eq_ignore_ascii_case("dotted") {
+            dec.style = Some(TextDecorationStyle::Dotted);
+        } else if s.eq_ignore_ascii_case("dashed") {
+            dec.style = Some(TextDecorationStyle::Dashed);
+        }
+    }
+
+    // Also accept the style value when present in the `text-decoration` shorthand
+    if let Some(val) = style.get("text-decoration") {
+        match val {
+            CssValue::Keyword(s) => {
+                if s.eq_ignore_ascii_case("solid") {
+                    dec.style = Some(TextDecorationStyle::Solid);
+                } else if s.eq_ignore_ascii_case("double") {
+                    dec.style = Some(TextDecorationStyle::Double);
+                } else if s.eq_ignore_ascii_case("dotted") {
+                    dec.style = Some(TextDecorationStyle::Dotted);
+                } else if s.eq_ignore_ascii_case("dashed") {
+                    dec.style = Some(TextDecorationStyle::Dashed);
+                }
+            }
+            CssValue::Multiple(values) => {
+                for v in values {
+                    if let CssValue::Keyword(s) = v {
+                        if s.eq_ignore_ascii_case("solid") {
+                            dec.style = Some(TextDecorationStyle::Solid);
+                        } else if s.eq_ignore_ascii_case("double") {
+                            dec.style = Some(TextDecorationStyle::Double);
+                        } else if s.eq_ignore_ascii_case("dotted") {
+                            dec.style = Some(TextDecorationStyle::Dotted);
+                        } else if s.eq_ignore_ascii_case("dashed") {
+                            dec.style = Some(TextDecorationStyle::Dashed);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     dec
@@ -287,6 +342,9 @@ fn resolve_text_decorations(
             if local_dec.color.is_some() && resolved.color.is_none() {
                 resolved.color = local_dec.color;
             }
+            if local_dec.style.is_some() && resolved.style.is_none() {
+                resolved.style = local_dec.style;
+            }
         }
         current = dom.parent(curr_id);
         depth += 1;
@@ -309,6 +367,70 @@ fn get_opacity(style: &ComputedStyle) -> f32 {
             (p / 100.0).clamp(0.0, 1.0)
         }
         _ => 1.0,
+    }
+}
+
+/// Helper to paint a decoration line with a specific style, color, and geometry.
+fn paint_decoration_line(
+    items: &mut Vec<DisplayItem>,
+    style: Option<TextDecorationStyle>,
+    x: f32,
+    y: f32,
+    width: f32,
+    color: Color,
+) {
+    // TODO(spec): text-decoration-style v1 — solid/double/dotted/dashed via repeated SolidRects; wavy is approximated/out-of-scope, dash/dot metrics are fixed heuristics, and shorthand-embedded style keyword parsing is best-effort.
+    match style {
+        Some(TextDecorationStyle::Solid) | None => {
+            items.push(DisplayItem::SolidRect {
+                rect: Rect::new(x, y, width, 1.0),
+                color,
+            });
+        }
+        Some(TextDecorationStyle::Double) => {
+            items.push(DisplayItem::SolidRect {
+                rect: Rect::new(x, y, width, 1.0),
+                color: color.clone(),
+            });
+            items.push(DisplayItem::SolidRect {
+                rect: Rect::new(x, y + 2.0, width, 1.0),
+                color,
+            });
+        }
+        Some(TextDecorationStyle::Dotted) => {
+            let dot_width = 1.0;
+            let gap = 1.0;
+            let mut current_x = x;
+            while current_x < x + width {
+                let current_dot_width = if current_x + dot_width > x + width {
+                    x + width - current_x
+                } else {
+                    dot_width
+                };
+                items.push(DisplayItem::SolidRect {
+                    rect: Rect::new(current_x, y, current_dot_width, 1.0),
+                    color: color.clone(),
+                });
+                current_x += dot_width + gap;
+            }
+        }
+        Some(TextDecorationStyle::Dashed) => {
+            let dash_width = 4.0;
+            let gap = 4.0;
+            let mut current_x = x;
+            while current_x < x + width {
+                let current_dash_width = if current_x + dash_width > x + width {
+                    x + width - current_x
+                } else {
+                    dash_width
+                };
+                items.push(DisplayItem::SolidRect {
+                    rect: Rect::new(current_x, y, current_dash_width, 1.0),
+                    color: color.clone(),
+                });
+                current_x += dash_width + gap;
+            }
+        }
     }
 }
 
@@ -727,37 +849,45 @@ pub fn build_display_list(
 
                     let deco_color = decorations.color.unwrap_or(color.clone());
 
+                    let scaled_deco_color = scale_color_alpha(&deco_color, effective_opacity);
+
                     if decorations.underline {
                         // Position underline relative to the baseline-corrected text position
                         let underline_y = corrected_rect.origin.y + font_height - 1.0;
-                        let underline_rect = Rect::new(x, underline_y, width, 1.0);
-
-                        items.push(DisplayItem::SolidRect {
-                            rect: underline_rect,
-                            color: scale_color_alpha(&deco_color, effective_opacity),
-                        });
+                        paint_decoration_line(
+                            &mut items,
+                            decorations.style,
+                            x,
+                            underline_y,
+                            width,
+                            scaled_deco_color.clone(),
+                        );
                     }
 
                     if decorations.overline {
                         // Position overline at the top of the baseline-corrected text position
                         let overline_y = corrected_rect.origin.y;
-                        let overline_rect = Rect::new(x, overline_y, width, 1.0);
-
-                        items.push(DisplayItem::SolidRect {
-                            rect: overline_rect,
-                            color: scale_color_alpha(&deco_color, effective_opacity),
-                        });
+                        paint_decoration_line(
+                            &mut items,
+                            decorations.style,
+                            x,
+                            overline_y,
+                            width,
+                            scaled_deco_color.clone(),
+                        );
                     }
 
                     if decorations.line_through {
                         // Position line-through in the middle of the baseline-corrected text position
                         let line_through_y = corrected_rect.origin.y + (font_height / 2.0);
-                        let line_through_rect = Rect::new(x, line_through_y, width, 1.0);
-
-                        items.push(DisplayItem::SolidRect {
-                            rect: line_through_rect,
-                            color: scale_color_alpha(&deco_color, effective_opacity),
-                        });
+                        paint_decoration_line(
+                            &mut items,
+                            decorations.style,
+                            x,
+                            line_through_y,
+                            width,
+                            scaled_deco_color.clone(),
+                        );
                     }
                 }
 
@@ -1657,6 +1787,201 @@ mod tests {
         } = solid_rects[0]
         {
             assert_eq!(rect_color, &Color::Rgba(255, 0, 0, 255));
+        }
+    }
+
+    #[test]
+    fn test_paint_text_decoration_style_dotted() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("dotted_underlined".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            p { text-decoration: underline; text-decoration-style: dotted; color: #ff00ff; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(text_items.len(), 1);
+        // "dotted_underlined" spans some width, so we expect multiple dotted SolidRects
+        assert!(solid_rects.len() > 1);
+
+        if let DisplayItem::Text {
+            rect: text_rect, ..
+        } = text_items[0]
+        {
+            // All dots must be at the underline's y and within the text's horizontal span
+            for item in &solid_rects {
+                if let DisplayItem::SolidRect { rect, color } = item {
+                    assert_eq!(color, &Color::Rgba(255, 0, 255, 255));
+                    assert!(rect.origin.x >= text_rect.origin.x);
+                    assert!(
+                        rect.origin.x + rect.size.width
+                            <= text_rect.origin.x + text_rect.size.width
+                    );
+                    // Dotted line height is 1.0, dot width is at most 1.0
+                    assert!(rect.size.width <= 1.0);
+                    assert_eq!(rect.size.height, 1.0);
+                } else {
+                    panic!("Expected SolidRect");
+                }
+            }
+        } else {
+            panic!("Expected Text");
+        }
+    }
+
+    #[test]
+    fn test_paint_text_decoration_style_dashed_shorthand() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("dashed_underlined".into()));
+        dom.append_child(p, text);
+
+        // Test shorthand-embedded parsing!
+        let stylesheet = parse_stylesheet(
+            "
+            p { text-decoration: underline dashed; color: #00ff00; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(text_items.len(), 1);
+        assert!(solid_rects.len() > 1);
+
+        if let DisplayItem::Text {
+            rect: text_rect, ..
+        } = text_items[0]
+        {
+            for item in &solid_rects {
+                if let DisplayItem::SolidRect { rect, color } = item {
+                    assert_eq!(color, &Color::Rgba(0, 255, 0, 255));
+                    assert!(rect.origin.x >= text_rect.origin.x);
+                    assert!(
+                        rect.origin.x + rect.size.width
+                            <= text_rect.origin.x + text_rect.size.width
+                    );
+                    assert_eq!(rect.size.height, 1.0);
+                } else {
+                    panic!("Expected SolidRect");
+                }
+            }
+        } else {
+            panic!("Expected Text");
+        }
+    }
+
+    #[test]
+    fn test_paint_text_decoration_style_double() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("double_underlined".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            p { text-decoration: underline; text-decoration-style: double; color: #0000ff; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(text_items.len(), 1);
+        // Double style emits exactly TWO parallel line rectangles
+        assert_eq!(solid_rects.len(), 2);
+
+        if let DisplayItem::Text {
+            rect: text_rect, ..
+        } = text_items[0]
+        {
+            let r1 = match solid_rects[0] {
+                DisplayItem::SolidRect { rect, color } => {
+                    assert_eq!(color, &Color::Rgba(0, 0, 255, 255));
+                    assert_eq!(rect.origin.x, text_rect.origin.x);
+                    assert_eq!(rect.size.width, text_rect.size.width);
+                    assert_eq!(rect.size.height, 1.0);
+                    rect
+                }
+                _ => panic!("Expected SolidRect"),
+            };
+
+            let r2 = match solid_rects[1] {
+                DisplayItem::SolidRect { rect, color } => {
+                    assert_eq!(color, &Color::Rgba(0, 0, 255, 255));
+                    assert_eq!(rect.origin.x, text_rect.origin.x);
+                    assert_eq!(rect.size.width, text_rect.size.width);
+                    assert_eq!(rect.size.height, 1.0);
+                    rect
+                }
+                _ => panic!("Expected SolidRect"),
+            };
+
+            // Two parallel lines must be at distinct y offsets
+            assert_ne!(r1.origin.y, r2.origin.y);
+            assert_eq!(r2.origin.y, r1.origin.y + 2.0);
+        } else {
+            panic!("Expected Text");
         }
     }
 
