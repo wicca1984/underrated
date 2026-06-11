@@ -2577,7 +2577,10 @@ fn map_boa_error(err: JsError) -> ScriptError {
 /// If a script throws an error, it is caught per-script and does not abort
 /// the overall run (I-6 safety). External `src`, `defer`, or `async` scripts
 /// are skipped and marked with a spec TODO.
-pub fn run_inline_scripts(mut dom: Dom) -> Dom {
+pub fn run_inline_scripts(
+    mut dom: Dom,
+    styles: &std::collections::HashMap<crate::infra::NodeId, crate::style::ComputedStyle>,
+) -> Dom {
     // Collect inline script node IDs in document order (pre-order traversal)
     let mut script_ids = Vec::new();
     for id in dom.descendants(dom.document()) {
@@ -2602,7 +2605,7 @@ pub fn run_inline_scripts(mut dom: Dom) -> Dom {
         let src = dom.text_content(id);
         // Execute the script with the current DOM context
         // spec: S-61 Any exception from a throwing script must be caught per-script and not abort the entire run.
-        let _ = host.eval_with_dom(&src, &mut dom);
+        let _ = host.eval_with_dom_and_styles(&src, &mut dom, styles);
     }
 
     dom
@@ -3794,7 +3797,7 @@ mod tests {
         dom.append_child(script_id, script_text);
         dom.append_child(document, script_id);
 
-        let mutated_dom = run_inline_scripts(dom);
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "hi");
     }
 
@@ -3834,7 +3837,7 @@ mod tests {
         dom.append_child(document, script_id2);
 
         // This must run successfully without panic and execute the second script!
-        let mutated_dom = run_inline_scripts(dom);
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "recovered");
     }
 
@@ -3885,7 +3888,7 @@ mod tests {
         dom.append_child(document, script_async);
 
         // Run scripts: all three must be skipped and target must remain "original"
-        let mutated_dom = run_inline_scripts(dom);
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "original");
     }
 
@@ -3925,7 +3928,7 @@ mod tests {
         dom.append_child(document, script_id2);
 
         // Run: output should be "AB"
-        let mutated_dom = run_inline_scripts(dom);
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "AB");
     }
 
@@ -3961,7 +3964,7 @@ mod tests {
         dom.append_child(document, script_id);
 
         // Run scripts: must NOT hang or panic!
-        let _mutated_dom = run_inline_scripts(dom);
+        let _mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
 
         // Restore defaults
         set_limits_enabled(true);
@@ -3999,7 +4002,7 @@ mod tests {
         dom.append_child(script_id, script_text);
         dom.append_child(document, script_id);
 
-        let mutated_dom = run_inline_scripts(dom);
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "original");
 
         // Restore defaults
@@ -4036,7 +4039,7 @@ mod tests {
         dom.append_child(script_id, script_text);
         dom.append_child(document, script_id);
 
-        let mutated_dom = run_inline_scripts(dom);
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "changed");
 
         // Restore defaults

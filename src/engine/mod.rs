@@ -306,13 +306,17 @@ pub fn render_page(
         }
     }
 
-    // 4. Run inline scripts
-    dom = crate::script::run_inline_scripts(dom);
-
     // 5. Parse accumulated stylesheet
     let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
 
-    // 6. Compute styles with viewport
+    // Compute styles before running scripts so that inline scripts have access to them
+    let pre_script_styles =
+        crate::style::compute_styles_with_viewport(&dom, &stylesheet, viewport_width);
+
+    // 4. Run inline scripts with computed styles
+    dom = crate::script::run_inline_scripts(dom, &pre_script_styles);
+
+    // 6. Compute styles again with viewport (since scripts might have mutated the DOM)
     let styles = crate::style::compute_styles_with_viewport(&dom, &stylesheet, viewport_width);
 
     // 7. Layout document
@@ -899,6 +903,52 @@ mod tests {
         } else {
             panic!("Expected blue background color");
         }
+    }
+
+    #[test]
+    fn test_render_page_script_get_computed_style() {
+        let html = "
+            <html>
+              <head>
+                <style>
+                  #target { color: red; }
+                </style>
+              </head>
+              <body>
+                <div id=\"target\"></div>
+                <script>
+                  let el = document.getElementById('target');
+                  let style = window.getComputedStyle(el);
+                  let color = style.getPropertyValue('color');
+                  if (color === 'rgb(255, 0, 0)') {
+                      el.textContent = 'matched-color';
+                  } else {
+                      el.textContent = 'unmatched-color: ' + color;
+                  }
+                </script>
+              </body>
+            </html>
+        ";
+
+        let loader = MockLoader {
+            responses: HashMap::new(),
+        };
+        let base_url = crate::url::Url::parse("https://example.com/").unwrap();
+
+        let page = render_page(html, &base_url, &loader, 800.0);
+        let doc = page.dom.document();
+
+        let mut target_node_id = None;
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { attrs, .. }) = page.dom.data(id)
+                && attrs.iter().any(|(k, v)| k == "id" && v == "target")
+            {
+                target_node_id = Some(id);
+                break;
+            }
+        }
+        let target_id = target_node_id.expect("Should find element with id='target'");
+        assert_eq!(page.dom.text_content(target_id), "matched-color");
     }
 
     #[test]
