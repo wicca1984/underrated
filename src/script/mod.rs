@@ -288,6 +288,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_is_connected),
+                JsString::from("isConnected"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_contains),
                 JsString::from("contains"),
                 1,
@@ -1207,6 +1212,14 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'isConnected', {
+                        get() {
+                            return bridge.isConnected(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     node.contains = function(otherNode) {
                         return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
                     };
@@ -1586,6 +1599,14 @@ impl BoaHost {
                 Object.defineProperty(document, 'parentNode', {
                     get() {
                         return getOrCreateNode(bridge.parentNode(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'isConnected', {
+                    get() {
+                        return bridge.isConnected(this.__key__);
                     },
                     enumerable: true,
                     configurable: true
@@ -3524,6 +3545,32 @@ fn bridge_parent_node(
     }
 }
 
+fn bridge_is_connected(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let is_connected = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            let mut curr = n_id;
+            while let Some(parent_id) = dom.parent(curr) {
+                curr = parent_id;
+            }
+            curr == dom.document()
+        } else {
+            false
+        }
+    })?;
+
+    Ok(JsValue::from(is_connected))
+}
+
 fn bridge_contains(
     _this: &JsValue,
     args: &[JsValue],
@@ -5147,6 +5194,33 @@ mod tests {
         assert_eq!(
             res,
             Ok(r#"{"enumerable":true,"configurable":true,"readOnly":true}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_dom_node_is_connected() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const div = document.createElement('div');
+            const detachedIsConnected = div.isConnected;
+            
+            document.appendChild(div);
+            const attachedIsConnected = div.isConnected;
+
+            const verification = {
+                documentIsConnected: document.isConnected,
+                detachedIsConnected: detachedIsConnected,
+                attachedIsConnected: attachedIsConnected
+            };
+            JSON.stringify(verification);
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok(r#"{"documentIsConnected":true,"detachedIsConnected":false,"attachedIsConnected":true}"#.to_string())
         );
     }
 
