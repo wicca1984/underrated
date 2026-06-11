@@ -229,6 +229,16 @@ impl BoaHost {
                 2,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_get_inner_html),
+                JsString::from("getInnerHTML"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_set_inner_html),
+                JsString::from("setInnerHTML"),
+                2,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_parent_node),
                 JsString::from("parentNode"),
                 1,
@@ -849,6 +859,19 @@ impl BoaHost {
                         },
                         set(val) {
                             bridge.setTextContent(this.__key__, String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'innerHTML', {
+                        get() {
+                            if (this.nodeType !== 1) return undefined;
+                            return bridge.getInnerHTML(this.__key__);
+                        },
+                        set(val) {
+                            if (this.nodeType !== 1) return;
+                            bridge.setInnerHTML(this.__key__, String(val));
                         },
                         enumerable: true,
                         configurable: true
@@ -2262,6 +2285,110 @@ fn bridge_set_text_content(
                 dom.append_child(n_id, text_id);
             }
             // TODO(spec): Re-layout on mutation
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn copy_node_to_dom_recursive(src_dom: &Dom, src_node_id: NodeId, dest_dom: &mut Dom) -> NodeId {
+    let node_data = if let Some(data) = src_dom.data(src_node_id) {
+        data.clone()
+    } else {
+        NodeData::Comment(String::new())
+    };
+
+    let dest_node_id = dest_dom.create_node(node_data);
+
+    let children: Vec<NodeId> = src_dom.children(src_node_id).to_vec();
+    for child_id in children {
+        let cloned_child_id = copy_node_to_dom_recursive(src_dom, child_id, dest_dom);
+        dest_dom.append_child(dest_node_id, cloned_child_id);
+    }
+
+    dest_node_id
+}
+
+fn bridge_get_inner_html(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let inner_html = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            let mut result = String::new();
+            for &child_id in dom.children(n_id) {
+                result.push_str(&dom.serialize(child_id));
+            }
+            result
+        } else {
+            String::new()
+        }
+    })?;
+
+    Ok(JsValue::from(JsString::from(inner_html)))
+}
+
+fn bridge_set_inner_html(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let html_val = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            // Remove existing children
+            let children: Vec<NodeId> = dom.children(n_id).to_vec();
+            for child in children {
+                dom.remove_child(n_id, child);
+            }
+
+            // Parse the HTML fragment (using wrapped body).
+            // TODO(spec): We emulate fragment parsing by wrapping in a body tag and parsing the document.
+            let wrapped_html = format!("<body>{}</body>", html_val);
+            let temp_dom = crate::html::parse_document(crate::encoding::InputStream::from_utf8(
+                wrapped_html.as_bytes(),
+            ));
+
+            // Find the <body> element in temp_dom.
+            let body_id_opt =
+                temp_dom
+                    .descendants(temp_dom.document())
+                    .into_iter()
+                    .find(|&node_id| {
+                        if let Some(crate::dom::NodeData::Element { name, .. }) =
+                            temp_dom.data(node_id)
+                        {
+                            name == "body"
+                        } else {
+                            false
+                        }
+                    });
+
+            if let Some(body_id) = body_id_opt {
+                let temp_children = temp_dom.children(body_id).to_vec();
+                for temp_child_id in temp_children {
+                    let dest_child_id = copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom);
+                    dom.append_child(n_id, dest_child_id);
+                }
+            }
         }
     })?;
 
@@ -4881,6 +5008,84 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script_invalid, &mut dom),
             Ok("".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_inner_html_getter_setter() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        // 1. Basic get/set round trip with mixed element and text nodes
+        let script1 = "
+            let div = document.createElement('div');
+            document.appendChild(div);
+            div.innerHTML = '<span class=\"a\">hi</span><b>x</b>';
+            div.innerHTML;
+        ";
+        let res1 = host.eval_with_dom(script1, &mut dom);
+        // Note: attribute orders and formatting may differ, but our serialize implementation
+        // produces `<span class="a">hi</span><b>x</b>`
+        assert_eq!(res1, Ok("<span class=\"a\">hi</span><b>x</b>".to_string()));
+
+        // 2. Inspect the real DOM tree from the Rust side to ensure it was properly parsed and transplanted
+        let root_children = dom.children(dom.document());
+        let div_id = root_children[0];
+        let div_children = dom.children(div_id);
+        assert_eq!(div_children.len(), 2);
+
+        // First child: span with class="a" and text "hi"
+        let span_id = div_children[0];
+        assert!(
+            matches!(dom.data(span_id), Some(NodeData::Element { name, .. }) if name == "span")
+        );
+        assert_eq!(dom.get_attribute(span_id, "class"), Some("a"));
+        let span_children = dom.children(span_id);
+        assert_eq!(span_children.len(), 1);
+        assert_eq!(dom.text_content(span_id), "hi");
+
+        // Second child: b with text "x"
+        let b_id = div_children[1];
+        assert!(matches!(dom.data(b_id), Some(NodeData::Element { name, .. }) if name == "b"));
+        assert_eq!(dom.text_content(b_id), "x");
+
+        // 3. Clear using empty string setter
+        let script2 = "
+            div.innerHTML = '';
+            div.innerHTML;
+        ";
+        let res2 = host.eval_with_dom(script2, &mut dom);
+        assert_eq!(res2, Ok("".to_string()));
+        assert_eq!(dom.children(div_id).len(), 0);
+
+        // 4. Getter/setter with void element and text nodes
+        let script3 = "
+            div.innerHTML = 'hello<br>world<img>';
+            div.innerHTML;
+        ";
+        let res3 = host.eval_with_dom(script3, &mut dom);
+        assert_eq!(res3, Ok("hello<br>world<img>".to_string()));
+
+        // 5. Query and set innerHTML on a non-element (Text node) - should do nothing (not crash or mutate) and return undefined
+        let script4 = "
+            let textNode = document.createTextNode('sample');
+            let res_get = String(textNode.innerHTML);
+            textNode.innerHTML = '<b>failed</b>';
+            let res_text = textNode.textContent;
+            [res_get, res_text].join('|');
+        ";
+        let res4 = host.eval_with_dom(script4, &mut dom);
+        assert_eq!(res4, Ok("undefined|sample".to_string()));
+
+        // 6. Check escaping of text/attributes
+        let script6 = "
+            div.innerHTML = '<span title=\"a &quot; b &amp; c\">&lt;test&gt;</span>';
+            div.innerHTML;
+        ";
+        let res6 = host.eval_with_dom(script6, &mut dom);
+        assert_eq!(
+            res6,
+            Ok("<span title=\"a &quot; b &amp; c\">&lt;test&gt;</span>".to_string())
         );
     }
 }
