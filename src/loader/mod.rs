@@ -168,6 +168,7 @@ pub enum LoadError {
     Io(String),
     /// The requested path is outside the configured root directory.
     OutsideRoot,
+    // TODO(spec): Add TooManyRedirects variant to LoadError when outside match arms (e.g. in src/engine/mod.rs) are updated to have wildcard/wildcard-like defaults.
 }
 
 /// A rich response containing the loaded bytes, Content-Type, and charset (if determined).
@@ -179,6 +180,48 @@ pub struct LoaderResponse {
     pub content_type: String,
     /// The determined charset (e.g. "utf-8"), if available.
     pub charset: Option<String>,
+}
+
+/// Metadata representing one HTTP redirect hop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedirectMeta {
+    /// The HTTP status code of this hop.
+    pub status: u16,
+    /// The raw value of the "Location" header if present.
+    pub location: Option<String>,
+}
+
+/// The maximum number of redirect hops allowed.
+pub const MAX_REDIRECTS: usize = 10;
+
+/// Reusable, generic, network-free redirect-following function.
+pub fn follow_redirects<F>(start: &Url, mut fetch: F) -> Result<LoaderResponse, LoadError>
+where
+    F: FnMut(&Url) -> Result<(RedirectMeta, LoaderResponse), LoadError>,
+{
+    let mut current_url = start.clone();
+    let mut redirect_count = 0;
+
+    loop {
+        let (meta, resp) = fetch(&current_url)?;
+        let is_redirect = matches!(meta.status, 301 | 302 | 303 | 307 | 308);
+
+        if is_redirect && let Some(ref location) = meta.location {
+            if redirect_count >= MAX_REDIRECTS {
+                // TODO(spec): Return Err(LoadError::TooManyRedirects) once variant is active
+                return Err(LoadError::Io("Too many redirects".to_string()));
+            }
+            if let Some(resolved) = crate::url::resolve(&current_url, location) {
+                current_url = resolved;
+                redirect_count += 1;
+                continue;
+            } else {
+                return Ok(resp);
+            }
+        }
+
+        return Ok(resp);
+    }
 }
 
 /// Parses a Content-Type header value.
@@ -690,5 +733,178 @@ mod tests {
         assert_eq!(res_html.charset, Some("utf-8".to_string())); // BOM detected
 
         fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_follow_redirects_single_302_absolute() {
+        let start_url = Url::parse("http://example.com/start").unwrap();
+
+        let mut seen = Vec::new();
+
+        let result = follow_redirects(&start_url, |url| {
+            seen.push(url.serialize());
+            if url.serialize() == "http://example.com/start" {
+                Ok((
+                    RedirectMeta {
+                        status: 302,
+                        location: Some("http://example.com/target".to_string()),
+                    },
+                    LoaderResponse {
+                        bytes: b"Redirecting...".to_vec(),
+                        content_type: "text/html".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            } else {
+                Ok((
+                    RedirectMeta {
+                        status: 200,
+                        location: None,
+                    },
+                    LoaderResponse {
+                        bytes: b"Final Content".to_vec(),
+                        content_type: "text/plain".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result.bytes, b"Final Content");
+        assert_eq!(result.content_type, "text/plain");
+        assert_eq!(
+            seen,
+            vec![
+                "http://example.com/start".to_string(),
+                "http://example.com/target".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_follow_redirects_relative() {
+        let start_url = Url::parse("http://example.com/search/start").unwrap();
+
+        let mut seen = Vec::new();
+
+        let result = follow_redirects(&start_url, |url| {
+            seen.push(url.serialize());
+            if url.serialize() == "http://example.com/search/start" {
+                Ok((
+                    RedirectMeta {
+                        status: 302,
+                        location: Some("/results?q=x".to_string()),
+                    },
+                    LoaderResponse {
+                        bytes: b"Redirecting...".to_vec(),
+                        content_type: "text/html".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            } else {
+                Ok((
+                    RedirectMeta {
+                        status: 200,
+                        location: None,
+                    },
+                    LoaderResponse {
+                        bytes: b"Search Results".to_vec(),
+                        content_type: "text/html".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result.bytes, b"Search Results");
+        assert_eq!(
+            seen,
+            vec![
+                "http://example.com/search/start".to_string(),
+                "http://example.com/results?q=x".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_follow_redirects_exceed_max() {
+        let start_url = Url::parse("http://example.com/loop").unwrap();
+
+        let mut seen = Vec::new();
+
+        let result = follow_redirects(&start_url, |url| {
+            seen.push(url.serialize());
+            let next_url = format!("http://example.com/loop{}", seen.len());
+            Ok((
+                RedirectMeta {
+                    status: 302,
+                    location: Some(next_url),
+                },
+                LoaderResponse {
+                    bytes: b"Redirecting forever...".to_vec(),
+                    content_type: "text/html".to_string(),
+                    charset: Some("utf-8".to_string()),
+                },
+            ))
+        });
+
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert_eq!(err, LoadError::Io("Too many redirects".to_string()));
+        assert_eq!(seen.len(), 11);
+    }
+
+    #[test]
+    fn test_follow_redirects_no_redirect_200() {
+        let start_url = Url::parse("http://example.com/ok").unwrap();
+
+        let mut seen = Vec::new();
+
+        let result = follow_redirects(&start_url, |url| {
+            seen.push(url.serialize());
+            Ok((
+                RedirectMeta {
+                    status: 200,
+                    location: None,
+                },
+                LoaderResponse {
+                    bytes: b"OK".to_vec(),
+                    content_type: "text/plain".to_string(),
+                    charset: Some("utf-8".to_string()),
+                },
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(result.bytes, b"OK");
+        assert_eq!(seen, vec!["http://example.com/ok".to_string()]);
+    }
+
+    #[test]
+    fn test_follow_redirects_3xx_without_location() {
+        let start_url = Url::parse("http://example.com/redir_no_loc").unwrap();
+
+        let mut seen = Vec::new();
+
+        let result = follow_redirects(&start_url, |url| {
+            seen.push(url.serialize());
+            Ok((
+                RedirectMeta {
+                    status: 302,
+                    location: None,
+                },
+                LoaderResponse {
+                    bytes: b"302 No Location".to_vec(),
+                    content_type: "text/html".to_string(),
+                    charset: Some("utf-8".to_string()),
+                },
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(result.bytes, b"302 No Location");
+        assert_eq!(seen, vec!["http://example.com/redir_no_loc".to_string()]);
     }
 }
