@@ -27,6 +27,7 @@ h3 { margin-top: 1em; margin-bottom: 1em; font-weight: bold; }\n\
 h4 { margin-top: 1.33em; margin-bottom: 1.33em; font-weight: bold; }\n\
 h5 { margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold; }\n\
 h6 { margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold; }\n\
+ul, ol { margin: 1em 0; padding-left: 40px; }\n\
 a { color: #0000ee; text-decoration: underline; }\n\
 b, strong { font-weight: bold; }\n\
 i, em { font-style: italic; }\n\
