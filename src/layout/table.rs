@@ -38,6 +38,10 @@ pub fn layout_table_container(
     depth: usize,
 ) -> Option<LayoutBox> {
     let style = styles.get(&node)?;
+    let caption_side_bottom = matches!(
+        style.get("caption-side"),
+        Some(CssValue::Keyword(kw)) if kw == "bottom"
+    );
 
     // Get box model values
     let margin_top = get_px(style, "margin-top", 0.0);
@@ -92,7 +96,7 @@ pub fn layout_table_container(
         let mut table_children = Vec::new();
         let mut caption_height = 0.0_f32;
         if let Some(caption_node) = first_caption
-            && let Some(cap_box) = layout_node(
+            && let Some(mut cap_box) = layout_node(
                 dom,
                 styles,
                 caption_node,
@@ -103,6 +107,10 @@ pub fn layout_table_container(
             )
         {
             caption_height = cap_box.rect.size.height;
+            if caption_side_bottom {
+                let dy = padding_top + padding_bottom + border_top + border_bottom;
+                translate_y(&mut cap_box, dy);
+            }
             table_children.push(cap_box);
         }
         let border_box_height =
@@ -163,7 +171,7 @@ pub fn layout_table_container(
         let mut table_children = Vec::new();
         let mut caption_height = 0.0_f32;
         if let Some(caption_node) = first_caption
-            && let Some(cap_box) = layout_node(
+            && let Some(mut cap_box) = layout_node(
                 dom,
                 styles,
                 caption_node,
@@ -174,6 +182,10 @@ pub fn layout_table_container(
             )
         {
             caption_height = cap_box.rect.size.height;
+            if caption_side_bottom {
+                let dy = padding_top + padding_bottom + border_top + border_bottom;
+                translate_y(&mut cap_box, dy);
+            }
             table_children.push(cap_box);
         }
         let border_box_height =
@@ -353,8 +365,11 @@ pub fn layout_table_container(
     }
 
     let mut row_y_offsets = vec![0.0_f32; rows.len()];
-    // TODO(spec): caption-side: bottom is not implemented. Defaulting to caption-side: top.
-    let mut curr_y = border_box_y + border_top + padding_top + caption_height;
+    let mut curr_y = border_box_y + border_top + padding_top;
+    if !caption_side_bottom {
+        curr_y += caption_height;
+    }
+    let row_start_y = curr_y;
     for r in 0..rows.len() {
         curr_y += spacing_v;
         row_y_offsets[r] = curr_y;
@@ -363,8 +378,16 @@ pub fn layout_table_container(
     curr_y += spacing_v;
 
     let mut table_children = Vec::new();
-    if let Some(cap_box) = caption_box {
-        table_children.push(cap_box);
+    let mut bottom_caption_box = None;
+    if let Some(mut cap_box) = caption_box {
+        if caption_side_bottom {
+            let target_y = curr_y + padding_bottom + border_bottom;
+            let dy = target_y - cap_box.rect.origin.y;
+            translate_y(&mut cap_box, dy);
+            bottom_caption_box = Some(cap_box);
+        } else {
+            table_children.push(cap_box);
+        }
     }
 
     // Lay out rows and place cells
@@ -452,7 +475,11 @@ pub fn layout_table_container(
         table_children.push(row_box);
     }
 
-    let final_content_height = curr_y - (border_box_y + border_top + padding_top + caption_height);
+    if let Some(cap_box) = bottom_caption_box {
+        table_children.push(cap_box);
+    }
+
+    let final_content_height = curr_y - row_start_y;
     let border_box_height = final_content_height
         + padding_top
         + padding_bottom
@@ -1215,6 +1242,97 @@ mod tests {
         assert_eq!(cell_box.rect.origin.x, 10.0);
         assert_eq!(cell_box.rect.origin.y, 20.0 + 40.0); // cell is also offset downward
         assert_eq!(cell_box.rect.size.height, 30.0);
+    }
+
+    #[test]
+    fn test_table_caption_side_bottom() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Create table element
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Create caption element
+        let caption_node = dom.create_node(NodeData::Element {
+            name: "caption".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, caption_node);
+
+        // Create row
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        // Create cell
+        let cell_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 200px, caption-side: bottom
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        table_style.insert(
+            "caption-side".to_string(),
+            CssValue::Keyword("bottom".to_string()),
+        );
+        styles.insert(table_node, table_style);
+
+        // Caption style: height 40px
+        let mut caption_style = style_with_display("block");
+        caption_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        styles.insert(caption_node, caption_style);
+
+        // Row style
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Cell style: width 200px, height 30px
+        let mut cell_style = style_with_display("table-cell");
+        cell_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        cell_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        styles.insert(cell_node, cell_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 10.0, 20.0, 0)
+            .expect("should layout table");
+
+        // Checks:
+        // 1. Table width is 200px
+        assert_eq!(table_box.rect.size.width, 200.0);
+        // 2. Table total height should include caption (40px) + cell/row (30px) = 70px
+        assert_eq!(table_box.rect.size.height, 70.0);
+
+        // 3. Children of table should be: row and then the caption
+        assert_eq!(table_box.children.len(), 2);
+
+        let row_box = &table_box.children[0];
+        assert_eq!(row_box.node, Some(row_node));
+        assert_eq!(row_box.rect.origin.x, 10.0);
+        assert_eq!(row_box.rect.origin.y, 20.0); // starts at normal top position (not offset)
+        assert_eq!(row_box.rect.size.height, 30.0);
+
+        let cell_box = &row_box.children[0];
+        assert_eq!(cell_box.node, Some(cell_node));
+        assert_eq!(cell_box.rect.origin.y, 20.0); // cell also starts at normal top position
+
+        let cap_box = &table_box.children[1];
+        assert_eq!(cap_box.node, Some(caption_node));
+        assert_eq!(cap_box.rect.origin.x, 10.0);
+        assert_eq!(cap_box.rect.origin.y, 20.0 + 30.0); // positioned below the row (row top 20.0 + row height 30.0 = 50.0)
+        assert_eq!(cap_box.rect.size.width, 200.0);
+        assert_eq!(cap_box.rect.size.height, 40.0);
+
+        // Assert that caption top y (50.0) is greater than row top y (20.0)
+        assert!(cap_box.rect.origin.y > row_box.rect.origin.y);
     }
 
     #[test]
