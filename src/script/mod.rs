@@ -298,6 +298,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_has_child_nodes),
+                JsString::from("hasChildNodes"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_child_nodes),
                 JsString::from("childNodes"),
                 1,
@@ -1224,6 +1229,10 @@ impl BoaHost {
                         return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
                     };
 
+                    node.hasChildNodes = function() {
+                        return bridge.hasChildNodes(this.__key__);
+                    };
+
                     node.isSameNode = function(otherNode) {
                         return this === otherNode;
                     };
@@ -1614,6 +1623,10 @@ impl BoaHost {
 
                 document.contains = function(otherNode) {
                     return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
+                };
+
+                document.hasChildNodes = function() {
+                    return bridge.hasChildNodes(this.__key__);
                 };
 
                 document.isSameNode = function(otherNode) {
@@ -3630,6 +3643,28 @@ fn bridge_contains(
     Ok(JsValue::from(contains))
 }
 
+fn bridge_has_child_nodes(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let has_children = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            !dom.children(n_id).is_empty()
+        } else {
+            false
+        }
+    })?;
+
+    Ok(JsValue::from(has_children))
+}
+
 fn bridge_child_nodes(
     _this: &JsValue,
     args: &[JsValue],
@@ -4863,6 +4898,25 @@ mod tests {
         // 7. document does NOT contain nodes outside it (not appended, or null)
         let res_document_contains_null = host.eval_with_dom("document.contains(null)", &mut dom);
         assert_eq!(res_document_contains_null, Ok("false".to_string()));
+    }
+
+    #[test]
+    fn test_node_has_child_nodes() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            const div = document.createElement('div');
+            const hasNoChildren = div.hasChildNodes();
+            
+            const span = document.createElement('span');
+            div.appendChild(span);
+            const hasChildrenNow = div.hasChildNodes();
+            
+            [hasNoChildren, hasChildrenNow].join(',');
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(res, Ok("false,true".to_string()));
     }
 
     #[test]
