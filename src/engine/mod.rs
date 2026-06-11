@@ -277,6 +277,25 @@ pub fn render_page_to_canvas(
     crate::raster::rasterize(&display_list, width, height)
 }
 
+/// Resolves a click on `clicked` into a navigated result page.
+///
+/// Returns `Some(Page)` when `clicked` is a submit button that owns a form
+/// (`forms::submit_from_button` yields a `NavigationRequest`): the request is
+/// dispatched through `navigate` against `base` and the rendered result page
+/// is returned. Returns `None` when the click does not trigger a submission
+/// (not a submit button, or no owning form). Never panics (I-6).
+pub fn navigate_from_click(
+    dom: &crate::dom::Dom,
+    clicked: crate::infra::NodeId,
+    values: &crate::forms::FormState,
+    base: &Url,
+    loader: &dyn ResourceLoader,
+    viewport_width: f32,
+) -> Option<Page> {
+    let req = crate::forms::submit_from_button(dom, clicked, values)?;
+    Some(navigate(&req, base, loader, viewport_width))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1386,5 +1405,183 @@ mod tests {
         } else {
             panic!("Expected DisplayItem::Image");
         }
+    }
+
+    #[test]
+    fn test_navigate_from_click_complete_behavior() {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+
+        // Custom recording loader
+        struct RecordingLoader {
+            requests: RefCell<Vec<(String, crate::loader::HttpMethod, Vec<u8>)>>,
+            responses: HashMap<String, Vec<u8>>,
+        }
+
+        impl crate::loader::ResourceLoader for RecordingLoader {
+            fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
+
+            fn load_request(
+                &self,
+                url: &crate::url::Url,
+                method: crate::loader::HttpMethod,
+                body: &[u8],
+                _content_type: Option<&str>,
+            ) -> Result<crate::loader::LoaderResponse, crate::loader::LoadError> {
+                let serialized = url.serialize();
+                self.requests
+                    .borrow_mut()
+                    .push((serialized.clone(), method, body.to_vec()));
+
+                let bytes = self.responses.get(&serialized).cloned().unwrap_or_default();
+                Ok(crate::loader::LoaderResponse {
+                    bytes,
+                    charset: Some("utf-8".to_string()),
+                    content_type: "text/html".to_string(),
+                })
+            }
+        }
+
+        let base_url = Url::parse("https://example.com/").unwrap();
+
+        // 1. GET form scenario
+        let mut dom = Dom::new();
+        let doc_root = dom.document();
+
+        // Build a form: <form action="/search" method="get">
+        let form = dom.create_node(NodeData::Element {
+            name: "form".to_string(),
+            attrs: vec![
+                ("action".to_string(), "/search".to_string()),
+                ("method".to_string(), "get".to_string()),
+            ],
+        });
+        dom.append_child(doc_root, form);
+
+        // Named input control: <input type="text" name="query" value="rust">
+        let text_input = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![
+                ("type".to_string(), "text".to_string()),
+                ("name".to_string(), "query".to_string()),
+                ("value".to_string(), "rust".to_string()),
+            ],
+        });
+        dom.append_child(form, text_input);
+
+        // Submit input: <input type="submit">
+        let submit_input = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("type".to_string(), "submit".to_string())],
+        });
+        dom.append_child(form, submit_input);
+
+        // Plain div inside the form
+        let plain_div = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(form, plain_div);
+
+        // Button type=button inside the form
+        let plain_button = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![("type".to_string(), "button".to_string())],
+        });
+        dom.append_child(form, plain_button);
+
+        // Prepare some mock responses
+        let mut responses = HashMap::new();
+        responses.insert(
+            "https://example.com/search?query=rust".to_string(),
+            b"<html><body><h1>Search Results for Rust</h1></body></html>".to_vec(),
+        );
+
+        let loader = RecordingLoader {
+            requests: RefCell::new(Vec::new()),
+            responses,
+        };
+
+        let values = crate::forms::FormState::new();
+
+        // Case 1: Clicking the submit button triggers a GET submission and returns Page
+        let page_opt = navigate_from_click(&dom, submit_input, &values, &base_url, &loader, 800.0);
+        assert!(
+            page_opt.is_some(),
+            "Clicking submit input should navigate and yield a Page"
+        );
+
+        // Assert loader recorded the correct GET request
+        let recorded = loader.requests.borrow().clone();
+        assert_eq!(recorded.len(), 1, "Exactly one request should be recorded");
+        assert_eq!(recorded[0].0, "https://example.com/search?query=rust");
+        assert_eq!(recorded[0].1, crate::loader::HttpMethod::Get);
+
+        // Assert resulting page DOM contains the loaded content
+        let navigated_page = page_opt.unwrap();
+        let mut found_search_text = false;
+        let nav_doc = navigated_page.dom.document();
+        for id in navigated_page.dom.descendants(nav_doc) {
+            if let Some(NodeData::Text(text)) = navigated_page.dom.data(id)
+                && text.contains("Search Results for Rust")
+            {
+                found_search_text = true;
+            }
+        }
+        assert!(
+            found_search_text,
+            "Navigated page should contain expected text"
+        );
+
+        // Clear requests log
+        loader.requests.borrow_mut().clear();
+
+        // Case 2: Clicking non-submit nodes returns None and records no request
+        let div_result = navigate_from_click(&dom, plain_div, &values, &base_url, &loader, 800.0);
+        assert!(
+            div_result.is_none(),
+            "Clicking plain div should not trigger navigation"
+        );
+        assert!(
+            loader.requests.borrow().is_empty(),
+            "No requests should be recorded for plain div click"
+        );
+
+        let button_result =
+            navigate_from_click(&dom, plain_button, &values, &base_url, &loader, 800.0);
+        assert!(
+            button_result.is_none(),
+            "Clicking button of type button should not trigger navigation"
+        );
+        assert!(
+            loader.requests.borrow().is_empty(),
+            "No requests should be recorded for plain button click"
+        );
+
+        // Case 3: A submit button with no owning form returns None
+        let mut orphan_dom = Dom::new();
+        let orphan_submit = orphan_dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("type".to_string(), "submit".to_string())],
+        });
+        // We do not append it to any form
+        let orphan_result = navigate_from_click(
+            &orphan_dom,
+            orphan_submit,
+            &values,
+            &base_url,
+            &loader,
+            800.0,
+        );
+        assert!(
+            orphan_result.is_none(),
+            "Clicking orphan submit should not trigger navigation"
+        );
+        assert!(
+            loader.requests.borrow().is_empty(),
+            "No requests should be recorded for orphan submit click"
+        );
     }
 }
