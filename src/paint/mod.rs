@@ -585,7 +585,7 @@ pub fn build_display_list(
                     }
 
                     if leaves.is_empty() || has_none || has_inset || has_comma {
-                        // TODO(spec): box-shadow v1 — single outer shadow, offset-only (blur/spread ignored, inset & multiple shadows out of scope).
+                        // TODO(spec): box-shadow v2 — single outer shadow with spread (blur is still unimplemented; inset & multiple shadows out of scope).
                     } else {
                         // Parse lengths and colors
                         let mut length_values = Vec::new();
@@ -613,6 +613,11 @@ pub fn build_display_list(
                         if length_values.len() >= 2 {
                             let offset_x = length_values[0];
                             let offset_y = length_values[1];
+                            let spread = if length_values.len() >= 4 {
+                                length_values[3]
+                            } else {
+                                0.0
+                            };
 
                             // Determine shadow color: default to text color, falling back to black
                             let shadow_color = if let Some(c) = color_value {
@@ -628,17 +633,22 @@ pub fn build_display_list(
                             // Only paint shadow if the border box is valid (has positive dimensions)
                             if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0
                             {
-                                // Translate the border-box rect by offset-x, offset-y
+                                // Translate and inflate/deflate by spread
                                 let mut shadow_rect = layout_box.rect;
-                                shadow_rect.origin.x += offset_x;
-                                shadow_rect.origin.y += offset_y;
+                                shadow_rect.origin.x += offset_x - spread;
+                                shadow_rect.origin.y += offset_y - spread;
+                                shadow_rect.size.width += 2.0 * spread;
+                                shadow_rect.size.height += 2.0 * spread;
 
-                                items.push(DisplayItem::SolidRect {
-                                    rect: shadow_rect,
-                                    color: scale_color_alpha(&shadow_color, effective_opacity),
-                                });
+                                // Only paint if resulting dimensions are positive (fully shrunk shadow is invisible)
+                                if shadow_rect.size.width > 0.0 && shadow_rect.size.height > 0.0 {
+                                    items.push(DisplayItem::SolidRect {
+                                        rect: shadow_rect,
+                                        color: scale_color_alpha(&shadow_color, effective_opacity),
+                                    });
+                                }
                             }
-                            // TODO(spec): box-shadow v1 — single outer shadow, offset-only (blur/spread ignored, inset & multiple shadows out of scope).
+                            // TODO(spec): box-shadow v2 — single outer shadow with spread (blur is still unimplemented; inset & multiple shadows out of scope).
                         }
                     }
                 }
@@ -3559,6 +3569,89 @@ mod tests {
         assert_eq!(
             red_rect_count, 1,
             "There should be exactly one red shadow rect emitted in total"
+        );
+    }
+
+    #[test]
+    fn test_box_shadow_spread() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div_shadow = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "shadowed".into())],
+        });
+        dom.append_child(body, div_shadow);
+
+        let div_collapsed = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "collapsed".into())],
+        });
+        dom.append_child(body, div_collapsed);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .shadowed { width: 100px; height: 50px; background-color: rgb(0, 255, 0); box-shadow: 0px 0px 0px 10px #ff0000; }
+            .collapsed { width: 100px; height: 50px; background-color: rgb(0, 0, 255); box-shadow: 0px 0px 0px -100px #ff0000; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Verify positive spread shadow
+        let mut shadow_rect = None;
+        let mut bg_rect = None;
+        let mut red_count = 0;
+
+        for item in &items {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                if *color == Color::Rgba(255, 0, 0, 255) {
+                    shadow_rect = Some(*rect);
+                    red_count += 1;
+                } else if *color == Color::Rgba(0, 255, 0, 255) {
+                    bg_rect = Some(*rect);
+                }
+            }
+        }
+
+        // We expect exactly 1 red shadow rect to be emitted (for the .shadowed box, but NOT the .collapsed box)
+        assert_eq!(
+            red_count, 1,
+            "Should emit exactly one red shadow rect across both divs"
+        );
+
+        let s_rect = shadow_rect.expect("Should find red shadow rect");
+        let b_rect = bg_rect.expect("Should find green background rect");
+
+        // The positive spread is 10px. It should inflate on all sides:
+        // origin.x -= 10, origin.y -= 10, size.width += 20, size.height += 20
+        assert_eq!(
+            s_rect.origin.x,
+            b_rect.origin.x - 10.0,
+            "Shadow X origin should be inflated by 10px"
+        );
+        assert_eq!(
+            s_rect.origin.y,
+            b_rect.origin.y - 10.0,
+            "Shadow Y origin should be inflated by 10px"
+        );
+        assert_eq!(
+            s_rect.size.width,
+            b_rect.size.width + 20.0,
+            "Shadow width should be inflated by 20px"
+        );
+        assert_eq!(
+            s_rect.size.height,
+            b_rect.size.height + 20.0,
+            "Shadow height should be inflated by 20px"
         );
     }
 }
