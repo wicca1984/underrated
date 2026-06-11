@@ -1,7 +1,22 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-echo "Running oracle snapshot tests..."
-cargo test --test oracle_snapshot_test
+# Accept an optional target directory to gate
+if [ -n "${1:-}" ]; then
+  echo "Changing directory to $1..."
+  cd "$1"
+fi
 
-echo "All tests passed!"
+echo "=== Running cargo fmt ==="
+cargo fmt --all --check
+
+echo "=== Running cargo clippy ==="
+cargo clippy --all-targets -- -D warnings
+
+echo "=== Running cargo test ==="
+cargo test
+
+echo "=== Running cargo doc ==="
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+
+echo "All gates passed!"
