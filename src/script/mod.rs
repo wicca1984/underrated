@@ -122,6 +122,16 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_query_selector),
+                JsString::from("querySelector"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_query_selector_all),
+                JsString::from("querySelectorAll"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_append_child),
                 JsString::from("appendChild"),
                 2,
@@ -250,6 +260,17 @@ impl BoaHost {
                 document.getElementById = function(id) {
                     const key = bridge.getElementById(String(id));
                     return getOrCreateNode(key);
+                };
+
+                document.querySelector = function(selector) {
+                    const key = bridge.querySelector(String(selector));
+                    return getOrCreateNode(key);
+                };
+
+                document.querySelectorAll = function(selector) {
+                    const keys = bridge.querySelectorAll(String(selector));
+                    if (!keys) return [];
+                    return keys.map(key => getOrCreateNode(key));
                 };
 
                 document.appendChild = function(child) {
@@ -627,6 +648,77 @@ fn bridge_get_element_by_id(
     }
 }
 
+fn bridge_query_selector(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let selector_val = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let key_opt = with_dom(|dom, key_to_node| {
+        if let Some(node_id) = dom.query_selector(&selector_val) {
+            let k = format!("{:?}", node_id);
+            key_to_node.insert(k.clone(), node_id);
+            Some(k)
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(key) = key_opt {
+        Ok(JsValue::from(JsString::from(key)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_query_selector_all(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let selector_val = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let keys = with_dom(|dom, key_to_node| {
+        let mut keys_list = Vec::new();
+        for node_id in dom.query_selector_all(&selector_val) {
+            let k = format!("{:?}", node_id);
+            key_to_node.insert(k.clone(), node_id);
+            keys_list.push(k);
+        }
+        keys_list
+    })?;
+
+    let array_constructor = context
+        .global_object()
+        .get(JsString::from("Array"), context)?;
+    let array_obj = array_constructor.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("Array constructor not found")))
+    })?;
+    let array_val = array_obj.construct(&[], None, context)?;
+
+    let push_val = array_val.get(JsString::from("push"), context)?;
+    if let Some(push_fn) = push_val.as_object() {
+        for key in keys {
+            push_fn.call(
+                &JsValue::from(array_val.clone()),
+                &[JsValue::from(JsString::from(key))],
+                context,
+            )?;
+        }
+    }
+
+    Ok(JsValue::from(array_val))
+}
+
 fn bridge_append_child(
     _this: &JsValue,
     args: &[JsValue],
@@ -980,6 +1072,78 @@ mod tests {
         let mut host = BoaHost::new();
         let res = host.eval_with_dom("document.getElementById('nonexistent')", &mut dom);
         assert_eq!(res, Ok("null".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_query_selector() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("class".to_string(), "x".to_string())],
+        });
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        let text_id = dom.create_node(NodeData::Text("Target Paragraph".to_string()));
+        dom.append_child(p_id, text_id);
+        dom.append_child(div_id, p_id);
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+        let res = host.eval_with_dom("document.querySelector('div.x > p').textContent", &mut dom);
+        assert_eq!(res, Ok("Target Paragraph".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_query_selector_all() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let a1_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("href".to_string(), "https://foo".to_string())],
+        });
+        let a2_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("href".to_string(), "https://bar".to_string())],
+        });
+        dom.append_child(document, a1_id);
+        dom.append_child(document, a2_id);
+
+        let mut host = BoaHost::new();
+        let res_len = host.eval_with_dom("document.querySelectorAll('a').length", &mut dom);
+        assert_eq!(res_len, Ok("2".to_string()));
+
+        let res_content = host.eval_with_dom(
+            "[document.querySelectorAll('a')[0].getAttribute('href'), document.querySelectorAll('a')[1].getAttribute('href')].join(',')",
+            &mut dom,
+        );
+        assert_eq!(res_content, Ok("https://foo,https://bar".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_query_selector_non_matching_and_invalid() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        // Non-matching selector
+        let res_null = host.eval_with_dom("document.querySelector('.nonexistent')", &mut dom);
+        assert_eq!(res_null, Ok("null".to_string()));
+
+        let res_empty_arr =
+            host.eval_with_dom("document.querySelectorAll('.nonexistent').length", &mut dom);
+        assert_eq!(res_empty_arr, Ok("0".to_string()));
+
+        // Invalid selector should return null and empty array respectively without panicking
+        let res_invalid_qs = host.eval_with_dom("document.querySelector('div > > p')", &mut dom);
+        assert_eq!(res_invalid_qs, Ok("null".to_string()));
+
+        let res_invalid_qsa =
+            host.eval_with_dom("document.querySelectorAll('div > > p').length", &mut dom);
+        assert_eq!(res_invalid_qsa, Ok("0".to_string()));
     }
 
     #[test]
