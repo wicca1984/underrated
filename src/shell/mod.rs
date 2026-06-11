@@ -291,6 +291,28 @@ mod winit_adapter {
         }
     }
 
+    /// Runs `draw` on a dedicated 16 MiB-stack thread so deep (but bounded) DOM/CSS/JS
+    /// work cannot overflow the small Windows main-thread stack. Falls back to running
+    /// inline if the OS cannot spawn the thread (I-6: never panic).
+    fn render_on_big_stack<F>(draw: &mut F) -> Canvas
+    where
+        F: FnMut() -> Canvas + Send,
+    {
+        let produced = std::thread::scope(|scope| {
+            match std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(scope, &mut *draw)
+            {
+                Ok(handle) => handle.join().ok(), // Some(canvas) on success; None if the render thread panicked
+                Err(_) => None,                   // OS refused to spawn the thread
+            }
+        });
+        match produced {
+            Some(canvas) => canvas,
+            None => draw(), // graceful degrade on spawn failure; L2 caps already prevent panics
+        }
+    }
+
     /// An adapter that uses winit and softbuffer to display a window.
     /// spec: S-16
     pub struct WinitWindow {
@@ -340,14 +362,16 @@ mod winit_adapter {
 
         /// Runs the event loop, calling `draw` to get the next canvas to present.
         /// spec: S-16
-        pub fn run<F>(self, draw: F)
+        pub fn run<F>(self, mut draw: F)
         where
-            F: FnMut() -> Canvas,
+            F: FnMut() -> Canvas + Send,
         {
             let event_loop = match EventLoop::new() {
                 Ok(el) => el,
                 Err(_) => return, // spec: I-6: no panic
             };
+
+            let draw = move || render_on_big_stack(&mut draw);
 
             let mut app = App {
                 window_attrs: Some((self.title, self.width, self.height)),
@@ -365,15 +389,17 @@ mod winit_adapter {
         /// Runs the event loop with input support, calling `draw` to get the next canvas to present,
         /// and `on_event` when a mapped input event occurs.
         /// spec: S-34
-        pub fn run_with_input<F, G>(self, draw: F, on_event: G)
+        pub fn run_with_input<F, G>(self, mut draw: F, on_event: G)
         where
-            F: FnMut() -> Canvas,
+            F: FnMut() -> Canvas + Send,
             G: FnMut(InputEvent),
         {
             let event_loop = match EventLoop::new() {
                 Ok(el) => el,
                 Err(_) => return, // spec: I-6: no panic
             };
+
+            let draw = move || render_on_big_stack(&mut draw);
 
             let mut app = AppWithInput {
                 window_attrs: Some((self.title, self.width, self.height)),
