@@ -10,7 +10,7 @@ pub struct BitmapFont {
     width: u32,
     height: u32,
     /// Row-major coverage data (0..=255) for printable ASCII (0x20-0x7E) plus the .notdef glyph.
-    /// Size: 96 * width * height.
+    /// Size: 99 * width * height.
     data: &'static [u8],
 }
 
@@ -31,7 +31,12 @@ impl BitmapFont {
         let index = if (0x20..=0x7E).contains(&(c as u32)) {
             (c as u32 - 0x20) as usize
         } else {
-            95
+            match c {
+                '\u{2022}' => 96,
+                '\u{25E6}' => 97,
+                '\u{25AA}' => 98,
+                _ => 95,
+            }
         };
         GLYPH_WIDTHS[index] as u32
     }
@@ -51,7 +56,12 @@ impl BitmapFont {
             (c as u32 - 0x20) as usize
         } else {
             // spec: Undefined chars return a visible .notdef box (not blank)
-            95
+            match c {
+                '\u{2022}' => 96,
+                '\u{25E6}' => 97,
+                '\u{25AA}' => 98,
+                _ => 95,
+            }
         };
 
         let size = (self.width * self.height) as usize;
@@ -86,10 +96,10 @@ impl BitmapFont {
 }
 
 /// Expands 1-bit bitmaps into 8-bit coverage data.
-const fn expand_bitmaps(bitmaps: &[u64; 96]) -> [u8; 96 * 8 * 8] {
-    let mut data = [0u8; 96 * 8 * 8];
+const fn expand_bitmaps(bitmaps: &[u64; 99]) -> [u8; 99 * 8 * 8] {
+    let mut data = [0u8; 99 * 8 * 8];
     let mut i = 0;
-    while i < 96 {
+    while i < 99 {
         let bitmap = bitmaps[i];
         let mut row = 0;
         while row < 8 {
@@ -112,7 +122,7 @@ const fn expand_bitmaps(bitmaps: &[u64; 96]) -> [u8; 96 * 8 * 8] {
 // Simple 8x8 bitmaps for printable ASCII (0x20-0x7E) plus the .notdef glyph at the end.
 // Each u64 contains 8 rows of 8 bits. Row 0 is the top row (most significant byte).
 // Bit 7 of each byte is the leftmost pixel.
-const BITMAPS: [u64; 96] = [
+const BITMAPS: [u64; 99] = [
     0x0000000000000000, // 0x20 space
     0x1818181818001800, // 0x21 !
     0x6666660000000000, // 0x22 "
@@ -209,12 +219,15 @@ const BITMAPS: [u64; 96] = [
     0x3018180C18183000, // 0x7D }
     0x0000314A44000000, // 0x7E ~
     0xFF81A59999A581FF, // 0x7F / .notdef box
+    0x00183C7E7E3C1800, // U+2022 • filled disc
+    0x0018244242241800, // U+25E6 ◦ hollow circle
+    0x00003C3C3C3C0000, // U+25AA ▪ filled square
 ];
 
 // spec: S-72
 /// Fixed-cell monospace advance widths (8px) for printable ASCII (0x20-0x7E) plus the .notdef glyph.
 /// Index maps to (char as u32 - 0x20) with 95 as the .notdef fallback.
-const GLYPH_WIDTHS: [u8; 96] = [
+const GLYPH_WIDTHS: [u8; 99] = [
     8, // 0x20 ' '
     8, // 0x21 '!'
     8, // 0x22 '"'
@@ -311,9 +324,12 @@ const GLYPH_WIDTHS: [u8; 96] = [
     8, // 0x7D '}'
     8, // 0x7E '~'
     8, // 0x7F .notdef
+    8, // U+2022
+    8, // U+25E6
+    8, // U+25AA
 ];
 
-const BUILTIN_GLYPHS: [u8; 96 * 8 * 8] = expand_bitmaps(&BITMAPS);
+const BUILTIN_GLYPHS: [u8; 99 * 8 * 8] = expand_bitmaps(&BITMAPS);
 
 #[cfg(test)]
 mod tests {
@@ -451,5 +467,52 @@ mod tests {
         assert_eq!(font.measure("Hello, World!"), 8 * 13);
         assert_eq!(font.measure("🦀"), 8);
         assert_eq!(font.measure("🦀m"), 16);
+    }
+
+    #[test]
+    fn test_bullet_glyphs_not_notdef() {
+        let font = BitmapFont::builtin();
+        let notdef = font.glyph_coverage('\u{FFFF}');
+
+        let chars = ['\u{2022}', '\u{25E6}', '\u{25AA}'];
+        for &c in &chars {
+            let cov = font.glyph_coverage(c);
+            assert!(
+                !cov.is_empty(),
+                "Glyph coverage for {:?} must be non-empty",
+                c
+            );
+            assert_ne!(
+                cov, notdef,
+                "Glyph coverage for {:?} must not fall back to .notdef",
+                c
+            );
+            assert!(
+                cov.iter().any(|&b| b > 0),
+                "Glyph coverage for {:?} must have at least one non-zero coverage byte",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_bullet_glyphs_mutually_distinct() {
+        let font = BitmapFont::builtin();
+        let disc = font.glyph_coverage('\u{2022}');
+        let circle = font.glyph_coverage('\u{25E6}');
+        let square = font.glyph_coverage('\u{25AA}');
+
+        assert_ne!(
+            disc, circle,
+            "Filled disc and hollow circle glyphs must be distinct"
+        );
+        assert_ne!(
+            disc, square,
+            "Filled disc and filled square glyphs must be distinct"
+        );
+        assert_ne!(
+            circle, square,
+            "Hollow circle and filled square glyphs must be distinct"
+        );
     }
 }
