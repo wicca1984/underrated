@@ -229,6 +229,27 @@ pub fn submit(dom: &Dom, form: NodeId, values: &FormState) -> Option<NavigationR
     submit_with_current_url(dom, form, values, fallback_url)
 }
 
+/// Resolves a click on `button` into a form submission, if applicable.
+///
+/// Returns `Some(NavigationRequest)` when `button` is a submit button
+/// (`is_submit_button`) that has an owning form (`find_form_for_button`);
+/// otherwise returns `None`. The clicked button is recorded as the form's
+/// submitter before submitting, so any named/`<input type=image>` submitter
+/// participates in the serialized controls exactly as `submit` already handles it.
+pub fn submit_from_button(
+    dom: &Dom,
+    button: NodeId,
+    values: &FormState,
+) -> Option<NavigationRequest> {
+    if !is_submit_button(dom, button) {
+        return None;
+    }
+    let form = find_form_for_button(dom, button)?;
+    let mut local_values = values.clone();
+    local_values.set_submitter(button);
+    submit(dom, form, &local_values)
+}
+
 /// Submits `form` with an optional current URL context.
 /// Correctly collects successful controls, filters out disabled controls,
 /// and overrides any existing query string in the action URL for GET requests.
@@ -1256,6 +1277,71 @@ mod tests {
         dom.append_child(doc_root, btn_no_form);
 
         assert_eq!(find_form_for_button(&dom, btn_no_form), None);
+    }
+
+    #[test]
+    fn test_submit_from_button_success() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/s"), ("method", "get")]);
+        let input = el(&mut dom, "input", &[("name", "q")]);
+        let btn = el(&mut dom, "button", &[("type", "submit")]);
+        dom.append_child(form, input);
+        dom.append_child(form, btn);
+
+        let mut state = FormState::new();
+        state.set_value(input, "hello");
+
+        let req = submit_from_button(&dom, btn, &state).unwrap();
+        assert_eq!(req.method, Method::Get);
+        assert_eq!(req.url, "/s?q=hello");
+    }
+
+    #[test]
+    fn test_submit_from_button_non_submit_node() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/s"), ("method", "get")]);
+        let div = el(&mut dom, "div", &[]);
+        let btn_type_button = el(&mut dom, "button", &[("type", "button")]);
+        dom.append_child(form, div);
+        dom.append_child(form, btn_type_button);
+
+        let state = FormState::new();
+
+        assert!(submit_from_button(&dom, div, &state).is_none());
+        assert!(submit_from_button(&dom, btn_type_button, &state).is_none());
+    }
+
+    #[test]
+    fn test_submit_from_button_no_owning_form() {
+        let mut dom = Dom::new();
+        let doc_root = dom.document();
+        let btn = el(&mut dom, "button", &[("type", "submit")]);
+        dom.append_child(doc_root, btn);
+
+        let state = FormState::new();
+
+        assert!(submit_from_button(&dom, btn, &state).is_none());
+    }
+
+    #[test]
+    fn test_submit_from_button_named_submitter_included() {
+        let mut dom = Dom::new();
+        let form = el(&mut dom, "form", &[("action", "/s"), ("method", "get")]);
+        let input = el(&mut dom, "input", &[("name", "q")]);
+        let btn = el(
+            &mut dom,
+            "button",
+            &[("type", "submit"), ("name", "op"), ("value", "go")],
+        );
+        dom.append_child(form, input);
+        dom.append_child(form, btn);
+
+        let mut state = FormState::new();
+        state.set_value(input, "hello");
+
+        let req = submit_from_button(&dom, btn, &state).unwrap();
+        assert_eq!(req.method, Method::Get);
+        assert_eq!(req.url, "/s?q=hello&op=go");
     }
 }
 
