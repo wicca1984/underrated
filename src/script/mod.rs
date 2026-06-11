@@ -1139,6 +1139,36 @@ impl BoaHost {
                     configurable: true
                 });
 
+                // spec: https://dom.spec.whatwg.org/#dom-document-documentelement
+                // TODO(spec): getElementsByTagName-based lookup does not enforce that the root <html> is the document element or a direct child of document.
+                Object.defineProperty(document, 'documentElement', {
+                    get() {
+                        return document.getElementsByTagName("html")[0] || null;
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                // spec: https://dom.spec.whatwg.org/#dom-document-body
+                // TODO(spec): getElementsByTagName-based lookup does not enforce the "must be a child of documentElement" / frameset rules.
+                Object.defineProperty(document, 'body', {
+                    get() {
+                        return document.getElementsByTagName("body")[0] || null;
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                // spec: https://dom.spec.whatwg.org/#dom-document-head
+                // TODO(spec): getElementsByTagName-based lookup does not enforce the "must be a child of documentElement" / head rules.
+                Object.defineProperty(document, 'head', {
+                    get() {
+                        return document.getElementsByTagName("head")[0] || null;
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
                 Object.defineProperty(document, 'firstChild', {
                     get() {
                         return getOrCreateNode(bridge.firstChild(this.__key__));
@@ -3214,6 +3244,54 @@ mod tests {
         let mut host = BoaHost::new();
         let res = host.eval_with_dom("document.getElementById('greeting').textContent", &mut dom);
         assert_eq!(res, Ok("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_document_elements() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+        let html = dom.create_node(NodeData::Element {
+            name: "html".to_string(),
+            attrs: vec![],
+        });
+        let head = dom.create_node(NodeData::Element {
+            name: "head".to_string(),
+            attrs: vec![],
+        });
+        let body = dom.create_node(NodeData::Element {
+            name: "body".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(html, head);
+        dom.append_child(html, body);
+        dom.append_child(document, html);
+        let mut host = BoaHost::new();
+
+        let res = host.eval_with_dom(
+            r#"
+            (
+                document.documentElement.tagName === "HTML" &&
+                document.body.tagName === "BODY" &&
+                document.head.tagName === "HEAD" &&
+                document.body === document.getElementsByTagName("body")[0]
+            ) ? "true" : "false"
+            "#,
+            &mut dom,
+        );
+        assert_eq!(res, Ok("true".to_string()));
+
+        let mut empty_dom = Dom::new();
+        let res_empty = host.eval_with_dom(
+            r#"
+            (
+                document.body === null &&
+                document.documentElement === null &&
+                document.head === null
+            ) ? "true" : "false"
+            "#,
+            &mut empty_dom,
+        );
+        assert_eq!(res_empty, Ok("true".to_string()));
     }
 
     #[test]
