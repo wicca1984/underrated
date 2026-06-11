@@ -669,17 +669,37 @@ fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut
     }
 }
 
-fn clamp_width(style: &ComputedStyle, mut width: f32) -> f32 {
-    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("max-width") {
-        let max_width = get_px(style, "max-width", 0.0);
-        if width > max_width {
-            width = max_width;
+fn clamp_width(style: &ComputedStyle, mut width: f32, containing_width: f32) -> f32 {
+    if let Some(max_val) = style.get("max-width") {
+        match max_val {
+            CssValue::Length(v, LengthUnit::Px) => {
+                if width > *v {
+                    width = *v;
+                }
+            }
+            CssValue::Length(p, LengthUnit::Percent) => {
+                let max_width = containing_width * p / 100.0;
+                if width > max_width {
+                    width = max_width;
+                }
+            }
+            _ => {}
         }
     }
-    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("min-width") {
-        let min_width = get_px(style, "min-width", 0.0);
-        if width < min_width {
-            width = min_width;
+    if let Some(min_val) = style.get("min-width") {
+        match min_val {
+            CssValue::Length(v, LengthUnit::Px) => {
+                if width < *v {
+                    width = *v;
+                }
+            }
+            CssValue::Length(p, LengthUnit::Percent) => {
+                let min_width = containing_width * p / 100.0;
+                if width < min_width {
+                    width = min_width;
+                }
+            }
+            _ => {}
         }
     }
     width.max(0.0)
@@ -754,11 +774,11 @@ pub(crate) fn resolve_margins_and_width(
                 - padding_left
                 - padding_right)
                 .max(0.0);
-            content_width = clamp_width(style, raw_width);
+            content_width = clamp_width(style, raw_width, containing_width);
         } else {
             // width is definite
             let raw_width = get_px(style, "width", 0.0);
-            content_width = clamp_width(style, raw_width);
+            content_width = clamp_width(style, raw_width, containing_width);
             let total_non_margin_width =
                 content_width + border_left + border_right + padding_left + padding_right;
 
@@ -3158,5 +3178,60 @@ mod tests {
         // Assert no constraints (regression guard)
         assert!(approx_eq(box_no_constraints.rect.size.width, 150.0));
         assert!(approx_eq(box_no_constraints.rect.size.height, 150.0));
+    }
+
+    #[test]
+    fn test_percentage_min_max_sizing_constraints() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // A block with width: 1000px; max-width: 50% inside an 800px containing block resolves to content width 400px (50% of 800).
+        let div_max_width = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "percent-max-width".into())],
+        });
+        dom.append_child(body, div_max_width);
+
+        // A block with width: 100px; min-width: 50% inside an 800px containing block resolves to content width 400px.
+        let div_min_width = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "percent-min-width".into())],
+        });
+        dom.append_child(body, div_min_width);
+
+        // Keep a px max-width assertion to prove the px path is unchanged.
+        let div_px_max_width = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "px-max-width".into())],
+        });
+        dom.append_child(body, div_px_max_width);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 800px; }
+            .percent-max-width { display: block; width: 1000px; max-width: 50%; }
+            .percent-min-width { display: block; width: 100px; min-width: 50%; }
+            .px-max-width { display: block; width: 1000px; max-width: 200px; }
+            ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 3);
+
+        let box_percent_max_width = &body_box.children[0];
+        let box_percent_min_width = &body_box.children[1];
+        let box_px_max_width = &body_box.children[2];
+
+        assert!(approx_eq(box_percent_max_width.rect.size.width, 400.0));
+        assert!(approx_eq(box_percent_min_width.rect.size.width, 400.0));
+        assert!(approx_eq(box_px_max_width.rect.size.width, 200.0));
     }
 }
