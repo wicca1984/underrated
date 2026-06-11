@@ -277,9 +277,7 @@ pub fn layout_table_container(
         let mut row_cells_boxes = Vec::new();
 
         for &cell_node in &row_info.cells {
-            if let Some(placement) = cell_placements.get(&cell_node)
-                && let Some(mut cell_box) = cell_boxes.remove(&cell_node)
-            {
+            if let Some(placement) = cell_placements.get(&cell_node) {
                 let col_idx = placement.col_idx;
                 let col_offset_x: f32 = col_widths[0..col_idx].iter().sum();
                 let cell_x = border_box_x + border_left + padding_left + col_offset_x;
@@ -290,12 +288,19 @@ pub fn layout_table_container(
                     .sum();
                 let cell_height: f32 = row_heights[r..(r + placement.rowspan)].iter().sum();
 
-                cell_box.rect.origin.x = cell_x;
-                cell_box.rect.origin.y = cell_y;
-                cell_box.rect.size.width = cell_width;
-                cell_box.rect.size.height = cell_height;
-
-                row_cells_boxes.push(cell_box);
+                if let Some(mut cell_box) = layout_node(
+                    dom,
+                    styles,
+                    cell_node,
+                    cell_width,
+                    cell_x,
+                    cell_y,
+                    depth + 2,
+                ) {
+                    cell_box.rect.size.width = cell_width;
+                    cell_box.rect.size.height = cell_height;
+                    row_cells_boxes.push(cell_box);
+                }
             }
         }
 
@@ -519,6 +524,13 @@ mod tests {
         });
         dom.append_child(row1_node, cell11_node);
 
+        // Add a block child to cell 1.1 to verify child positioning
+        let cell11_child_node = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(cell11_node, cell11_child_node);
+
         // Create cell 1.2
         let cell12_node = dom.create_node(NodeData::Element {
             name: "td".to_string(),
@@ -539,6 +551,13 @@ mod tests {
             attrs: Vec::new(),
         });
         dom.append_child(row2_node, cell21_node);
+
+        // Add a block child to cell 2.1 to verify child positioning
+        let cell21_child_node = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(cell21_node, cell21_child_node);
 
         // Setup styles
         let mut styles = HashMap::new();
@@ -569,6 +588,18 @@ mod tests {
         cell21_style.insert("width".to_string(), CssValue::Length(40.0, LengthUnit::Px));
         cell21_style.insert("height".to_string(), CssValue::Length(25.0, LengthUnit::Px));
         styles.insert(cell21_node, cell21_style);
+
+        // Cell 1.1 child: width 20px, height 10px
+        let mut cell11_child_style = style_with_display("block");
+        cell11_child_style.insert("width".to_string(), CssValue::Length(20.0, LengthUnit::Px));
+        cell11_child_style.insert("height".to_string(), CssValue::Length(10.0, LengthUnit::Px));
+        styles.insert(cell11_child_node, cell11_child_style);
+
+        // Cell 2.1 child: width 20px, height 10px
+        let mut cell21_child_style = style_with_display("block");
+        cell21_child_style.insert("width".to_string(), CssValue::Length(20.0, LengthUnit::Px));
+        cell21_child_style.insert("height".to_string(), CssValue::Length(10.0, LengthUnit::Px));
+        styles.insert(cell21_child_node, cell21_child_style);
 
         // Document layout
         let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 10.0, 20.0, 0)
@@ -605,6 +636,13 @@ mod tests {
         assert_eq!(cell11_box.rect.size.width, 85.0);
         assert_eq!(cell11_box.rect.size.height, 40.0); // stretched!
 
+        // Verify child positioning of Cell 1.1: child should be translated with the cell
+        assert_eq!(cell11_box.children.len(), 1);
+        let cell11_child_box = &cell11_box.children[0];
+        assert_eq!(cell11_child_box.node, Some(cell11_child_node));
+        assert_eq!(cell11_child_box.rect.origin.x, 10.0);
+        assert_eq!(cell11_child_box.rect.origin.y, 20.0);
+
         let cell12_box = &r1.children[1];
         assert_eq!(cell12_box.node, Some(cell12_node));
         assert_eq!(cell12_box.rect.origin.x, 10.0 + 85.0);
@@ -624,6 +662,13 @@ mod tests {
         assert_eq!(cell21_box.rect.origin.x, 10.0);
         assert_eq!(cell21_box.rect.size.width, 85.0);
         assert_eq!(cell21_box.rect.size.height, 25.0);
+
+        // Verify child positioning of Cell 2.1: child should be translated with the cell
+        assert_eq!(cell21_box.children.len(), 1);
+        let cell21_child_box = &cell21_box.children[0];
+        assert_eq!(cell21_child_box.node, Some(cell21_child_node));
+        assert_eq!(cell21_child_box.rect.origin.x, 10.0);
+        assert_eq!(cell21_child_box.rect.origin.y, 60.0);
     }
 
     #[test]
