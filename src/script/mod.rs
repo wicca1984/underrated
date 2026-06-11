@@ -193,6 +193,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_get_elements_by_name),
+                JsString::from("getElementsByName"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_append_child),
                 JsString::from("appendChild"),
                 2,
@@ -1435,6 +1440,12 @@ impl BoaHost {
                     return keys.map(key => getOrCreateNode(key));
                 };
 
+                document.getElementsByName = function(name) {
+                    const keys = bridge.getElementsByName(String(name));
+                    if (!keys) return [];
+                    return keys.map(key => getOrCreateNode(key));
+                };
+
                 document.appendChild = function(child) {
                     if (!child || !child.__key__) {
                         throw new TypeError("child must be a Node");
@@ -2548,6 +2559,26 @@ fn bridge_get_elements_by_class_name(
             .map(|t| format!(".{}", t))
             .collect::<Vec<String>>()
             .join("");
+        execute_dom_query_to_js_array(&selector, context)
+    }
+}
+
+fn bridge_get_elements_by_name(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let name = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    if name.is_empty() {
+        execute_dom_query_to_js_array("", context)
+    } else {
+        let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+        let selector = format!("[name=\"{}\"]", escaped);
         execute_dom_query_to_js_array(&selector, context)
     }
 }
@@ -5019,6 +5050,84 @@ mod tests {
 
         // Empty class name returns empty array (length 0)
         let res_empty = host.eval_with_dom("document.getElementsByClassName('').length", &mut dom);
+        assert_eq!(res_empty, Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_eval_with_dom_get_elements_by_name() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let input1_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![
+                ("name".to_string(), "q".to_string()),
+                ("value".to_string(), "first".to_string()),
+            ],
+        });
+        let input2_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![
+                ("name".to_string(), "q".to_string()),
+                ("value".to_string(), "second".to_string()),
+            ],
+        });
+        let input3_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![
+                ("name".to_string(), "btn".to_string()),
+                ("value".to_string(), "click".to_string()),
+            ],
+        });
+        let input4_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![
+                ("name".to_string(), "foo\"bar\\baz".to_string()),
+                ("value".to_string(), "escaped".to_string()),
+            ],
+        });
+        dom.append_child(document, input1_id);
+        dom.append_child(document, input2_id);
+        dom.append_child(document, input3_id);
+        dom.append_child(document, input4_id);
+
+        let mut host = BoaHost::new();
+
+        // Exact name matching with multiple matches
+        let res_q_len = host.eval_with_dom("document.getElementsByName('q').length", &mut dom);
+        assert_eq!(res_q_len, Ok("2".to_string()));
+
+        // Check attributes/values of retrieved elements
+        let res_q_val1 = host.eval_with_dom(
+            "document.getElementsByName('q')[0].getAttribute('value')",
+            &mut dom,
+        );
+        assert_eq!(res_q_val1, Ok("first".to_string()));
+        let res_q_val2 = host.eval_with_dom(
+            "document.getElementsByName('q')[1].getAttribute('value')",
+            &mut dom,
+        );
+        assert_eq!(res_q_val2, Ok("second".to_string()));
+
+        // Single match
+        let res_btn_len = host.eval_with_dom("document.getElementsByName('btn').length", &mut dom);
+        assert_eq!(res_btn_len, Ok("1".to_string()));
+
+        // Escaped name test: foo"bar\baz
+        // Note: JS string literal 'foo"bar\\\\baz' corresponds to string 'foo"bar\\baz'
+        let res_escaped_len = host.eval_with_dom(
+            "document.getElementsByName('foo\"bar\\\\baz').length",
+            &mut dom,
+        );
+        assert_eq!(res_escaped_len, Ok("1".to_string()));
+
+        // Non-existent name
+        let res_nonexistent =
+            host.eval_with_dom("document.getElementsByName('notfound').length", &mut dom);
+        assert_eq!(res_nonexistent, Ok("0".to_string()));
+
+        // Empty string
+        let res_empty = host.eval_with_dom("document.getElementsByName('').length", &mut dom);
         assert_eq!(res_empty, Ok("0".to_string()));
     }
 
