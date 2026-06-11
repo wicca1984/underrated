@@ -94,6 +94,82 @@ fn find_elements_by_tag<'a>(node: &'a Value, tag_name: &str, results: &mut Vec<&
     }
 }
 
+fn find_element_by_class<'a>(node: &'a Value, class_name: &str) -> Option<&'a Value> {
+    if node["type"] == "element" {
+        let has_class = node["attrs"]
+            .as_object()
+            .and_then(|attrs| attrs.get("class"))
+            .and_then(|v| v.as_str())
+            .map(|class| class.split_whitespace().any(|c| c == class_name))
+            .unwrap_or(false);
+        if has_class {
+            return Some(node);
+        }
+    }
+    if let Some(children) = node["children"].as_array() {
+        for child in children {
+            if let Some(found) = find_element_by_class(child, class_name) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn assert_centered(node: &Value, viewport_width: f64, tolerance_px: f64) {
+    let tag = node["tag"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Node must have a 'tag' string field"));
+    let rect = &node["rect"];
+    assert!(
+        rect.is_object(),
+        "Element node '{}' must have a 'rect' object field",
+        tag
+    );
+    let x = rect["x"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("rect.x of '{}' must be a number", tag));
+    let w = rect["width"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("rect.width of '{}' must be a number", tag));
+
+    let center = x + w / 2.0;
+    let expected_center = viewport_width / 2.0;
+    assert!(
+        (center - expected_center).abs() <= tolerance_px,
+        "Element '{}' is not centered: computed center is {}, expected {}, tolerance is {}",
+        tag,
+        center,
+        expected_center,
+        tolerance_px
+    );
+}
+
+fn assert_max_width(node: &Value, viewport_width: f64, ratio: f64) {
+    let tag = node["tag"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Node must have a 'tag' string field"));
+    let rect = &node["rect"];
+    assert!(
+        rect.is_object(),
+        "Element node '{}' must have a 'rect' object field",
+        tag
+    );
+    let w = rect["width"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("rect.width of '{}' must be a number", tag));
+
+    let limit = viewport_width * ratio;
+    assert!(
+        w <= limit,
+        "Element '{}' width ({}) exceeds maximum width limit ({}) for ratio {}",
+        tag,
+        w,
+        limit,
+        ratio
+    );
+}
+
 fn collect_text_nodes<'a>(node: &'a Value, results: &mut Vec<&'a str>) {
     if node["type"] == "text" {
         let text = node["text"]
@@ -368,6 +444,39 @@ fn test_fixture_07_google_mock() {
         let height = script["rect"]["height"].as_f64().unwrap();
         assert_eq!(width, 0.0);
         assert_eq!(height, 0.0);
+    }
+
+    let search_box = find_element_by_class(&snapshot, "search-box")
+        .unwrap_or_else(|| panic!("search-box element must exist"));
+    let sb_x = search_box["rect"]["x"].as_f64().unwrap();
+    let sb_w = search_box["rect"]["width"].as_f64().unwrap();
+    println!(
+        "DIAGNOSTIC: .search-box rect x={}, width={}, center={}",
+        sb_x,
+        sb_w,
+        sb_x + sb_w / 2.0
+    );
+    assert_centered(search_box, 800.0, 4.0);
+
+    let logo = find_element_by_class(&snapshot, "logo")
+        .unwrap_or_else(|| panic!("logo element must exist"));
+    let logo_x = logo["rect"]["x"].as_f64().unwrap();
+    let logo_w = logo["rect"]["width"].as_f64().unwrap();
+    println!(
+        "DIAGNOSTIC: .logo rect x={}, width={}, center={}",
+        logo_x,
+        logo_w,
+        logo_x + logo_w / 2.0
+    );
+    assert_centered(logo, 800.0, 4.0);
+
+    let mut buttons = Vec::new();
+    find_elements_by_tag(&snapshot, "button", &mut buttons);
+    assert_eq!(buttons.len(), 2, "Should find exactly two buttons");
+    for (i, button) in buttons.iter().enumerate() {
+        let b_w = button["rect"]["width"].as_f64().unwrap();
+        println!("DIAGNOSTIC: button {} rect width={}", i + 1, b_w);
+        assert_max_width(button, 800.0, 0.4);
     }
 
     let path = std::path::Path::new("tests/oracle/fixtures").join("07_google_mock.html");
