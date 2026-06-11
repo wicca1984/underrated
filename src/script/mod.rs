@@ -1305,6 +1305,22 @@ impl BoaHost {
                         writable: true
                     });
 
+                    Object.defineProperty(node, 'replaceWith', {
+                        value: function(newNode) {
+                            // TODO(spec): ChildNode.replaceWith() v1 — single Node arg only; variadic nodes and DOMString
+                            // arguments are out of scope (same limitation as before()/after()).
+                            if (!this.parentNode) return;
+                            if (!newNode || !newNode.__key__) {
+                                throw new TypeError("newNode must be a Node");
+                            }
+                            this.parentNode.insertBefore(newNode, this);
+                            this.parentNode.removeChild(this);
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+
                     registry[key] = node;
                     return node;
                 }
@@ -5547,6 +5563,53 @@ mod tests {
         assert_eq!(parent_children.len(), 2);
         assert_eq!(dom.text_content(parent_children[0]), "a");
         assert_eq!(dom.text_content(parent_children[1]), "c");
+    }
+
+    #[test]
+    fn test_dom_childnode_replacewith() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let parent = document.createElement('div');
+            document.appendChild(parent);
+
+            let a = document.createElement('span');
+            a.textContent = 'a';
+            parent.appendChild(a);
+
+            let b = document.createElement('span');
+            b.textContent = 'b';
+            parent.appendChild(b);
+
+            let c = document.createElement('span');
+            c.textContent = 'c';
+            parent.appendChild(c);
+
+            let x = document.createElement('span');
+            x.textContent = 'x';
+
+            // Replaces b with x:
+            b.replaceWith(x);
+
+            // Calling replaceWith() on a node with no parent is a silent no-op:
+            let detached = document.createElement('span');
+            let detached_replacer = document.createElement('span');
+            detached.replaceWith(detached_replacer);
+        ";
+        assert!(host.eval_with_dom(script, &mut dom).is_ok());
+
+        // Verify the DOM structure from the Rust side
+        let doc_children = dom.children(dom.document());
+        assert_eq!(doc_children.len(), 1);
+        let parent_id = doc_children[0];
+        let parent_children = dom.children(parent_id);
+
+        // Order should be exactly: a, x, c
+        assert_eq!(parent_children.len(), 3);
+        assert_eq!(dom.text_content(parent_children[0]), "a");
+        assert_eq!(dom.text_content(parent_children[1]), "x");
+        assert_eq!(dom.text_content(parent_children[2]), "c");
     }
 
     #[test]
