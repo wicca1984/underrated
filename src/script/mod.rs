@@ -211,6 +211,21 @@ impl BoaHost {
                 JsString::from("addEventListener"),
                 2,
             )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_tag_name),
+                JsString::from("tagName"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_node_name),
+                JsString::from("nodeName"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_node_type),
+                JsString::from("nodeType"),
+                1,
+            )
             .build();
 
         let _ = context.register_global_property(
@@ -372,6 +387,30 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'tagName', {
+                        get() {
+                            return bridge.tagName(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'nodeName', {
+                        get() {
+                            return bridge.nodeName(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'nodeType', {
+                        get() {
+                            return bridge.nodeType(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     registry[key] = node;
                     return node;
                 }
@@ -483,6 +522,30 @@ impl BoaHost {
                 Object.defineProperty(document, 'previousSibling', {
                     get() {
                         return getOrCreateNode(bridge.previousSibling(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'tagName', {
+                    get() {
+                        return bridge.tagName(this.__key__);
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'nodeName', {
+                    get() {
+                        return bridge.nodeName(this.__key__);
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'nodeType', {
+                    get() {
+                        return bridge.nodeType(this.__key__);
                     },
                     enumerable: true,
                     configurable: true
@@ -1483,6 +1546,102 @@ fn add_event_listener(
     Ok(JsValue::undefined())
 }
 
+fn bridge_tag_name(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let tag_name_opt = with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
+                Some(name.to_ascii_uppercase())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(tag_name) = tag_name_opt {
+        Ok(JsValue::from(JsString::from(tag_name)))
+    } else {
+        Ok(JsValue::undefined())
+    }
+}
+
+fn bridge_node_name(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let node_name_opt = with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            match dom.data(node_id) {
+                Some(NodeData::Element { name, .. }) => Some(name.to_ascii_uppercase()),
+                Some(NodeData::Text(_)) => Some("#text".to_string()),
+                Some(NodeData::Comment(_)) => Some("#comment".to_string()),
+                Some(NodeData::Document) => Some("#document".to_string()),
+                Some(NodeData::Doctype { name, .. }) => Some(name.clone()),
+                None => None,
+            }
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(node_name) = node_name_opt {
+        Ok(JsValue::from(JsString::from(node_name)))
+    } else {
+        Ok(JsValue::undefined())
+    }
+}
+
+fn bridge_node_type(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let node_type_opt = with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            match dom.data(node_id) {
+                Some(NodeData::Element { .. }) => Some(1),
+                Some(NodeData::Text(_)) => Some(3),
+                Some(NodeData::Comment(_)) => Some(8),
+                Some(NodeData::Document) => Some(9),
+                Some(NodeData::Doctype { .. }) => Some(10),
+                None => None,
+            }
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(node_type) = node_type_opt {
+        Ok(JsValue::from(node_type))
+    } else {
+        Ok(JsValue::undefined())
+    }
+}
+
 impl Default for BoaHost {
     fn default() -> Self {
         Self::new()
@@ -1801,6 +1960,89 @@ mod tests {
         assert_eq!(
             res,
             Ok(r#"{"enumerable":true,"configurable":true,"readOnly":true}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_dom_node_identity_accessors() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Let's manually add some comment and doctype nodes as well to verify them.
+        let doctype_id = dom.create_node(NodeData::Doctype {
+            name: "html".to_string(),
+            public_id: "".to_string(),
+            system_id: "".to_string(),
+        });
+        dom.append_child(document, doctype_id);
+
+        let parent_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent-div".to_string())],
+        });
+        dom.append_child(document, parent_id);
+
+        let comment_id = dom.create_node(NodeData::Comment("this is a comment".to_string()));
+        dom.append_child(parent_id, comment_id);
+
+        let mut host = BoaHost::new();
+
+        // 1. Check tagName, nodeName, nodeType of document and doctype
+        let script_doc_doctype = r#"
+            (function() {
+                const docTypeNode = document.firstChild; // doctype is first child
+                const verification = {
+                    documentNodeName: document.nodeName,
+                    documentNodeType: document.nodeType,
+                    documentTagName: document.tagName,
+                    doctypeNodeName: docTypeNode.nodeName,
+                    doctypeNodeType: docTypeNode.nodeType,
+                    doctypeTagName: docTypeNode.tagName,
+                };
+                return JSON.stringify(verification);
+            })()
+        "#;
+        let res1 = host.eval_with_dom(script_doc_doctype, &mut dom);
+        assert_eq!(
+            res1,
+            Ok(r##"{"documentNodeName":"#document","documentNodeType":9,"doctypeNodeName":"html","doctypeNodeType":10}"##.to_string())
+        );
+
+        // 2. Check createElement elements and querySelector fetched elements
+        let script_elements = r#"
+            (function() {
+                const div = document.createElement('div');
+                const p = document.createElement('p');
+                p.textContent = 'hello';
+                const textNode = p.firstChild;
+                
+                const parentDiv = document.getElementById('parent-div');
+                const commentNode = parentDiv.firstChild;
+
+                const verification = {
+                    divTagName: div.tagName,
+                    divNodeName: div.nodeName,
+                    divNodeType: div.nodeType,
+                    pTagName: p.tagName,
+                    pNodeName: p.nodeName,
+                    pNodeType: p.nodeType,
+                    textNodeName: textNode.nodeName,
+                    textNodeType: textNode.nodeType,
+                    textTagName: textNode.tagName,
+                    parentDivTagName: parentDiv.tagName,
+                    parentDivNodeName: parentDiv.nodeName,
+                    parentDivNodeType: parentDiv.nodeType,
+                    commentNodeName: commentNode.nodeName,
+                    commentNodeType: commentNode.nodeType,
+                    commentTagName: commentNode.tagName,
+                };
+                return JSON.stringify(verification);
+            })()
+        "#;
+        let res2 = host.eval_with_dom(script_elements, &mut dom);
+        assert_eq!(
+            res2,
+            Ok(r##"{"divTagName":"DIV","divNodeName":"DIV","divNodeType":1,"pTagName":"P","pNodeName":"P","pNodeType":1,"textNodeName":"#text","textNodeType":3,"parentDivTagName":"DIV","parentDivNodeName":"DIV","parentDivNodeType":1,"commentNodeName":"#comment","commentNodeType":8}"##.to_string())
         );
     }
 
