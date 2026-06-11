@@ -425,11 +425,16 @@ pub(crate) fn layout_node(
                 let marker_x = border_box_x - 20.0 - side / 2.0;
                 let marker_y = first_line_center_y - side / 2.0;
 
+                // TODO(spec): disc marker needs a paint-side fill primitive — layout cannot emit a fill for a node without background-color
+                // As a fallback to actually paint a visible bullet, we render an ASCII '*' character using the first text node.
+                let text_node = find_first_text_node(dom, node);
+                let marker_text = text_node.map(|_| String::from("*"));
+
                 let marker_box = LayoutBox {
-                    node: Some(node),
+                    node: text_node.or(Some(node)),
                     rect: Rect::new(marker_x, marker_y, side, side),
                     children: Vec::new(),
-                    text: None,
+                    text: marker_text,
                 };
                 children.push(marker_box);
             } else if list_name == "ol" {
