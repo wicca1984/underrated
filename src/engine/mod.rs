@@ -34,6 +34,7 @@ ul, ol { margin: 1em 0; padding-left: 40px; }\n\
 a { color: #0000ee; text-decoration: underline; }\n\
 b, strong { font-weight: bold; }\n\
 i, em { font-style: italic; }\n\
+th { font-weight: bold; text-align: center; }\n\
 head, style, script, meta, link, title { display: none; }\n\
 button, input[type=\"submit\"], input[type=\"button\"], input[type=\"reset\"] {\n\
   display: inline-block;\n\
@@ -1206,6 +1207,34 @@ mod tests {
                 40.0,
                 crate::css::values::LengthUnit::Px
             ))
+        );
+    }
+
+    #[test]
+    fn test_ua_default_stylesheet_th() {
+        let html = "<html><body><table><tr><th>Header</th></tr></table></body></html>";
+        let page = render_html_for_test(html, 800.0);
+
+        let doc = page.dom.document();
+        let mut th_style = None;
+
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(id)
+                && name.eq_ignore_ascii_case("th")
+            {
+                th_style = page.styles.get(&id);
+                break;
+            }
+        }
+
+        let th_s = th_style.expect("th should have styles");
+        assert_eq!(
+            th_s.get("font-weight"),
+            Some(&crate::css::values::CssValue::Keyword("bold".to_string()))
+        );
+        assert_eq!(
+            th_s.get("text-align"),
+            Some(&crate::css::values::CssValue::Keyword("center".to_string()))
         );
     }
 
