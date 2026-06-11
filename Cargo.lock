@@ -2487,6 +2487,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "boa_engine",
+ "boa_gc",
  "fontdb",
  "jpeg-decoder",
  "png",
