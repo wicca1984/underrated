@@ -175,12 +175,39 @@ pub fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG or JPEG) into a DecodedImage by sniffing the format.
+/// Decodes a GIF byte stream into a DecodedImage.
+/// GIF pixels are converted to RGBA8.
+/// Only the first frame is decoded.
+/// spec: S-261
+pub fn decode_gif(bytes: &[u8]) -> Option<DecodedImage> {
+    // TODO(spec): only the first frame is decoded (animation/disposal/sub-frame offsets are not yet composited) and that the logical screen size may exceed the first frame's size.
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let mut decoder = options.read_info(Cursor::new(bytes)).ok()?;
+    let frame = decoder.read_next_frame().ok()??; // returns Option<&Frame>; `??` flattens Result<Option<_>>
+    let width = frame.width as u32;
+    let height = frame.height as u32;
+    let rgba = frame.buffer.to_vec();
+
+    if rgba.len() != (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Decodes an image byte stream (PNG, JPEG, or GIF) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         decode_jpeg(bytes)
+    } else if bytes.starts_with(b"GIF8") {
+        decode_gif(bytes)
     } else {
         None
     }
@@ -192,6 +219,7 @@ mod tests {
 
     const JPEG_BASE64_1: &str = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
     const JPEG_BASE64_2: &str = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
+    const GIF_BASE64: &str = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
     #[test]
     fn test_round_trip() {
@@ -223,6 +251,8 @@ mod tests {
         assert!(decode_png(&[]).is_none());
         assert!(decode_jpeg(b"not a jpeg").is_none());
         assert!(decode_jpeg(&[]).is_none());
+        assert!(decode_gif(b"not a gif").is_none());
+        assert!(decode_gif(&[]).is_none());
     }
 
     #[test]
@@ -234,6 +264,9 @@ mod tests {
 
         let jpeg_bytes = crate::loader::decode_base64(JPEG_BASE64_2).unwrap();
         assert!(decode_jpeg(&jpeg_bytes[0..jpeg_bytes.len() - 10]).is_none());
+
+        let gif_bytes = crate::loader::decode_base64(GIF_BASE64).unwrap();
+        assert!(decode_gif(&gif_bytes[0..gif_bytes.len() / 2]).is_none());
     }
 
     #[test]
@@ -249,6 +282,15 @@ mod tests {
         let jpeg_bytes_2 = crate::loader::decode_base64(JPEG_BASE64_2).unwrap();
         let decoded =
             decode_jpeg(&jpeg_bytes_2).expect("Should decode successfully with second fallback");
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.rgba.len(), 4);
+    }
+
+    #[test]
+    fn test_decode_gif_minimal() {
+        let gif_bytes = crate::loader::decode_base64(GIF_BASE64).unwrap();
+        let decoded = decode_gif(&gif_bytes).expect("Should decode successfully");
         assert_eq!(decoded.width, 1);
         assert_eq!(decoded.height, 1);
         assert_eq!(decoded.rgba.len(), 4);
@@ -272,7 +314,14 @@ mod tests {
         assert_eq!(decoded_jpeg.height, 1);
         assert_eq!(decoded_jpeg.rgba.len(), 4);
 
+        // Test GIF decoding via decode_image
+        let gif_bytes = crate::loader::decode_base64(GIF_BASE64).unwrap();
+        let decoded_gif = decode_image(&gif_bytes).expect("Should sniff and decode GIF");
+        assert_eq!(decoded_gif.width, 1);
+        assert_eq!(decoded_gif.height, 1);
+        assert_eq!(decoded_gif.rgba.len(), 4);
+
         // Test garbage rejected by decode_image
-        assert!(decode_image(b"neither png nor jpeg").is_none());
+        assert!(decode_image(b"neither png nor jpeg nor gif").is_none());
     }
 }
