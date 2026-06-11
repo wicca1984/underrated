@@ -140,7 +140,6 @@ fn fetch_and_decode_images(
                     if let Some(NodeData::Element { name: sib_name, .. }) = dom.data(sibling_id)
                         && sib_name.eq_ignore_ascii_case("source")
                     {
-                        // TODO(spec): <source media> is not yet evaluated and the first type-compatible source wins.
                         if let Some(source_type) = dom.get_attribute(sibling_id, "type") {
                             let mime = if let Some(part) = source_type.split(';').next() {
                                 part.trim().to_ascii_lowercase()
@@ -159,6 +158,12 @@ fn fetch_and_decode_images(
                             if !is_supported {
                                 continue;
                             }
+                        }
+
+                        if let Some(media) = dom.get_attribute(sibling_id, "media")
+                            && !crate::css::media::media_matches(media, viewport_width)
+                        {
+                            continue;
                         }
 
                         if let Some(srcset) = dom.get_attribute(sibling_id, "srcset")
@@ -2147,6 +2152,63 @@ mod tests {
         assert_eq!(
             decoded.width, 3,
             "Should have loaded narrow.png (width 3) as the first supported source"
+        );
+    }
+
+    #[test]
+    fn test_picture_source_media_matching() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate wide.png (4x4), narrow.png (3x3), fallback.png (2x2)
+        let canvas_wide = Canvas::new(4, 4);
+        let png_wide = crate::image::encode_png(&canvas_wide);
+
+        let canvas_narrow = Canvas::new(3, 3);
+        let png_narrow = crate::image::encode_png(&canvas_narrow);
+
+        let canvas_fallback = Canvas::new(2, 2);
+        let png_fallback = crate::image::encode_png(&canvas_fallback);
+
+        // 2. Set up loader
+        let mut responses = HashMap::new();
+        responses.insert("http://localhost/wide.png".to_string(), Ok(png_wide));
+        responses.insert("http://localhost/narrow.png".to_string(), Ok(png_narrow));
+        responses.insert(
+            "http://localhost/fallback.png".to_string(),
+            Ok(png_fallback),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 3. Define the HTML with responsive sources using media queries
+        let html = r#"
+            <picture>
+                <source srcset="http://localhost/wide.png" media="(min-width: 600px)">
+                <source srcset="http://localhost/narrow.png" media="(max-width: 599px)">
+                <img src="http://localhost/fallback.png">
+            </picture>
+        "#;
+
+        // Case A: viewport width = 800.0 (matches min-width: 600px)
+        let page_wide = render_page(html, &base_url, &loader, 800.0);
+        let img_wide_opt = page_wide.dom.get_image("http://localhost/fallback.png");
+        assert!(img_wide_opt.is_some());
+        assert_eq!(
+            img_wide_opt.unwrap().width,
+            4,
+            "Should have loaded wide.png at viewport width 800.0"
+        );
+
+        // Case B: viewport width = 500.0 (matches max-width: 599px)
+        let page_narrow = render_page(html, &base_url, &loader, 500.0);
+        let img_narrow_opt = page_narrow.dom.get_image("http://localhost/fallback.png");
+        assert!(img_narrow_opt.is_some());
+        assert_eq!(
+            img_narrow_opt.unwrap().width,
+            3,
+            "Should have loaded narrow.png at viewport width 500.0"
         );
     }
 }
