@@ -234,6 +234,20 @@ fn compute_node_style(
                     }
                     // TODO(spec): border-style, border-color, etc.
                 }
+                "outline" => {
+                    // spec: https://drafts.csswg.org/css-ui/#outline-shorthand
+                    let width = find_outline_width(&value)
+                        .unwrap_or_else(|| CssValue::Keyword("medium".to_string()));
+                    let style = find_outline_style(&value)
+                        .unwrap_or_else(|| CssValue::Keyword("none".to_string()));
+
+                    properties.insert("outline-width".to_string(), width);
+                    properties.insert("outline-style".to_string(), style);
+
+                    if let Some(color) = find_outline_color(&value) {
+                        properties.insert("outline-color".to_string(), color);
+                    }
+                }
                 // TODO(spec): other shorthand properties like background, font, transition, etc.
                 name => {
                     properties.insert(name.to_string(), value);
@@ -1171,6 +1185,95 @@ fn is_border_width_value(value: &CssValue) -> bool {
     }
 }
 
+fn find_outline_width(value: &CssValue) -> Option<CssValue> {
+    match value {
+        CssValue::Multiple(values) => {
+            for v in values {
+                if is_border_width_value(v) {
+                    return Some(v.clone());
+                }
+            }
+            None
+        }
+        v => {
+            if is_border_width_value(v) {
+                Some(v.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn find_outline_style(value: &CssValue) -> Option<CssValue> {
+    match value {
+        CssValue::Multiple(values) => {
+            for v in values {
+                if is_outline_style_value(v) {
+                    return Some(v.clone());
+                }
+            }
+            None
+        }
+        v => {
+            if is_outline_style_value(v) {
+                Some(v.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn find_outline_color(value: &CssValue) -> Option<CssValue> {
+    match value {
+        CssValue::Multiple(values) => {
+            for v in values {
+                if is_outline_color_value(v) {
+                    return Some(v.clone());
+                }
+            }
+            None
+        }
+        v => {
+            if is_outline_color_value(v) {
+                Some(v.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn is_outline_style_value(value: &CssValue) -> bool {
+    match value {
+        CssValue::Keyword(s) => {
+            matches!(
+                s.to_ascii_lowercase().as_str(),
+                "none"
+                    | "hidden"
+                    | "dotted"
+                    | "dashed"
+                    | "solid"
+                    | "double"
+                    | "groove"
+                    | "ridge"
+                    | "inset"
+                    | "outset"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn is_outline_color_value(value: &CssValue) -> bool {
+    match value {
+        CssValue::Color(_) => true,
+        CssValue::Keyword(s) => s.eq_ignore_ascii_case("invert"),
+        _ => false,
+    }
+}
+
 fn is_inherited_property(property: &str) -> bool {
     // spec: basic inherited properties
     matches!(
@@ -1539,6 +1642,68 @@ mod tests {
             style_border_thick.get("border-top-width"),
             Some(&CssValue::Keyword("thick".to_string()))
         );
+    }
+
+    #[test]
+    fn test_outline_properties() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // 1. Test outline shorthand with width, style, and color
+        let stylesheet_outline = parse_stylesheet("div { outline: 2px solid red; }");
+        let styles_outline = compute_styles(&dom, &stylesheet_outline);
+        let style_outline = styles_outline.get(&div).unwrap();
+
+        assert_eq!(
+            style_outline.get("outline-width"),
+            Some(&CssValue::Length(2.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style_outline.get("outline-style"),
+            Some(&CssValue::Keyword("solid".to_string()))
+        );
+        assert_eq!(
+            style_outline.get("outline-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255
+            )))
+        );
+
+        // 2. Test longhand overrides shorthand
+        let stylesheet_override =
+            parse_stylesheet("div { outline: 2px solid red; outline-width: 3px; }");
+        let styles_override = compute_styles(&dom, &stylesheet_override);
+        let style_override = styles_override.get(&div).unwrap();
+
+        assert_eq!(
+            style_override.get("outline-width"),
+            Some(&CssValue::Length(3.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style_override.get("outline-style"),
+            Some(&CssValue::Keyword("solid".to_string()))
+        );
+
+        // 3. Test longhand-only style and width
+        let stylesheet_longhand =
+            parse_stylesheet("div { outline-style: solid; outline-width: 3px; }");
+        let styles_longhand = compute_styles(&dom, &stylesheet_longhand);
+        let style_longhand = styles_longhand.get(&div).unwrap();
+
+        assert_eq!(
+            style_longhand.get("outline-width"),
+            Some(&CssValue::Length(3.0, crate::css::values::LengthUnit::Px))
+        );
+        assert_eq!(
+            style_longhand.get("outline-style"),
+            Some(&CssValue::Keyword("solid".to_string()))
+        );
+        assert_eq!(style_longhand.get("outline-color"), None);
     }
 
     #[test]
