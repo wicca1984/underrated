@@ -414,6 +414,28 @@ fn resolve_text_color(
     Color::Rgba(0, 0, 0, 255) // Default fallback color is black
 }
 
+/// Helper to resolve the computed text shadow of a text node, following the DOM tree upwards.
+fn resolve_text_shadow(
+    dom: &Dom,
+    node_id: NodeId,
+    styles: &HashMap<NodeId, ComputedStyle>,
+) -> Option<CssValue> {
+    let mut current = Some(node_id);
+    let mut depth = 0;
+    while let Some(curr_id) = current
+        && depth < 1000
+    {
+        if let Some(style) = styles.get(&curr_id)
+            && let Some(val) = style.get("text-shadow")
+        {
+            return Some(val.clone());
+        }
+        current = dom.parent(curr_id);
+        depth += 1;
+    }
+    None
+}
+
 /// Helper to recursively check and resolve the active text decorations for a node from its DOM ancestors.
 /// spec: S-55
 fn resolve_text_decorations(
@@ -1035,6 +1057,97 @@ pub fn build_display_list(
                         None => text.clone(),
                     };
 
+                    // Paint text-shadow if present
+                    if let Some(text_shadow_val) = resolve_text_shadow(dom, node_id, styles) {
+                        let mut leaves = Vec::new();
+                        flatten_value(&text_shadow_val, &mut leaves);
+
+                        // Check for Keyword("none")
+                        let mut is_none = false;
+                        for leaf in &leaves {
+                            if let CssValue::Keyword(kw) = leaf
+                                && kw.eq_ignore_ascii_case("none")
+                            {
+                                is_none = true;
+                            }
+                        }
+
+                        if !is_none && !leaves.is_empty() {
+                            // Split leaves by comma to support multiple shadows
+                            let mut shadow_groups = Vec::new();
+                            let mut current_group = Vec::new();
+                            for leaf in leaves {
+                                if let CssValue::Keyword(kw) = leaf
+                                    && kw == ","
+                                {
+                                    if !current_group.is_empty() {
+                                        shadow_groups.push(current_group);
+                                        current_group = Vec::new();
+                                    }
+                                } else {
+                                    current_group.push(leaf);
+                                }
+                            }
+                            if !current_group.is_empty() {
+                                shadow_groups.push(current_group);
+                            }
+
+                            // CSS paints the first shadow on top, so paint later list entries
+                            // first: iterate in reverse so the first shadow is pushed (and drawn) last.
+                            for group in shadow_groups.into_iter().rev() {
+                                let mut length_values = Vec::new();
+                                let mut color_value = None;
+
+                                for leaf in group {
+                                    match leaf {
+                                        CssValue::Length(v, _) => {
+                                            length_values.push(*v);
+                                        }
+                                        CssValue::Number(v) => {
+                                            length_values.push(*v);
+                                        }
+                                        CssValue::Color(c) => {
+                                            color_value = Some(c.clone());
+                                        }
+                                        _ => {
+                                            if let Some(c) = find_color(leaf) {
+                                                color_value = Some(c);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if length_values.len() >= 2 {
+                                    let offset_x = length_values[0];
+                                    let offset_y = length_values[1];
+                                    if length_values.len() >= 3 {
+                                        // TODO(spec): text-shadow blur not rasterized
+                                    }
+
+                                    // Determine shadow color: default to resolved text color
+                                    let shadow_color = if let Some(c) = color_value {
+                                        c
+                                    } else {
+                                        color.clone()
+                                    };
+
+                                    let shadow_rect = Rect::new(
+                                        corrected_rect.origin.x + offset_x,
+                                        corrected_rect.origin.y + offset_y,
+                                        corrected_rect.size.width,
+                                        corrected_rect.size.height,
+                                    );
+
+                                    items.push(DisplayItem::Text {
+                                        rect: shadow_rect,
+                                        text: display_text.clone(),
+                                        color: scale_color_alpha(&shadow_color, effective_opacity),
+                                    });
+                                }
+                            }
+                        }
+                    }
+
                     items.push(DisplayItem::Text {
                         rect: corrected_rect,
                         text: display_text,
@@ -1195,6 +1308,7 @@ pub fn build_display_list(
 mod tests {
     use super::*;
     use crate::css::parser::parse_stylesheet;
+    use crate::css::values::LengthUnit;
     use crate::dom::{Dom, NodeData};
     use crate::layout::layout_document;
     use crate::style::compute_styles;
@@ -4006,5 +4120,237 @@ mod tests {
             b_rect.size.height + 20.0,
             "Shadow height should be inflated by 20px"
         );
+    }
+
+    #[test]
+    fn test_text_shadow_basic() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "shadowed".into())],
+        });
+        dom.append_child(body, div);
+
+        let text_node = dom.create_node(NodeData::Text("paint".into()));
+        dom.append_child(div, text_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .shadowed { color: #0000ff; }
+        ",
+        );
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        // Manually insert text-shadow on the div
+        if let Some(style) = styles.get_mut(&div) {
+            let shadow_val = CssValue::Multiple(vec![
+                CssValue::Length(2.0, LengthUnit::Px),
+                CssValue::Length(3.0, LengthUnit::Px),
+                CssValue::Color(Color::Rgba(255, 0, 0, 255)),
+            ]);
+            style.insert("text-shadow".to_string(), shadow_val);
+        }
+
+        let layout = layout_document(&dom, &styles, 800.0);
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert_eq!(
+            text_items.len(),
+            2,
+            "Should emit exactly two text items (one shadow, one main)"
+        );
+
+        if let DisplayItem::Text {
+            rect: shadow_rect,
+            text: shadow_txt,
+            color: shadow_col,
+        } = text_items[0]
+        {
+            assert_eq!(shadow_txt, "paint");
+            assert_eq!(*shadow_col, Color::Rgba(255, 0, 0, 255));
+
+            if let DisplayItem::Text {
+                rect: main_rect,
+                text: main_txt,
+                color: main_col,
+            } = text_items[1]
+            {
+                assert_eq!(main_txt, "paint");
+                assert_eq!(*main_col, Color::Rgba(0, 0, 255, 255));
+
+                // Verify offset
+                assert_eq!(shadow_rect.origin.x, main_rect.origin.x + 2.0);
+                assert_eq!(shadow_rect.origin.y, main_rect.origin.y + 3.0);
+            } else {
+                panic!("Second item should be the main text");
+            }
+        } else {
+            panic!("First item should be the text shadow");
+        }
+    }
+
+    #[test]
+    fn test_text_shadow_absent() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "normal".into())],
+        });
+        dom.append_child(body, div);
+
+        let text_node = dom.create_node(NodeData::Text("paint".into()));
+        dom.append_child(div, text_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .normal { color: #0000ff; }
+        ",
+        );
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        // Manually insert text-shadow: none
+        if let Some(style) = styles.get_mut(&div) {
+            style.insert(
+                "text-shadow".to_string(),
+                CssValue::Keyword("none".to_string()),
+            );
+        }
+
+        let layout = layout_document(&dom, &styles, 800.0);
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert_eq!(
+            text_items.len(),
+            1,
+            "Should emit exactly one text item since text-shadow: none"
+        );
+    }
+
+    #[test]
+    fn test_text_shadow_multiple() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "multi-shadowed".into())],
+        });
+        dom.append_child(body, div);
+
+        let text_node = dom.create_node(NodeData::Text("paint".into()));
+        dom.append_child(div, text_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .multi-shadowed { color: #0000ff; }
+        ",
+        );
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        // Manually insert multiple text-shadows
+        if let Some(style) = styles.get_mut(&div) {
+            let shadow_val = CssValue::Multiple(vec![
+                CssValue::Length(1.0, LengthUnit::Px),
+                CssValue::Length(2.0, LengthUnit::Px),
+                CssValue::Color(Color::Rgba(0, 255, 0, 255)),
+                CssValue::Keyword(",".to_string()),
+                CssValue::Length(3.0, LengthUnit::Px),
+                CssValue::Length(4.0, LengthUnit::Px),
+                CssValue::Color(Color::Rgba(255, 0, 0, 255)),
+            ]);
+            style.insert("text-shadow".to_string(), shadow_val);
+        }
+
+        let layout = layout_document(&dom, &styles, 800.0);
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert_eq!(
+            text_items.len(),
+            3,
+            "Should emit exactly three text items (two shadows, one main)"
+        );
+
+        // 1. Second shadow (red)
+        if let DisplayItem::Text {
+            rect: s2_rect,
+            text: s2_txt,
+            color: s2_col,
+        } = text_items[0]
+        {
+            assert_eq!(s2_txt, "paint");
+            assert_eq!(*s2_col, Color::Rgba(255, 0, 0, 255));
+
+            // 2. First shadow (green)
+            if let DisplayItem::Text {
+                rect: s1_rect,
+                text: s1_txt,
+                color: s1_col,
+            } = text_items[1]
+            {
+                assert_eq!(s1_txt, "paint");
+                assert_eq!(*s1_col, Color::Rgba(0, 255, 0, 255));
+
+                // 3. Main text (blue)
+                if let DisplayItem::Text {
+                    rect: main_rect,
+                    text: main_txt,
+                    color: main_col,
+                } = text_items[2]
+                {
+                    assert_eq!(main_txt, "paint");
+                    assert_eq!(*main_col, Color::Rgba(0, 0, 255, 255));
+
+                    // Verify offsets
+                    assert_eq!(s2_rect.origin.x, main_rect.origin.x + 3.0);
+                    assert_eq!(s2_rect.origin.y, main_rect.origin.y + 4.0);
+
+                    assert_eq!(s1_rect.origin.x, main_rect.origin.x + 1.0);
+                    assert_eq!(s1_rect.origin.y, main_rect.origin.y + 2.0);
+                } else {
+                    panic!("Third item should be main text");
+                }
+            } else {
+                panic!("Second item should be first shadow");
+            }
+        } else {
+            panic!("First item should be second shadow");
+        }
     }
 }
