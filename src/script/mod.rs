@@ -1336,6 +1336,34 @@ impl BoaHost {
                         writable: true
                     });
 
+                    Object.defineProperty(node, 'replaceChildren', {
+                        value: function(...args) {
+                            // TODO(spec): ParentNode.replaceChildren() v1 — Node/DOMString args; DocumentFragment expansion out of scope.
+                            const validatedNodes = [];
+                            for (let i = 0; i < args.length; i++) {
+                                let arg = args[i];
+                                if (typeof arg === 'string') {
+                                    validatedNodes.push(document.createTextNode(arg));
+                                } else if (arg && arg.__key__) {
+                                    validatedNodes.push(arg);
+                                } else {
+                                    throw new TypeError("Argument must be a Node or a string");
+                                }
+                            }
+
+                            while (this.firstChild) {
+                                this.removeChild(this.firstChild);
+                            }
+
+                            for (let i = 0; i < validatedNodes.length; i++) {
+                                this.appendChild(validatedNodes[i]);
+                            }
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+
                     // TODO(spec): ChildNode.remove() v1 — single-node removal only; DocumentFragment / cross-document host edge cases out of scope.
                     Object.defineProperty(node, 'remove', {
                         value: function() {
@@ -5612,6 +5640,52 @@ mod tests {
         assert_eq!(dom.text_content(parent_children[4]), "b");
         assert_eq!(dom.text_content(parent_children[5]), "c");
         assert_eq!(dom.text_content(parent_children[6]), "hi");
+    }
+
+    #[test]
+    fn test_dom_parentnode_replace_children() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let parent = document.createElement('div');
+            document.appendChild(parent);
+
+            let initial1 = document.createElement('span');
+            initial1.textContent = 'old1';
+            let initial2 = document.createElement('span');
+            initial2.textContent = 'old2';
+            parent.appendChild(initial1);
+            parent.appendChild(initial2);
+
+            let a = document.createElement('span');
+            a.textContent = 'newA';
+            let b = document.createElement('span');
+            b.textContent = 'newB';
+
+            parent.replaceChildren(a, 'txt', b);
+        ";
+        assert!(host.eval_with_dom(script, &mut dom).is_ok());
+
+        // Verify the DOM structure from the Rust side
+        let doc_children = dom.children(dom.document());
+        assert_eq!(doc_children.len(), 1);
+        let parent_id = doc_children[0];
+        let parent_children = dom.children(parent_id);
+
+        assert_eq!(parent_children.len(), 3);
+        assert_eq!(dom.text_content(parent_children[0]), "newA");
+        assert_eq!(dom.text_content(parent_children[1]), "txt");
+        assert_eq!(dom.text_content(parent_children[2]), "newB");
+
+        // Now clear with no arguments
+        let script_clear = "
+            parent.replaceChildren();
+        ";
+        assert!(host.eval_with_dom(script_clear, &mut dom).is_ok());
+
+        let parent_children_cleared = dom.children(parent_id);
+        assert_eq!(parent_children_cleared.len(), 0);
     }
 
     #[test]
