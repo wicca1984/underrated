@@ -862,6 +862,8 @@ fn get_text_align(dom: &Dom, node: NodeId, style: &ComputedStyle) -> &'static st
                         Some("center")
                     } else if kw == "right" {
                         Some("right")
+                    } else if kw == "justify" {
+                        Some("justify")
                     } else {
                         Some("left")
                     }
@@ -1092,6 +1094,62 @@ mod tests {
         // Under text-align: center, the remaining space of 460px is halved.
         // Therefore, the word_box should be shifted to x = 230.0px.
         assert!(approx_eq(word_box.rect.origin.x, 230.0));
+    }
+
+    #[test]
+    fn test_text_align_justify_via_layout_document() {
+        // End-to-end guard: `text-align: justify` must survive get_text_align()
+        // and reach the inline justification logic through the shipping layout path.
+        // (A unit test that calls layout_inline_run directly would pass even if
+        // get_text_align dropped "justify" -> "left"; this one exercises the plumbing.)
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        // Two short words on line 1 ("aa bb"), then a word too wide to share the
+        // line, forcing "aa bb" to be a non-last line with large slack to justify.
+        let text = dom.create_node(NodeData::Text(
+            "aa bb xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx".into(),
+        ));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            div { display: block; text-align: justify; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+        let first_line = &div_box.children[0];
+
+        // Line 1 must hold exactly the two short words.
+        assert_eq!(first_line.children.len(), 2);
+        let w1 = &first_line.children[0];
+        let w2 = &first_line.children[1];
+
+        // First word stays at the left edge.
+        assert!(approx_eq(w1.rect.origin.x, 0.0));
+        // Justify must push the second word's right edge out to the content width
+        // (200px). Without the get_text_align plumbing this stays clustered left.
+        let right_edge = w2.rect.origin.x + w2.rect.size.width;
+        assert!(
+            (right_edge - 200.0).abs() < 1.0,
+            "justify did not stretch the line: right_edge={right_edge}"
+        );
     }
 
     #[test]
