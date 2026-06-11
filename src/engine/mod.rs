@@ -16,8 +16,6 @@ pub struct Page {
 
 // spec: S-79
 // The default User-Agent stylesheet used by the browser.
-// spec: S-79
-// The default User-Agent stylesheet used by the browser.
 pub const UA_DEFAULT_CSS: &str = "\
 html, body { background: #fff; background-color: #fff; color: #000; }\n\
 body { margin: 8px; }\n\
