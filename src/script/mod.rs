@@ -197,6 +197,16 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_last_child),
+                JsString::from("lastChild"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_previous_sibling),
+                JsString::from("previousSibling"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(add_event_listener),
                 JsString::from("addEventListener"),
                 2,
@@ -338,9 +348,25 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'lastChild', {
+                        get() {
+                            return getOrCreateNode(bridge.lastChild(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'nextSibling', {
                         get() {
                             return getOrCreateNode(bridge.nextSibling(this.__key__));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'previousSibling', {
+                        get() {
+                            return getOrCreateNode(bridge.previousSibling(this.__key__));
                         },
                         enumerable: true,
                         configurable: true
@@ -438,9 +464,25 @@ impl BoaHost {
                     configurable: true
                 });
 
+                Object.defineProperty(document, 'lastChild', {
+                    get() {
+                        return getOrCreateNode(bridge.lastChild(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
                 Object.defineProperty(document, 'nextSibling', {
                     get() {
                         return getOrCreateNode(bridge.nextSibling(this.__key__));
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'previousSibling', {
+                    get() {
+                        return getOrCreateNode(bridge.previousSibling(this.__key__));
                     },
                     enumerable: true,
                     configurable: true
@@ -1310,6 +1352,71 @@ fn bridge_next_sibling(
     }
 }
 
+fn bridge_last_child(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let last_child_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(&last_id) = dom.children(n_id).last()
+        {
+            let k = format!("{:?}", last_id);
+            key_to_node.insert(k.clone(), last_id);
+            Some(k)
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(k) = last_child_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_previous_sibling(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let previous_sibling_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(p_id) = dom.parent(n_id)
+        {
+            let children = dom.children(p_id);
+            if let Some(pos) = children.iter().position(|&id| id == n_id)
+                && let Some(prev_pos) = pos.checked_sub(1)
+                && let Some(&prev_id) = children.get(prev_pos)
+            {
+                let k = format!("{:?}", prev_id);
+                key_to_node.insert(k.clone(), prev_id);
+                return Some(k);
+            }
+        }
+        None
+    })?;
+
+    if let Some(k) = previous_sibling_key_opt {
+        Ok(JsValue::from(JsString::from(k)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
 fn add_event_listener(
     this: &JsValue,
     args: &[JsValue],
@@ -1590,6 +1697,41 @@ mod tests {
             &mut dom,
         );
         assert_eq!(res_doc_first_child, Ok("true".to_string()));
+
+        // 5. Symmetric accessors: lastChild and previousSibling
+        let res_last_child = host.eval_with_dom(
+            "document.getElementById('parent').lastChild === document.getElementById('child2')",
+            &mut dom,
+        );
+        assert_eq!(res_last_child, Ok("true".to_string()));
+
+        let res_prev_sibling = host.eval_with_dom(
+            "document.getElementById('child2').previousSibling === document.getElementById('child1')",
+            &mut dom,
+        );
+        assert_eq!(res_prev_sibling, Ok("true".to_string()));
+
+        let res_first_child_prev = host.eval_with_dom(
+            "document.getElementById('child1').previousSibling === null",
+            &mut dom,
+        );
+        assert_eq!(res_first_child_prev, Ok("true".to_string()));
+
+        let res_no_child_last = host.eval_with_dom(
+            "document.getElementById('child1').lastChild === null",
+            &mut dom,
+        );
+        assert_eq!(res_no_child_last, Ok("true".to_string()));
+
+        let res_doc_last_child = host.eval_with_dom(
+            "document.lastChild === document.getElementById('parent')",
+            &mut dom,
+        );
+        assert_eq!(res_doc_last_child, Ok("true".to_string()));
+
+        let res_doc_prev_sibling =
+            host.eval_with_dom("document.previousSibling === null", &mut dom);
+        assert_eq!(res_doc_prev_sibling, Ok("true".to_string()));
     }
 
     #[test]
@@ -1616,9 +1758,14 @@ mod tests {
                 item1Parent: item1.parentNode === container,
                 item2Parent: item2.parentNode === container,
                 firstChild: container.firstChild === item1,
+                lastChild: container.lastChild === item2,
                 nextSibling: item1.nextSibling === item2,
+                previousSibling: item2.previousSibling === item1,
                 lastChildNextSibling: item2.nextSibling === null,
-                childNodesLength: container.childNodes.length
+                firstChildPreviousSibling: item1.previousSibling === null,
+                childNodesLength: container.childNodes.length,
+                documentLastChild: document.lastChild === container,
+                documentPreviousSibling: document.previousSibling === null
             };
             JSON.stringify(verification);
         "#;
@@ -1627,7 +1774,7 @@ mod tests {
         assert_eq!(
             res,
             Ok(
-                r#"{"containerParent":true,"item1Parent":true,"item2Parent":true,"firstChild":true,"nextSibling":true,"lastChildNextSibling":true,"childNodesLength":2}"#
+                r#"{"containerParent":true,"item1Parent":true,"item2Parent":true,"firstChild":true,"lastChild":true,"nextSibling":true,"previousSibling":true,"lastChildNextSibling":true,"firstChildPreviousSibling":true,"childNodesLength":2,"documentLastChild":true,"documentPreviousSibling":true}"#
                     .to_string()
             )
         );
