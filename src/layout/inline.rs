@@ -250,6 +250,30 @@ pub fn layout_inline_run(
                         _ => false,
                     };
 
+                    let mut current_node = Some(node);
+                    let mut overflow_wrap_val = None;
+                    while let Some(n) = current_node {
+                        if let Some(style) = styles.get(&n) {
+                            if let Some(val) = style.get("overflow-wrap") {
+                                overflow_wrap_val = Some(val);
+                                break;
+                            } else if let Some(val) = style.get("word-wrap") {
+                                overflow_wrap_val = Some(val);
+                                break;
+                            }
+                        }
+                        current_node = dom.parent(n);
+                    }
+
+                    // TODO(spec): overflow-wrap: anywhere affects min-content sizing, which is out of scope.
+                    // Only `break-word` and `normal` are implemented here.
+                    let break_word = match overflow_wrap_val {
+                        Some(crate::css::values::CssValue::Keyword(kw)) => {
+                            kw.as_str() == "break-word"
+                        }
+                        _ => false,
+                    };
+
                     let preprocessed = preprocess_text(text, collapse, preserve_newlines);
 
                     let transformed = if let Some(style) = styles.get(&node) {
@@ -299,7 +323,13 @@ pub fn layout_inline_run(
                             // spec: S-45, S-57
                             let word_width = font.measure(word) as f32;
 
-                            if allow_wrap && break_all && cursor_x + word_width > containing_width {
+                            let should_break =
+                                break_all || (break_word && word_width > containing_width);
+
+                            if allow_wrap
+                                && should_break
+                                && cursor_x + word_width > containing_width
+                            {
                                 let mut rem_word = word;
                                 while !rem_word.is_empty() {
                                     let rem_width = font.measure(rem_word) as f32;
@@ -1442,6 +1472,155 @@ mod tests {
 
         // Under normal word-break, single word overflows and stays on a single line
         assert_eq!(line_boxes_normal.len(), 1);
+    }
+
+    #[test]
+    fn test_overflow_wrap_break_word() {
+        // Test case 1: A long unbreakable word (e.g., 60 chars) in a narrow container with overflow-wrap: break-word
+        // must produce MORE THAN ONE line box (the word is split across lines).
+        let mut dom_break = Dom::new();
+        let doc_break = dom_break.document();
+        let div_break = dom_break.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom_break.append_child(doc_break, div_break);
+
+        let t_break = dom_break.create_node(NodeData::Text(
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefgh".into(),
+        ));
+        dom_break.append_child(div_break, t_break);
+
+        let stylesheet_break = parse_stylesheet("div { overflow-wrap: break-word; }");
+        let styles_break = compute_styles(&dom_break, &stylesheet_break);
+
+        let children_break = dom_break.children(div_break);
+        // Narrow container of 40px width (fits up to 5 chars of 8px each per line)
+        let (line_boxes_break, _) = layout_inline_run(
+            &dom_break,
+            &styles_break,
+            children_break,
+            40.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        // It must be split across multiple line boxes
+        assert!(line_boxes_break.len() > 1);
+
+        // Test case 2: The SAME long word with overflow-wrap: normal must stay on a SINGLE line box (overflow, no split)
+        let mut dom_normal = Dom::new();
+        let doc_normal = dom_normal.document();
+        let div_normal = dom_normal.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom_normal.append_child(doc_normal, div_normal);
+
+        let t_normal = dom_normal.create_node(NodeData::Text(
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefgh".into(),
+        ));
+        dom_normal.append_child(div_normal, t_normal);
+
+        let stylesheet_normal = parse_stylesheet("div { overflow-wrap: normal; }");
+        let styles_normal = compute_styles(&dom_normal, &stylesheet_normal);
+
+        let children_normal = dom_normal.children(div_normal);
+        let (line_boxes_normal, _) = layout_inline_run(
+            &dom_normal,
+            &styles_normal,
+            children_normal,
+            40.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        // Under normal overflow-wrap, the single word overflows and stays on a single line
+        assert_eq!(line_boxes_normal.len(), 1);
+
+        // Test case 3: A SHORT word that fits on its own line, with overflow-wrap: break-word,
+        // must NOT be split (it wraps whole) — this proves break-word differs from break-all.
+        let mut dom_short = Dom::new();
+        let doc_short = dom_short.document();
+        let div_short = dom_short.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom_short.append_child(doc_short, div_short);
+
+        // Let's create two words: "abc" and "def"
+        // Let's make sure the width of container fits "abc" (3 chars, 24px) but "abc def" (7 chars, 56px) overflows.
+        // Container width: 40px.
+        let t_short = dom_short.create_node(NodeData::Text("abc def".into()));
+        dom_short.append_child(div_short, t_short);
+
+        let stylesheet_short = parse_stylesheet("div { overflow-wrap: break-word; }");
+        let styles_short = compute_styles(&dom_short, &stylesheet_short);
+
+        let children_short = dom_short.children(div_short);
+        let (line_boxes_short, _) = layout_inline_run(
+            &dom_short,
+            &styles_short,
+            children_short,
+            40.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        // Since the second word fits on its own line, it should wrap whole.
+        // It must NOT be split (meaning we should have exactly two line boxes, with whole words)
+        assert_eq!(line_boxes_short.len(), 2);
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes_short {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+        assert_eq!(leaf_texts, vec!["abc ", "def"]);
+
+        // Test case 4: Legacy alias word-wrap: break-word is honored
+        let mut dom_alias = Dom::new();
+        let doc_alias = dom_alias.document();
+        let div_alias = dom_alias.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom_alias.append_child(doc_alias, div_alias);
+
+        let t_alias = dom_alias.create_node(NodeData::Text(
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefgh".into(),
+        ));
+        dom_alias.append_child(div_alias, t_alias);
+
+        let stylesheet_alias = parse_stylesheet("div { word-wrap: break-word; }");
+        let styles_alias = compute_styles(&dom_alias, &stylesheet_alias);
+
+        let children_alias = dom_alias.children(div_alias);
+        let (line_boxes_alias, _) = layout_inline_run(
+            &dom_alias,
+            &styles_alias,
+            children_alias,
+            40.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        // It must be split across multiple line boxes under word-wrap: break-word
+        assert!(line_boxes_alias.len() > 1);
     }
 
     #[test]
