@@ -1294,6 +1294,17 @@ impl BoaHost {
                         writable: true
                     });
 
+                    // TODO(spec): ChildNode.remove() v1 — single-node removal only; DocumentFragment / cross-document host edge cases out of scope.
+                    Object.defineProperty(node, 'remove', {
+                        value: function() {
+                            if (!this.parentNode) return;
+                            this.parentNode.removeChild(this);
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+
                     registry[key] = node;
                     return node;
                 }
@@ -5494,6 +5505,48 @@ mod tests {
         assert_eq!(dom.text_content(parent_children[1]), "ref");
         assert_eq!(dom.text_content(parent_children[2]), "after");
         assert_eq!(dom.text_content(parent_children[3]), "last");
+    }
+
+    #[test]
+    fn test_dom_childnode_remove() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let parent = document.createElement('div');
+            document.appendChild(parent);
+
+            let a = document.createElement('span');
+            a.textContent = 'a';
+            parent.appendChild(a);
+
+            let b = document.createElement('span');
+            b.textContent = 'b';
+            parent.appendChild(b);
+
+            let c = document.createElement('span');
+            c.textContent = 'c';
+            parent.appendChild(c);
+
+            // Removing a middle child detaches it:
+            b.remove();
+
+            // Calling remove() on a node with no parent is a silent no-op:
+            let detached = document.createElement('div');
+            detached.remove();
+        ";
+        assert!(host.eval_with_dom(script, &mut dom).is_ok());
+
+        // Verify the DOM structure from the Rust side
+        let doc_children = dom.children(dom.document());
+        assert_eq!(doc_children.len(), 1);
+        let parent_id = doc_children[0];
+        let parent_children = dom.children(parent_id);
+
+        // Order should be exactly: a, c
+        assert_eq!(parent_children.len(), 2);
+        assert_eq!(dom.text_content(parent_children[0]), "a");
+        assert_eq!(dom.text_content(parent_children[1]), "c");
     }
 
     #[test]
