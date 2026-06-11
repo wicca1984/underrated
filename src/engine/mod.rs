@@ -352,12 +352,14 @@ pub fn navigate(
         crate::forms::Method::Post => crate::loader::HttpMethod::Post,
     };
 
-    let response = match loader.load_request(
-        &resolved_url,
-        method,
-        req.body.as_bytes(),
-        req.content_type.as_deref(),
-    ) {
+    let response = match crate::loader::follow_redirects(&resolved_url, |url| {
+        loader.load_request_hop(
+            url,
+            method,
+            req.body.as_bytes(),
+            req.content_type.as_deref(),
+        )
+    }) {
         Ok(res) => res,
         Err(_) => return render_page("", base, loader, viewport_width),
     };
@@ -376,6 +378,7 @@ pub fn navigate(
     }
     let decoded_html = crate::encoding::decode(&response.bytes[offset..], charset);
 
+    // TODO(spec): after a redirect chain, relative URLs on the result page should resolve against the final hop URL, but follow_redirects does not surface it yet (needs a loader IF extension — future task).
     render_page(&decoded_html, &resolved_url, loader, viewport_width)
 }
 
@@ -1458,6 +1461,142 @@ mod tests {
         assert!(
             found_post_submitted_text,
             "Submitted POST page should contain search results text"
+        );
+    }
+
+    #[test]
+    fn test_navigate_follows_redirects() {
+        struct RedirectMockLoader;
+
+        impl crate::loader::ResourceLoader for RedirectMockLoader {
+            fn load(&self, _url: &Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
+
+            fn load_request_hop(
+                &self,
+                url: &Url,
+                _method: crate::loader::HttpMethod,
+                _body: &[u8],
+                _content_type: Option<&str>,
+            ) -> Result<
+                (crate::loader::RedirectMeta, crate::loader::LoaderResponse),
+                crate::loader::LoadError,
+            > {
+                if url.serialize() == "https://example.com/start" {
+                    Ok((
+                        crate::loader::RedirectMeta {
+                            status: 302,
+                            location: Some("/final".to_string()),
+                        },
+                        crate::loader::LoaderResponse {
+                            bytes: b"Redirecting...".to_vec(),
+                            content_type: "text/html".to_string(),
+                            charset: Some("utf-8".to_string()),
+                        },
+                    ))
+                } else if url.serialize() == "https://example.com/final" {
+                    Ok((
+                        crate::loader::RedirectMeta {
+                            status: 200,
+                            location: None,
+                        },
+                        crate::loader::LoaderResponse {
+                            bytes: b"<html><body><h1>Redirected result</h1></body></html>".to_vec(),
+                            content_type: "text/html".to_string(),
+                            charset: Some("utf-8".to_string()),
+                        },
+                    ))
+                } else {
+                    Err(crate::loader::LoadError::NotFound)
+                }
+            }
+        }
+
+        let loader = RedirectMockLoader;
+        let base_url = Url::parse("https://example.com/").unwrap();
+
+        let get_request = crate::forms::NavigationRequest {
+            url: "/start".to_string(),
+            method: crate::forms::Method::Get,
+            body: String::new(),
+            content_type: None,
+        };
+
+        let page = navigate(&get_request, &base_url, &loader, 800.0);
+
+        let mut found_text = false;
+        let doc = page.dom.document();
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Text(text)) = page.dom.data(id)
+                && text.contains("Redirected result")
+            {
+                found_text = true;
+            }
+        }
+        assert!(
+            found_text,
+            "Page after redirect should contain 'Redirected result' text"
+        );
+    }
+
+    #[test]
+    fn test_navigate_non_redirect_works() {
+        struct NonRedirectMockLoader;
+
+        impl crate::loader::ResourceLoader for NonRedirectMockLoader {
+            fn load(&self, _url: &Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
+
+            fn load_request_hop(
+                &self,
+                _url: &Url,
+                _method: crate::loader::HttpMethod,
+                _body: &[u8],
+                _content_type: Option<&str>,
+            ) -> Result<
+                (crate::loader::RedirectMeta, crate::loader::LoaderResponse),
+                crate::loader::LoadError,
+            > {
+                Ok((
+                    crate::loader::RedirectMeta {
+                        status: 200,
+                        location: None,
+                    },
+                    crate::loader::LoaderResponse {
+                        bytes: b"<html><body><h1>Direct result</h1></body></html>".to_vec(),
+                        content_type: "text/html".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            }
+        }
+
+        let loader = NonRedirectMockLoader;
+        let base_url = Url::parse("https://example.com/").unwrap();
+
+        let get_request = crate::forms::NavigationRequest {
+            url: "/direct".to_string(),
+            method: crate::forms::Method::Get,
+            body: String::new(),
+            content_type: None,
+        };
+
+        let page = navigate(&get_request, &base_url, &loader, 800.0);
+
+        let mut found_text = false;
+        let doc = page.dom.document();
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Text(text)) = page.dom.data(id)
+                && text.contains("Direct result")
+            {
+                found_text = true;
+            }
+        }
+        assert!(
+            found_text,
+            "Page without redirect should contain 'Direct result' text"
         );
     }
 
