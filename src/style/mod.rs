@@ -619,6 +619,52 @@ fn collect_presentational_hints(
             });
         }
 
+        if name.eq_ignore_ascii_case("img") {
+            if let Some((_, hspace_val)) = attrs
+                .iter()
+                .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("hspace"))
+            {
+                let trimmed = hspace_val.trim();
+                if let Ok(num) = trimmed.parse::<u32>() {
+                    let css_val_str = format!("{}px", num);
+                    let components = crate::css::parser::parse_component_values(&css_val_str);
+                    for side in &["margin-left", "margin-right"] {
+                        matched_declarations.push(MatchedDeclaration {
+                            declaration: Declaration {
+                                name: side.to_string(),
+                                value: components.clone(),
+                                important: false,
+                            },
+                            specificity: (0, 0, 0, 0),
+                            source_order: ua_rules_count,
+                        });
+                    }
+                }
+            }
+
+            if let Some((_, vspace_val)) = attrs
+                .iter()
+                .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("vspace"))
+            {
+                let trimmed = vspace_val.trim();
+                if let Ok(num) = trimmed.parse::<u32>() {
+                    let css_val_str = format!("{}px", num);
+                    let components = crate::css::parser::parse_component_values(&css_val_str);
+                    for side in &["margin-top", "margin-bottom"] {
+                        matched_declarations.push(MatchedDeclaration {
+                            declaration: Declaration {
+                                name: side.to_string(),
+                                value: components.clone(),
+                                important: false,
+                            },
+                            specificity: (0, 0, 0, 0),
+                            source_order: ua_rules_count,
+                        });
+                    }
+                }
+            }
+        }
+
         // 1. bgcolor on <table>, <td>, <th>, <tr>, <body> -> CSS background-color
         if (name.eq_ignore_ascii_case("table")
             || name.eq_ignore_ascii_case("td")
@@ -2156,5 +2202,55 @@ mod tests {
                 0, 0, 255, 255
             )))
         );
+    }
+
+    #[test]
+    fn test_presentational_hints_hspace_vspace() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![
+                ("hspace".into(), "10".into()),
+                ("vspace".into(), "5".into()),
+            ],
+        });
+        dom.append_child(doc, img);
+
+        let img_invalid = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![
+                ("hspace".into(), "abc".into()),
+                ("vspace".into(), "-5".into()),
+            ],
+        });
+        dom.append_child(doc, img_invalid);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let img_style = styles.get(&img).unwrap();
+        assert_eq!(
+            img_style.get("margin-left"),
+            Some(&CssValue::Length(10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            img_style.get("margin-right"),
+            Some(&CssValue::Length(10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            img_style.get("margin-top"),
+            Some(&CssValue::Length(5.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            img_style.get("margin-bottom"),
+            Some(&CssValue::Length(5.0, LengthUnit::Px))
+        );
+
+        let img_invalid_style = styles.get(&img_invalid).unwrap();
+        assert_eq!(img_invalid_style.get("margin-left"), None);
+        assert_eq!(img_invalid_style.get("margin-right"), None);
+        assert_eq!(img_invalid_style.get("margin-top"), None);
+        assert_eq!(img_invalid_style.get("margin-bottom"), None);
     }
 }
