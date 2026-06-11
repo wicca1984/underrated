@@ -40,6 +40,21 @@ fn get_border_width(style: &ComputedStyle, prop: &str) -> f32 {
     }
 }
 
+/// Helper to extract outline width from computed styles in px, defaulting to medium (3.0px).
+fn get_outline_width(style: &ComputedStyle) -> f32 {
+    match style.get("outline-width") {
+        Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
+        Some(CssValue::Number(v)) => *v,
+        Some(CssValue::Keyword(s)) => match s.to_ascii_lowercase().as_str() {
+            "thin" => 1.0,
+            "medium" => 3.0,
+            "thick" => 5.0,
+            _ => 3.0,
+        },
+        _ => 3.0,
+    }
+}
+
 /// Helper to recursively find any `Color` value inside a CSS property.
 /// spec: S-39
 fn find_color(value: &CssValue) -> Option<Color> {
@@ -474,6 +489,81 @@ pub fn build_display_list(
                     }
                 }
 
+                // Paint outline if style is present and not none
+                let outline_style = style.get("outline-style");
+                let has_outline = matches!(outline_style, Some(CssValue::Keyword(s)) if !s.eq_ignore_ascii_case("none"));
+
+                if has_outline {
+                    let ow = get_outline_width(style);
+                    if ow > 0.0 {
+                        let rect = layout_box.rect;
+                        let x = rect.origin.x;
+                        let y = rect.origin.y;
+                        let w = rect.size.width.max(0.0);
+                        let h = rect.size.height.max(0.0);
+
+                        // TODO(spec): outline non-solid styles, outline-offset != 0, and color:invert are not implemented (solid frame, zero offset, color falls back to text color).
+
+                        let mut outline_color = Color::Rgba(0, 0, 0, 255);
+                        let mut resolved = false;
+
+                        if let Some(val) = style.get("outline-color")
+                            && let Some(c) = find_color(val)
+                        {
+                            outline_color = c;
+                            resolved = true;
+                        }
+
+                        if !resolved {
+                            if let Some(val) = style.get("color")
+                                && let Some(c) = find_color(val)
+                            {
+                                outline_color = c;
+                            } else {
+                                outline_color = Color::Rgba(0, 0, 0, 255);
+                            }
+                        }
+
+                        let scaled_color = scale_color_alpha(&outline_color, effective_opacity);
+
+                        // Top strip
+                        let top_rect = Rect::new(x - ow, y - ow, w + 2.0 * ow, ow);
+                        if top_rect.size.width > 0.0 && top_rect.size.height > 0.0 {
+                            items.push(DisplayItem::SolidRect {
+                                rect: top_rect,
+                                color: scaled_color.clone(),
+                            });
+                        }
+
+                        // Bottom strip
+                        let bottom_rect = Rect::new(x - ow, y + h, w + 2.0 * ow, ow);
+                        if bottom_rect.size.width > 0.0 && bottom_rect.size.height > 0.0 {
+                            items.push(DisplayItem::SolidRect {
+                                rect: bottom_rect,
+                                color: scaled_color.clone(),
+                            });
+                        }
+
+                        // Left strip
+                        let left_rect = Rect::new(x - ow, y, ow, h);
+                        if left_rect.size.width > 0.0 && left_rect.size.height > 0.0 {
+                            items.push(DisplayItem::SolidRect {
+                                rect: left_rect,
+                                color: scaled_color.clone(),
+                            });
+                        }
+
+                        // Right strip
+                        let right_rect = Rect::new(x + w, y, ow, h);
+                        if right_rect.size.width > 0.0 && right_rect.size.height > 0.0 {
+                            items.push(DisplayItem::SolidRect {
+                                rect: right_rect,
+                                color: scaled_color.clone(),
+                            });
+                        }
+                    }
+                }
+
                 // spec: if node is a Text node -> Text item
                 if let Some(NodeData::Text(text)) = dom.data(node_id) {
                     // spec: S-82: reliably resolve text color, defaulting to blue-ish for links
@@ -823,6 +913,107 @@ mod tests {
         assert!(bottom_found, "Bottom border rect mismatch");
         assert!(left_found, "Left border rect mismatch");
         assert!(right_found, "Right border rect mismatch");
+    }
+
+    #[test]
+    fn test_paint_outline() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                width: 100px;
+                height: 100px;
+                outline: 2px solid red;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(rects.len(), 4, "Expected exactly 4 outline strips");
+
+        let red = Color::Rgba(255, 0, 0, 255);
+
+        let mut top_found = false;
+        let mut bottom_found = false;
+        let mut left_found = false;
+        let mut right_found = false;
+
+        for item in rects {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                assert_eq!(color, &red);
+                if rect.origin.x == -2.0
+                    && rect.origin.y == -2.0
+                    && rect.size.width == 104.0
+                    && rect.size.height == 2.0
+                {
+                    top_found = true;
+                } else if rect.origin.x == -2.0
+                    && rect.origin.y == 100.0
+                    && rect.size.width == 104.0
+                    && rect.size.height == 2.0
+                {
+                    bottom_found = true;
+                } else if rect.origin.x == -2.0
+                    && rect.origin.y == 0.0
+                    && rect.size.width == 2.0
+                    && rect.size.height == 100.0
+                {
+                    left_found = true;
+                } else if rect.origin.x == 100.0
+                    && rect.origin.y == 0.0
+                    && rect.size.width == 2.0
+                    && rect.size.height == 100.0
+                {
+                    right_found = true;
+                }
+            }
+        }
+
+        assert!(top_found, "Top outline rect mismatch");
+        assert!(bottom_found, "Bottom outline rect mismatch");
+        assert!(left_found, "Left outline rect mismatch");
+        assert!(right_found, "Right outline rect mismatch");
+
+        // Assert outline-style: none produces NO such outside rect
+        let stylesheet_none = parse_stylesheet(
+            "
+            div {
+                width: 100px;
+                height: 100px;
+                outline: 2px none red;
+            }
+        ",
+        );
+        let styles_none = compute_styles(&dom, &stylesheet_none);
+        let layout_none = layout_document(&dom, &styles_none, 800.0);
+        let display_list_none = build_display_list(&layout_none, &dom, &styles_none);
+        let rects_none: Vec<&DisplayItem> = display_list_none
+            .0
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(
+            rects_none.len(),
+            0,
+            "Expected no outline rects with outline-style: none"
+        );
     }
 
     #[test]
