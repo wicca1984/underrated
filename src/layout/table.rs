@@ -21,6 +21,13 @@ struct CellPlacement {
     rowspan: usize,
 }
 
+fn translate_y(layout_box: &mut LayoutBox, dy: f32) {
+    layout_box.rect.origin.y += dy;
+    for child in &mut layout_box.children {
+        translate_y(child, dy);
+    }
+}
+
 pub fn layout_table_container(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
@@ -391,8 +398,41 @@ pub fn layout_table_container(
                     cell_y,
                     depth + 2,
                 ) {
+                    let natural_height = cell_box.rect.size.height;
                     cell_box.rect.size.width = cell_width;
                     cell_box.rect.size.height = cell_height;
+
+                    if cell_height > natural_height {
+                        let align = styles
+                            .get(&cell_node)
+                            .and_then(|cs| cs.get("vertical-align"));
+                        let mut dy = 0.0;
+                        match align {
+                            Some(CssValue::Keyword(kw)) => {
+                                match kw.as_str() {
+                                    "top" => {}
+                                    "middle" => {
+                                        dy = (cell_height - natural_height) / 2.0;
+                                    }
+                                    "bottom" => {
+                                        dy = cell_height - natural_height;
+                                    }
+                                    _ => {
+                                        // TODO(spec): table-cell vertical-align baseline/sub/super/text-top/text-bottom not implemented; treated as top.
+                                    }
+                                }
+                            }
+                            _ => {
+                                // TODO(spec): table-cell vertical-align baseline/sub/super/text-top/text-bottom not implemented; treated as top.
+                            }
+                        }
+                        if dy > 0.0 {
+                            for child in &mut cell_box.children {
+                                translate_y(child, dy);
+                            }
+                        }
+                    }
+
                     row_cells_boxes.push(cell_box);
                 }
             }
@@ -1760,5 +1800,182 @@ mod tests {
         assert_eq!(c22.rect.origin.y, 70.0);
         assert_eq!(c22.rect.size.width, 40.0);
         assert_eq!(c22.rect.size.height, 40.0);
+    }
+
+    #[test]
+    fn test_table_cell_vertical_align() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Create table element
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Create row 1
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        // Create cell 1 (tall)
+        let cell1_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell1_node);
+        let cell1_child_node = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(cell1_node, cell1_child_node);
+
+        // Create cell 2 (middle)
+        let cell2_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell2_node);
+        let cell2_child_node = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(cell2_node, cell2_child_node);
+
+        // Create cell 3 (bottom)
+        let cell3_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell3_node);
+        let cell3_child_node = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(cell3_node, cell3_child_node);
+
+        // Create cell 4 (top)
+        let cell4_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell4_node);
+        let cell4_child_node = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(cell4_node, cell4_child_node);
+
+        // Setup styles
+        let mut styles = HashMap::new();
+
+        // Table style
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(400.0, LengthUnit::Px));
+        styles.insert(table_node, table_style);
+
+        // Row style
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Cell 1: height 100px
+        let mut cell1_style = style_with_display("table-cell");
+        cell1_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell1_style.insert(
+            "height".to_string(),
+            CssValue::Length(100.0, LengthUnit::Px),
+        );
+        styles.insert(cell1_node, cell1_style);
+
+        let mut cell1_child_style = style_with_display("block");
+        cell1_child_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell1_child_style.insert(
+            "height".to_string(),
+            CssValue::Length(100.0, LengthUnit::Px),
+        );
+        styles.insert(cell1_child_node, cell1_child_style);
+
+        // Cell 2: height 40px, middle
+        let mut cell2_style = style_with_display("table-cell");
+        cell2_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell2_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        cell2_style.insert(
+            "vertical-align".to_string(),
+            CssValue::Keyword("middle".to_string()),
+        );
+        styles.insert(cell2_node, cell2_style);
+
+        let mut cell2_child_style = style_with_display("block");
+        cell2_child_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell2_child_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        styles.insert(cell2_child_node, cell2_child_style);
+
+        // Cell 3: height 40px, bottom
+        let mut cell3_style = style_with_display("table-cell");
+        cell3_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell3_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        cell3_style.insert(
+            "vertical-align".to_string(),
+            CssValue::Keyword("bottom".to_string()),
+        );
+        styles.insert(cell3_node, cell3_style);
+
+        let mut cell3_child_style = style_with_display("block");
+        cell3_child_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell3_child_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        styles.insert(cell3_child_node, cell3_child_style);
+
+        // Cell 4: height 40px, top
+        let mut cell4_style = style_with_display("table-cell");
+        cell4_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell4_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        cell4_style.insert(
+            "vertical-align".to_string(),
+            CssValue::Keyword("top".to_string()),
+        );
+        styles.insert(cell4_node, cell4_style);
+
+        let mut cell4_child_style = style_with_display("block");
+        cell4_child_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell4_child_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        styles.insert(cell4_child_node, cell4_child_style);
+
+        // Document layout (offset_x = 0, offset_y = 0)
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // The single row
+        assert_eq!(table_box.children.len(), 1);
+        let row_box = &table_box.children[0];
+        assert_eq!(row_box.children.len(), 4);
+
+        // Row should start at y = 0 since no border spacing, padding, margins or captions
+        let cell_y = row_box.rect.origin.y;
+
+        // Cell 1: tall, height = 100.0
+        let c1 = &row_box.children[0];
+        assert_eq!(c1.rect.size.height, 100.0);
+        let c1_child = &c1.children[0];
+        assert_eq!(c1_child.rect.origin.y, cell_y);
+
+        // Cell 2: middle, height = 100.0, dy = (100 - 40) / 2 = 30
+        let c2 = &row_box.children[1];
+        assert_eq!(c2.rect.size.height, 100.0);
+        let c2_child = &c2.children[0];
+        assert_eq!(c2_child.rect.origin.y, cell_y + 30.0);
+
+        // Cell 3: bottom, height = 100.0, dy = 100 - 40 = 60
+        let c3 = &row_box.children[2];
+        assert_eq!(c3.rect.size.height, 100.0);
+        let c3_child = &c3.children[0];
+        assert_eq!(c3_child.rect.origin.y, cell_y + 60.0);
+
+        // Cell 4: top, height = 100.0, dy = 0
+        let c4 = &row_box.children[3];
+        assert_eq!(c4.rect.size.height, 100.0);
+        let c4_child = &c4.children[0];
+        assert_eq!(c4_child.rect.origin.y, cell_y);
     }
 }
