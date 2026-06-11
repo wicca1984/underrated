@@ -261,8 +261,6 @@ pub fn build_display_list(
     // spec: iterative pre-order traversal (no unbounded recursion — I-6)
     while let Some(layout_box) = stack.pop() {
         let mut skip_children = false;
-        let mut processed_as_button = false;
-        let mut processed_as_text_input = false;
 
         if let Some((node_id, style)) = layout_box
             .node
@@ -319,107 +317,18 @@ pub fn build_display_list(
                 }
             }
 
+            let mut btn_label_item = None;
+
             if is_btn_or_submit {
-                processed_as_button = true;
                 skip_children = true;
 
-                // 1. Determine background color
-                let bg_color = match style.get("background-color") {
-                    Some(CssValue::Color(color)) => color.clone(),
-                    _ => Color::Rgba(239, 239, 239, 255), // light-grey UA default
-                };
-
-                // 2. Emit filled background rect
                 let rect = layout_box.rect;
-                items.push(DisplayItem::SolidRect {
-                    rect,
-                    color: bg_color,
-                });
-
-                // 3. Determine border sizes and colors
-                let border_top = get_border_width(style, "border-top-width");
-                let border_right = get_border_width(style, "border-right-width");
-                let border_bottom = get_border_width(style, "border-bottom-width");
-                let border_left = get_border_width(style, "border-left-width");
-
-                let (t, r, b, l) = if border_top > 0.0
-                    || border_right > 0.0
-                    || border_bottom > 0.0
-                    || border_left > 0.0
-                {
-                    (border_top, border_right, border_bottom, border_left)
-                } else {
-                    (2.0, 2.0, 2.0, 2.0) // default 2px button border/bevel
-                };
-
-                let border_color = get_border_color(style);
-                let top_color = get_edge_color(style, "border-top-color", &border_color);
-                let right_color = get_edge_color(style, "border-right-color", &border_color);
-                let bottom_color = get_edge_color(style, "border-bottom-color", &border_color);
-                let left_color = get_edge_color(style, "border-left-color", &border_color);
-
-                let (tc, rc, bc, lc) = if style.get("border-top-color").is_some()
-                    || style.get("border-right-color").is_some()
-                    || style.get("border-bottom-color").is_some()
-                    || style.get("border-left-color").is_some()
-                    || style.get("border-color").is_some()
-                    || style.get("border").is_some()
-                {
-                    (top_color, right_color, bottom_color, left_color)
-                } else {
-                    (
-                        Color::Rgba(240, 240, 240, 255), // top: light highlight
-                        Color::Rgba(140, 140, 140, 255), // right: dark shadow
-                        Color::Rgba(140, 140, 140, 255), // bottom: dark shadow
-                        Color::Rgba(240, 240, 240, 255), // left: light highlight
-                    )
-                };
-
                 let x = rect.origin.x;
                 let y = rect.origin.y;
                 let w = rect.size.width.max(0.0);
                 let h = rect.size.height.max(0.0);
 
-                let t_clamped = t.max(0.0).min(h);
-                let b_clamped = b.max(0.0).min(h - t_clamped);
-                let l_clamped = l.max(0.0).min(w);
-                let r_clamped = r.max(0.0).min(w - l_clamped);
-
-                // Top border strip
-                if t_clamped > 0.0 && w > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y, w, t_clamped),
-                        color: tc,
-                    });
-                }
-                // Bottom border strip
-                if b_clamped > 0.0 && w > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y + h - b_clamped, w, b_clamped),
-                        color: bc,
-                    });
-                }
-                // Left border strip
-                if l_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y + t_clamped, l_clamped, h - t_clamped - b_clamped),
-                        color: lc,
-                    });
-                }
-                // Right border strip
-                if r_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(
-                            x + w - r_clamped,
-                            y + t_clamped,
-                            r_clamped,
-                            h - t_clamped - b_clamped,
-                        ),
-                        color: rc,
-                    });
-                }
-
-                // 4. Center the label text within the button box
+                // Center the label text within the button box
                 let font = crate::font::BitmapFont::builtin();
                 let text_w = font.measure(&label_text) as f32;
                 let text_h = font.line_height() as f32;
@@ -433,137 +342,17 @@ pub fn build_display_list(
                 };
 
                 let corrected_rect = Rect::new(text_x, text_y, text_w, text_h);
-                items.push(DisplayItem::Text {
+                btn_label_item = Some(DisplayItem::Text {
                     rect: corrected_rect,
                     text: label_text,
                     color: text_color,
                 });
             } else if is_text_input {
-                processed_as_text_input = true;
                 skip_children = true;
-
-                // 1. Determine background color
-                let bg_color = if let Some(val) = style.get("background-color")
-                    && let Some(c) = find_color(val)
-                {
-                    Some(c)
-                } else if let Some(val) = style.get("background")
-                    && let Some(c) = find_color(val)
-                {
-                    Some(c)
-                } else if style.get("background-color").is_some()
-                    || style.get("background").is_some()
-                {
-                    None
-                } else {
-                    Some(Color::Rgba(255, 255, 255, 255)) // default white UA background
-                };
-
-                // Emit filled background rect
-                let rect = layout_box.rect;
-                if let Some(color) = bg_color {
-                    items.push(DisplayItem::SolidRect { rect, color });
-                }
-
-                // 2. Determine border widths and colors
-                let has_border_spec = style.get("border").is_some()
-                    || style.get("border-width").is_some()
-                    || style.get("border-style").is_some()
-                    || style.get("border-color").is_some()
-                    || style.get("border-top").is_some()
-                    || style.get("border-right").is_some()
-                    || style.get("border-bottom").is_some()
-                    || style.get("border-left").is_some()
-                    || style.get("border-top-width").is_some()
-                    || style.get("border-right-width").is_some()
-                    || style.get("border-bottom-width").is_some()
-                    || style.get("border-left-width").is_some()
-                    || style.get("border-top-color").is_some()
-                    || style.get("border-right-color").is_some()
-                    || style.get("border-bottom-color").is_some()
-                    || style.get("border-left-color").is_some()
-                    || style.get("border-top-style").is_some()
-                    || style.get("border-right-style").is_some()
-                    || style.get("border-bottom-style").is_some()
-                    || style.get("border-left-style").is_some();
-
-                let border_top = get_border_width(style, "border-top-width");
-                let border_right = get_border_width(style, "border-right-width");
-                let border_bottom = get_border_width(style, "border-bottom-width");
-                let border_left = get_border_width(style, "border-left-width");
-
-                let (t, r, b, l) = if has_border_spec {
-                    (border_top, border_right, border_bottom, border_left)
-                } else {
-                    (1.0, 1.0, 1.0, 1.0) // 1px UA default solid border
-                };
-
-                let border_color = get_border_color(style);
-                let top_color = get_edge_color(style, "border-top-color", &border_color);
-                let right_color = get_edge_color(style, "border-right-color", &border_color);
-                let bottom_color = get_edge_color(style, "border-bottom-color", &border_color);
-                let left_color = get_edge_color(style, "border-left-color", &border_color);
-
-                let (tc, rc, bc, lc) = if has_border_spec {
-                    (top_color, right_color, bottom_color, left_color)
-                } else {
-                    let default_border_color = Color::Rgba(118, 118, 118, 255); // #767676
-                    (
-                        default_border_color.clone(),
-                        default_border_color.clone(),
-                        default_border_color.clone(),
-                        default_border_color,
-                    )
-                };
-
-                let x = rect.origin.x;
-                let y = rect.origin.y;
-                let w = rect.size.width.max(0.0);
-                let h = rect.size.height.max(0.0);
-
-                let t_clamped = t.max(0.0).min(h);
-                let b_clamped = b.max(0.0).min(h - t_clamped);
-                let l_clamped = l.max(0.0).min(w);
-                let r_clamped = r.max(0.0).min(w - l_clamped);
-
-                // Top border strip
-                if t_clamped > 0.0 && w > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y, w, t_clamped),
-                        color: tc,
-                    });
-                }
-                // Bottom border strip
-                if b_clamped > 0.0 && w > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y + h - b_clamped, w, b_clamped),
-                        color: bc,
-                    });
-                }
-                // Left border strip
-                if l_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(x, y + t_clamped, l_clamped, h - t_clamped - b_clamped),
-                        color: lc,
-                    });
-                }
-                // Right border strip
-                if r_clamped > 0.0 && h - t_clamped - b_clamped > 0.0 {
-                    items.push(DisplayItem::SolidRect {
-                        rect: Rect::new(
-                            x + w - r_clamped,
-                            y + t_clamped,
-                            r_clamped,
-                            h - t_clamped - b_clamped,
-                        ),
-                        color: rc,
-                    });
-                }
-
                 // TODO(spec): render input value/placeholder/caret
             }
 
-            if !processed_as_button && !processed_as_text_input {
+            {
                 // spec: if node has background-color -> SolidRect
                 if let Some(CssValue::Color(color)) = style.get("background-color") {
                     // TODO(spec): border/images/gradients/rasterization
@@ -598,10 +387,25 @@ pub fn build_display_list(
                     let r = border_right.max(0.0).min(w - l);
 
                     let border_color = get_border_color(style);
-                    let top_color = get_edge_color(style, "border-top-color", &border_color);
-                    let right_color = get_edge_color(style, "border-right-color", &border_color);
-                    let bottom_color = get_edge_color(style, "border-bottom-color", &border_color);
-                    let left_color = get_edge_color(style, "border-left-color", &border_color);
+                    let mut top_color = get_edge_color(style, "border-top-color", &border_color);
+                    let mut right_color =
+                        get_edge_color(style, "border-right-color", &border_color);
+                    let mut bottom_color =
+                        get_edge_color(style, "border-bottom-color", &border_color);
+                    let mut left_color = get_edge_color(style, "border-left-color", &border_color);
+
+                    if is_btn_or_submit
+                        && style.get("border-top-color").is_none()
+                        && style.get("border-right-color").is_none()
+                        && style.get("border-bottom-color").is_none()
+                        && style.get("border-left-color").is_none()
+                        && border_color == Color::Rgba(192, 192, 192, 255)
+                    {
+                        top_color = Color::Rgba(240, 240, 240, 255); // light highlight
+                        left_color = Color::Rgba(240, 240, 240, 255); // light highlight
+                        bottom_color = Color::Rgba(140, 140, 140, 255); // dark shadow
+                        right_color = Color::Rgba(140, 140, 140, 255); // dark shadow
+                    }
 
                     // Emit 4 border edges as SolidRects, ensuring no empty or negative rects are painted
                     // Top border strip
@@ -785,6 +589,10 @@ pub fn build_display_list(
                         }
                     }
                 }
+            }
+
+            if let Some(item) = btn_label_item {
+                items.push(item);
             }
         }
 
@@ -1737,7 +1545,7 @@ mod tests {
         let text = dom.create_node(NodeData::Text("Click me".into()));
         dom.append_child(btn, text);
 
-        let stylesheet = parse_stylesheet("");
+        let stylesheet = parse_stylesheet(crate::engine::UA_DEFAULT_CSS);
         let styles = compute_styles(&dom, &stylesheet);
         let layout = layout_document(&dom, &styles, 100.0);
 
@@ -1810,7 +1618,9 @@ mod tests {
         });
         dom.append_child(doc, input);
 
-        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+        css.push_str("input { width: 100px; height: 30px; }");
+        let stylesheet = parse_stylesheet(&css);
         let styles = compute_styles(&dom, &stylesheet);
         let layout = layout_document(&dom, &styles, 100.0);
 
@@ -1857,9 +1667,9 @@ mod tests {
         let text = dom.create_node(NodeData::Text("Custom".into()));
         dom.append_child(btn, text);
 
-        let stylesheet = parse_stylesheet(
-            "button { background-color: rgb(255, 0, 0); border-color: rgb(0, 255, 0); color: rgb(0, 0, 255); }",
-        );
+        let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+        css.push_str("button { background-color: rgb(255, 0, 0); border-color: rgb(0, 255, 0); color: rgb(0, 0, 255); }");
+        let stylesheet = parse_stylesheet(&css);
         let styles = compute_styles(&dom, &stylesheet);
         let layout = layout_document(&dom, &styles, 100.0);
 
@@ -1915,7 +1725,9 @@ mod tests {
         });
         dom.append_child(doc, input);
 
-        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+        css.push_str("input { width: 100px; height: 30px; }");
+        let stylesheet = parse_stylesheet(&css);
         let styles = compute_styles(&dom, &stylesheet);
         let layout = layout_document(&dom, &styles, 100.0);
 
@@ -1954,7 +1766,9 @@ mod tests {
         });
         dom.append_child(doc, input);
 
-        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+        css.push_str("input { width: 100px; height: 30px; }");
+        let stylesheet = parse_stylesheet(&css);
         let styles = compute_styles(&dom, &stylesheet);
         let layout = layout_document(&dom, &styles, 100.0);
 
@@ -1996,7 +1810,9 @@ mod tests {
         });
         dom.append_child(doc, input);
 
-        let stylesheet = parse_stylesheet("input { width: 100px; height: 30px; }");
+        let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+        css.push_str("input { width: 100px; height: 30px; }");
+        let stylesheet = parse_stylesheet(&css);
         let styles = compute_styles(&dom, &stylesheet);
         let layout = layout_document(&dom, &styles, 100.0);
 
@@ -2124,5 +1940,163 @@ mod tests {
         // Assert reconstruction of the original node text exactly once
         assert_eq!(concatenated_text, "ab cd");
         assert_ne!(concatenated_text, "ab cdab cd");
+    }
+
+    #[test]
+    fn test_ua_form_styling_paint_and_computed_properties() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, btn);
+
+        let input = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "submit".into()),
+                ("value".into(), "Submit".into()),
+            ],
+        });
+        dom.append_child(doc, input);
+
+        let stylesheet = parse_stylesheet(crate::engine::UA_DEFAULT_CSS);
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // (a) a <button> computed style has display:inline-block and a non-empty border-width and a background-color from UA CSS
+        let btn_style = styles.get(&btn).expect("button should have computed style");
+        assert_eq!(
+            btn_style.get("display"),
+            Some(&crate::css::values::CssValue::Keyword(
+                "inline-block".to_string()
+            ))
+        );
+        assert!(btn_style.get("background-color").is_some());
+        assert!(btn_style.get("border-top-width").is_some());
+
+        // (b) the paint display list for a submit input contains exactly one background SolidRect and four border strips, plus the centered label Text item — no duplicate fills.
+        let layout = layout_document(&dom, &styles, 800.0);
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Gather painted items belonging to the submit input box
+        let input_box = layout
+            .children
+            .iter()
+            .find(|child| child.node == Some(input))
+            .expect("input should have a layout box");
+        let input_rect = input_box.rect;
+
+        let input_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| match item {
+                DisplayItem::SolidRect { rect, .. } => {
+                    rect.origin.x >= input_rect.origin.x
+                        && rect.origin.x < input_rect.origin.x + input_rect.size.width
+                        && rect.origin.y >= input_rect.origin.y
+                        && rect.origin.y < input_rect.origin.y + input_rect.size.height
+                }
+                DisplayItem::Text { rect, .. } => {
+                    rect.origin.x >= input_rect.origin.x
+                        && rect.origin.x < input_rect.origin.x + input_rect.size.width
+                        && rect.origin.y >= input_rect.origin.y
+                        && rect.origin.y < input_rect.origin.y + input_rect.size.height
+                }
+                _ => false,
+            })
+            .collect();
+
+        let background_rects: Vec<&&DisplayItem> = input_items.iter().filter(|item| {
+            matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(239, 239, 239, 255))
+        }).collect();
+
+        let border_rects: Vec<&&DisplayItem> = input_items.iter().filter(|item| {
+            matches!(item, DisplayItem::SolidRect { color, .. } if color == &Color::Rgba(240, 240, 240, 255) || color == &Color::Rgba(140, 140, 140, 255))
+        }).collect();
+
+        let text_items: Vec<&&DisplayItem> = input_items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        assert_eq!(
+            background_rects.len(),
+            1,
+            "Expected exactly one background SolidRect"
+        );
+        assert_eq!(border_rects.len(), 4, "Expected exactly four border strips");
+        assert_eq!(
+            text_items.len(),
+            1,
+            "Expected exactly one centered label Text item"
+        );
+    }
+
+    #[test]
+    fn test_button_label_z_order() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, btn);
+
+        let text = dom.create_node(NodeData::Text("Click me".into()));
+        dom.append_child(btn, text);
+
+        let stylesheet = parse_stylesheet(crate::engine::UA_DEFAULT_CSS);
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout = layout_document(&dom, &styles, 800.0);
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Find the layout box of the button
+        let btn_box = layout
+            .children
+            .iter()
+            .find(|child| child.node == Some(btn))
+            .expect("button should have a layout box");
+        let btn_rect = btn_box.rect;
+
+        // Find the index of the background SolidRect and the label Text
+        let mut bg_index = None;
+        let mut text_index = None;
+
+        for (idx, item) in items.iter().enumerate() {
+            match item {
+                DisplayItem::SolidRect { rect, color }
+                    if rect.origin.x >= btn_rect.origin.x
+                        && rect.origin.x < btn_rect.origin.x + btn_rect.size.width
+                        && rect.origin.y >= btn_rect.origin.y
+                        && rect.origin.y < btn_rect.origin.y + btn_rect.size.height
+                        && *color == Color::Rgba(239, 239, 239, 255) =>
+                {
+                    bg_index = Some(idx);
+                }
+                DisplayItem::Text { rect, text, .. }
+                    if rect.origin.x >= btn_rect.origin.x
+                        && rect.origin.x < btn_rect.origin.x + btn_rect.size.width
+                        && rect.origin.y >= btn_rect.origin.y
+                        && rect.origin.y < btn_rect.origin.y + btn_rect.size.height
+                        && text == "Click me" =>
+                {
+                    text_index = Some(idx);
+                }
+                _ => {}
+            }
+        }
+
+        let bg_idx = bg_index.expect("Should find button background SolidRect");
+        let text_idx = text_index.expect("Should find button label Text");
+
+        assert!(
+            text_idx > bg_idx,
+            "Label text (index {}) must paint on top of background SolidRect (index {})",
+            text_idx,
+            bg_idx
+        );
     }
 }

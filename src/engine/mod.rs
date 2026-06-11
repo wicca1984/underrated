@@ -16,7 +16,7 @@ pub struct Page {
 
 // spec: S-79
 // The default User-Agent stylesheet used by the browser.
-const UA_DEFAULT_CSS: &str = "\
+pub const UA_DEFAULT_CSS: &str = "\
 html, body { background: #fff; background-color: #fff; color: #000; }\n\
 body { margin: 8px; }\n\
 div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article { display: block; }\n\
@@ -32,6 +32,28 @@ a { color: #0000ee; text-decoration: underline; }\n\
 b, strong { font-weight: bold; }\n\
 i, em { font-style: italic; }\n\
 head, style, script, meta, link, title { display: none; }\n\
+button, input[type=\"submit\"], input[type=\"button\"], input[type=\"reset\"] {\n\
+  display: inline-block;\n\
+  padding: 1px 6px;\n\
+  border: 2px outset #c0c0c0;\n\
+  border-color: #c0c0c0;\n\
+  background-color: #efefef;\n\
+  color: #000;\n\
+}\n\
+input {\n\
+  display: inline-block;\n\
+  padding: 1px 2px;\n\
+  border: 1px solid #767676;\n\
+  border-color: #767676;\n\
+  background-color: #fff;\n\
+}\n\
+input[type=\"text\"], input[type=\"search\"], input[type=\"email\"], input[type=\"url\"], input[type=\"tel\"], input[type=\"password\"], input[type=\"number\"] {\n\
+  display: inline-block;\n\
+  padding: 1px 2px;\n\
+  border: 1px solid #767676;\n\
+  border-color: #767676;\n\
+  background-color: #fff;\n\
+}\n\
 ";
 
 fn load_image_safely_with_loader(
