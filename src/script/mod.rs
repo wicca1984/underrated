@@ -148,6 +148,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_create_comment),
+                JsString::from("createComment"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_has_attribute),
                 JsString::from("hasAttribute"),
                 2,
@@ -1479,6 +1484,11 @@ impl BoaHost {
                     return getOrCreateNode(key);
                 };
 
+                document.createComment = function(data) {
+                    const key = bridge.createComment(data !== undefined ? String(data) : "");
+                    return getOrCreateNode(key);
+                };
+
                 document.getElementById = function(id) {
                     const key = bridge.getElementById(String(id));
                     return getOrCreateNode(key);
@@ -2778,6 +2788,27 @@ fn bridge_create_text_node(
 
     let key = with_dom(|dom, key_to_node| {
         let node_id = dom.create_node(NodeData::Text(data));
+        let k = format!("{:?}", node_id);
+        key_to_node.insert(k.clone(), node_id);
+        k
+    })?;
+
+    Ok(JsValue::from(JsString::from(key)))
+}
+
+fn bridge_create_comment(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let data = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let key = with_dom(|dom, key_to_node| {
+        let node_id = dom.create_node(NodeData::Comment(data));
         let k = format!("{:?}", node_id);
         key_to_node.insert(k.clone(), node_id);
         k
@@ -6300,6 +6331,34 @@ mod tests {
         match dom.data(text_id) {
             Some(NodeData::Text(content)) => assert_eq!(content, "hi"),
             _ => panic!("Expected Text node"),
+        }
+    }
+
+    #[test]
+    fn test_dom_write_create_comment() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            let comment = document.createComment('hello comment');
+            div.appendChild(comment);
+            document.appendChild(div);
+            div.outerHTML;
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(res, Ok("<div><!--hello comment--></div>".to_string()));
+
+        // Verify backing Node type and content
+        let root_children = dom.children(dom.document());
+        assert_eq!(root_children.len(), 1);
+        let div_id = root_children[0];
+        let div_children = dom.children(div_id);
+        assert_eq!(div_children.len(), 1);
+        let comment_id = div_children[0];
+        match dom.data(comment_id) {
+            Some(NodeData::Comment(content)) => assert_eq!(content, "hello comment"),
+            _ => panic!("Expected Comment node"),
         }
     }
 
