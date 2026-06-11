@@ -168,6 +168,16 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_matches),
+                JsString::from("matches"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_closest),
+                JsString::from("closest"),
+                2,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_query_selector_all),
                 JsString::from("querySelectorAll"),
                 1,
@@ -1000,23 +1010,13 @@ impl BoaHost {
                             return bridge.getAttributeNames(this.__key__);
                         },
                         matches(selector) {
-                            // TODO(spec): detached-node matching and :scope are not yet supported because matching is document-rooted.
                             if (this.nodeType !== 1) return false;
-                            const sel = String(selector);
-                            const all = document.querySelectorAll(sel);
-                            for (let i = 0; i < all.length; i++) {
-                                if (all[i] && all[i].__key__ === this.__key__) return true;
-                            }
-                            return false;
+                            return bridge.matches(this.__key__, String(selector));
                         },
                         closest(selector) {
-                            const sel = String(selector);
-                            let el = this;
-                            while (el && el.nodeType === 1) {
-                                if (el.matches(sel)) return el;
-                                el = el.parentElement;
-                            }
-                            return null;
+                            if (this.nodeType !== 1) return null;
+                            const key = bridge.closest(this.__key__, String(selector));
+                            return getOrCreateNode(key);
                         }
                     };
 
@@ -2230,6 +2230,90 @@ fn bridge_query_selector(
         } else {
             None
         }
+    })?;
+
+    if let Some(key) = key_opt {
+        Ok(JsValue::from(JsString::from(key)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_matches(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let selector_val = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let is_match = with_dom(|dom, key_to_node| {
+        let node_id = match key_to_node.get(&node_key).copied() {
+            Some(id) => id,
+            None => return false,
+        };
+
+        let selector_list = match crate::selector::parse_selector_list(&selector_val) {
+            Ok(list) => list,
+            Err(_) => return false,
+        };
+
+        crate::selector::matches(&selector_list, dom, node_id)
+    })?;
+
+    Ok(JsValue::from(is_match))
+}
+
+fn bridge_closest(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let selector_val = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let key_opt = with_dom(|dom, key_to_node| {
+        let mut curr_node_id = match key_to_node.get(&node_key).copied() {
+            Some(id) => id,
+            None => return None,
+        };
+
+        let selector_list = match crate::selector::parse_selector_list(&selector_val) {
+            Ok(list) => list,
+            Err(_) => return None,
+        };
+
+        loop {
+            if crate::selector::matches(&selector_list, dom, curr_node_id) {
+                let k = format!("{:?}", curr_node_id);
+                key_to_node.insert(k.clone(), curr_node_id);
+                return Some(k);
+            }
+            if let Some(parent_id) = dom.parent(curr_node_id) {
+                curr_node_id = parent_id;
+            } else {
+                break;
+            }
+        }
+        None
     })?;
 
     if let Some(key) = key_opt {
@@ -4658,59 +4742,62 @@ mod tests {
         let mut dom = Dom::new();
         let document = dom.document();
 
-        // Build structure: <div class="x" id="d1"><p id="t">hi</p></div>
+        // Build structure: <div id="a"><span class="b highlight" id="b-span">hi</span></div>
         let div_id = dom.create_node(NodeData::Element {
             name: "div".to_string(),
-            attrs: vec![
-                ("class".to_string(), "x".to_string()),
-                ("id".to_string(), "d1".to_string()),
-            ],
+            attrs: vec![("id".to_string(), "a".to_string())],
         });
-        let p_id = dom.create_node(NodeData::Element {
-            name: "p".to_string(),
-            attrs: vec![("id".to_string(), "t".to_string())],
+        let span_id = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![
+                ("class".to_string(), "b highlight".to_string()),
+                ("id".to_string(), "b-span".to_string()),
+            ],
         });
         let text_id = dom.create_node(NodeData::Text("hi".to_string()));
 
-        dom.append_child(p_id, text_id);
-        dom.append_child(div_id, p_id);
+        dom.append_child(span_id, text_id);
+        dom.append_child(div_id, span_id);
         dom.append_child(document, div_id);
 
         let mut host = BoaHost::new();
 
-        // matches positive: tag/class selector
-        let res_matches_pos = host.eval_with_dom(
-            "document.getElementById('t').matches('div.x > p')",
+        // Assertions requested by t0281:
+        // - getElementById('b-span').matches('span.highlight') => "true"
+        let res1 = host.eval_with_dom(
+            "document.getElementById('b-span').matches('span.highlight')",
             &mut dom,
         );
-        assert_eq!(res_matches_pos, Ok("true".to_string()));
+        assert_eq!(res1, Ok("true".to_string()));
 
-        // matches negative
-        let res_matches_neg =
-            host.eval_with_dom("document.getElementById('t').matches('a')", &mut dom);
-        assert_eq!(res_matches_neg, Ok("false".to_string()));
+        // - getElementById('b-span').matches('div') => "false"
+        let res2 = host.eval_with_dom("document.getElementById('b-span').matches('div')", &mut dom);
+        assert_eq!(res2, Ok("false".to_string()));
 
-        // closest hit: find ancestor <div> by its class selector
-        let res_closest_hit_class =
-            host.eval_with_dom("document.getElementById('t').closest('div.x').id", &mut dom);
-        assert_eq!(res_closest_hit_class, Ok("d1".to_string()));
-
-        // closest hit: find ancestor <div> by tag selector
-        let res_closest_hit_tag =
-            host.eval_with_dom("document.getElementById('t').closest('div').id", &mut dom);
-        assert_eq!(res_closest_hit_tag, Ok("d1".to_string()));
-
-        // closest self: matches itself
-        let res_closest_self =
-            host.eval_with_dom("document.getElementById('t').closest('p').id", &mut dom);
-        assert_eq!(res_closest_self, Ok("t".to_string()));
-
-        // closest miss: does not exist
-        let res_closest_miss = host.eval_with_dom(
-            "document.getElementById('t').closest('table') === null",
+        // - getElementById('b-span').matches('#b-span') => "true"
+        let res3 = host.eval_with_dom(
+            "document.getElementById('b-span').matches('#b-span')",
             &mut dom,
         );
-        assert_eq!(res_closest_miss, Ok("true".to_string()));
+        assert_eq!(res3, Ok("true".to_string()));
+
+        // - getElementById('b-span').closest('div') resolves to the ancestor div (e.g. compare its .id to "a") => the expected id string
+        let res4 = host.eval_with_dom(
+            "document.getElementById('b-span').closest('div').id",
+            &mut dom,
+        );
+        assert_eq!(res4, Ok("a".to_string()));
+
+        // - getElementById('b-span').closest('.no-such-class') => "null" (assert the JS stringifies to "null")
+        let res5 = host.eval_with_dom(
+            "document.getElementById('b-span').closest('.no-such-class')",
+            &mut dom,
+        );
+        assert_eq!(res5, Ok("null".to_string()));
+
+        // - closest returns self when self matches: getElementById('a').closest('#a').id => "a"
+        let res6 = host.eval_with_dom("document.getElementById('a').closest('#a').id", &mut dom);
+        assert_eq!(res6, Ok("a".to_string()));
     }
 
     #[test]
