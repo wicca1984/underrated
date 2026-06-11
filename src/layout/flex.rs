@@ -185,8 +185,13 @@ pub fn layout_flex_container(
         children: Vec<LayoutBox>,
     }
 
+    let has_main_constraint = match flex_direction {
+        FlexDirection::Row => true,
+        FlexDirection::Column => has_explicit_size(Some(style), "height"),
+    };
+
     let mut lines = Vec::new();
-    if flex_wrap == FlexWrap::Nowrap || children.is_empty() {
+    if flex_wrap == FlexWrap::Nowrap || !has_main_constraint || children.is_empty() {
         lines.push(FlexLine { children });
     } else {
         let mut current_line = FlexLine {
@@ -2032,5 +2037,142 @@ mod tests {
         assert_eq!(container_box.children.len(), 2);
         assert!(approx_eq(container_box.children[0].rect.origin.x, 40.0));
         assert!(approx_eq(container_box.children[1].rect.origin.x, 160.0));
+    }
+
+    #[test]
+    fn test_flex_wrap_column_auto_height() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: column;
+                flex-wrap: wrap;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 50.0));
+    }
+
+    #[test]
+    fn test_flex_wrap_column_explicit_height() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+        dom.append_child(container, child3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: column;
+                flex-wrap: wrap;
+                height: 120px;
+                column-gap: 15px;
+                row-gap: 10px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+            #child3 {
+                width: 80px;
+                height: 40px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Height is 120px.
+        // child1: height=50px.
+        // gap: row_gap=10px.
+        // child2: height=50px.
+        // child1 (50) + gap (10) + child2 (50) = 110px <= 120px. They fit on Line 1.
+        // If child3 were to fit: 110 + gap (10) + child3 (40) = 160px > 120px.
+        // So child3 wraps to Line 2!
+        // Line 1: child1, child2
+        // Line 2: child3
+        // Line 1 cross size: max(child1.width, child2.width) = max(100, 100) = 100px.
+        // Line 2 cross size: max(child3.width) = 80px.
+        // Line 2 cross offset (x): Line 1 cross offset (0) + Line 1 cross size (100) + col_gap (15) = 115px.
+        assert_eq!(container_box.children.len(), 3);
+        // child1: x=0, y=0, w=100, h=50
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
+        assert!(approx_eq(container_box.children[0].rect.size.width, 100.0));
+        assert!(approx_eq(container_box.children[0].rect.size.height, 50.0));
+
+        // child2: x=0, y=50+10=60, w=100, h=50
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 60.0));
+        assert!(approx_eq(container_box.children[1].rect.size.width, 100.0));
+        assert!(approx_eq(container_box.children[1].rect.size.height, 50.0));
+
+        // child3: x=115, y=0, w=80, h=40
+        assert!(approx_eq(container_box.children[2].rect.origin.x, 115.0));
+        assert!(approx_eq(container_box.children[2].rect.origin.y, 0.0));
+        assert!(approx_eq(container_box.children[2].rect.size.width, 80.0));
+        assert!(approx_eq(container_box.children[2].rect.size.height, 40.0));
     }
 }
