@@ -19,7 +19,7 @@ pub struct Page {
 pub const UA_DEFAULT_CSS: &str = "\
 html, body { background: #fff; background-color: #fff; color: #000; }\n\
 body { margin: 8px; }\n\
-div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article, figure, figcaption { display: block; }\n\
+div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article, figure, figcaption, blockquote, dl, dt, dd { display: block; }\n\
 p { margin-top: 1em; margin-bottom: 1em; }\n\
 h1 { margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }\n\
 h2 { margin-top: 0.83em; margin-bottom: 0.83em; font-weight: bold; }\n\
@@ -27,7 +27,9 @@ h3 { margin-top: 1em; margin-bottom: 1em; font-weight: bold; }\n\
 h4 { margin-top: 1.33em; margin-bottom: 1.33em; font-weight: bold; }\n\
 h5 { margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold; }\n\
 h6 { margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold; }\n\
-figure { margin: 1em 40px; }\n\
+figure, blockquote { margin: 1em 40px; }\n\
+dl { margin: 1em 0; }\n\
+dd { margin-left: 40px; }\n\
 ul, ol { margin: 1em 0; padding-left: 40px; }\n\
 a { color: #0000ee; text-decoration: underline; }\n\
 b, strong { font-weight: bold; }\n\
@@ -1107,6 +1109,103 @@ mod tests {
         assert_eq!(
             figcap_s.get("display"),
             Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_ua_default_stylesheet_blockquote_and_dl() {
+        let html = "<html><body><blockquote>Q</blockquote><dl><dt>Term</dt><dd>Def</dd></dl></body></html>";
+        let page = render_html_for_test(html, 800.0);
+
+        let doc = page.dom.document();
+        let mut blockquote_style = None;
+        let mut dl_style = None;
+        let mut dt_style = None;
+        let mut dd_style = None;
+
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(id) {
+                match name.as_str() {
+                    "blockquote" => blockquote_style = page.styles.get(&id),
+                    "dl" => dl_style = page.styles.get(&id),
+                    "dt" => dt_style = page.styles.get(&id),
+                    "dd" => dd_style = page.styles.get(&id),
+                    _ => {}
+                }
+            }
+        }
+
+        let bq_s = blockquote_style.expect("blockquote should have styles");
+        assert_eq!(
+            bq_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
+        assert_eq!(
+            bq_s.get("margin-top"),
+            Some(&crate::css::values::CssValue::Length(
+                1.0,
+                crate::css::values::LengthUnit::Em
+            ))
+        );
+        assert_eq!(
+            bq_s.get("margin-bottom"),
+            Some(&crate::css::values::CssValue::Length(
+                1.0,
+                crate::css::values::LengthUnit::Em
+            ))
+        );
+        assert_eq!(
+            bq_s.get("margin-left"),
+            Some(&crate::css::values::CssValue::Length(
+                40.0,
+                crate::css::values::LengthUnit::Px
+            ))
+        );
+        assert_eq!(
+            bq_s.get("margin-right"),
+            Some(&crate::css::values::CssValue::Length(
+                40.0,
+                crate::css::values::LengthUnit::Px
+            ))
+        );
+
+        let dl_s = dl_style.expect("dl should have styles");
+        assert_eq!(
+            dl_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
+        assert_eq!(
+            dl_s.get("margin-top"),
+            Some(&crate::css::values::CssValue::Length(
+                1.0,
+                crate::css::values::LengthUnit::Em
+            ))
+        );
+        assert_eq!(
+            dl_s.get("margin-bottom"),
+            Some(&crate::css::values::CssValue::Length(
+                1.0,
+                crate::css::values::LengthUnit::Em
+            ))
+        );
+
+        let dt_s = dt_style.expect("dt should have styles");
+        assert_eq!(
+            dt_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
+
+        let dd_s = dd_style.expect("dd should have styles");
+        assert_eq!(
+            dd_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
+        assert_eq!(
+            dd_s.get("margin-left"),
+            Some(&crate::css::values::CssValue::Length(
+                40.0,
+                crate::css::values::LengthUnit::Px
+            ))
         );
     }
 
