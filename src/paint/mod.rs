@@ -317,6 +317,8 @@ pub fn build_display_list(
                 }
             }
 
+            let mut btn_label_item = None;
+
             if is_btn_or_submit {
                 skip_children = true;
 
@@ -340,7 +342,7 @@ pub fn build_display_list(
                 };
 
                 let corrected_rect = Rect::new(text_x, text_y, text_w, text_h);
-                items.push(DisplayItem::Text {
+                btn_label_item = Some(DisplayItem::Text {
                     rect: corrected_rect,
                     text: label_text,
                     color: text_color,
@@ -587,6 +589,10 @@ pub fn build_display_list(
                         }
                     }
                 }
+            }
+
+            if let Some(item) = btn_label_item {
+                items.push(item);
             }
         }
 
@@ -2024,6 +2030,73 @@ mod tests {
             text_items.len(),
             1,
             "Expected exactly one centered label Text item"
+        );
+    }
+
+    #[test]
+    fn test_button_label_z_order() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, btn);
+
+        let text = dom.create_node(NodeData::Text("Click me".into()));
+        dom.append_child(btn, text);
+
+        let stylesheet = parse_stylesheet(crate::engine::UA_DEFAULT_CSS);
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout = layout_document(&dom, &styles, 800.0);
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Find the layout box of the button
+        let btn_box = layout
+            .children
+            .iter()
+            .find(|child| child.node == Some(btn))
+            .expect("button should have a layout box");
+        let btn_rect = btn_box.rect;
+
+        // Find the index of the background SolidRect and the label Text
+        let mut bg_index = None;
+        let mut text_index = None;
+
+        for (idx, item) in items.iter().enumerate() {
+            match item {
+                DisplayItem::SolidRect { rect, color }
+                    if rect.origin.x >= btn_rect.origin.x
+                        && rect.origin.x < btn_rect.origin.x + btn_rect.size.width
+                        && rect.origin.y >= btn_rect.origin.y
+                        && rect.origin.y < btn_rect.origin.y + btn_rect.size.height
+                        && *color == Color::Rgba(239, 239, 239, 255) =>
+                {
+                    bg_index = Some(idx);
+                }
+                DisplayItem::Text { rect, text, .. }
+                    if rect.origin.x >= btn_rect.origin.x
+                        && rect.origin.x < btn_rect.origin.x + btn_rect.size.width
+                        && rect.origin.y >= btn_rect.origin.y
+                        && rect.origin.y < btn_rect.origin.y + btn_rect.size.height
+                        && text == "Click me" =>
+                {
+                    text_index = Some(idx);
+                }
+                _ => {}
+            }
+        }
+
+        let bg_idx = bg_index.expect("Should find button background SolidRect");
+        let text_idx = text_index.expect("Should find button label Text");
+
+        assert!(
+            text_idx > bg_idx,
+            "Label text (index {}) must paint on top of background SolidRect (index {})",
+            text_idx,
+            bg_idx
         );
     }
 }
