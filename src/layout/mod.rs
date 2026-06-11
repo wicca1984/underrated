@@ -1,6 +1,7 @@
 mod flex;
 mod inline;
 mod position;
+mod table;
 
 pub(crate) use position::is_absolute_or_fixed;
 
@@ -125,6 +126,26 @@ pub(crate) fn layout_node(
     // display: flex
     if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "flex") {
         return crate::layout::flex::layout_flex_container(
+            dom,
+            styles,
+            node,
+            containing_width,
+            offset_x,
+            offset_y,
+            depth,
+        );
+    }
+
+    // display: table
+    let is_table_element = matches!(dom.data(node), Some(crate::dom::NodeData::Element { name, .. }) if name == "table");
+    if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "table")
+        || matches!(
+            style.get("display"),
+            Some(CssValue::Display(DisplayValue::Table))
+        )
+        || is_table_element
+    {
+        return crate::layout::table::layout_table_container(
             dom,
             styles,
             node,
@@ -377,7 +398,7 @@ pub(crate) fn layout_node(
     })
 }
 
-fn get_layoutable_children(
+pub(crate) fn get_layoutable_children(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
     node: NodeId,
@@ -524,7 +545,7 @@ fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut
     }
 }
 
-fn resolve_margins_and_width(
+pub(crate) fn resolve_margins_and_width(
     style: &ComputedStyle,
     containing_width: f32,
     is_inline: bool,

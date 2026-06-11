@@ -16,6 +16,11 @@ impl ComputedStyle {
     pub fn get(&self, property: &str) -> Option<&CssValue> {
         self.properties.get(property)
     }
+
+    /// Sets/inserts a computed value for a given property.
+    pub fn insert(&mut self, property: String, value: CssValue) {
+        self.properties.insert(property, value);
+    }
 }
 
 /// Computes the specificity of a complex selector.

@@ -46,6 +46,9 @@ pub enum DisplayValue {
     InlineBlock,
     None,
     Flex,
+    Table,
+    TableRow,
+    TableCell,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -283,6 +286,9 @@ pub fn parse_property_value(
                     "inline-block" => DisplayValue::InlineBlock,
                     "none" => DisplayValue::None,
                     "flex" => DisplayValue::Flex,
+                    "table" => DisplayValue::Table,
+                    "table-row" => DisplayValue::TableRow,
+                    "table-cell" => DisplayValue::TableCell,
                     _ => return None,
                 };
                 Some(CssValue::Display(typed))
