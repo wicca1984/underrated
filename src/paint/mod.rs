@@ -266,6 +266,13 @@ pub fn build_display_list(
             .node
             .and_then(|id| styles.get(&id).map(|s| (id, s)))
         {
+            // Treat `collapse` the same as `hidden` for this task.
+            // TODO(spec): S-12 visibility: collapse differs from hidden for table-row/column content.
+            let node_hidden = matches!(
+                style.get("visibility"),
+                Some(CssValue::Keyword(k)) if k == "hidden" || k == "collapse"
+            );
+
             // Check if this node is a button or input[type=submit] (S-79)
             let mut is_btn_or_submit = false;
             let mut label_text = String::new();
@@ -352,7 +359,7 @@ pub fn build_display_list(
                 // TODO(spec): render input value/placeholder/caret
             }
 
-            {
+            if !node_hidden {
                 // spec: if node has background-color -> SolidRect
                 if let Some(CssValue::Color(color)) = style.get("background-color") {
                     // TODO(spec): border/images/gradients/rasterization
@@ -591,7 +598,7 @@ pub fn build_display_list(
                 }
             }
 
-            if let Some(item) = btn_label_item {
+            if !node_hidden && let Some(item) = btn_label_item {
                 items.push(item);
             }
         }
@@ -2098,5 +2105,152 @@ mod tests {
             text_idx,
             bg_idx
         );
+    }
+
+    #[test]
+    fn test_paint_visibility_hidden() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let text = dom.create_node(NodeData::Text("hidden text".into()));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { visibility: hidden; background-color: #ff0000; border: 1px solid #00ff00; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Since parent is hidden and child inherits hidden, no SolidRect or Text should be emitted
+        for item in &items {
+            match item {
+                DisplayItem::SolidRect { .. } => {
+                    panic!("Should not paint any SolidRect for hidden elements");
+                }
+                DisplayItem::Text { .. } => {
+                    panic!("Should not paint any Text for hidden elements");
+                }
+                _ => {}
+            }
+        }
+        assert!(items.is_empty(), "Display list should be empty");
+    }
+
+    #[test]
+    fn test_paint_visibility_hidden_visible_child() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, span);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { visibility: hidden; background-color: #ff0000; }
+            span { visibility: visible; background-color: #0000ff; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_blue = false;
+        for item in &items {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                if *color == Color::Rgba(255, 0, 0, 255) {
+                    panic!("Should not paint red background for hidden parent div");
+                }
+                if *color == Color::Rgba(0, 0, 255, 255) {
+                    found_blue = true;
+                }
+            }
+        }
+        assert!(
+            found_blue,
+            "Should paint blue background for visible child span"
+        );
+    }
+
+    #[test]
+    fn test_paint_visibility_visible_regression() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let text = dom.create_node(NodeData::Text("visible text".into()));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { visibility: visible; background-color: #ff0000; color: #0000ff; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_rect = false;
+        let mut text_fragments = Vec::new();
+
+        for item in &items {
+            match item {
+                DisplayItem::SolidRect { color, .. } => {
+                    if *color == Color::Rgba(255, 0, 0, 255) {
+                        found_rect = true;
+                    }
+                }
+                DisplayItem::Text { text, color, .. } if *color == Color::Rgba(0, 0, 255, 255) => {
+                    text_fragments.push(text.clone());
+                }
+                _ => {}
+            }
+        }
+
+        assert!(found_rect, "Should paint background for visible div");
+        assert_eq!(text_fragments.concat(), "visible text");
     }
 }
