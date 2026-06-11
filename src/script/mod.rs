@@ -1204,6 +1204,19 @@ impl BoaHost {
                 document.removeEventListener = bridge.removeEventListener;
                 document.dispatchEvent = bridge.dispatchEvent;
 
+                window.addEventListener = bridge.addEventListener;
+                window.removeEventListener = bridge.removeEventListener;
+                window.dispatchEvent = bridge.dispatchEvent;
+
+                document.__readyState__ = 'loading';
+                Object.defineProperty(document, 'readyState', {
+                    get() {
+                        return this.__readyState__ || 'loading';
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
                 Object.defineProperty(document, 'parentNode', {
                     get() {
                         return getOrCreateNode(bridge.parentNode(this.__key__));
@@ -1655,6 +1668,160 @@ impl BoaHost {
         });
 
         res
+    }
+
+    fn dispatch_single_lifecycle_event(
+        &mut self,
+        target: &JsValue,
+        event_type: &str,
+    ) -> Result<(), ScriptError> {
+        let global = self.context.global_object().clone();
+        let event_constructor = global
+            .get(JsString::from("Event"), &mut self.context)
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+        let event_constructor_obj = event_constructor
+            .as_object()
+            .ok_or_else(|| ScriptError::Runtime("Event constructor not found".to_string()))?;
+        let event_obj = event_constructor_obj
+            .construct(
+                &[JsValue::from(JsString::from(event_type))],
+                None,
+                &mut self.context,
+            )
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+
+        let event_js_val = JsValue::from(event_obj.clone());
+
+        let mut listeners_to_call = Vec::new();
+        if let Some(target_obj) = target.as_object() {
+            let events_prop = JsString::from("__events__");
+            if let Ok(events_val) = target_obj.get(events_prop, &mut self.context)
+                && let Some(events_obj) = events_val.as_object()
+            {
+                let type_prop = JsString::from(event_type);
+                if let Ok(handlers_val) = events_obj.get(type_prop, &mut self.context)
+                    && let Some(handlers_obj) = handlers_val.as_object()
+                    && let Ok(length_val) =
+                        handlers_obj.get(JsString::from("length"), &mut self.context)
+                {
+                    let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+                    for i in 0..length {
+                        if let Ok(handler) = handlers_obj.get(i, &mut self.context) {
+                            listeners_to_call.push(handler);
+                        }
+                    }
+                }
+            }
+        }
+
+        for listener in listeners_to_call {
+            if let Some(event) = event_obj.downcast_ref::<event::Event>() {
+                *event.target.borrow_mut() = Some(target.clone());
+                *event.current_target.borrow_mut() = Some(target.clone());
+            }
+
+            if let Some(callable) = listener.as_object() {
+                let res = if callable.is_callable() {
+                    callable.call(
+                        target,
+                        std::slice::from_ref(&event_js_val),
+                        &mut self.context,
+                    )
+                } else if let Ok(handle_event_val) =
+                    callable.get(JsString::from("handleEvent"), &mut self.context)
+                    && let Some(handle_event_callable) = handle_event_val.as_object()
+                    && handle_event_callable.is_callable()
+                {
+                    handle_event_callable.call(
+                        &listener,
+                        std::slice::from_ref(&event_js_val),
+                        &mut self.context,
+                    )
+                } else {
+                    Ok(JsValue::undefined())
+                };
+
+                if let Err(err) = res {
+                    eprintln!(
+                        "Error in lifecycle listener for event {}: {:?}",
+                        event_type, err
+                    );
+                }
+            }
+        }
+
+        if let Some(event) = event_obj.downcast_ref::<event::Event>() {
+            *event.current_target.borrow_mut() = None;
+        }
+
+        Ok(())
+    }
+
+    /// Transition readyState to 'complete' and dispatch DOMContentLoaded and load events.
+    pub fn dispatch_lifecycle_events(
+        &mut self,
+        dom: &mut Dom,
+        styles: &HashMap<NodeId, crate::style::ComputedStyle>,
+    ) -> Result<(), ScriptError> {
+        // 1. Swap DOM out of `dom` to place in thread-safe RefCell, set styles
+        let temp_dom = std::mem::take(dom);
+
+        CURRENT_DOM.with(|cell| {
+            let mut opt = cell.borrow_mut();
+            *opt = Some(temp_dom);
+            if let Some(d) = opt.as_ref() {
+                KEY_TO_NODE.with(|key_cell| {
+                    let mut map = key_cell.borrow_mut();
+                    map.clear();
+                    index_dom_nodes(d, &mut map);
+                });
+            }
+        });
+
+        CURRENT_STYLES.with(|cell| {
+            *cell.borrow_mut() = Some(styles.clone());
+        });
+
+        // 2. Set readyState to 'complete'. This is best-effort: any failure must NOT
+        // early-return, because `dom` has been taken out via `mem::take` above and the
+        // caller would otherwise receive an empty `Dom` (control must always reach the
+        // step-5 restore below).
+        let global = self.context.global_object().clone();
+        let document_val = match global.get(JsString::from("document"), &mut self.context) {
+            Ok(val) => val,
+            Err(_) => JsValue::undefined(),
+        };
+        if let Some(document_obj) = document_val.as_object() {
+            let _ = document_obj.set(
+                JsString::from("__readyState__"),
+                JsValue::from(JsString::from("complete")),
+                false,
+                &mut self.context,
+            );
+        }
+
+        // 3. Dispatch DOMContentLoaded at document then window
+        let _ = self.dispatch_single_lifecycle_event(&document_val, "DOMContentLoaded");
+        let window_val = JsValue::from(global.clone());
+        let _ = self.dispatch_single_lifecycle_event(&window_val, "DOMContentLoaded");
+
+        // 4. Dispatch load at document then window
+        let _ = self.dispatch_single_lifecycle_event(&document_val, "load");
+        let _ = self.dispatch_single_lifecycle_event(&window_val, "load");
+
+        // 5. Restore DOM and clear styles
+        let restored_dom = CURRENT_DOM.with(|cell| cell.borrow_mut().take());
+        if let Some(final_dom) = restored_dom {
+            *dom = final_dom;
+        }
+
+        KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
+
+        CURRENT_STYLES.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+
+        Ok(())
     }
 
     /// Dispatches an event of type `event_type` to the element with `id`.
@@ -3347,6 +3514,9 @@ pub fn run_inline_scripts(
         // spec: S-61 Any exception from a throwing script must be caught per-script and not abort the entire run.
         let _ = host.eval_with_dom_and_styles(&src, &mut dom, styles);
     }
+
+    // Fire DOM lifecycle events (DOMContentLoaded, load) and expose document.readyState after inline scripts run.
+    let _ = host.dispatch_lifecycle_events(&mut dom, styles);
 
     dom
 }
@@ -5377,5 +5547,190 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn test_lifecycle_readystate_loading_and_complete() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let script_text = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent = document.readyState;".to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mut host = BoaHost::new();
+        let script_ids = vec![script_id];
+        for id in script_ids {
+            let src = dom.text_content(id);
+            let _ =
+                host.eval_with_dom_and_styles(&src, &mut dom, &std::collections::HashMap::new());
+        }
+
+        // readyState should be 'loading' during the execution of the script
+        assert_eq!(dom.text_content(element_id), "loading");
+
+        // After all inline scripts, we run lifecycle events which transitions state to complete
+        let _ = host.dispatch_lifecycle_events(&mut dom, &std::collections::HashMap::new());
+
+        // We can query the state via host directly
+        let state_res = host.eval_with_dom("document.readyState", &mut dom).unwrap();
+        assert_eq!(state_res, "complete");
+    }
+
+    #[test]
+    fn test_lifecycle_domcontentloaded_listener() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        // Register a DOMContentLoaded listener during script execution
+        let script_text = dom.create_node(NodeData::Text(
+            r#"
+            document.addEventListener('DOMContentLoaded', () => {
+                document.getElementById('target').textContent = 'domloaded';
+            });
+            "#
+            .to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
+        assert_eq!(mutated_dom.text_content(element_id), "domloaded");
+    }
+
+    #[test]
+    fn test_lifecycle_window_load_listener() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        // Register a window load listener during script execution
+        let script_text = dom.create_node(NodeData::Text(
+            r#"
+            window.addEventListener('load', () => {
+                document.getElementById('target').textContent = 'windowloaded';
+            });
+            "#
+            .to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
+        assert_eq!(mutated_dom.text_content(element_id), "windowloaded");
+    }
+
+    #[test]
+    fn test_lifecycle_readystate_idiom() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("0".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        // The readyState idiom that registers DOMContentLoaded listener during script execution
+        // and only calls init once.
+        let script_text = dom.create_node(NodeData::Text(
+            r#"
+            let count = 0;
+            function init() {
+                count += 1;
+                document.getElementById('target').textContent = String(count);
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', init);
+            } else {
+                init();
+            }
+            "#
+            .to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
+        assert_eq!(mutated_dom.text_content(element_id), "1");
+    }
+
+    #[test]
+    fn test_lifecycle_throwing_listener_safety() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        // Register multiple listeners where first one throws but second must still run
+        let script_text = dom.create_node(NodeData::Text(
+            r#"
+            document.addEventListener('DOMContentLoaded', () => {
+                throw new Error('This should be caught safely');
+            });
+            document.addEventListener('DOMContentLoaded', () => {
+                document.getElementById('target').textContent = 'second_ran';
+            });
+            "#
+            .to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
+        assert_eq!(mutated_dom.text_content(element_id), "second_ran");
     }
 }
