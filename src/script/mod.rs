@@ -147,6 +147,16 @@ impl BoaHost {
                 2,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_remove_child),
+                JsString::from("removeChild"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_insert_before),
+                JsString::from("insertBefore"),
+                3,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_set_attribute),
                 JsString::from("setAttribute"),
                 3,
@@ -223,6 +233,21 @@ impl BoaHost {
                             }
                             bridge.appendChild(this.__key__, child.__key__);
                             return child;
+                        },
+                        removeChild(child) {
+                            if (!child || !child.__key__) {
+                                throw new TypeError("child must be a Node");
+                            }
+                            bridge.removeChild(this.__key__, child.__key__);
+                            return child;
+                        },
+                        insertBefore(newNode, refNode) {
+                            if (!newNode || !newNode.__key__) {
+                                throw new TypeError("newNode must be a Node");
+                            }
+                            const refKey = (refNode && refNode.__key__) ? refNode.__key__ : null;
+                            bridge.insertBefore(this.__key__, newNode.__key__, refKey);
+                            return newNode;
                         },
                         setAttribute(name, value) {
                             bridge.setAttribute(this.__key__, String(name), String(value));
@@ -301,6 +326,23 @@ impl BoaHost {
                     }
                     bridge.appendChild(this.__key__, child.__key__);
                     return child;
+                };
+
+                document.removeChild = function(child) {
+                    if (!child || !child.__key__) {
+                        throw new TypeError("child must be a Node");
+                    }
+                    bridge.removeChild(this.__key__, child.__key__);
+                    return child;
+                };
+
+                document.insertBefore = function(newNode, refNode) {
+                    if (!newNode || !newNode.__key__) {
+                        throw new TypeError("newNode must be a Node");
+                    }
+                    const refKey = (refNode && refNode.__key__) ? refNode.__key__ : null;
+                    bridge.insertBefore(this.__key__, newNode.__key__, refKey);
+                    return newNode;
                 };
 
                 document.addEventListener = bridge.addEventListener;
@@ -824,6 +866,84 @@ fn bridge_append_child(
         let child_id = key_to_node.get(&child_key).copied();
         if let (Some(p_id), Some(c_id)) = (parent_id, child_id) {
             dom.append_child(p_id, c_id);
+            // TODO(spec): Re-layout on mutation
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_remove_child(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let parent_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let child_key = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    with_dom(|dom, key_to_node| {
+        let parent_id = key_to_node.get(&parent_key).copied();
+        let child_id = key_to_node.get(&child_key).copied();
+        if let (Some(p_id), Some(c_id)) = (parent_id, child_id) {
+            dom.remove_child(p_id, c_id);
+            // TODO(spec): Re-layout on mutation
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_insert_before(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let parent_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let child_key = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let reference_key = if let Some(arg) = args.get(2) {
+        if arg.is_null() || arg.is_undefined() {
+            None
+        } else {
+            let key_str = arg.to_string(context)?.to_std_string().unwrap_or_default();
+            if key_str.is_empty() {
+                None
+            } else {
+                Some(key_str)
+            }
+        }
+    } else {
+        None
+    };
+
+    with_dom(|dom, key_to_node| {
+        let parent_id = key_to_node.get(&parent_key).copied();
+        let child_id = key_to_node.get(&child_key).copied();
+        let reference_id = match reference_key {
+            Some(ref r_key) => key_to_node.get(r_key).copied(),
+            None => None,
+        };
+
+        if let (Some(p_id), Some(c_id)) = (parent_id, child_id) {
+            dom.insert_before(p_id, c_id, reference_id);
             // TODO(spec): Re-layout on mutation
         }
     })?;
@@ -1509,6 +1629,50 @@ mod tests {
         let root_children = dom.children(dom.document());
         let child_id = root_children[0];
         assert_eq!(dom.text_content(child_id), "Updated content!");
+    }
+
+    #[test]
+    fn test_dom_write_insert_before_and_remove_child() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let parent = document.createElement('div');
+            document.appendChild(parent);
+            
+            let c1 = document.createElement('span');
+            c1.textContent = 'one';
+            parent.appendChild(c1);
+            
+            let c2 = document.createElement('span');
+            c2.textContent = 'two';
+            parent.appendChild(c2);
+            
+            // 1. Insert 'inserted' before c2
+            let new_child = document.createElement('span');
+            new_child.textContent = 'inserted';
+            parent.insertBefore(new_child, c2);
+            
+            // 2. Insert 'last' before null
+            let last_child = document.createElement('span');
+            last_child.textContent = 'last';
+            parent.insertBefore(last_child, null);
+            
+            // 3. Remove c1
+            parent.removeChild(c1);
+        ";
+        assert!(host.eval_with_dom(script, &mut dom).is_ok());
+
+        // Check DOM state from Rust side
+        let doc_children = dom.children(dom.document());
+        assert_eq!(doc_children.len(), 1);
+        let parent_id = doc_children[0];
+        let parent_children = dom.children(parent_id);
+        assert_eq!(parent_children.len(), 3);
+
+        assert_eq!(dom.text_content(parent_children[0]), "inserted");
+        assert_eq!(dom.text_content(parent_children[1]), "two");
+        assert_eq!(dom.text_content(parent_children[2]), "last");
     }
 
     #[test]
