@@ -113,13 +113,15 @@ pub fn layout_inline_run(
     offset_y: f32,
     depth: usize,
     text_align: &str,
+    text_indent: f32,
 ) -> (Vec<LayoutBox>, f32) {
     let font = crate::font::BitmapFont::builtin();
     let line_height = font.line_height() as f32;
 
     let mut line_boxes = Vec::new();
     let mut current_line_children = Vec::new();
-    let mut cursor_x = 0.0;
+    // TODO(spec): text-indent interaction with text-align (center/right/justify) and RTL, and percentage text-indent resolution, are out of scope; only length values shift the first-line start.
+    let mut cursor_x = text_indent;
     let mut cursor_y = 0.0;
     let mut current_line_height = line_height;
 
@@ -366,6 +368,7 @@ pub fn layout_inline(
     offset_y: f32,
     depth: usize,
     text_align: &str,
+    text_indent: f32,
 ) -> (Vec<LayoutBox>, f32) {
     layout_inline_run(
         dom,
@@ -376,6 +379,7 @@ pub fn layout_inline(
         offset_y,
         depth,
         text_align,
+        text_indent,
     )
 }
 
@@ -516,7 +520,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -557,7 +561,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
         // The call must complete without stack overflow.
         let _ = line_boxes;
     }
@@ -580,7 +584,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -608,7 +612,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -636,7 +640,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -664,7 +668,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -696,7 +700,7 @@ mod tests {
         let children = dom.children(div);
         // Container width is 100px.
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 100.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 100.0, 0.0, 0.0, 0, "left", 0.0);
 
         // Since white-space is nowrap, it must be on a single line.
         assert_eq!(line_boxes.len(), 1);
@@ -732,7 +736,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         let mut leaf_texts = Vec::new();
         for line in &line_boxes {
@@ -762,7 +766,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         // Embedded newlines must produce forced line breaks.
         // "hello\nworld\n" -> segments "hello", "world", "".
@@ -796,7 +800,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         // Under pre-line:
         // - Multiple spaces collapse to one.
@@ -832,7 +836,7 @@ mod tests {
 
         let children = dom.children(div);
         let (line_boxes, _) =
-            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0);
 
         // Under normal:
         // - All spaces/newlines collapse to a single space.
@@ -843,5 +847,93 @@ mod tests {
 
         let leaf_texts = collect_leaf_texts(&line_boxes[0]);
         assert_eq!(leaf_texts, vec!["hello ", "world"]);
+    }
+
+    #[test]
+    fn test_text_indent_basic() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-indent: 40px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 40.0);
+
+        assert!(!line_boxes.is_empty());
+        let first_line = &line_boxes[0];
+        assert!(!first_line.children.is_empty());
+        let first_fragment = &first_line.children[0];
+        assert_eq!(first_fragment.rect.origin.x, 50.0);
+    }
+
+    #[test]
+    fn test_text_indent_wrapping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello world wraps completely".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-indent: 40px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 120.0, 10.0, 20.0, 0, "left", 40.0);
+
+        assert!(line_boxes.len() >= 2);
+
+        let first_line = &line_boxes[0];
+        assert!(!first_line.children.is_empty());
+        assert_eq!(first_line.children[0].rect.origin.x, 50.0);
+
+        let second_line = &line_boxes[1];
+        assert!(!second_line.children.is_empty());
+        assert_eq!(second_line.children[0].rect.origin.x, 10.0);
+    }
+
+    #[test]
+    fn test_text_indent_zero_regression() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-indent: 0px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 0.0);
+
+        assert!(!line_boxes.is_empty());
+        let first_line = &line_boxes[0];
+        assert!(!first_line.children.is_empty());
+        let first_fragment = &first_line.children[0];
+        assert_eq!(first_fragment.rect.origin.x, 10.0);
     }
 }
