@@ -243,6 +243,16 @@ impl BoaHost {
                 2,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_get_outer_html),
+                JsString::from("getOuterHTML"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_set_outer_html),
+                JsString::from("setOuterHTML"),
+                2,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_parent_node),
                 JsString::from("parentNode"),
                 1,
@@ -1029,6 +1039,19 @@ impl BoaHost {
                         set(val) {
                             if (this.nodeType !== 1) return;
                             bridge.setInnerHTML(this.__key__, String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'outerHTML', {
+                        get() {
+                            if (this.nodeType !== 1) return undefined;
+                            return bridge.getOuterHTML(this.__key__);
+                        },
+                        set(val) {
+                            if (this.nodeType !== 1) return;
+                            bridge.setOuterHTML(this.__key__, String(val));
                         },
                         enumerable: true,
                         configurable: true
@@ -2840,6 +2863,91 @@ fn bridge_set_inner_html(
                     dom.append_child(n_id, dest_child_id);
                 }
             }
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_get_outer_html(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let outer_html = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            dom.serialize(n_id)
+        } else {
+            String::new()
+        }
+    })?;
+
+    Ok(JsValue::from(JsString::from(outer_html)))
+}
+
+fn bridge_set_outer_html(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let html_val = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            let parent = match dom.parent(n_id) {
+                Some(p) => p,
+                None => {
+                    // TODO(spec): outerHTML on a parentless element is a no-op here; the HTML spec requires throwing a NoModificationAllowedError DOMException. Fragment parsing is emulated via a wrapped <body> like setInnerHTML.
+                    return;
+                }
+            };
+
+            // Parse the HTML fragment (using wrapped body).
+            let wrapped_html = format!("<body>{}</body>", html_val);
+            let temp_dom = crate::html::parse_document(crate::encoding::InputStream::from_utf8(
+                wrapped_html.as_bytes(),
+            ));
+
+            // Find the <body> element in temp_dom.
+            let body_id_opt =
+                temp_dom
+                    .descendants(temp_dom.document())
+                    .into_iter()
+                    .find(|&node_id| {
+                        if let Some(crate::dom::NodeData::Element { name, .. }) =
+                            temp_dom.data(node_id)
+                        {
+                            name == "body"
+                        } else {
+                            false
+                        }
+                    });
+
+            if let Some(body_id) = body_id_opt {
+                let temp_children = temp_dom.children(body_id).to_vec();
+                for temp_child_id in temp_children {
+                    let dest_child_id = copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom);
+                    dom.insert_before(parent, dest_child_id, Some(n_id));
+                }
+            }
+
+            dom.remove_child(parent, n_id);
         }
     })?;
 
@@ -5599,6 +5707,84 @@ mod tests {
             res6,
             Ok("<span title=\"a &quot; b &amp; c\">&lt;test&gt;</span>".to_string())
         );
+    }
+
+    #[test]
+    fn test_element_outer_html_getter_setter() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        // 1. Basic outerHTML GET on an element with known children vs innerHTML
+        let script1 = "
+            let div1 = document.createElement('div');
+            div1.setAttribute('id', 'x');
+            document.appendChild(div1);
+            div1.innerHTML = '<span>hi</span>';
+            let outer1 = div1.outerHTML;
+            let inner1 = div1.innerHTML;
+            [outer1, inner1].join('|');
+        ";
+        let res1 = host.eval_with_dom(script1, &mut dom);
+        assert_eq!(
+            res1,
+            Ok("<div id=\"x\"><span>hi</span></div>|<span>hi</span>".to_string())
+        );
+
+        // 2. SET: replacing an element via el.outerHTML = '<p>new</p>'
+        // Old element is removed, new <p>new</p> is in its place.
+        let script2 = "
+            let parent2 = document.createElement('div');
+            document.appendChild(parent2);
+            let child2 = document.createElement('span');
+            parent2.appendChild(child2);
+            child2.outerHTML = '<p>new</p>';
+            parent2.innerHTML;
+        ";
+        let res2 = host.eval_with_dom(script2, &mut dom);
+        assert_eq!(res2, Ok("<p>new</p>".to_string()));
+
+        // 3. SET multiple nodes: el.outerHTML = '<a>1</a><b>2</b>'
+        // Inserts both replacement nodes in correct order where the old element was.
+        let script3 = "
+            let parent3 = document.createElement('div');
+            document.appendChild(parent3);
+            
+            // Add some context nodes around the target element to verify relative positioning/ordering
+            let pre3 = document.createElement('pre');
+            parent3.appendChild(pre3);
+            
+            let child3 = document.createElement('span');
+            parent3.appendChild(child3);
+            
+            let post3 = document.createElement('code');
+            parent3.appendChild(post3);
+            
+            child3.outerHTML = '<a>1</a><b>2</b>';
+            parent3.innerHTML;
+        ";
+        let res3 = host.eval_with_dom(script3, &mut dom);
+        assert_eq!(
+            res3,
+            Ok("<pre></pre><a>1</a><b>2</b><code></code>".to_string())
+        );
+
+        // 4. Non-element (Text node) and/or parentless element:
+        // Setting outerHTML on text node is a no-op, get returns undefined.
+        // Setting outerHTML on parentless element is a no-op, does not crash.
+        let script4 = "
+            let textNode4 = document.createTextNode('sample');
+            let res_text_get4 = String(textNode4.outerHTML);
+            textNode4.outerHTML = '<b>failed</b>';
+            let res_text_content4 = textNode4.textContent;
+            
+            let parentless4 = document.createElement('div');
+            parentless4.outerHTML = '<a>replaced</a>';
+            let res_parentless_get4 = parentless4.outerHTML;
+            
+            [res_text_get4, res_text_content4, res_parentless_get4].join('|');
+        ";
+        let res4 = host.eval_with_dom(script4, &mut dom);
+        assert_eq!(res4, Ok("undefined|sample|<div></div>".to_string()));
     }
 
     #[test]
