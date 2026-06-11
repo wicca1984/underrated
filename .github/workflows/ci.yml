@@ -23,6 +23,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install CJK fonts (for shipping-path glyph rendering)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-ipafont-gothic fonts-wqy-zenhei
+
       # ubuntu-latest ships rustup, so avoid the flaky `curl sh.rustup.rs` install and
       # only wrap the component fetch in a retry (up to 3 attempts to ride out
       # transient GitHub/rustup network failures).
