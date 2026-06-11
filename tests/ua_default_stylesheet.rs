@@ -118,3 +118,51 @@ fn test_ua_default_stylesheet_list_indentation() {
         Some(&CssValue::Length(1.0, LengthUnit::Em))
     );
 }
+
+#[test]
+fn test_ua_default_stylesheet_th() {
+    let base_url = underrated::url::Url::parse("http://localhost/").unwrap();
+
+    struct DummyLoader;
+    impl underrated::loader::ResourceLoader for DummyLoader {
+        fn load(
+            &self,
+            _url: &underrated::url::Url,
+        ) -> Result<Vec<u8>, underrated::loader::LoadError> {
+            Err(underrated::loader::LoadError::NotFound)
+        }
+        fn load_request(
+            &self,
+            _url: &underrated::url::Url,
+            _method: underrated::loader::HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> {
+            Err(underrated::loader::LoadError::NotFound)
+        }
+    }
+
+    let html = "<table><tr><th>Header</th></tr></table>";
+    let page = underrated::engine::render_page(html, &base_url, &DummyLoader, 800.0);
+
+    let doc = page.dom.document();
+    let mut th_style = None;
+    for id in page.dom.descendants(doc) {
+        if let Some(underrated::dom::NodeData::Element { name, .. }) = page.dom.data(id)
+            && name == "th"
+        {
+            th_style = page.styles.get(&id);
+            break;
+        }
+    }
+
+    let th_s = th_style.expect("th should have styles");
+    assert_eq!(
+        th_s.get("font-weight"),
+        Some(&CssValue::Keyword("bold".to_string()))
+    );
+    assert_eq!(
+        th_s.get("text-align"),
+        Some(&CssValue::Keyword("center".to_string()))
+    );
+}
