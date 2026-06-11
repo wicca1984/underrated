@@ -138,7 +138,18 @@ pub fn layout_inline_run(
             match data {
                 NodeData::Text(text) => {
                     let collapsed = collapse_whitespace(text);
-                    let words = collapsed.split_inclusive(' ');
+                    let transformed = if let Some(style) = styles.get(&node) {
+                        if let Some(crate::css::values::CssValue::Keyword(kw)) =
+                            style.get("text-transform")
+                        {
+                            apply_text_transform(&collapsed, &kw.to_ascii_lowercase())
+                        } else {
+                            collapsed
+                        }
+                    } else {
+                        collapsed
+                    };
+                    let words = transformed.split_inclusive(' ');
 
                     for word in words {
                         // Measure the word with the font's measure helper.
@@ -339,6 +350,31 @@ fn collapse_whitespace(s: &str) -> String {
     result
 }
 
+fn apply_text_transform(s: &str, kind: &str) -> String {
+    // TODO(spec): Simplified capitalization logic. For full Unicode word-boundary nuance, a more complex boundary analysis is required.
+    match kind {
+        "uppercase" => s.to_uppercase(),
+        "lowercase" => s.to_lowercase(),
+        "capitalize" => {
+            let mut result = String::with_capacity(s.len());
+            let mut capitalize_next = true;
+            for c in s.chars() {
+                if c == ' ' {
+                    result.push(c);
+                    capitalize_next = true;
+                } else if capitalize_next {
+                    result.extend(c.to_uppercase());
+                    capitalize_next = false;
+                } else {
+                    result.push(c);
+                }
+            }
+            result
+        }
+        _ => s.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,5 +472,117 @@ mod tests {
             layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
         // The call must complete without stack overflow.
         let _ = line_boxes;
+    }
+
+    #[test]
+    fn test_text_transform_uppercase() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-transform: uppercase; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        assert_eq!(leaf_texts, vec!["HELLO ", "WORLD"]);
+    }
+
+    #[test]
+    fn test_text_transform_lowercase() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("HELLO World".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-transform: lowercase; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        assert_eq!(leaf_texts, vec!["hello ", "world"]);
+    }
+
+    #[test]
+    fn test_text_transform_capitalize() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-transform: capitalize; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        assert_eq!(leaf_texts, vec!["Hello ", "World"]);
+    }
+
+    #[test]
+    fn test_text_transform_none() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello world".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-transform: none; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 800.0, 0.0, 0.0, 0, "left");
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        assert_eq!(leaf_texts, vec!["hello ", "world"]);
     }
 }
