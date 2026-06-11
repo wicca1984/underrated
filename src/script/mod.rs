@@ -203,6 +203,21 @@ impl BoaHost {
                 2,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_remove_attribute),
+                JsString::from("removeAttribute"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_toggle_attribute),
+                JsString::from("toggleAttribute"),
+                3,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_get_attribute_names),
+                JsString::from("getAttributeNames"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_get_text_content),
                 JsString::from("getTextContent"),
                 1,
@@ -550,6 +565,19 @@ impl BoaHost {
                         },
                         hasAttribute(name) {
                             return bridge.hasAttribute(this.__key__, String(name));
+                        },
+                        removeAttribute(name) {
+                            bridge.removeAttribute(this.__key__, String(name));
+                        },
+                        toggleAttribute(name, force) {
+                            if (arguments.length >= 2) {
+                                return bridge.toggleAttribute(this.__key__, String(name), Boolean(force));
+                            } else {
+                                return bridge.toggleAttribute(this.__key__, String(name));
+                            }
+                        },
+                        getAttributeNames() {
+                            return bridge.getAttributeNames(this.__key__);
                         }
                     };
 
@@ -1598,6 +1626,125 @@ fn bridge_get_attribute(
     } else {
         Ok(JsValue::null())
     }
+}
+
+fn bridge_remove_attribute(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let attr_name = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            dom.remove_attribute(n_id, &attr_name);
+            // TODO(spec): Re-layout on mutation
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_toggle_attribute(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let attr_name = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    // If force argument is provided:
+    let force = args.get(2).map(|arg| arg.to_boolean());
+
+    let result = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            let present = dom.get_attribute(n_id, &attr_name).is_some();
+            let should_be_present = match force {
+                Some(f) => f,
+                None => !present,
+            };
+
+            if should_be_present {
+                if !present {
+                    dom.set_attribute(n_id, &attr_name, "");
+                }
+                true
+            } else {
+                if present {
+                    dom.remove_attribute(n_id, &attr_name);
+                }
+                false
+            }
+        } else {
+            false
+        }
+    })?;
+
+    Ok(JsValue::from(result))
+}
+
+fn bridge_get_attribute_names(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let attr_names = with_dom(|dom, key_to_node| {
+        let mut names = Vec::new();
+        if let Some(n_id) = key_to_node.get(&node_key).copied()
+            && let Some(NodeData::Element { attrs, .. }) = dom.data(n_id)
+        {
+            for (name, _) in attrs {
+                names.push(name.clone());
+            }
+        }
+        names
+    })?;
+
+    let array_constructor = context
+        .global_object()
+        .get(JsString::from("Array"), context)?;
+    let array_obj = array_constructor.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from("Array constructor not found")))
+    })?;
+    let array_val = array_obj.construct(&[], None, context)?;
+
+    let push_val = array_val.get(JsString::from("push"), context)?;
+    if let Some(push_fn) = push_val.as_object() {
+        for name in attr_names {
+            push_fn.call(
+                &JsValue::from(array_val.clone()),
+                &[JsValue::from(JsString::from(name))],
+                context,
+            )?;
+        }
+    }
+
+    Ok(JsValue::from(array_val))
 }
 
 fn bridge_get_text_content(
@@ -2842,6 +2989,80 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("0||2|a b|a b|a b|true|a|b|null|a|undefined|a|false||true|b|true|b|false||true|z y|false|2|p|q|hello world|2|true|SyntaxError|InvalidCharacterError".to_string())
+        );
+    }
+
+    #[test]
+    fn test_dom_write_attribute_management() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            const div = document.createElement('div');
+            div.setAttribute('id', 'test-id');
+            div.setAttribute('class', 'foo bar');
+            div.setAttribute('data-custom', 'val');
+
+            // 1. Check getAttributeNames
+            const names1 = div.getAttributeNames().join(',');
+
+            // 2. removeAttribute('class')
+            div.removeAttribute('class');
+            const has_class = div.hasAttribute('class');
+            const class_val = div.getAttribute('class');
+            const names2 = div.getAttributeNames().join(',');
+
+            // 3. removeAttribute for non-existent is no-op
+            div.removeAttribute('non-existent');
+
+            // 4. toggleAttribute(name) (no force)
+            // If absent: adds it with empty value
+            const t1 = div.toggleAttribute('class'); // should return true
+            const has_class_now = div.hasAttribute('class');
+            const class_val_now = div.getAttribute('class');
+
+            // If present: removes it
+            const t2 = div.toggleAttribute('class'); // should return false
+            const has_class_now2 = div.hasAttribute('class');
+
+            // 5. toggleAttribute(name, force)
+            // force = true, absent -> adds empty value, returns true
+            const t3 = div.toggleAttribute('class', true); // should return true
+            const class_val_t3 = div.getAttribute('class');
+
+            // force = true, present -> no-op, returns true
+            const t4 = div.toggleAttribute('class', true); // should return true
+            
+            // force = false, present -> removes, returns false
+            const t5 = div.toggleAttribute('class', false); // should return false
+            const has_class_t5 = div.hasAttribute('class');
+
+            // force = false, absent -> no-op, returns false
+            const t6 = div.toggleAttribute('class', false); // should return false
+
+            [
+                names1,
+                has_class,
+                class_val,
+                names2,
+                t1,
+                has_class_now,
+                class_val_now,
+                t2,
+                has_class_now2,
+                t3,
+                class_val_t3,
+                t4,
+                t5,
+                has_class_t5,
+                t6
+            ].map(String).join('|');
+        ";
+
+        let expected = "id,class,data-custom|false|null|id,data-custom|true|true||false|false|true||true|false|false|false";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok(expected.to_string())
         );
     }
 
