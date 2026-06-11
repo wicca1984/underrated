@@ -81,6 +81,20 @@ fn find_color(value: &CssValue) -> Option<Color> {
     }
 }
 
+/// Helper to recursively flatten a CSS value into leaf values.
+fn flatten_value<'a>(value: &'a CssValue, leaves: &mut Vec<&'a CssValue>) {
+    match value {
+        CssValue::Multiple(values) => {
+            for v in values {
+                flatten_value(v, leaves);
+            }
+        }
+        _ => {
+            leaves.push(value);
+        }
+    }
+}
+
 /// Helper to resolve the general border color of an element style,
 /// with fallbacks to shorthand `border`, computed text `color`, and finally black.
 /// spec: S-39
@@ -426,6 +440,87 @@ pub fn build_display_list(
             }
 
             if !node_hidden {
+                // Paint box-shadow if present
+                if let Some(box_shadow_val) = style.get("box-shadow") {
+                    // Flatten values to check for none, inset, or comma
+                    let mut leaves = Vec::new();
+                    flatten_value(box_shadow_val, &mut leaves);
+
+                    let mut has_inset = false;
+                    let mut has_none = false;
+                    let mut has_comma = false;
+                    for leaf in &leaves {
+                        if let CssValue::Keyword(kw) = leaf {
+                            let kw_lower = kw.to_ascii_lowercase();
+                            if kw_lower == "inset" {
+                                has_inset = true;
+                            } else if kw_lower == "none" {
+                                has_none = true;
+                            } else if kw_lower == "," {
+                                has_comma = true;
+                            }
+                        }
+                    }
+
+                    if leaves.is_empty() || has_none || has_inset || has_comma {
+                        // TODO(spec): box-shadow v1 — single outer shadow, offset-only (blur/spread ignored, inset & multiple shadows out of scope).
+                    } else {
+                        // Parse lengths and colors
+                        let mut length_values = Vec::new();
+                        let mut color_value = None;
+
+                        for leaf in &leaves {
+                            match leaf {
+                                CssValue::Length(v, _) => {
+                                    length_values.push(*v);
+                                }
+                                CssValue::Number(v) => {
+                                    length_values.push(*v);
+                                }
+                                CssValue::Color(c) => {
+                                    color_value = Some(c.clone());
+                                }
+                                _ => {
+                                    if let Some(c) = find_color(leaf) {
+                                        color_value = Some(c);
+                                    }
+                                }
+                            }
+                        }
+
+                        if length_values.len() >= 2 {
+                            let offset_x = length_values[0];
+                            let offset_y = length_values[1];
+
+                            // Determine shadow color: default to text color, falling back to black
+                            let shadow_color = if let Some(c) = color_value {
+                                c
+                            } else if let Some(val) = style.get("color")
+                                && let Some(c) = find_color(val)
+                            {
+                                c
+                            } else {
+                                Color::Rgba(0, 0, 0, 255)
+                            };
+
+                            // Only paint shadow if the border box is valid (has positive dimensions)
+                            if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0
+                            {
+                                // Translate the border-box rect by offset-x, offset-y
+                                let mut shadow_rect = layout_box.rect;
+                                shadow_rect.origin.x += offset_x;
+                                shadow_rect.origin.y += offset_y;
+
+                                items.push(DisplayItem::SolidRect {
+                                    rect: shadow_rect,
+                                    color: scale_color_alpha(&shadow_color, effective_opacity),
+                                });
+                            }
+                            // TODO(spec): box-shadow v1 — single outer shadow, offset-only (blur/spread ignored, inset & multiple shadows out of scope).
+                        }
+                    }
+                }
+
                 // spec: if node has background-color -> SolidRect
                 if let Some(CssValue::Color(color)) = style.get("background-color") {
                     // B-4: do not paint background for zero/negative-area boxes
@@ -3037,6 +3132,108 @@ mod tests {
         assert!(
             found_blue,
             "Should emit exactly one SolidRect for normal box (blue background)"
+        );
+    }
+
+    #[test]
+    fn test_box_shadow_emits_offset_rect() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div_shadow = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "shadowed".into())],
+        });
+        dom.append_child(body, div_shadow);
+
+        let div_normal = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "normal".into())],
+        });
+        dom.append_child(body, div_normal);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .shadowed { width: 100px; height: 50px; background-color: rgb(0, 255, 0); box-shadow: 5px 5px #ff0000; }
+            .normal { width: 100px; height: 50px; background-color: rgb(0, 0, 255); box-shadow: none; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Verify shadow rect and background rect ordering
+        let mut shadow_idx = None;
+        let mut bg_idx = None;
+        let mut shadow_rect_found = None;
+        let mut bg_rect_found = None;
+
+        for (idx, item) in items.iter().enumerate() {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                if *color == Color::Rgba(255, 0, 0, 255) {
+                    shadow_idx = Some(idx);
+                    shadow_rect_found = Some(*rect);
+                } else if *color == Color::Rgba(0, 255, 0, 255) {
+                    bg_idx = Some(idx);
+                    bg_rect_found = Some(*rect);
+                }
+            }
+        }
+
+        let s_idx = shadow_idx.expect("Should find red shadow SolidRect");
+        let b_idx = bg_idx.expect("Should find green background SolidRect");
+        let s_rect = shadow_rect_found.expect("Should find red shadow rect");
+        let b_rect = bg_rect_found.expect("Should find green background rect");
+
+        // The shadow SolidRect must be ordered BEFORE the background rect
+        assert!(
+            s_idx < b_idx,
+            "Shadow rect must be painted before background rect"
+        );
+
+        // Shadow origin is offset by (5,5) relative to the box's border-box (the background rect)
+        assert_eq!(
+            s_rect.origin.x,
+            b_rect.origin.x + 5.0,
+            "Shadow X origin should be offset by 5px"
+        );
+        assert_eq!(
+            s_rect.origin.y,
+            b_rect.origin.y + 5.0,
+            "Shadow Y origin should be offset by 5px"
+        );
+
+        // Shadow size equals the border-box size (background rect size)
+        assert_eq!(
+            s_rect.size.width, b_rect.size.width,
+            "Shadow width should match background width"
+        );
+        assert_eq!(
+            s_rect.size.height, b_rect.size.height,
+            "Shadow height should match background height"
+        );
+
+        // Assert box-shadow: none (or absent) emits no red or extra shadow rect (there should be only one red rect in total)
+        let red_rect_count = items
+            .iter()
+            .filter(|item| {
+                if let DisplayItem::SolidRect { color, .. } = item {
+                    *color == Color::Rgba(255, 0, 0, 255)
+                } else {
+                    false
+                }
+            })
+            .count();
+        assert_eq!(
+            red_rect_count, 1,
+            "There should be exactly one red shadow rect emitted in total"
         );
     }
 }
