@@ -97,6 +97,7 @@ thread_local! {
     static CURRENT_DOM: RefCell<Option<Dom>> = const { RefCell::new(None) };
     static KEY_TO_NODE: RefCell<HashMap<String, NodeId>> = RefCell::new(HashMap::new());
     static CURRENT_STYLES: RefCell<Option<HashMap<NodeId, crate::style::ComputedStyle>>> = const { RefCell::new(None) };
+    static PENDING_NAVIGATION: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 impl BoaHost {
@@ -435,6 +436,12 @@ impl BoaHost {
         let _ =
             context.register_global_property(JsString::from("window"), global, Attribute::all());
 
+        let _ = context.register_global_builtin_callable(
+            JsString::from("__request_navigation__"),
+            1,
+            NativeFunction::from_fn_ptr(request_navigation),
+        );
+
         // Evaluate the JS wrapper code to build the dynamic DOM API.
         // spec: https://dom.spec.whatwg.org/#dom-document-createelement
         // spec: https://dom.spec.whatwg.org/#dom-node-appendchild
@@ -471,16 +478,16 @@ impl BoaHost {
                     get origin() { return window.__document_location__.origin; },
 
                     set href(val) {
-                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                        __request_navigation__(String(val));
                     },
                     assign(url) {
-                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                        __request_navigation__(String(url));
                     },
                     replace(url) {
-                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                        __request_navigation__(String(url));
                     },
                     reload() {
-                        // TODO(spec): wire location assignment to navigation pipeline (follow-up)
+                        __request_navigation__(window.__document_location__.href);
                     },
 
                     toString() {
@@ -1943,6 +1950,16 @@ impl BoaHost {
         }
     }
 
+    /// Returns the most recently requested pending navigation URL string, if any,
+    /// and clears the slot so it won't be returned again.
+    ///
+    /// The engine post-eval will consume this pending navigation to drive navigation.
+    ///
+    /// // TODO(spec): noting the engine-side wiring (engine::navigate) is a follow-up task and that relative URLs are resolved engine-side, not here.
+    pub fn take_pending_navigation(&mut self) -> Option<String> {
+        PENDING_NAVIGATION.with(|cell| cell.borrow_mut().take())
+    }
+
     /// Evaluates the given script with the provided DOM context.
     ///
     /// Exposes a read-write `document` object to the script enabling DOM mutations.
@@ -2418,6 +2435,22 @@ where
             ))))
         }
     })
+}
+
+fn request_navigation(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let url = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    PENDING_NAVIGATION.with(|cell| {
+        *cell.borrow_mut() = Some(url);
+    });
+    Ok(JsValue::undefined())
 }
 
 fn bridge_create_element(
@@ -7227,6 +7260,55 @@ mod tests {
                 "if (window.location.origin !== 'http://example.org') throw 'origin mismatch';"
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_location_navigation() {
+        let mut host = BoaHost::new();
+        host.set_document_url("https://example.com/initial");
+
+        // 1. With NO assignment, take_pending_navigation() returns None
+        assert_eq!(host.take_pending_navigation(), None);
+
+        // 2. Assigning window.location.href
+        assert!(
+            host.eval("window.location.href = 'https://example.com/next'")
+                .is_ok()
+        );
+        assert_eq!(
+            host.take_pending_navigation().as_deref(),
+            Some("https://example.com/next")
+        );
+
+        // 3. A second call to take_pending_navigation() returns None (slot is cleared after taking)
+        assert_eq!(host.take_pending_navigation(), None);
+
+        // 4. location.assign('/foo')
+        assert!(host.eval("location.assign('/foo')").is_ok());
+        assert_eq!(host.take_pending_navigation().as_deref(), Some("/foo"));
+
+        // 5. location.replace('/bar')
+        assert!(host.eval("location.replace('/bar')").is_ok());
+        assert_eq!(host.take_pending_navigation().as_deref(), Some("/bar"));
+
+        // 6. location.reload() records current document location href
+        assert!(host.eval("location.reload()").is_ok());
+        assert_eq!(
+            host.take_pending_navigation().as_deref(),
+            Some("https://example.com/initial")
+        );
+
+        // 7. location getters still work (href/pathname unchanged) — do not regress existing test_location_initialized
+        assert!(
+            host.eval(
+                "if (window.location.href !== 'https://example.com/initial') throw 'href mismatch';"
+            )
+            .is_ok()
+        );
+        assert!(
+            host.eval("if (window.location.pathname !== '/initial') throw 'pathname mismatch';")
+                .is_ok()
         );
     }
 
