@@ -19,7 +19,7 @@ pub struct Page {
 pub const UA_DEFAULT_CSS: &str = "\
 html, body { background: #fff; background-color: #fff; color: #000; }\n\
 body { margin: 8px; }\n\
-div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article { display: block; }\n\
+div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article, figure, figcaption { display: block; }\n\
 p { margin-top: 1em; margin-bottom: 1em; }\n\
 h1 { margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }\n\
 h2 { margin-top: 0.83em; margin-bottom: 0.83em; font-weight: bold; }\n\
@@ -27,6 +27,7 @@ h3 { margin-top: 1em; margin-bottom: 1em; font-weight: bold; }\n\
 h4 { margin-top: 1.33em; margin-bottom: 1.33em; font-weight: bold; }\n\
 h5 { margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold; }\n\
 h6 { margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold; }\n\
+figure { margin: 1em 40px; }\n\
 ul, ol { margin: 1em 0; padding-left: 40px; }\n\
 a { color: #0000ee; text-decoration: underline; }\n\
 b, strong { font-weight: bold; }\n\
@@ -1046,6 +1047,67 @@ mod tests {
         } else {
             panic!("Expected white background color for body");
         }
+    }
+
+    #[test]
+    fn test_ua_default_stylesheet_figure() {
+        let html = "<html><body><figure><img src=\"x\"><figcaption>Cap</figcaption></figure></body></html>";
+        let page = render_html_for_test(html, 800.0);
+
+        let doc = page.dom.document();
+        let mut figure_style = None;
+        let mut figcaption_style = None;
+
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(id) {
+                match name.as_str() {
+                    "figure" => figure_style = page.styles.get(&id),
+                    "figcaption" => figcaption_style = page.styles.get(&id),
+                    _ => {}
+                }
+            }
+        }
+
+        let fig_s = figure_style.expect("figure should have styles");
+        assert_eq!(
+            fig_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
+        // figure should have margin-top/margin-bottom = 1em and margin-left/margin-right = 40px
+        assert_eq!(
+            fig_s.get("margin-top"),
+            Some(&crate::css::values::CssValue::Length(
+                1.0,
+                crate::css::values::LengthUnit::Em
+            ))
+        );
+        assert_eq!(
+            fig_s.get("margin-bottom"),
+            Some(&crate::css::values::CssValue::Length(
+                1.0,
+                crate::css::values::LengthUnit::Em
+            ))
+        );
+        assert_eq!(
+            fig_s.get("margin-left"),
+            Some(&crate::css::values::CssValue::Length(
+                40.0,
+                crate::css::values::LengthUnit::Px
+            ))
+        );
+        assert_eq!(
+            fig_s.get("margin-right"),
+            Some(&crate::css::values::CssValue::Length(
+                40.0,
+                crate::css::values::LengthUnit::Px
+            ))
+        );
+
+        let figcap_s = figcaption_style.expect("figcaption should have styles");
+        assert_eq!(
+            figcap_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
+        );
     }
 
     #[test]
