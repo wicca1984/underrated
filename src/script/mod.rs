@@ -1094,6 +1094,38 @@ impl BoaHost {
                     }
                 }
 
+                function normalizeHelper(node) {
+                    if (!node) return;
+                    const kids = node.childNodes;
+                    if (!kids) return;
+                    let i = 0;
+                    while (i < kids.length) {
+                        const child = kids[i];
+                        if (child.nodeType === 3) { // TEXT_NODE
+                            let text = String(child.textContent || '');
+                            let j = i + 1;
+                            while (j < kids.length && kids[j].nodeType === 3) {
+                                text += String(kids[j].textContent || '');
+                                j++;
+                            }
+                            for (let k = i + 1; k < j; k++) {
+                                node.removeChild(kids[k]);
+                            }
+                            if (text.length === 0) {
+                                node.removeChild(child);
+                            } else {
+                                const newText = document.createTextNode(text);
+                                node.replaceChild(newText, child);
+                            }
+                            // TODO(spec): Node.normalize() should also handle CDATASection nodes (nodeType === 4) as text nodes, but this engine does not expose them.
+                            i = j;
+                        } else {
+                            normalizeHelper(child);
+                            i++;
+                        }
+                    }
+                }
+
                 function getOrCreateNode(key) {
                     if (!key) return null;
                     if (registry[key]) {
@@ -1345,6 +1377,10 @@ impl BoaHost {
                     Object.defineProperty(node, 'DOCUMENT_POSITION_CONTAINS', { value: 8, enumerable: true });
                     Object.defineProperty(node, 'DOCUMENT_POSITION_CONTAINED_BY', { value: 16, enumerable: true });
                     Object.defineProperty(node, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
+
+                    node.normalize = function() {
+                        normalizeHelper(this);
+                    };
 
                     Object.defineProperty(node, 'childNodes', {
                         get() {
@@ -1752,6 +1788,10 @@ impl BoaHost {
                 Object.defineProperty(document, 'DOCUMENT_POSITION_CONTAINS', { value: 8, enumerable: true });
                 Object.defineProperty(document, 'DOCUMENT_POSITION_CONTAINED_BY', { value: 16, enumerable: true });
                 Object.defineProperty(document, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
+
+                document.normalize = function() {
+                    normalizeHelper(this);
+                };
 
                 Object.defineProperty(document, 'childNodes', {
                     get() {
@@ -7796,5 +7836,76 @@ mod tests {
 
         let res = host.eval_with_dom(setup_script, &mut dom).unwrap();
         assert_eq!(res, "zpreapostbcase|true");
+    }
+
+    #[test]
+    fn test_node_normalize() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let setup_script = r#"
+            let container = document.createElement('div');
+            document.appendChild(container);
+
+            // 1. Test basic adjacent text node merging
+            let t1 = document.createTextNode('hello ');
+            let t2 = document.createTextNode('world');
+            container.appendChild(t1);
+            container.appendChild(t2);
+
+            let initial_len = container.childNodes.length; // 2
+            container.normalize();
+            let after_len = container.childNodes.length; // 1
+            let merged_text = container.childNodes[0].textContent; // "hello world"
+
+            // 2. Test empty text node removal
+            let empty_container = document.createElement('div');
+            document.appendChild(empty_container);
+            let t_empty = document.createTextNode('');
+            empty_container.appendChild(t_empty);
+            let initial_empty_len = empty_container.childNodes.length; // 1
+            empty_container.normalize();
+            let after_empty_len = empty_container.childNodes.length; // 0
+
+            // 3. Test nested elements recursion
+            let parent = document.createElement('div');
+            let child_elem = document.createElement('p');
+            parent.appendChild(child_elem);
+            let child_t1 = document.createTextNode('foo ');
+            let child_t2 = document.createTextNode('bar');
+            child_elem.appendChild(child_t1);
+            child_elem.appendChild(child_t2);
+
+            parent.normalize(); // Normalize on parent should recurse to child_elem
+            let child_after_len = child_elem.childNodes.length; // 1
+            let child_merged_text = child_elem.childNodes[0].textContent; // "foo bar"
+
+            // 4. Calling normalize on a text node should not throw
+            let standalone_text = document.createTextNode('abc');
+            let standalone_ok = true;
+            try {
+                standalone_text.normalize();
+            } catch (e) {
+                standalone_ok = false;
+            }
+
+            // 5. Exposing on document object
+            let doc_normalize_exists = typeof document.normalize === 'function';
+
+            [
+                initial_len,
+                after_len,
+                merged_text,
+                initial_empty_len,
+                after_empty_len,
+                child_after_len,
+                child_merged_text,
+                standalone_ok,
+                doc_normalize_exists
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(setup_script, &mut dom).unwrap();
+        assert_eq!(res, "2|1|hello world|1|0|1|foo bar|true|true");
     }
 }
