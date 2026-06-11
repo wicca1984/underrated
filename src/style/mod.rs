@@ -1296,6 +1296,7 @@ fn is_inherited_property(property: &str) -> bool {
             | "text-transform"
             | "visibility"
             | "white-space"
+            | "word-break"
             | "word-spacing"
     )
 }

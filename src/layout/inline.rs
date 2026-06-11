@@ -173,6 +173,19 @@ pub fn layout_inline_run(
                         _ => (true, false, true),
                     };
 
+                    let style_wb = if let Some(style) = styles.get(&node) {
+                        style.get("word-break")
+                    } else {
+                        None
+                    };
+
+                    let break_all = match style_wb {
+                        Some(crate::css::values::CssValue::Keyword(kw)) => {
+                            kw.as_str() == "break-all"
+                        }
+                        _ => false,
+                    };
+
                     let preprocessed = preprocess_text(text, collapse, preserve_newlines);
 
                     let transformed = if let Some(style) = styles.get(&node) {
@@ -220,52 +233,184 @@ pub fn layout_inline_run(
                             // spec: S-45, S-57
                             let word_width = font.measure(word) as f32;
 
-                            if allow_wrap
-                                && cursor_x + word_width > containing_width
-                                && cursor_x > 0.0
-                            {
-                                // Flush current line
-                                line_boxes.push(create_line_box_adjusted(
-                                    std::mem::take(&mut current_line_children),
-                                    offset_x,
-                                    offset_y + cursor_y,
-                                    cursor_x,
-                                    current_line_height,
-                                    styles,
-                                    text_align,
-                                    containing_width,
-                                    false,
-                                ));
-                                cursor_x = 0.0;
-                                cursor_y += current_line_height;
-                                current_line_height = line_height;
-                            }
+                            if allow_wrap && break_all && cursor_x + word_width > containing_width {
+                                let mut rem_word = word;
+                                while !rem_word.is_empty() {
+                                    let rem_width = font.measure(rem_word) as f32;
+                                    if cursor_x + rem_width <= containing_width {
+                                        // The remaining word fits completely on the current line!
+                                        // Push it as a LayoutBox
+                                        current_line_children.push(LayoutBox {
+                                            node: Some(node),
+                                            rect: Rect {
+                                                origin: Point {
+                                                    x: offset_x + cursor_x,
+                                                    y: offset_y + cursor_y,
+                                                },
+                                                size: Size {
+                                                    width: rem_width,
+                                                    height: line_height,
+                                                },
+                                            },
+                                            children: Vec::new(),
+                                            text: Some(rem_word.to_string()),
+                                        });
+                                        cursor_x += rem_width;
+                                        if rem_word.ends_with(" ") {
+                                            cursor_x += word_spacing;
+                                        }
+                                        break; // we are done with this word!
+                                    }
 
-                            // Skip leading whitespace on a new line (only if collapsing whitespace)
-                            if collapse && cursor_x == 0.0 && word == " " {
-                                continue;
-                            }
+                                    // It does not fit. We need to split.
+                                    // Let's find the longest prefix that fits on the current line.
+                                    // If cursor_x > 0.0, we can try to fit characters in the remaining space.
+                                    // But we must check if at least 1 character fits.
+                                    // If not even 1 character fits, we must flush first.
 
-                            // Add word to current line
-                            current_line_children.push(LayoutBox {
-                                node: Some(node),
-                                rect: Rect {
-                                    origin: Point {
-                                        x: offset_x + cursor_x,
-                                        y: offset_y + cursor_y,
+                                    // Let's find how many characters we can fit.
+                                    let mut chars_iter = rem_word.char_indices();
+                                    // Get the first character
+                                    let (first_idx, first_c) = match chars_iter.next() {
+                                        Some(val) => val,
+                                        None => break, // Should not happen since !rem_word.is_empty()
+                                    };
+                                    let first_char_end = first_idx + first_c.len_utf8();
+                                    let first_char_width =
+                                        font.measure(&rem_word[..first_char_end]) as f32;
+
+                                    if cursor_x > 0.0
+                                        && cursor_x + first_char_width > containing_width
+                                    {
+                                        // Not even the first character fits in the remaining space.
+                                        // Flush the current line.
+                                        line_boxes.push(create_line_box_adjusted(
+                                            std::mem::take(&mut current_line_children),
+                                            offset_x,
+                                            offset_y + cursor_y,
+                                            cursor_x,
+                                            current_line_height,
+                                            styles,
+                                            text_align,
+                                            containing_width,
+                                            false,
+                                        ));
+                                        cursor_x = 0.0;
+                                        cursor_y += current_line_height;
+                                        current_line_height = line_height;
+                                        // Continue loop - now cursor_x is 0.0, so the next iteration will retry with the full line.
+                                        continue;
+                                    }
+
+                                    // Now, either cursor_x == 0.0, or the first character fits.
+                                    // We want to find the maximum prefix that fits.
+                                    // We already know the first character is included.
+                                    let mut split_index = first_char_end;
+                                    let mut last_valid_width = first_char_width;
+
+                                    // Iterate through subsequent characters to see how many more fit.
+                                    for (idx, c) in chars_iter {
+                                        let candidate_end = idx + c.len_utf8();
+                                        let candidate_width =
+                                            font.measure(&rem_word[..candidate_end]) as f32;
+                                        if cursor_x + candidate_width <= containing_width {
+                                            split_index = candidate_end;
+                                            last_valid_width = candidate_width;
+                                        } else {
+                                            // Cannot fit any more characters on this line.
+                                            break;
+                                        }
+                                    }
+
+                                    // Split the word at split_index
+                                    let prefix = &rem_word[..split_index];
+                                    rem_word = &rem_word[split_index..];
+
+                                    // Push the prefix to the current line
+                                    current_line_children.push(LayoutBox {
+                                        node: Some(node),
+                                        rect: Rect {
+                                            origin: Point {
+                                                x: offset_x + cursor_x,
+                                                y: offset_y + cursor_y,
+                                            },
+                                            size: Size {
+                                                width: last_valid_width,
+                                                height: line_height,
+                                            },
+                                        },
+                                        children: Vec::new(),
+                                        text: Some(prefix.to_string()),
+                                    });
+                                    cursor_x += last_valid_width;
+                                    if prefix.ends_with(" ") {
+                                        cursor_x += word_spacing;
+                                    }
+
+                                    // Since we didn't fit the whole rem_word, we must flush the line now.
+                                    line_boxes.push(create_line_box_adjusted(
+                                        std::mem::take(&mut current_line_children),
+                                        offset_x,
+                                        offset_y + cursor_y,
+                                        cursor_x,
+                                        current_line_height,
+                                        styles,
+                                        text_align,
+                                        containing_width,
+                                        false,
+                                    ));
+                                    cursor_x = 0.0;
+                                    cursor_y += current_line_height;
+                                    current_line_height = line_height;
+                                }
+                            } else {
+                                if allow_wrap
+                                    && cursor_x + word_width > containing_width
+                                    && cursor_x > 0.0
+                                {
+                                    // Flush current line
+                                    line_boxes.push(create_line_box_adjusted(
+                                        std::mem::take(&mut current_line_children),
+                                        offset_x,
+                                        offset_y + cursor_y,
+                                        cursor_x,
+                                        current_line_height,
+                                        styles,
+                                        text_align,
+                                        containing_width,
+                                        false,
+                                    ));
+                                    cursor_x = 0.0;
+                                    cursor_y += current_line_height;
+                                    current_line_height = line_height;
+                                }
+
+                                // Skip leading whitespace on a new line (only if collapsing whitespace)
+                                if collapse && cursor_x == 0.0 && word == " " {
+                                    continue;
+                                }
+
+                                // Add word to current line
+                                current_line_children.push(LayoutBox {
+                                    node: Some(node),
+                                    rect: Rect {
+                                        origin: Point {
+                                            x: offset_x + cursor_x,
+                                            y: offset_y + cursor_y,
+                                        },
+                                        size: Size {
+                                            width: word_width,
+                                            height: line_height,
+                                        },
                                     },
-                                    size: Size {
-                                        width: word_width,
-                                        height: line_height,
-                                    },
-                                },
-                                children: Vec::new(),
-                                text: Some(word.to_string()),
-                            });
-                            cursor_x += word_width;
-                            // TODO(spec): word-spacing v1 adds a fixed advance after each word that carries a trailing space; interaction with text-align justify, percentage values, and full Unicode space-separator handling are out of scope.
-                            if word.ends_with(" ") {
-                                cursor_x += word_spacing;
+                                    children: Vec::new(),
+                                    text: Some(word.to_string()),
+                                });
+                                cursor_x += word_width;
+                                // TODO(spec): word-spacing v1 adds a fixed advance after each word that carries a trailing space; interaction with text-align justify, percentage values, and full Unicode space-separator handling are out of scope.
+                                if word.ends_with(" ") {
+                                    cursor_x += word_spacing;
+                                }
                             }
                         }
                     }
@@ -1157,5 +1302,69 @@ mod tests {
         // Position of words in justified line 2 should match left-aligned layout.
         assert_eq!(word3_j.rect.origin.x, word3_l.rect.origin.x);
         assert_eq!(word4_j.rect.origin.x, word4_l.rect.origin.x);
+    }
+
+    #[test]
+    fn test_word_break_break_all() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("abcdefghijklmnop".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { word-break: break-all; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Narrow container of 40px width (fits up to 5 chars of 8px each per line)
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 40.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+        // It must be split across multiple line boxes
+        assert!(line_boxes.len() > 1);
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+        assert_eq!(leaf_texts, vec!["abcde", "fghij", "klmno", "p"]);
+
+        // Test case 2: word-break: normal (default) on the exact same long word
+        let mut dom_normal = Dom::new();
+        let doc_normal = dom_normal.document();
+        let div_normal = dom_normal.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom_normal.append_child(doc_normal, div_normal);
+
+        let t_normal = dom_normal.create_node(NodeData::Text("abcdefghijklmnop".into()));
+        dom_normal.append_child(div_normal, t_normal);
+
+        // Normal word-break
+        let stylesheet_normal = parse_stylesheet("div { word-break: normal; }");
+        let styles_normal = compute_styles(&dom_normal, &stylesheet_normal);
+
+        let children_normal = dom_normal.children(div_normal);
+        let (line_boxes_normal, _) = layout_inline_run(
+            &dom_normal,
+            &styles_normal,
+            children_normal,
+            40.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        // Under normal word-break, single word overflows and stays on a single line
+        assert_eq!(line_boxes_normal.len(), 1);
     }
 }
