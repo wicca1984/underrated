@@ -517,6 +517,193 @@ impl BoaHost {
                 }
                 window.DOMTokenList = DOMTokenList;
 
+                function camelToKebab(str) {
+                    return str.replace(/[A-Z]/g, match => '-' + match.toLowerCase());
+                }
+
+                function parseStyleString(styleStr) {
+                    const decls = [];
+                    if (!styleStr) return decls;
+                    const parts = [];
+                    let currentPart = "";
+                    let inDoubleQuotes = false;
+                    let inSingleQuotes = false;
+                    let parenDepth = 0;
+                    for (let i = 0; i < styleStr.length; i++) {
+                        const char = styleStr[i];
+                        if (char === '"' && !inSingleQuotes) {
+                            inDoubleQuotes = !inDoubleQuotes;
+                            currentPart += char;
+                        } else if (char === "'" && !inDoubleQuotes) {
+                            inSingleQuotes = !inSingleQuotes;
+                            currentPart += char;
+                        } else if (char === '(' && !inDoubleQuotes && !inSingleQuotes) {
+                            parenDepth++;
+                            currentPart += char;
+                        } else if (char === ')' && !inDoubleQuotes && !inSingleQuotes) {
+                            if (parenDepth > 0) parenDepth--;
+                            currentPart += char;
+                        } else if (char === ';' && !inDoubleQuotes && !inSingleQuotes && parenDepth === 0) {
+                            parts.push(currentPart);
+                            currentPart = "";
+                        } else {
+                            currentPart += char;
+                        }
+                    }
+                    if (currentPart.trim() !== "") {
+                        parts.push(currentPart);
+                    }
+
+                    for (const part of parts) {
+                        const trimmed = part.trim();
+                        if (trimmed === "") continue;
+                        const colonIndex = trimmed.indexOf(":");
+                        if (colonIndex === -1) continue;
+                        const name = trimmed.substring(0, colonIndex).trim().toLowerCase();
+                        const value = trimmed.substring(colonIndex + 1).trim();
+                        if (name !== "") {
+                            decls.push({ name, value });
+                        }
+                    }
+                    return decls;
+                }
+
+                function serializeStyleDecls(decls) {
+                    return decls.map(d => `${d.name}: ${d.value}`).join('; ') + (decls.length > 0 ? ';' : '');
+                }
+
+                class CSSStyleDeclaration {
+                    constructor(element) {
+                        this.__element__ = element;
+                        return new Proxy(this, {
+                            get(target, prop, receiver) {
+                                if (prop === 'cssText') {
+                                    return target.cssText;
+                                }
+                                if (prop in target || typeof prop === 'symbol') {
+                                    const value = Reflect.get(target, prop, receiver);
+                                    if (typeof value === 'function') {
+                                        return value.bind(target);
+                                    }
+                                    return value;
+                                }
+                                if (typeof prop === 'string') {
+                                    // // TODO(spec): index getter is skipped in this minimal version
+                                    const kebab = camelToKebab(prop);
+                                    return target.getPropertyValue(kebab);
+                                }
+                                return undefined;
+                            },
+                            set(target, prop, value, receiver) {
+                                if (prop === 'cssText') {
+                                    target.cssText = value;
+                                    return true;
+                                }
+                                if (typeof prop === 'string') {
+                                    const kebab = camelToKebab(prop);
+                                    target.setProperty(kebab, value);
+                                    return true;
+                                }
+                                return Reflect.set(target, prop, value, receiver);
+                            }
+                        });
+                    }
+
+                    get cssText() {
+                        return this.__element__.getAttribute('style') || '';
+                    }
+
+                    set cssText(val) {
+                        // // TODO(spec): Shorthand expansion (margin -> margin-top/...), !important priority parsing, computed styles, and units normalization are skipped in CSSOM-lite.
+                        if (val === undefined || val === null) {
+                            val = "";
+                        }
+                        const strVal = String(val).trim();
+                        if (strVal === "") {
+                            this.__element__.removeAttribute('style');
+                        } else {
+                            this.__element__.setAttribute('style', strVal);
+                        }
+                    }
+
+                    setProperty(name, value) {
+                        // // TODO(spec): priority/!important parsing and shorthand expansion are skipped in CSSOM-lite.
+                        if (value === undefined || value === null) {
+                            value = "";
+                        }
+                        const strVal = String(value).trim();
+                        const lowerName = String(name).trim().toLowerCase();
+                        if (lowerName === "") return;
+
+                        const styleStr = this.__element__.getAttribute('style') || '';
+                        const decls = parseStyleString(styleStr);
+
+                        if (strVal === "") {
+                            const filtered = decls.filter(d => d.name !== lowerName);
+                            const newStyle = serializeStyleDecls(filtered);
+                            if (newStyle === "") {
+                                this.__element__.removeAttribute('style');
+                            } else {
+                                this.__element__.setAttribute('style', newStyle);
+                            }
+                        } else {
+                            let found = false;
+                            for (const d of decls) {
+                                if (d.name === lowerName) {
+                                    d.value = strVal;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                decls.push({ name: lowerName, value: strVal });
+                            }
+                            this.__element__.setAttribute('style', serializeStyleDecls(decls));
+                        }
+                    }
+
+                    getPropertyValue(name) {
+                        // // TODO(spec): Computed/used style resolution and units normalization are skipped in CSSOM-lite.
+                        const lowerName = String(name).trim().toLowerCase();
+                        if (lowerName === "") return "";
+                        const styleStr = this.__element__.getAttribute('style') || '';
+                        const decls = parseStyleString(styleStr);
+                        for (const d of decls) {
+                            if (d.name === lowerName) {
+                                return d.value;
+                            }
+                        }
+                        return "";
+                    }
+
+                    removeProperty(name) {
+                        // // TODO(spec): Shorthand expansion and computed style resolution are skipped in CSSOM-lite.
+                        const lowerName = String(name).trim().toLowerCase();
+                        if (lowerName === "") return "";
+                        const styleStr = this.__element__.getAttribute('style') || '';
+                        const decls = parseStyleString(styleStr);
+                        let removedValue = "";
+                        const filtered = [];
+                        for (const d of decls) {
+                            if (d.name === lowerName) {
+                                removedValue = d.value;
+                            } else {
+                                filtered.push(d);
+                            }
+                        }
+                        if (removedValue !== "") {
+                            const newStyle = serializeStyleDecls(filtered);
+                            if (newStyle === "") {
+                                this.__element__.removeAttribute('style');
+                            } else {
+                                this.__element__.setAttribute('style', newStyle);
+                            }
+                        }
+                        return removedValue;
+                    }
+                }
+                window.CSSStyleDeclaration = CSSStyleDeclaration;
+
                 function getOrCreateNode(key) {
                     if (!key) return null;
                     if (registry[key]) {
@@ -625,6 +812,17 @@ impl BoaHost {
                                 this.__classList__ = new DOMTokenList(this);
                             }
                             return this.__classList__;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'style', {
+                        get() {
+                            if (!this.__style__) {
+                                this.__style__ = new CSSStyleDeclaration(this);
+                            }
+                            return this.__style__;
                         },
                         enumerable: true,
                         configurable: true
@@ -3542,5 +3740,67 @@ mod tests {
             if (count !== 1) throw new Error('Expected count to be 1 after removing');
         "#;
         assert!(host.eval(script).is_ok());
+    }
+
+    #[test]
+    fn test_element_style() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.createElement('div');
+
+            // 1. Initially style.cssText and properties are empty
+            const r1 = el.style.cssText;
+            const r2 = el.style.color;
+
+            // 2. setProperty color
+            el.style.setProperty('color', 'red');
+            const r3 = el.style.color;
+            const r4 = el.style.getPropertyValue('color');
+            const r5 = el.getAttribute('style') || '';
+
+            // 3. camelCase mapping (backgroundColor) and setting directly
+            el.style.backgroundColor = 'blue';
+            const r6 = el.style.backgroundColor;
+            const r7 = el.style.getPropertyValue('background-color');
+            const r8 = el.getAttribute('style') || '';
+
+            // 4. cssText setting and getting
+            el.style.cssText = 'display: none; border-radius: 5px';
+            const r9 = el.style.cssText;
+            const r10 = el.style.display;
+
+            // 5. removeProperty
+            const removed = el.style.removeProperty('display');
+            const r11 = el.style.cssText;
+            const r12 = el.style.display;
+
+            // 6. setting property to empty string removes it
+            el.style.backgroundColor = '';
+            const r13 = el.style.cssText;
+
+            [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, removed, r11, r12, r13].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok("||red|red|color: red;|blue|blue|color: red; background-color: blue;|display: none; border-radius: 5px|none|none|border-radius: 5px;||border-radius: 5px;".to_string())
+        );
+
+        // Ensure robust error/garbage safety: setting null or invalid empty values shouldn't panic
+        let script_invalid = r#"
+            const el_inv = document.createElement('div');
+            el_inv.style.setProperty('', 'red');
+            el_inv.style.setProperty(null, 'blue');
+            el_inv.style.setProperty('color', null);
+            el_inv.style.cssText = null;
+            el_inv.style.cssText;
+        "#;
+        assert_eq!(
+            host.eval_with_dom(script_invalid, &mut dom),
+            Ok("".to_string())
+        );
     }
 }
