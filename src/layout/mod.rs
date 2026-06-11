@@ -193,6 +193,7 @@ pub(crate) fn layout_node(
 
     let text_align = get_text_align(dom, node, style);
     let text_indent = get_px(style, "text-indent", 0.0);
+    let word_spacing = get_px(style, "word-spacing", 0.0);
 
     let mut children = Vec::new();
     // TODO(spec): Parent-child margin collapse (collapse-through) is out of scope.
@@ -221,6 +222,7 @@ pub(crate) fn layout_node(
             depth,
             text_align,
             text_indent,
+            word_spacing,
         );
         children.extend(line_boxes);
         child_cursor_y += total_height;
@@ -306,6 +308,7 @@ pub(crate) fn layout_node(
                     depth,
                     text_align,
                     text_indent,
+                    word_spacing,
                 );
                 if !line_boxes.is_empty() {
                     let anon_box = LayoutBox {
