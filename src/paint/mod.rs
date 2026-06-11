@@ -428,11 +428,14 @@ pub fn build_display_list(
             if !node_hidden {
                 // spec: if node has background-color -> SolidRect
                 if let Some(CssValue::Color(color)) = style.get("background-color") {
-                    // TODO(spec): border/images/gradients/rasterization
-                    items.push(DisplayItem::SolidRect {
-                        rect: layout_box.rect,
-                        color: scale_color_alpha(color, effective_opacity),
-                    });
+                    // B-4: do not paint background for zero/negative-area boxes
+                    if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
+                        // TODO(spec): border/images/gradients/rasterization
+                        items.push(DisplayItem::SolidRect {
+                            rect: layout_box.rect,
+                            color: scale_color_alpha(color, effective_opacity),
+                        });
+                    }
                 }
 
                 // spec: S-39: read computed border widths
@@ -841,7 +844,7 @@ mod tests {
 
         let stylesheet = parse_stylesheet(
             "
-            div { background-color: blue; }
+            div { background-color: blue; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
@@ -2654,8 +2657,8 @@ mod tests {
 
         let stylesheet = parse_stylesheet(
             "
-            div { visibility: hidden; background-color: #ff0000; }
-            span { visibility: visible; background-color: #0000ff; }
+            div { visibility: hidden; background-color: #ff0000; height: 10px; }
+            span { visibility: visible; background-color: #0000ff; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
@@ -2750,7 +2753,7 @@ mod tests {
 
         let stylesheet = parse_stylesheet(
             "
-            div { opacity: 0.5; background-color: #ff0000; }
+            div { opacity: 0.5; background-color: #ff0000; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
@@ -2800,8 +2803,8 @@ mod tests {
 
         let stylesheet = parse_stylesheet(
             "
-            .parent { opacity: 0.5; }
-            .child { opacity: 0.5; background-color: #ff0000; }
+            .parent { opacity: 0.5; height: 10px; }
+            .child { opacity: 0.5; background-color: #ff0000; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
@@ -2854,8 +2857,8 @@ mod tests {
 
         let stylesheet = parse_stylesheet(
             "
-            .div1 { opacity: 1.0; background-color: #ff0000; }
-            .div2 { background-color: #00ff00; }
+            .div1 { opacity: 1.0; background-color: #ff0000; height: 10px; }
+            .div2 { background-color: #00ff00; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
@@ -2900,7 +2903,7 @@ mod tests {
 
         let stylesheet = parse_stylesheet(
             "
-            div { opacity: 0; background-color: #ff0000; }
+            div { opacity: 0; background-color: #ff0000; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
@@ -2940,7 +2943,7 @@ mod tests {
 
         let stylesheet = parse_stylesheet(
             "
-            div { opacity: 50%; background-color: #ff0000; }
+            div { opacity: 50%; background-color: #ff0000; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
@@ -2964,5 +2967,76 @@ mod tests {
             }
         }
         assert!(found_bg, "Background SolidRect should be present");
+    }
+
+    #[test]
+    fn test_zero_area_box_emits_no_background_rect() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "zero-width".into())],
+        });
+        dom.append_child(body, div1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "zero-height".into())],
+        });
+        dom.append_child(body, div2);
+
+        let div3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "normal".into())],
+        });
+        dom.append_child(body, div3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .zero-width { width: 0px; height: 10px; background-color: rgb(255, 0, 0); }
+            .zero-height { width: 10px; height: 0px; background-color: rgb(0, 255, 0); }
+            .normal { width: 10px; height: 10px; background-color: rgb(0, 0, 255); }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_red = false;
+        let mut found_green = false;
+        let mut found_blue = false;
+
+        for item in &items {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                if *color == Color::Rgba(255, 0, 0, 255) {
+                    found_red = true;
+                } else if *color == Color::Rgba(0, 255, 0, 255) {
+                    found_green = true;
+                } else if *color == Color::Rgba(0, 0, 255, 255) {
+                    found_blue = true;
+                }
+            }
+        }
+
+        assert!(
+            !found_red,
+            "Should not emit SolidRect for zero-width box (red background)"
+        );
+        assert!(
+            !found_green,
+            "Should not emit SolidRect for zero-height box (green background)"
+        );
+        assert!(
+            found_blue,
+            "Should emit exactly one SolidRect for normal box (blue background)"
+        );
     }
 }
