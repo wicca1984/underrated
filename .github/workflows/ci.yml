@@ -51,6 +51,31 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  windows:
+    name: windows build + test (stack-overflow regression guard)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain — resilient
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Test
+        run: cargo test
+
   deny:
     name: cargo-deny (security / license / deps)
     runs-on: ubuntu-latest
