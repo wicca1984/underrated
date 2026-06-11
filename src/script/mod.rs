@@ -138,6 +138,21 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_create_text_node),
+                JsString::from("createTextNode"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_has_attribute),
+                JsString::from("hasAttribute"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_replace_child),
+                JsString::from("replaceChild"),
+                3,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_get_element_by_id),
                 JsString::from("getElementById"),
                 1,
@@ -517,11 +532,24 @@ impl BoaHost {
                             bridge.insertBefore(this.__key__, newNode.__key__, refKey);
                             return newNode;
                         },
+                        replaceChild(newChild, oldChild) {
+                            if (!newChild || !newChild.__key__) {
+                                throw new TypeError("newChild must be a Node");
+                            }
+                            if (!oldChild || !oldChild.__key__) {
+                                throw new TypeError("oldChild must be a Node");
+                            }
+                            bridge.replaceChild(this.__key__, newChild.__key__, oldChild.__key__);
+                            return oldChild;
+                        },
                         setAttribute(name, value) {
                             bridge.setAttribute(this.__key__, String(name), String(value));
                         },
                         getAttribute(name) {
                             return bridge.getAttribute(this.__key__, String(name));
+                        },
+                        hasAttribute(name) {
+                            return bridge.hasAttribute(this.__key__, String(name));
                         }
                     };
 
@@ -659,6 +687,11 @@ impl BoaHost {
                     return getOrCreateNode(key);
                 };
 
+                document.createTextNode = function(data) {
+                    const key = bridge.createTextNode(data !== undefined ? String(data) : "");
+                    return getOrCreateNode(key);
+                };
+
                 document.getElementById = function(id) {
                     const key = bridge.getElementById(String(id));
                     return getOrCreateNode(key);
@@ -710,6 +743,17 @@ impl BoaHost {
                     const refKey = (refNode && refNode.__key__) ? refNode.__key__ : null;
                     bridge.insertBefore(this.__key__, newNode.__key__, refKey);
                     return newNode;
+                };
+
+                document.replaceChild = function(newChild, oldChild) {
+                    if (!newChild || !newChild.__key__) {
+                        throw new TypeError("newChild must be a Node");
+                    }
+                    if (!oldChild || !oldChild.__key__) {
+                        throw new TypeError("oldChild must be a Node");
+                    }
+                    bridge.replaceChild(this.__key__, newChild.__key__, oldChild.__key__);
+                    return oldChild;
                 };
 
                 Object.setPrototypeOf(document, EventTarget.prototype);
@@ -1396,6 +1440,94 @@ fn bridge_insert_before(
 
         if let (Some(p_id), Some(c_id)) = (parent_id, child_id) {
             dom.insert_before(p_id, c_id, reference_id);
+            // TODO(spec): Re-layout on mutation
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_create_text_node(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let data = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let key = with_dom(|dom, key_to_node| {
+        let node_id = dom.create_node(NodeData::Text(data));
+        let k = format!("{:?}", node_id);
+        key_to_node.insert(k.clone(), node_id);
+        k
+    })?;
+
+    Ok(JsValue::from(JsString::from(key)))
+}
+
+fn bridge_has_attribute(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let attr_name = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let has_attr = with_dom(|dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            dom.get_attribute(n_id, &attr_name).is_some()
+        } else {
+            false
+        }
+    })?;
+
+    Ok(JsValue::from(has_attr))
+}
+
+fn bridge_replace_child(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let parent_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let new_child_key = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let old_child_key = if let Some(arg) = args.get(2) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    with_dom(|dom, key_to_node| {
+        let parent_id = key_to_node.get(&parent_key).copied();
+        let new_child_id = key_to_node.get(&new_child_key).copied();
+        let old_child_id = key_to_node.get(&old_child_key).copied();
+
+        if let (Some(p_id), Some(new_cid), Some(old_cid)) = (parent_id, new_child_id, old_child_id)
+        {
+            dom.insert_before(p_id, new_cid, Some(old_cid));
+            dom.remove_child(p_id, old_cid);
             // TODO(spec): Re-layout on mutation
         }
     })?;
@@ -2775,6 +2907,94 @@ mod tests {
         assert_eq!(dom.text_content(parent_children[0]), "inserted");
         assert_eq!(dom.text_content(parent_children[1]), "two");
         assert_eq!(dom.text_content(parent_children[2]), "last");
+    }
+
+    #[test]
+    fn test_dom_write_create_text_node() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            let text = document.createTextNode('hi');
+            div.appendChild(text);
+            document.appendChild(div);
+            div.textContent;
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(res, Ok("hi".to_string()));
+
+        // Verify backing Node type and content
+        let root_children = dom.children(dom.document());
+        assert_eq!(root_children.len(), 1);
+        let div_id = root_children[0];
+        let div_children = dom.children(div_id);
+        assert_eq!(div_children.len(), 1);
+        let text_id = div_children[0];
+        match dom.data(text_id) {
+            Some(NodeData::Text(content)) => assert_eq!(content, "hi"),
+            _ => panic!("Expected Text node"),
+        }
+    }
+
+    #[test]
+    fn test_dom_write_has_attribute() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            div.setAttribute('class', 'active');
+            let r1 = div.hasAttribute('class');
+            let r2 = div.hasAttribute('id');
+            [r1, r2].join(',');
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(res, Ok("true,false".to_string()));
+    }
+
+    #[test]
+    fn test_dom_write_replace_child() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let parent = document.createElement('div');
+            document.appendChild(parent);
+
+            let a = document.createElement('span');
+            a.textContent = 'A';
+            parent.appendChild(a);
+
+            let b = document.createElement('span');
+            b.textContent = 'B';
+            parent.appendChild(b);
+
+            let c = document.createElement('span');
+            c.textContent = 'C';
+            parent.appendChild(c);
+
+            // Replace b with a new node
+            let newNode = document.createElement('span');
+            newNode.textContent = 'NEW';
+            let oldNode = parent.replaceChild(newNode, b);
+
+            // Return values and current nodes order
+            let oldText = oldNode.textContent;
+            let currentOrder = parent.childNodes.map(node => node.textContent).join(',');
+            [oldText, currentOrder].join('|');
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(res, Ok("B|A,NEW,C".to_string()));
+
+        // Also check DOM state from Rust side
+        let root_children = dom.children(dom.document());
+        let parent_id = root_children[0];
+        let parent_children = dom.children(parent_id);
+        assert_eq!(parent_children.len(), 3);
+        assert_eq!(dom.text_content(parent_children[0]), "A");
+        assert_eq!(dom.text_content(parent_children[1]), "NEW");
+        assert_eq!(dom.text_content(parent_children[2]), "C");
     }
 
     #[test]
