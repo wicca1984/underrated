@@ -808,6 +808,115 @@ impl BoaHost {
                 }
                 window.CSSStyleDeclaration = CSSStyleDeclaration;
 
+                function kebabToCamel(str) {
+                    return str.replace(/-([a-z])/g, (match, char) => char.toUpperCase());
+                }
+
+                class DOMStringMap {
+                    constructor(element) {
+                        this.__element__ = element;
+                        return new Proxy(this, {
+                            get(target, prop, receiver) {
+                                if (typeof prop !== 'string') {
+                                    return Reflect.get(target, prop, receiver);
+                                }
+                                if (prop === '__element__') {
+                                    return target.__element__;
+                                }
+                                const attrName = 'data-' + camelToKebab(prop);
+                                const hasAttr = target.__element__.hasAttribute(attrName);
+                                if (!hasAttr && (prop in target)) {
+                                    const val = Reflect.get(target, prop, receiver);
+                                    if (typeof val === 'function') {
+                                        return val.bind(target);
+                                    }
+                                    return val;
+                                }
+                                const attrVal = target.__element__.getAttribute(attrName);
+                                return attrVal === null ? undefined : attrVal;
+                            },
+                            set(target, prop, value, receiver) {
+                                if (typeof prop !== 'string') {
+                                    return Reflect.set(target, prop, value, receiver);
+                                }
+                                if (prop === '__element__') {
+                                    return Reflect.set(target, prop, value, receiver);
+                                }
+                                if (/-[a-z]/.test(prop)) {
+                                    throw new DOMException("Property name must not contain a hyphen followed by a lowercase letter", "SyntaxError");
+                                }
+                                // TODO(spec): Validate that prop is a valid XML name, throwing "InvalidCharacterError" if not.
+                                const attrName = 'data-' + camelToKebab(prop);
+                                target.__element__.setAttribute(attrName, String(value));
+                                return true;
+                            },
+                            has(target, prop) {
+                                if (typeof prop !== 'string') {
+                                    return Reflect.has(target, prop);
+                                }
+                                if (prop === '__element__') {
+                                    return true;
+                                }
+                                const attrName = 'data-' + camelToKebab(prop);
+                                if (target.__element__.hasAttribute(attrName)) {
+                                    return true;
+                                }
+                                return prop in target;
+                            },
+                            deleteProperty(target, prop) {
+                                if (typeof prop !== 'string') {
+                                    return Reflect.deleteProperty(target, prop);
+                                }
+                                if (prop === '__element__') {
+                                    return false;
+                                }
+                                if (/-[a-z]/.test(prop)) {
+                                    throw new DOMException("Property name must not contain a hyphen followed by a lowercase letter", "SyntaxError");
+                                }
+                                const attrName = 'data-' + camelToKebab(prop);
+                                target.__element__.removeAttribute(attrName);
+                                return true;
+                            },
+                            ownKeys(target) {
+                                const names = target.__element__.getAttributeNames();
+                                const keys = [];
+                                const seen = new Set();
+                                for (const name of names) {
+                                    if (name.startsWith('data-')) {
+                                        const remainder = name.slice(5);
+                                        const camel = kebabToCamel(remainder);
+                                        if (!seen.has(camel)) {
+                                            seen.add(camel);
+                                            keys.push(camel);
+                                        }
+                                    }
+                                }
+                                return keys;
+                            },
+                            getOwnPropertyDescriptor(target, prop) {
+                                if (typeof prop !== 'string') {
+                                    return Reflect.getOwnPropertyDescriptor(target, prop);
+                                }
+                                if (prop === '__element__') {
+                                    return undefined;
+                                }
+                                const attrName = 'data-' + camelToKebab(prop);
+                                if (target.__element__.hasAttribute(attrName)) {
+                                    const value = target.__element__.getAttribute(attrName);
+                                    return {
+                                        enumerable: true,
+                                        configurable: true,
+                                        value: value,
+                                        writable: true
+                                    };
+                                }
+                                return undefined;
+                            }
+                        });
+                    }
+                }
+                window.DOMStringMap = DOMStringMap;
+
                 function getOrCreateNode(key) {
                     if (!key) return null;
                     if (registry[key]) {
@@ -976,6 +1085,18 @@ impl BoaHost {
                                 this.__style__ = new CSSStyleDeclaration(this);
                             }
                             return this.__style__;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'dataset', {
+                        get() {
+                            if (this.nodeType !== 1) return undefined;
+                            if (!this.__dataset__) {
+                                this.__dataset__ = new DOMStringMap(this);
+                            }
+                            return this.__dataset__;
                         },
                         enumerable: true,
                         configurable: true
@@ -4727,6 +4848,64 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("0||2|a b|a b|a b|true|a|b|null|a|undefined|a|false||true|b|true|b|false||true|z y|false|2|p|q|hello world|2|true|SyntaxError|InvalidCharacterError".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_dataset() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            const div = document.createElement('div');
+
+            // 1. Read: an element with attribute data-user-id=\"42\" exposes el.dataset.userId === '42'
+            div.setAttribute('data-user-id', '42');
+            const r1 = div.dataset.userId;
+
+            // 2. Missing key returns undefined (check typeof === 'undefined' or standard === undefined)
+            const r2 = typeof div.dataset.nope;
+
+            // 3. Write: el.dataset.fooBar = 'x' then el.getAttribute('data-foo-bar') === 'x'
+            div.dataset.fooBar = 'x';
+            const r3_attr = div.getAttribute('data-foo-bar');
+            const r3_val = div.dataset.fooBar;
+
+            // 4. Delete: delete el.dataset.userId then el.hasAttribute('data-user-id') === false
+            const r4_has_before = div.hasAttribute('data-user-id');
+            const r4_delete_ret = delete div.dataset.userId;
+            const r4_has_after = div.hasAttribute('data-user-id');
+
+            // 5. Enumerate: after setting multiple data-* attrs, Object.keys(el.dataset).sort().join(',') equals expected
+            div.dataset.userId = '99'; // resets data-user-id
+            div.dataset.anotherKey = 'hello';
+            const keys = Object.keys(div.dataset).sort().join(',');
+
+            // 6. Test syntax error on invalid prop names in setting or deleting
+            let r6_set_err = 'no-error';
+            try {
+                div.dataset['user-id'] = 'fail';
+            } catch (e) {
+                r6_set_err = e.name;
+            }
+
+            let r6_delete_err = 'no-error';
+            try {
+                delete div.dataset['user-id'];
+            } catch (e) {
+                r6_delete_err = e.name;
+            }
+
+            // 7. Identity/Caching: el.dataset === el.dataset
+            const r7 = (div.dataset === div.dataset);
+
+            [
+                r1, r2, r3_attr, r3_val, r4_has_before, r4_delete_ret, r4_has_after, keys, r6_set_err, r6_delete_err, r7
+            ].map(String).join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("42|undefined|x|x|true|true|false|anotherKey,fooBar,userId|SyntaxError|SyntaxError|true".to_string())
         );
     }
 
