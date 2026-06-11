@@ -343,6 +343,8 @@ pub(crate) fn layout_node(
     }
 
     if let Some(w) = calculate_shrink_to_fit_width(
+        dom,
+        node,
         style,
         &children,
         border_box_x + border_left + padding_left,
@@ -352,7 +354,10 @@ pub(crate) fn layout_node(
     }
 
     // Calculate height
-    let content_height = child_cursor_y - (border_box_y + border_top + padding_top);
+    let mut content_height = child_cursor_y - (border_box_y + border_top + padding_top);
+    if get_form_control_button_label(dom, node).is_some() && children.is_empty() {
+        content_height = crate::font::BitmapFont::builtin().line_height() as f32;
+    }
     let border_box_height = get_px(style, "height", content_height)
         + padding_top
         + padding_bottom
@@ -403,7 +408,32 @@ fn get_layoutable_children(
     result
 }
 
+fn get_form_control_button_label(dom: &Dom, node: NodeId) -> Option<String> {
+    if let Some(NodeData::Element { name, .. }) = dom.data(node) {
+        if name.eq_ignore_ascii_case("button") {
+            return Some(dom.text_content(node));
+        } else if name.eq_ignore_ascii_case("input")
+            && let Some(type_attr) = dom.get_attribute(node, "type")
+        {
+            let t_trimmed = type_attr.trim();
+            if t_trimmed.eq_ignore_ascii_case("submit")
+                || t_trimmed.eq_ignore_ascii_case("button")
+                || t_trimmed.eq_ignore_ascii_case("reset")
+            {
+                let label = dom
+                    .get_attribute(node, "value")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "Submit".to_string());
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
 fn calculate_shrink_to_fit_width(
+    dom: &Dom,
+    node: NodeId,
     style: &ComputedStyle,
     children: &[LayoutBox],
     content_start_x: f32,
@@ -416,6 +446,9 @@ fn calculate_shrink_to_fit_width(
         );
     if is_inline_blk && !matches!(style.get("width"), Some(CssValue::Length(_, _))) {
         let mut max_child_right = 0.0_f32;
+        if let Some(label) = get_form_control_button_label(dom, node) {
+            max_child_right = crate::font::BitmapFont::builtin().measure(&label) as f32;
+        }
         for child in children {
             let child_right = child.rect.max_x() - content_start_x;
             if child_right > max_child_right {
@@ -2041,5 +2074,107 @@ mod tests {
             "Paragraph wrapped prematurely into {} lines",
             p.children.len()
         );
+    }
+
+    #[test]
+    fn test_form_control_button_intrinsic_width_and_height() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let input_submit = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "submit".into()),
+                ("value".into(), "Hello".into()),
+            ],
+        });
+        dom.append_child(body, input_submit);
+
+        let input_no_value = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "submit".into())],
+        });
+        dom.append_child(body, input_no_value);
+
+        let button_go = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, button_go);
+        let go_text = dom.create_node(NodeData::Text("Go".into()));
+        dom.append_child(button_go, go_text);
+
+        let button_override = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![("class".into(), "overridden".into())],
+        });
+        dom.append_child(body, button_override);
+        let override_text = dom.create_node(NodeData::Text("Width Overridden".into()));
+        dom.append_child(button_override, override_text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 800px; }
+            input, button {
+                display: inline-block;
+                padding-left: 5px;
+                padding-right: 5px;
+                border-left-width: 1px;
+                border-right-width: 1px;
+            }
+            .overridden {
+                width: 300px;
+            }
+            ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // The body should contain 1 line box with inline-block elements.
+        assert!(!body_box.children.is_empty());
+        let line_box = &body_box.children[0];
+
+        // Inside the line box, we expect:
+        // children[0] -> input_submit ("Hello")
+        // children[1] -> input_no_value ("Submit")
+        // children[2] -> button_go ("Go")
+        // children[3] -> button_override (width: 300px)
+        assert_eq!(line_box.children.len(), 4);
+
+        let box_hello = &line_box.children[0];
+        let box_submit = &line_box.children[1];
+        let box_go = &line_box.children[2];
+        let box_override = &line_box.children[3];
+
+        let font = crate::font::BitmapFont::builtin();
+        let measure_hello = font.measure("Hello") as f32;
+        let measure_submit = font.measure("Submit") as f32;
+        let measure_go = font.measure("Go") as f32;
+        let line_height = font.line_height() as f32;
+
+        // Total border box width = measure + padding_left (5) + padding_right (5) + border_left (1) + border_right (1)
+        let expected_hello_width = measure_hello + 12.0;
+        let expected_submit_width = measure_submit + 12.0;
+        let expected_go_width = measure_go + 12.0;
+
+        assert!(approx_eq(box_hello.rect.size.width, expected_hello_width));
+        assert!(approx_eq(box_submit.rect.size.width, expected_submit_width));
+        assert!(approx_eq(box_go.rect.size.width, expected_go_width));
+
+        // Box override must have explicit content width 300px + 12px padding/border = 312px.
+        assert!(approx_eq(box_override.rect.size.width, 312.0));
+
+        // Let's check height.
+        // box_hello is <input> (void element), so it has children.is_empty() -> content height is at least line_height.
+        assert!(approx_eq(box_hello.rect.size.height, line_height));
+
+        // box_submit is <input> -> children.is_empty() -> content height is at least line_height.
+        assert!(approx_eq(box_submit.rect.size.height, line_height));
     }
 }
