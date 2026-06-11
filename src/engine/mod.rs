@@ -93,7 +93,65 @@ fn fetch_and_decode_images(
             && let Some(src) = dom.get_attribute(n_id, "src")
         {
             let mut chosen_url = src.to_string();
-            if let Some(srcset) = dom.get_attribute(n_id, "srcset")
+            let mut resolved_from_picture = false;
+
+            // Check if <img> is a child of a <picture> element
+            if let Some(parent_id) = dom.parent(n_id)
+                && let Some(NodeData::Element {
+                    name: parent_name, ..
+                }) = dom.data(parent_id)
+                && parent_name.eq_ignore_ascii_case("picture")
+            {
+                for &sibling_id in dom.children(parent_id) {
+                    if sibling_id == n_id {
+                        break;
+                    }
+                    if let Some(NodeData::Element { name: sib_name, .. }) = dom.data(sibling_id)
+                        && sib_name.eq_ignore_ascii_case("source")
+                    {
+                        // TODO(spec): <source media> is not yet evaluated and the first type-compatible source wins.
+                        if let Some(source_type) = dom.get_attribute(sibling_id, "type") {
+                            let mime = if let Some(part) = source_type.split(';').next() {
+                                part.trim().to_ascii_lowercase()
+                            } else {
+                                String::new()
+                            };
+                            let is_supported = matches!(
+                                mime.as_str(),
+                                "image/png"
+                                    | "image/jpeg"
+                                    | "image/jpg"
+                                    | "image/gif"
+                                    | "image/bmp"
+                                    | "image/webp"
+                            );
+                            if !is_supported {
+                                continue;
+                            }
+                        }
+
+                        if let Some(srcset) = dom.get_attribute(sibling_id, "srcset")
+                            && !srcset.is_empty()
+                        {
+                            let candidates = crate::html::parse_srcset(srcset);
+                            let effective_px = crate::html::resolve_sizes(
+                                dom.get_attribute(sibling_id, "sizes"),
+                                viewport_width as u32,
+                            );
+                            if let Some(c) =
+                                crate::html::select_candidate(&candidates, 1.0, effective_px)
+                            {
+                                chosen_url = c.url.clone();
+                                resolved_from_picture = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !resolved_from_picture
+                && let Some(srcset) = dom.get_attribute(n_id, "srcset")
                 && !srcset.is_empty()
             {
                 let candidates = crate::html::parse_srcset(srcset);
@@ -1696,5 +1754,182 @@ mod tests {
         let decoded = img_opt.unwrap();
         assert_eq!(decoded.width, 2);
         assert_eq!(decoded.height, 2);
+    }
+
+    #[test]
+    fn test_picture_source_srcset_honored() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate wide.png (4x4)
+        let mut canvas_wide = Canvas::new(4, 4);
+        canvas_wide.pixels[0] = 0xFFFF0000;
+        let png_wide = crate::image::encode_png(&canvas_wide);
+
+        // 2. Generate fallback.png (2x2)
+        let mut canvas_fallback = Canvas::new(2, 2);
+        canvas_fallback.pixels[0] = 0xFF00FF00;
+        let png_fallback = crate::image::encode_png(&canvas_fallback);
+
+        // 3. Set up loader
+        let mut responses = HashMap::new();
+        responses.insert("http://localhost/wide.png".to_string(), Ok(png_wide));
+        responses.insert(
+            "http://localhost/fallback.png".to_string(),
+            Ok(png_fallback),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 4. Render HTML with <picture> wrapper
+        let html = r#"
+            <picture>
+                <source srcset="http://localhost/wide.png">
+                <img src="http://localhost/fallback.png">
+            </picture>
+        "#;
+        let page = render_page(html, &base_url, &loader, 800.0);
+
+        // 5. Assert cached image is wide.png (width == 4)
+        let img_opt = page.dom.get_image("http://localhost/fallback.png");
+        assert!(
+            img_opt.is_some(),
+            "Image should be cached under key fallback.png"
+        );
+        let decoded = img_opt.unwrap();
+        assert_eq!(
+            decoded.width, 4,
+            "Should have loaded wide.png (width 4) instead of fallback.png (width 2)"
+        );
+    }
+
+    #[test]
+    fn test_picture_unsupported_type_fallback() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate wide.png (4x4)
+        let mut canvas_wide = Canvas::new(4, 4);
+        canvas_wide.pixels[0] = 0xFFFF0000;
+        let png_wide = crate::image::encode_png(&canvas_wide);
+
+        // 2. Generate fallback.png (2x2)
+        let mut canvas_fallback = Canvas::new(2, 2);
+        canvas_fallback.pixels[0] = 0xFF00FF00;
+        let png_fallback = crate::image::encode_png(&canvas_fallback);
+
+        // 3. Set up loader
+        let mut responses = HashMap::new();
+        responses.insert("http://localhost/wide.png".to_string(), Ok(png_wide));
+        responses.insert(
+            "http://localhost/fallback.png".to_string(),
+            Ok(png_fallback),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 4. Render HTML with unsupported type="image/avif"
+        let html = r#"
+            <picture>
+                <source srcset="http://localhost/wide.png" type="image/avif">
+                <img src="http://localhost/fallback.png">
+            </picture>
+        "#;
+        let page = render_page(html, &base_url, &loader, 800.0);
+
+        // 5. Assert cached image is fallback.png (width == 2)
+        let img_opt = page.dom.get_image("http://localhost/fallback.png");
+        assert!(
+            img_opt.is_some(),
+            "Image should be cached under key fallback.png"
+        );
+        let decoded = img_opt.unwrap();
+        assert_eq!(
+            decoded.width, 2,
+            "Should have fallen back to fallback.png (width 2) since image/avif is unsupported"
+        );
+    }
+
+    #[test]
+    fn test_picture_bare_img_fallback() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate fallback.png (2x2)
+        let mut canvas_fallback = Canvas::new(2, 2);
+        canvas_fallback.pixels[0] = 0xFF00FF00;
+        let png_fallback = crate::image::encode_png(&canvas_fallback);
+
+        // 2. Set up loader
+        let mut responses = HashMap::new();
+        responses.insert(
+            "http://localhost/fallback.png".to_string(),
+            Ok(png_fallback),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 3. Render bare HTML img with no picture wrapper
+        let html = r#"<img src="http://localhost/fallback.png">"#;
+        let page = render_page(html, &base_url, &loader, 800.0);
+
+        // 4. Assert cached image is fallback.png (width == 2)
+        let img_opt = page.dom.get_image("http://localhost/fallback.png");
+        assert!(
+            img_opt.is_some(),
+            "Image should be cached under key fallback.png"
+        );
+        let decoded = img_opt.unwrap();
+        assert_eq!(decoded.width, 2);
+    }
+
+    #[test]
+    fn test_picture_multiple_sources() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate wide.png (4x4) and narrow.png (3x3) and fallback.png (2x2)
+        let canvas_wide = Canvas::new(4, 4);
+        let png_wide = crate::image::encode_png(&canvas_wide);
+
+        let canvas_narrow = Canvas::new(3, 3);
+        let png_narrow = crate::image::encode_png(&canvas_narrow);
+
+        let canvas_fallback = Canvas::new(2, 2);
+        let png_fallback = crate::image::encode_png(&canvas_fallback);
+
+        // 2. Set up loader
+        let mut responses = HashMap::new();
+        responses.insert("http://localhost/wide.png".to_string(), Ok(png_wide));
+        responses.insert("http://localhost/narrow.png".to_string(), Ok(png_narrow));
+        responses.insert(
+            "http://localhost/fallback.png".to_string(),
+            Ok(png_fallback),
+        );
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 3. First source has unsupported type, second has supported type, fallback img has fallback.png
+        let html = r#"
+            <picture>
+                <source srcset="http://localhost/wide.png" type="image/avif">
+                <source srcset="http://localhost/narrow.png" type="image/png">
+                <img src="http://localhost/fallback.png">
+            </picture>
+        "#;
+        let page = render_page(html, &base_url, &loader, 800.0);
+
+        // 4. Assert cached image is narrow.png (width == 3)
+        let img_opt = page.dom.get_image("http://localhost/fallback.png");
+        assert!(img_opt.is_some());
+        let decoded = img_opt.unwrap();
+        assert_eq!(
+            decoded.width, 3,
+            "Should have loaded narrow.png (width 3) as the first supported source"
+        );
     }
 }

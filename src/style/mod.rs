@@ -121,6 +121,29 @@ fn compute_node_style(
         &mut matched_declarations,
     );
 
+    // 1.5. Collect presentational hints.
+    let ua_rules_count = stylesheet
+        .rules
+        .iter()
+        .position(|rule| {
+            if let Rule::Qualified(qr) = rule {
+                let s = serialize_component_values(&qr.prelude);
+                s.replace(" ", "") == "head,style,script,meta,link,title"
+            } else {
+                false
+            }
+        })
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+
+    for decl in &mut matched_declarations {
+        if decl.source_order >= ua_rules_count {
+            decl.source_order += 1;
+        }
+    }
+
+    collect_presentational_hints(dom, node, ua_rules_count, &mut matched_declarations);
+
     // 2. Add declarations from inline style attribute.
     if let Some(crate::dom::NodeData::Element { attrs, .. }) = dom.data(node)
         && let Some((_, style_attr)) = attrs.iter().find(|(name, _)| name == "style")
@@ -521,6 +544,79 @@ fn evaluate_media_query(
 ) -> bool {
     let query_str = serialize_component_values(prelude);
     crate::css::media::media_matches(&query_str, viewport_width)
+}
+
+fn is_presentational_hint_element(name: &str) -> bool {
+    name.eq_ignore_ascii_case("img")
+        || name.eq_ignore_ascii_case("table")
+        || name.eq_ignore_ascii_case("td")
+        || name.eq_ignore_ascii_case("th")
+        || name.eq_ignore_ascii_case("col")
+        || name.eq_ignore_ascii_case("colgroup")
+}
+
+fn map_presentational_dimension(val: &str) -> Option<String> {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = trimmed.strip_suffix('%') {
+        let num_part = stripped.trim();
+        if num_part.parse::<f32>().is_ok() {
+            return Some(format!("{}%", num_part));
+        }
+    } else if trimmed.parse::<u32>().is_ok() {
+        return Some(format!("{}px", trimmed));
+    }
+
+    // TODO(spec): HTML spec allows mapping trailing characters after digits in some contexts (e.g. "200abc" -> "200px").
+    // For now, we only support exact integer or percentage matches for simplicity and safety.
+    None
+}
+
+fn collect_presentational_hints(
+    dom: &Dom,
+    node: NodeId,
+    ua_rules_count: usize,
+    matched_declarations: &mut Vec<MatchedDeclaration>,
+) {
+    if let Some(crate::dom::NodeData::Element { name, attrs }) = dom.data(node)
+        && is_presentational_hint_element(name)
+    {
+        if let Some((_, width_val)) = attrs
+            .iter()
+            .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("width"))
+            && let Some(css_val_str) = map_presentational_dimension(width_val)
+        {
+            let components = crate::css::parser::parse_component_values(&css_val_str);
+            matched_declarations.push(MatchedDeclaration {
+                declaration: Declaration {
+                    name: "width".to_string(),
+                    value: components,
+                    important: false,
+                },
+                specificity: (0, 0, 0, 0),
+                source_order: ua_rules_count,
+            });
+        }
+        if let Some((_, height_val)) = attrs
+            .iter()
+            .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("height"))
+            && let Some(css_val_str) = map_presentational_dimension(height_val)
+        {
+            let components = crate::css::parser::parse_component_values(&css_val_str);
+            matched_declarations.push(MatchedDeclaration {
+                declaration: Declaration {
+                    name: "height".to_string(),
+                    value: components,
+                    important: false,
+                },
+                specificity: (0, 0, 0, 0),
+                source_order: ua_rules_count,
+            });
+        }
+    }
 }
 
 struct PeekableTokenizer<'a> {
@@ -1695,6 +1791,104 @@ mod tests {
         assert_eq!(
             p_style_kw.get("visibility"),
             Some(&CssValue::Keyword("hidden".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_presentational_hints_mapping_px() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![
+                ("width".into(), "200".into()),
+                ("height".into(), "150".into()),
+            ],
+        });
+        dom.append_child(doc, img);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let img_style = styles.get(&img).unwrap();
+
+        assert_eq!(
+            img_style.get("width"),
+            Some(&CssValue::Length(200.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            img_style.get("height"),
+            Some(&CssValue::Length(150.0, LengthUnit::Px))
+        );
+    }
+
+    #[test]
+    fn test_presentational_hints_mapping_percent() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![
+                ("width".into(), "50%".into()),
+                ("height".into(), "100%".into()),
+            ],
+        });
+        dom.append_child(doc, table);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let table_style = styles.get(&table).unwrap();
+
+        assert_eq!(
+            table_style.get("width"),
+            Some(&CssValue::Length(50.0, LengthUnit::Percent))
+        );
+        assert_eq!(
+            table_style.get("height"),
+            Some(&CssValue::Length(100.0, LengthUnit::Percent))
+        );
+    }
+
+    #[test]
+    fn test_presentational_hints_author_overrides() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("width".into(), "200".into())],
+        });
+        dom.append_child(doc, img);
+
+        // Author CSS rule `img { width: 10px; }` should win over presentational hint.
+        let stylesheet = parse_stylesheet("img { width: 10px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let img_style = styles.get(&img).unwrap();
+
+        assert_eq!(
+            img_style.get("width"),
+            Some(&CssValue::Length(10.0, LengthUnit::Px))
+        );
+    }
+
+    #[test]
+    fn test_presentational_hints_inline_overrides() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![
+                ("width".into(), "200".into()),
+                ("style".into(), "width: 5px;".into()),
+            ],
+        });
+        dom.append_child(doc, img);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let img_style = styles.get(&img).unwrap();
+
+        assert_eq!(
+            img_style.get("width"),
+            Some(&CssValue::Length(5.0, LengthUnit::Px))
         );
     }
 }
