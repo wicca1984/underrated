@@ -65,6 +65,10 @@ jobs:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 10
+          # windows-latest's default shell is Windows PowerShell 5.1, where '&&' is not a
+          # valid statement separator; force bash (shipped with the runner) so the same
+          # command syntax as the ubuntu job works.
+          shell: bash
           command: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
       - name: Cache cargo build
