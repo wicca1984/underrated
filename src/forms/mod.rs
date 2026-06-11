@@ -671,6 +671,68 @@ pub fn submit_with_values_and_current_url(
     }
 }
 
+/// Helper to determine if a node is a submit button.
+///
+/// True if the node is:
+/// - `<button>` with no type attribute, or type="submit" (case-insensitive)
+/// - `<input type="submit">` (case-insensitive)
+/// - `<input type="image">` (case-insensitive)
+// spec: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-submit-button
+pub fn is_submit_button(dom: &Dom, node: NodeId) -> bool {
+    let Some(t) = tag(dom, node) else {
+        return false;
+    };
+    if t.eq_ignore_ascii_case("button") {
+        match attr(dom, node, "type") {
+            Some(typ) => typ.eq_ignore_ascii_case("submit"),
+            None => true,
+        }
+    } else if t.eq_ignore_ascii_case("input") {
+        if let Some(typ) = attr(dom, node, "type") {
+            typ.eq_ignore_ascii_case("submit") || typ.eq_ignore_ascii_case("image")
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+/// Helper to find the form associated with a button (or other form control).
+///
+/// If the button has a `form` attribute, returns the `<form>` element in the
+/// document with the matching `id`. Otherwise, walks up the ancestor chain and
+/// returns the nearest `<form>` ancestor. Returns `None` if no form is associated.
+// spec: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#form-owner
+pub fn find_form_for_button(dom: &Dom, button: NodeId) -> Option<NodeId> {
+    if let Some(form_id) = attr(dom, button, "form") {
+        // Explicit association: search the document for a <form> element with id == form_id
+        let doc_root = dom.document();
+        for desc in dom.descendants(doc_root) {
+            if let Some(t) = tag(dom, desc)
+                && t.eq_ignore_ascii_case("form")
+                && let Some(id) = attr(dom, desc, "id")
+                && id == form_id
+            {
+                return Some(desc);
+            }
+        }
+        None
+    } else {
+        // Implicit association: walk up ancestor chain to find the nearest `<form>`
+        let mut current = button;
+        while let Some(parent) = dom.parent(current) {
+            if let Some(t) = tag(dom, parent)
+                && t.eq_ignore_ascii_case("form")
+            {
+                return Some(parent);
+            }
+            current = parent;
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1105,6 +1167,95 @@ mod tests {
 
         let req = submit_with_values(&dom, form, &edited).unwrap();
         assert_eq!(req.url, "/a?color=blue&gender=male");
+    }
+
+    #[test]
+    fn test_is_submit_button_helper() {
+        let mut dom = Dom::new();
+
+        let b_no_type = el(&mut dom, "button", &[]);
+        let b_submit = el(&mut dom, "button", &[("type", "submit")]);
+        let b_button = el(&mut dom, "button", &[("type", "button")]);
+        let b_reset = el(&mut dom, "button", &[("type", "reset")]);
+
+        let i_submit = el(&mut dom, "input", &[("type", "submit")]);
+        let i_image = el(&mut dom, "input", &[("type", "image")]);
+        let i_text = el(&mut dom, "input", &[("type", "text")]);
+        let i_no_type = el(&mut dom, "input", &[]);
+
+        let other = el(&mut dom, "div", &[]);
+
+        assert!(is_submit_button(&dom, b_no_type));
+        assert!(is_submit_button(&dom, b_submit));
+        assert!(!is_submit_button(&dom, b_button));
+        assert!(!is_submit_button(&dom, b_reset));
+
+        assert!(is_submit_button(&dom, i_submit));
+        assert!(is_submit_button(&dom, i_image));
+        assert!(!is_submit_button(&dom, i_text));
+        assert!(!is_submit_button(&dom, i_no_type));
+
+        assert!(!is_submit_button(&dom, other));
+
+        // Case insensitivity checks
+        let b_submit_caps = el(&mut dom, "BUTTON", &[("TYPE", "SUBMIT")]);
+        let i_image_caps = el(&mut dom, "INPUT", &[("TYPE", "IMAGE")]);
+
+        assert!(is_submit_button(&dom, b_submit_caps));
+        assert!(is_submit_button(&dom, i_image_caps));
+    }
+
+    #[test]
+    fn test_find_form_for_button_helper() {
+        let mut dom = Dom::new();
+        let doc_root = dom.document();
+
+        let form1 = el(&mut dom, "form", &[("id", "f1")]);
+        let form2 = el(&mut dom, "form", &[("id", "f2")]);
+        dom.append_child(doc_root, form1);
+        dom.append_child(doc_root, form2);
+
+        // Implicit ancestry matching: nested in form1
+        let btn_implicit1 = el(&mut dom, "button", &[]);
+        dom.append_child(form1, btn_implicit1);
+
+        assert_eq!(find_form_for_button(&dom, btn_implicit1), Some(form1));
+
+        // Deeply nested implicit matching
+        let div = el(&mut dom, "div", &[]);
+        dom.append_child(form1, div);
+        let btn_deep_implicit = el(&mut dom, "button", &[]);
+        dom.append_child(div, btn_deep_implicit);
+
+        assert_eq!(find_form_for_button(&dom, btn_deep_implicit), Some(form1));
+
+        // Multiple nested forms - should pick nearest ancestor
+        let form_nested = el(&mut dom, "form", &[("id", "fnested")]);
+        dom.append_child(form1, form_nested);
+        let btn_nested = el(&mut dom, "button", &[]);
+        dom.append_child(form_nested, btn_nested);
+
+        assert_eq!(find_form_for_button(&dom, btn_nested), Some(form_nested));
+
+        // Explicit association via "form" attribute (form1 is outside)
+        let btn_explicit = el(&mut dom, "button", &[("form", "f1")]);
+        dom.append_child(doc_root, btn_explicit);
+
+        assert_eq!(find_form_for_button(&dom, btn_explicit), Some(form1));
+
+        // Explicit association to non-form element with matching ID should return None
+        let div_id_only = el(&mut dom, "div", &[("id", "not-a-form")]);
+        dom.append_child(doc_root, div_id_only);
+        let btn_explicit_not_a_form = el(&mut dom, "button", &[("form", "not-a-form")]);
+        dom.append_child(doc_root, btn_explicit_not_a_form);
+
+        assert_eq!(find_form_for_button(&dom, btn_explicit_not_a_form), None);
+
+        // Button with no form association
+        let btn_no_form = el(&mut dom, "button", &[]);
+        dom.append_child(doc_root, btn_no_form);
+
+        assert_eq!(find_form_for_button(&dom, btn_no_form), None);
     }
 }
 
