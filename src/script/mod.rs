@@ -281,6 +281,17 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'className', {
+                        get() {
+                            return this.getAttribute('class') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('class', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     registry[key] = node;
                     return node;
                 }
@@ -1604,11 +1615,49 @@ mod tests {
         let res = host.eval_with_dom(script, &mut dom);
         assert_eq!(res, Ok("main-box,content".to_string()));
 
-        // Also check attributes from Rust side
+        // Check attributes from Rust side
         let root_children = dom.children(dom.document());
         let child_id = root_children[0];
         assert_eq!(dom.get_attribute(child_id, "class"), Some("main-box"));
         assert_eq!(dom.get_attribute(child_id, "id"), Some("content"));
+    }
+
+    #[test]
+    fn test_element_classname() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. A freshly created element has className === '' by default.
+            let div1 = document.createElement('div');
+            let res1 = div1.className;
+
+            // 2. Setting el.className = 'foo bar' makes el.getAttribute('class') === 'foo bar'.
+            let div2 = document.createElement('div');
+            div2.className = 'foo bar';
+            let res2 = div2.getAttribute('class');
+
+            // 3. After el.setAttribute('class', 'x y'), reading el.className === 'x y'.
+            let div3 = document.createElement('div');
+            div3.setAttribute('class', 'x y');
+            let res3 = div3.className;
+
+            // 4. Round-trip via document.getElementById/querySelector also reflects className.
+            let div4 = document.createElement('div');
+            div4.setAttribute('id', 'mydiv');
+            div4.className = 'test-class';
+            document.appendChild(div4);
+
+            let retrieved = document.getElementById('mydiv');
+            let qsa = document.querySelector('.test-class');
+            let res4 = [retrieved.className, qsa.className].join(',');
+
+            [res1, res2, res3, res4].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|foo bar|x y|test-class,test-class".to_string())
+        );
     }
 
     #[test]
