@@ -213,6 +213,16 @@ impl BoaHost {
                 3,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_insert_adjacent_element),
+                JsString::from("insertAdjacentElement"),
+                3,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_insert_adjacent_html),
+                JsString::from("insertAdjacentHTML"),
+                3,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_set_attribute),
                 JsString::from("setAttribute"),
                 3,
@@ -1022,6 +1032,18 @@ impl BoaHost {
                             if (this.nodeType !== 1) return null;
                             const key = bridge.closest(this.__key__, String(selector));
                             return getOrCreateNode(key);
+                        },
+                        insertAdjacentElement(position, element) {
+                            if (this.nodeType !== 1) return null;
+                            if (!element || !element.__key__) {
+                                throw new TypeError("element must be a Node");
+                            }
+                            const resKey = bridge.insertAdjacentElement(this.__key__, String(position), element.__key__);
+                            return getOrCreateNode(resKey);
+                        },
+                        insertAdjacentHTML(position, html) {
+                            if (this.nodeType !== 1) return;
+                            bridge.insertAdjacentHTML(this.__key__, String(position), String(html));
                         }
                     };
 
@@ -3201,6 +3223,187 @@ fn bridge_set_outer_html(
             }
 
             dom.remove_child(parent, n_id);
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_insert_adjacent_element(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let ref_node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let position_str = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let element_node_key = if let Some(arg) = args.get(2) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let position = position_str.trim().to_lowercase();
+
+    let inserted_key_opt = with_dom(|dom, key_to_node| {
+        if let Some(&ref_id) = key_to_node.get(&ref_node_key) {
+            if let Some(&elem_id) = key_to_node.get(&element_node_key) {
+                match position.as_str() {
+                    "beforebegin" => {
+                        if let Some(parent_id) = dom.parent(ref_id) {
+                            dom.insert_before(parent_id, elem_id, Some(ref_id));
+                            Some(element_node_key.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    "afterbegin" => {
+                        let first_child = dom.children(ref_id).first().copied();
+                        dom.insert_before(ref_id, elem_id, first_child);
+                        Some(element_node_key.clone())
+                    }
+                    "beforeend" => {
+                        dom.insert_before(ref_id, elem_id, None);
+                        Some(element_node_key.clone())
+                    }
+                    "afterend" => {
+                        if let Some(parent_id) = dom.parent(ref_id) {
+                            let parent_children = dom.children(parent_id);
+                            let next_sibling = if let Some(pos) =
+                                parent_children.iter().position(|&c| c == ref_id)
+                            {
+                                parent_children.get(pos + 1).copied()
+                            } else {
+                                None
+                            };
+                            dom.insert_before(parent_id, elem_id, next_sibling);
+                            Some(element_node_key.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(key) = inserted_key_opt {
+        Ok(JsValue::from(JsString::from(key)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_insert_adjacent_html(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let ref_node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let position_str = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let html_val = if let Some(arg) = args.get(2) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let position = position_str.trim().to_lowercase();
+
+    with_dom(|dom, _key_to_node| {
+        if let Some(&ref_id) = _key_to_node.get(&ref_node_key) {
+            // Parse the HTML fragment (using wrapped body).
+            let wrapped_html = format!("<body>{}</body>", html_val);
+            let temp_dom = crate::html::parse_document(crate::encoding::InputStream::from_utf8(
+                wrapped_html.as_bytes(),
+            ));
+
+            // Find the <body> element in temp_dom.
+            let body_id_opt =
+                temp_dom
+                    .descendants(temp_dom.document())
+                    .into_iter()
+                    .find(|&node_id| {
+                        if let Some(crate::dom::NodeData::Element { name, .. }) =
+                            temp_dom.data(node_id)
+                        {
+                            name == "body"
+                        } else {
+                            false
+                        }
+                    });
+
+            if let Some(body_id) = body_id_opt {
+                let temp_children = temp_dom.children(body_id).to_vec();
+
+                match position.as_str() {
+                    "beforebegin" => {
+                        if let Some(parent_id) = dom.parent(ref_id) {
+                            for temp_child_id in temp_children {
+                                let dest_child_id =
+                                    copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom);
+                                dom.insert_before(parent_id, dest_child_id, Some(ref_id));
+                            }
+                        }
+                    }
+                    "afterbegin" => {
+                        let original_first_child = dom.children(ref_id).first().copied();
+                        for temp_child_id in temp_children {
+                            let dest_child_id =
+                                copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom);
+                            dom.insert_before(ref_id, dest_child_id, original_first_child);
+                        }
+                    }
+                    "beforeend" => {
+                        for temp_child_id in temp_children {
+                            let dest_child_id =
+                                copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom);
+                            dom.insert_before(ref_id, dest_child_id, None);
+                        }
+                    }
+                    "afterend" => {
+                        if let Some(parent_id) = dom.parent(ref_id) {
+                            let parent_children = dom.children(parent_id);
+                            let original_next_sibling = if let Some(pos) =
+                                parent_children.iter().position(|&c| c == ref_id)
+                            {
+                                parent_children.get(pos + 1).copied()
+                            } else {
+                                None
+                            };
+                            for temp_child_id in temp_children {
+                                let dest_child_id =
+                                    copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom);
+                                dom.insert_before(parent_id, dest_child_id, original_next_sibling);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     })?;
 
@@ -6828,5 +7031,63 @@ mod tests {
 
         let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "second_ran");
+    }
+
+    #[test]
+    fn test_element_insert_adjacent_html_and_element() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let setup_script = r#"
+            let container = document.createElement('div');
+            container.innerHTML = "<ul id='L'><li id='a'>a</li></ul>";
+            document.appendChild(container);
+            
+            let L = document.getElementById('L');
+            let a = document.getElementById('a');
+            
+            // 1. insertAdjacentHTML 'beforeend'
+            L.insertAdjacentHTML('beforeend', '<li>b</li>');
+            
+            // 2. insertAdjacentHTML 'afterbegin'
+            L.insertAdjacentHTML('afterbegin', '<li>z</li>');
+            
+            // 3. insertAdjacentHTML 'beforebegin' on 'a'
+            a.insertAdjacentHTML('beforebegin', '<li>pre</li>');
+            
+            // 4. insertAdjacentHTML 'afterend' on 'a'
+            a.insertAdjacentHTML('afterend', '<li>post</li>');
+            
+            // 5. Case insensitivity and whitespace trimming
+            L.insertAdjacentHTML('  BeFoReEnD  ', '<li>case</li>');
+            
+            let html1 = L.innerHTML;
+            
+            // 6. insertAdjacentElement
+            let newItem = document.createElement('li');
+            newItem.textContent = 'new';
+            let returnedItem = L.insertAdjacentElement('beforeend', newItem);
+            
+            // Check identity
+            let isSame = (returnedItem === newItem);
+            let html2 = L.innerHTML;
+            
+            // 7. Invalid/edge cases
+            let parentless = document.createElement('div');
+            let r1 = parentless.insertAdjacentElement('beforebegin', document.createElement('p'));
+            let r2 = parentless.insertAdjacentElement('afterend', document.createElement('p'));
+            let r3 = L.insertAdjacentElement('nope', document.createElement('p'));
+            L.insertAdjacentHTML('nope', '<li>invalid</li>');
+            let html3 = L.innerHTML;
+            
+            [html1, isSame, html2, String(r1), String(r2), String(r3), html3].join('|');
+        "#;
+
+        let res = host.eval_with_dom(setup_script, &mut dom).unwrap();
+        // Check everything in a single formatted assertion
+        assert_eq!(
+            res,
+            "<li>z</li><li>pre</li><li id=\"a\">a</li><li>post</li><li>b</li><li>case</li>|true|<li>z</li><li>pre</li><li id=\"a\">a</li><li>post</li><li>b</li><li>case</li><li>new</li>|null|null|null|<li>z</li><li>pre</li><li id=\"a\">a</li><li>post</li><li>b</li><li>case</li><li>new</li>"
+        );
     }
 }
