@@ -118,11 +118,12 @@ fn get_edge_color(style: &ComputedStyle, edge_prop: &str, border_color: &Color) 
     border_color.clone()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 struct TextDecorations {
     underline: bool,
     overline: bool,
     line_through: bool,
+    color: Option<Color>,
 }
 
 /// Helper to get the set of text decorations from a ComputedStyle.
@@ -167,6 +168,15 @@ fn get_text_decorations(style: &ComputedStyle) -> TextDecorations {
             }
         }
     }
+
+    // Parse text-decoration-color property
+    // TODO(spec): text-decoration-color v1 — single computed color only; `currentColor` keyword falls back to
+    // the text color (i.e. treat unset/`currentColor` as None). text-decoration shorthand color parsing and
+    // per-line distinct colors are out of scope.
+    if let Some(val) = style.get("text-decoration-color") {
+        dec.color = find_color(val);
+    }
+
     dec
 }
 
@@ -259,6 +269,9 @@ fn resolve_text_decorations(
             }
             if local_dec.line_through && !line_through_blocked {
                 resolved.line_through = true;
+            }
+            if local_dec.color.is_some() && resolved.color.is_none() {
+                resolved.color = local_dec.color;
             }
         }
         current = dom.parent(curr_id);
@@ -614,6 +627,8 @@ pub fn build_display_list(
                     let x = corrected_rect.origin.x;
                     let width = corrected_rect.size.width;
 
+                    let deco_color = decorations.color.unwrap_or(color.clone());
+
                     if decorations.underline {
                         // Position underline relative to the baseline-corrected text position
                         let underline_y = corrected_rect.origin.y + font_height - 1.0;
@@ -621,7 +636,7 @@ pub fn build_display_list(
 
                         items.push(DisplayItem::SolidRect {
                             rect: underline_rect,
-                            color: scale_color_alpha(&color, effective_opacity),
+                            color: scale_color_alpha(&deco_color, effective_opacity),
                         });
                     }
 
@@ -632,7 +647,7 @@ pub fn build_display_list(
 
                         items.push(DisplayItem::SolidRect {
                             rect: overline_rect,
-                            color: scale_color_alpha(&color, effective_opacity),
+                            color: scale_color_alpha(&deco_color, effective_opacity),
                         });
                     }
 
@@ -643,7 +658,7 @@ pub fn build_display_list(
 
                         items.push(DisplayItem::SolidRect {
                             rect: line_through_rect,
-                            color: scale_color_alpha(&color, effective_opacity),
+                            color: scale_color_alpha(&deco_color, effective_opacity),
                         });
                     }
                 }
@@ -1364,6 +1379,65 @@ mod tests {
         for item in text_items {
             if let DisplayItem::Text { color, .. } = item {
                 assert_eq!(color, &Color::Rgba(0, 255, 0, 255));
+            }
+        }
+    }
+
+    #[test]
+    fn test_paint_text_decoration_color() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, p);
+
+        let text = dom.create_node(NodeData::Text("colored underline".into()));
+        dom.append_child(p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            p { text-decoration: underline; text-decoration-color: #00ff00; color: #ff0000; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let text_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Text { .. }))
+            .collect();
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert!(!text_items.is_empty(), "Expected at least one Text item");
+        assert!(
+            !solid_rects.is_empty(),
+            "Expected at least one SolidRect item"
+        );
+
+        for item in text_items {
+            if let DisplayItem::Text { color, .. } = item {
+                // Glyph color must be red (#ff0000)
+                assert_eq!(color, &Color::Rgba(255, 0, 0, 255));
+            } else {
+                panic!("Expected Text");
+            }
+        }
+
+        for item in solid_rects {
+            if let DisplayItem::SolidRect { color, .. } = item {
+                // Underline color must be green (#00ff00)
+                assert_eq!(color, &Color::Rgba(0, 255, 0, 255));
+            } else {
+                panic!("Expected SolidRect");
             }
         }
     }
