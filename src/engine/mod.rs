@@ -71,6 +71,7 @@ fn fetch_and_decode_images(
     dom: &crate::dom::Dom,
     base_url: &crate::url::Url,
     loader: &dyn crate::loader::ResourceLoader,
+    viewport_width: f32,
 ) {
     let mut effective_base = base_url.clone();
     let doc = dom.document();
@@ -90,10 +91,27 @@ fn fetch_and_decode_images(
         if let Some(NodeData::Element { name, .. }) = dom.data(n_id)
             && name.eq_ignore_ascii_case("img")
             && let Some(src) = dom.get_attribute(n_id, "src")
-            && let Some(bytes) = load_image_safely_with_loader(loader, src, Some(&effective_base))
-            && let Some(decoded) = crate::image::decode_image(&bytes)
         {
-            dom.add_image(src.to_string(), decoded);
+            let mut chosen_url = src.to_string();
+            if let Some(srcset) = dom.get_attribute(n_id, "srcset")
+                && !srcset.is_empty()
+            {
+                let candidates = crate::html::parse_srcset(srcset);
+                let effective_px = crate::html::resolve_sizes(
+                    dom.get_attribute(n_id, "sizes"),
+                    viewport_width as u32,
+                );
+                if let Some(c) = crate::html::select_candidate(&candidates, 1.0, effective_px) {
+                    chosen_url = c.url.clone();
+                }
+            }
+
+            if let Some(bytes) =
+                load_image_safely_with_loader(loader, &chosen_url, Some(&effective_base))
+                && let Some(decoded) = crate::image::decode_image(&bytes)
+            {
+                dom.add_image(src.to_string(), decoded);
+            }
         }
     }
 }
@@ -206,7 +224,7 @@ pub fn render_page(
     // 7. Layout document
     let layout = crate::layout::layout_document(&dom, &styles, viewport_width);
 
-    fetch_and_decode_images(&dom, base_url, loader);
+    fetch_and_decode_images(&dom, base_url, loader, viewport_width);
 
     Page {
         dom,
@@ -1583,5 +1601,100 @@ mod tests {
             loader.requests.borrow().is_empty(),
             "No requests should be recorded for orphan submit click"
         );
+    }
+
+    #[test]
+    fn test_srcset_honored() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate a valid PNG image
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        // 2. Set up MockLoader to return PNG bytes for hi.png, but NOT fallback.png
+        let mut responses = HashMap::new();
+        responses.insert("http://localhost/hi.png".to_string(), Ok(png_bytes));
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 3. Render HTML containing image with srcset (using absolute URLs to bypass local relative parsing bug)
+        let html =
+            r#"<img src="http://localhost/fallback.png" srcset="http://localhost/hi.png 1x">"#;
+        let page = render_page(html, &base_url, &loader, 800.0);
+
+        // 4. Assert dom.get_image("http://localhost/fallback.png") is Some with the expected dimensions (2, 2)
+        let img_opt = page.dom.get_image("http://localhost/fallback.png");
+        assert!(
+            img_opt.is_some(),
+            "Image should be cached under key fallback.png"
+        );
+        let decoded = img_opt.unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+    }
+
+    #[test]
+    fn test_no_srcset_unchanged() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate a valid PNG image
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.pixels[0] = 0xFFFF0000;
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        // 2. Set up MockLoader to return PNG bytes for plain.png
+        let mut responses = HashMap::new();
+        responses.insert("http://localhost/plain.png".to_string(), Ok(png_bytes));
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 3. Render HTML containing plain image
+        let html = r#"<img src="http://localhost/plain.png">"#;
+        let page = render_page(html, &base_url, &loader, 800.0);
+
+        // 4. Assert dom.get_image("http://localhost/plain.png") is Some with the expected dimensions (2, 2)
+        let img_opt = page.dom.get_image("http://localhost/plain.png");
+        assert!(
+            img_opt.is_some(),
+            "Image should be cached under key plain.png"
+        );
+        let decoded = img_opt.unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+    }
+
+    #[test]
+    fn test_selection_correctness_sizes() {
+        use crate::raster::Canvas;
+        use std::collections::HashMap;
+
+        // 1. Generate a valid PNG image
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.pixels[0] = 0xFFFF0000;
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        // 2. Set up MockLoader to return PNG bytes for lo.png
+        let mut responses = HashMap::new();
+        responses.insert("http://localhost/lo.png".to_string(), Ok(png_bytes));
+
+        let loader = MockLoader { responses };
+        let base_url = crate::url::Url::parse("http://localhost/").unwrap();
+
+        // 3. Render HTML containing srcset with lo.png (1x) and hi.png (2x)
+        // With DPR 1.0 (hardcoded in fetch_and_decode_images), select_candidate should select lo.png (1x)
+        let html = r#"<img src="http://localhost/x.png" srcset="http://localhost/lo.png 1x, http://localhost/hi.png 2x">"#;
+        let page = render_page(html, &base_url, &loader, 800.0);
+
+        // 4. Assert dom.get_image("http://localhost/x.png") is Some because lo.png was selected and found in the mock loader
+        let img_opt = page.dom.get_image("http://localhost/x.png");
+        assert!(img_opt.is_some(), "Image should be cached under key x.png");
+        let decoded = img_opt.unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
     }
 }
