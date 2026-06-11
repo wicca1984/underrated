@@ -166,3 +166,131 @@ fn test_ua_default_stylesheet_th() {
         Some(&CssValue::Keyword("center".to_string()))
     );
 }
+
+#[test]
+fn test_ua_default_stylesheet_text_semantics() {
+    let base_url = underrated::url::Url::parse("http://localhost/").unwrap();
+
+    struct DummyLoader;
+    impl underrated::loader::ResourceLoader for DummyLoader {
+        fn load(
+            &self,
+            _url: &underrated::url::Url,
+        ) -> Result<Vec<u8>, underrated::loader::LoadError> {
+            Err(underrated::loader::LoadError::NotFound)
+        }
+        fn load_request(
+            &self,
+            _url: &underrated::url::Url,
+            _method: underrated::loader::HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> {
+            Err(underrated::loader::LoadError::NotFound)
+        }
+    }
+
+    let html = "\
+        <s>s-text</s> \
+        <strike>strike-text</strike> \
+        <del>del-text</del> \
+        <u>u-text</u> \
+        <ins>ins-text</ins> \
+        <mark>mark-text</mark> \
+        <center>center-text</center> \
+        <address>address-text</address>\
+    ";
+    let page = underrated::engine::render_page(html, &base_url, &DummyLoader, 800.0);
+
+    let doc = page.dom.document();
+    let mut s_style = None;
+    let mut strike_style = None;
+    let mut del_style = None;
+    let mut u_style = None;
+    let mut ins_style = None;
+    let mut mark_style = None;
+    let mut center_style = None;
+    let mut address_style = None;
+
+    for id in page.dom.descendants(doc) {
+        if let Some(underrated::dom::NodeData::Element { name, .. }) = page.dom.data(id) {
+            match name.as_str() {
+                "s" => s_style = Some(page.styles.get(&id).expect("s should have styles")),
+                "strike" => {
+                    strike_style = Some(page.styles.get(&id).expect("strike should have styles"))
+                }
+                "del" => del_style = Some(page.styles.get(&id).expect("del should have styles")),
+                "u" => u_style = Some(page.styles.get(&id).expect("u should have styles")),
+                "ins" => ins_style = Some(page.styles.get(&id).expect("ins should have styles")),
+                "mark" => mark_style = Some(page.styles.get(&id).expect("mark should have styles")),
+                "center" => {
+                    center_style = Some(page.styles.get(&id).expect("center should have styles"))
+                }
+                "address" => {
+                    address_style = Some(page.styles.get(&id).expect("address should have styles"))
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let s_s = s_style.expect("s element should be found");
+    assert_eq!(
+        s_s.get("text-decoration"),
+        Some(&CssValue::Keyword("line-through".to_string()))
+    );
+
+    let strike_s = strike_style.expect("strike element should be found");
+    assert_eq!(
+        strike_s.get("text-decoration"),
+        Some(&CssValue::Keyword("line-through".to_string()))
+    );
+
+    let del_s = del_style.expect("del element should be found");
+    assert_eq!(
+        del_s.get("text-decoration"),
+        Some(&CssValue::Keyword("line-through".to_string()))
+    );
+
+    let u_s = u_style.expect("u element should be found");
+    assert_eq!(
+        u_s.get("text-decoration"),
+        Some(&CssValue::Keyword("underline".to_string()))
+    );
+
+    let ins_s = ins_style.expect("ins element should be found");
+    assert_eq!(
+        ins_s.get("text-decoration"),
+        Some(&CssValue::Keyword("underline".to_string()))
+    );
+
+    let mark_s = mark_style.expect("mark element should be found");
+    assert_eq!(
+        mark_s.get("background-color"),
+        Some(&CssValue::Color(underrated::css::values::Color::Rgba(
+            255, 255, 0, 255
+        )))
+    );
+    assert_eq!(
+        mark_s.get("color"),
+        Some(&CssValue::Color(underrated::css::values::Color::Rgba(
+            0, 0, 0, 255
+        )))
+    );
+
+    let center_s = center_style.expect("center element should be found");
+    assert_eq!(
+        center_s.get("text-align"),
+        Some(&CssValue::Keyword("center".to_string()))
+    );
+
+    let address_s = address_style.expect("address element should be found");
+    assert_eq!(
+        address_s.get("display"),
+        Some(&CssValue::Keyword("block".to_string()))
+    );
+    assert_eq!(
+        address_s.get("font-style"),
+        Some(&CssValue::Keyword("italic".to_string()))
+    );
+}

@@ -35,6 +35,11 @@ a { color: #0000ee; text-decoration: underline; }\n\
 b, strong { font-weight: bold; }\n\
 i, em { font-style: italic; }\n\
 th { font-weight: bold; text-align: center; }\n\
+s, strike, del { text-decoration: line-through; }\n\
+u, ins { text-decoration: underline; }\n\
+mark { background-color: #ffff00; color: #000; }\n\
+center { text-align: center; }\n\
+address { display: block; font-style: italic; }\n\
 head, style, script, meta, link, title { display: none; }\n\
 button, input[type=\"submit\"], input[type=\"button\"], input[type=\"reset\"] {\n\
   display: inline-block;\n\
