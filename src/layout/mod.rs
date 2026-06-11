@@ -405,7 +405,6 @@ pub(crate) fn layout_node(
         // TODO(spec): support other list-style-type values like circle, square
         // TODO(spec): support list-style-position: inside
         // TODO(spec): support list-style-image
-        // TODO(spec): support start, value, and reversed attributes for list numbering
         // TODO(spec): support numbering restart edge cases
         // TODO(spec): support nested-list interactions beyond nearest ancestor
         // TODO(spec): support exact browser baseline/metrics of the marker
@@ -441,10 +440,34 @@ pub(crate) fn layout_node(
                 let index = get_li_decimal_index(dom, node, list_node);
                 let formatted = match list_style_type {
                     Some(CssValue::Keyword(kw)) => match kw.as_str() {
-                        "lower-alpha" | "lower-latin" => to_alpha(index, false),
-                        "upper-alpha" | "upper-latin" => to_alpha(index, true),
-                        "lower-roman" => to_roman(index, false),
-                        "upper-roman" => to_roman(index, true),
+                        "lower-alpha" | "lower-latin" => {
+                            if index >= 1 {
+                                to_alpha(index as usize, false)
+                            } else {
+                                index.to_string()
+                            }
+                        }
+                        "upper-alpha" | "upper-latin" => {
+                            if index >= 1 {
+                                to_alpha(index as usize, true)
+                            } else {
+                                index.to_string()
+                            }
+                        }
+                        "lower-roman" => {
+                            if index >= 1 {
+                                to_roman(index as usize, false)
+                            } else {
+                                index.to_string()
+                            }
+                        }
+                        "upper-roman" => {
+                            if index >= 1 {
+                                to_roman(index as usize, true)
+                            } else {
+                                index.to_string()
+                            }
+                        }
                         _ => index.to_string(),
                     },
                     _ => index.to_string(),
@@ -886,13 +909,39 @@ fn to_roman(mut n: usize, upper: bool) -> String {
     result
 }
 
-fn get_li_decimal_index(dom: &Dom, li_node: NodeId, list_node: NodeId) -> usize {
+// spec: https://html.spec.whatwg.org/multipage/grouping-content.html#the-ol-element
+fn get_li_decimal_index(dom: &Dom, li_node: NodeId, list_node: NodeId) -> i64 {
     let mut lis = Vec::new();
     find_li_descendants(dom, list_node, list_node, &mut lis);
-    lis.iter()
-        .position(|&id| id == li_node)
-        .map(|pos| pos + 1)
-        .unwrap_or(1)
+
+    let reversed = dom.get_attribute(list_node, "reversed").is_some();
+    let start_val = dom
+        .get_attribute(list_node, "start")
+        .map(|s| s.trim())
+        .and_then(|s| s.parse::<i64>().ok());
+
+    let start_value = if let Some(start) = start_val {
+        start
+    } else if reversed {
+        lis.len() as i64
+    } else {
+        1
+    };
+
+    let mut current = start_value;
+    for &child in &lis {
+        if let Some(val_str) = dom.get_attribute(child, "value")
+            && let Ok(val) = val_str.trim().parse::<i64>()
+        {
+            current = val;
+        }
+        if child == li_node {
+            return current;
+        }
+        current += if reversed { -1 } else { 1 };
+    }
+
+    1
 }
 
 fn find_li_descendants(dom: &Dom, current: NodeId, list_node: NodeId, lis: &mut Vec<NodeId>) {
@@ -1242,6 +1291,188 @@ mod tests {
         let li_r2_marker = &ol_roman_box.children[1].children[1];
         assert_eq!(li_r1_marker.text.as_deref(), Some("I."));
         assert_eq!(li_r2_marker.text.as_deref(), Some("II."));
+    }
+
+    #[test]
+    fn test_ordered_list_numbering_attributes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // 1. <ol start="5"> with 3 items
+        let ol_start = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![("start".into(), "5".into())],
+        });
+        dom.append_child(body, ol_start);
+
+        let li_s1 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_start, li_s1);
+        let text_s1 = dom.create_node(NodeData::Text("s1".into()));
+        dom.append_child(li_s1, text_s1);
+
+        let li_s2 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_start, li_s2);
+        let text_s2 = dom.create_node(NodeData::Text("s2".into()));
+        dom.append_child(li_s2, text_s2);
+
+        let li_s3 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_start, li_s3);
+        let text_s3 = dom.create_node(NodeData::Text("s3".into()));
+        dom.append_child(li_s3, text_s3);
+
+        // 2. <ol reversed> with 3 items
+        let ol_reversed = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![("reversed".into(), "".into())],
+        });
+        dom.append_child(body, ol_reversed);
+
+        let li_r1 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_reversed, li_r1);
+        let text_r1 = dom.create_node(NodeData::Text("r1".into()));
+        dom.append_child(li_r1, text_r1);
+
+        let li_r2 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_reversed, li_r2);
+        let text_r2 = dom.create_node(NodeData::Text("r2".into()));
+        dom.append_child(li_r2, text_r2);
+
+        let li_r3 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_reversed, li_r3);
+        let text_r3 = dom.create_node(NodeData::Text("r3".into()));
+        dom.append_child(li_r3, text_r3);
+
+        // 3. <ol> with second <li value="10">
+        let ol_val = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ol_val);
+
+        let li_v1 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_val, li_v1);
+        let text_v1 = dom.create_node(NodeData::Text("v1".into()));
+        dom.append_child(li_v1, text_v1);
+
+        let li_v2 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![("value".into(), "10".into())],
+        });
+        dom.append_child(ol_val, li_v2);
+        let text_v2 = dom.create_node(NodeData::Text("v2".into()));
+        dom.append_child(li_v2, text_v2);
+
+        let li_v3 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_val, li_v3);
+        let text_v3 = dom.create_node(NodeData::Text("v3".into()));
+        dom.append_child(li_v3, text_v3);
+
+        // 4. Plain <ol> with 2 items
+        let ol_plain = dom.create_node(NodeData::Element {
+            name: "ol".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ol_plain);
+
+        let li_p1 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_plain, li_p1);
+        let text_p1 = dom.create_node(NodeData::Text("p1".into()));
+        dom.append_child(li_p1, text_p1);
+
+        let li_p2 = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ol_plain, li_p2);
+        let text_p2 = dom.create_node(NodeData::Text("p2".into()));
+        dom.append_child(li_p2, text_p2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            ol { display: block; padding-left: 40px; }
+            li { display: block; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        // We added 4 ol lists to the body, so body_box should have 4 children
+        assert_eq!(body_box.children.len(), 4);
+
+        let ol_start_box = &body_box.children[0];
+        let ol_reversed_box = &body_box.children[1];
+        let ol_val_box = &body_box.children[2];
+        let ol_plain_box = &body_box.children[3];
+
+        // 1. Verify start="5" markers
+        assert_eq!(ol_start_box.children.len(), 3);
+        let li_s1_marker = &ol_start_box.children[0].children[1];
+        let li_s2_marker = &ol_start_box.children[1].children[1];
+        let li_s3_marker = &ol_start_box.children[2].children[1];
+        assert_eq!(li_s1_marker.text.as_deref(), Some("5."));
+        assert_eq!(li_s2_marker.text.as_deref(), Some("6."));
+        assert_eq!(li_s3_marker.text.as_deref(), Some("7."));
+
+        // 2. Verify reversed markers
+        assert_eq!(ol_reversed_box.children.len(), 3);
+        let li_r1_marker = &ol_reversed_box.children[0].children[1];
+        let li_r2_marker = &ol_reversed_box.children[1].children[1];
+        let li_r3_marker = &ol_reversed_box.children[2].children[1];
+        assert_eq!(li_r1_marker.text.as_deref(), Some("3."));
+        assert_eq!(li_r2_marker.text.as_deref(), Some("2."));
+        assert_eq!(li_r3_marker.text.as_deref(), Some("1."));
+
+        // 3. Verify value="10" override markers
+        assert_eq!(ol_val_box.children.len(), 3);
+        let li_v1_marker = &ol_val_box.children[0].children[1];
+        let li_v2_marker = &ol_val_box.children[1].children[1];
+        let li_v3_marker = &ol_val_box.children[2].children[1];
+        assert_eq!(li_v1_marker.text.as_deref(), Some("1."));
+        assert_eq!(li_v2_marker.text.as_deref(), Some("10."));
+        assert_eq!(li_v3_marker.text.as_deref(), Some("11."));
+
+        // 4. Verify plain markers (no regression)
+        assert_eq!(ol_plain_box.children.len(), 2);
+        let li_p1_marker = &ol_plain_box.children[0].children[1];
+        let li_p2_marker = &ol_plain_box.children[1].children[1];
+        assert_eq!(li_p1_marker.text.as_deref(), Some("1."));
+        assert_eq!(li_p2_marker.text.as_deref(), Some("2."));
     }
 
     #[test]
