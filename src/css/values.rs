@@ -112,6 +112,21 @@ pub fn parse_value(components: &[ComponentValue]) -> Option<CssValue> {
                     }
                 }
             }
+            // A `/` delimiter separates values even without surrounding
+            // whitespace (e.g. `aspect-ratio:16/9`), so flush the current
+            // group and emit the slash as its own keyword. This keeps the
+            // tight `16/9` form consistent with the spaced `16 / 9` form.
+            ComponentValue::Token(CssToken::Delim('/')) => {
+                if !current_group.is_empty() {
+                    if let Some(val) = parse_single_value(&current_group) {
+                        values.push(val);
+                        current_group.clear();
+                    } else {
+                        return None;
+                    }
+                }
+                values.push(CssValue::Keyword("/".to_string()));
+            }
             _ => {
                 current_group.push(component);
             }
@@ -638,6 +653,25 @@ mod tests {
             token(CssToken::Whitespace),
             token(CssToken::Delim('/')),
             token(CssToken::Whitespace),
+            token(CssToken::Number(9.0)),
+        ];
+        assert_eq!(
+            parse_value(&components),
+            Some(CssValue::Multiple(vec![
+                CssValue::Number(16.0),
+                CssValue::Keyword("/".to_string()),
+                CssValue::Number(9.0),
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_with_slash_no_whitespace() {
+        // 16/9 (tight form, no surrounding whitespace) must parse the same
+        // as the spaced `16 / 9` form so aspect-ratio reaches layout.
+        let components = [
+            token(CssToken::Number(16.0)),
+            token(CssToken::Delim('/')),
             token(CssToken::Number(9.0)),
         ];
         assert_eq!(
