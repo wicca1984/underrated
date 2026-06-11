@@ -379,7 +379,8 @@ pub(crate) fn layout_node(
     if get_form_control_button_label(dom, node).is_some() && children.is_empty() {
         content_height = crate::font::BitmapFont::builtin().line_height() as f32;
     }
-    let border_box_height = get_px(style, "height", content_height)
+    // TODO(spec): min/max-height clamp box-sizing interaction follows the existing height treatment; percentage min/max sizes are not resolved.
+    let border_box_height = clamp_height(style, get_px(style, "height", content_height))
         + padding_top
         + padding_bottom
         + border_top
@@ -662,6 +663,38 @@ fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut
     }
 }
 
+fn clamp_width(style: &ComputedStyle, mut width: f32) -> f32 {
+    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("max-width") {
+        let max_width = get_px(style, "max-width", 0.0);
+        if width > max_width {
+            width = max_width;
+        }
+    }
+    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("min-width") {
+        let min_width = get_px(style, "min-width", 0.0);
+        if width < min_width {
+            width = min_width;
+        }
+    }
+    width.max(0.0)
+}
+
+fn clamp_height(style: &ComputedStyle, mut height: f32) -> f32 {
+    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("max-height") {
+        let max_height = get_px(style, "max-height", 0.0);
+        if height > max_height {
+            height = max_height;
+        }
+    }
+    if let Some(CssValue::Length(_, LengthUnit::Px)) = style.get("min-height") {
+        let min_height = get_px(style, "min-height", 0.0);
+        if height < min_height {
+            height = min_height;
+        }
+    }
+    height.max(0.0)
+}
+
 pub(crate) fn resolve_margins_and_width(
     style: &ComputedStyle,
     containing_width: f32,
@@ -707,7 +740,7 @@ pub(crate) fn resolve_margins_and_width(
             if margin_right_is_auto {
                 resolved_margin_right = 0.0;
             }
-            content_width = (containing_width
+            let raw_width = (containing_width
                 - resolved_margin_left
                 - resolved_margin_right
                 - border_left
@@ -715,9 +748,11 @@ pub(crate) fn resolve_margins_and_width(
                 - padding_left
                 - padding_right)
                 .max(0.0);
+            content_width = clamp_width(style, raw_width);
         } else {
             // width is definite
-            content_width = get_px(style, "width", 0.0);
+            let raw_width = get_px(style, "width", 0.0);
+            content_width = clamp_width(style, raw_width);
             let total_non_margin_width =
                 content_width + border_left + border_right + padding_left + padding_right;
 
@@ -3025,5 +3060,97 @@ mod tests {
 
         // box_submit is <input> -> children.is_empty() -> content height is at least line_height.
         assert!(approx_eq(box_submit.rect.size.height, line_height));
+    }
+
+    #[test]
+    fn test_min_max_sizing_constraints() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // 1. max-width clamps: width: 1000px; max-width: 200px;
+        let div_max_width = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "max-width-test".into())],
+        });
+        dom.append_child(body, div_max_width);
+
+        // 2. min-width clamps: width: 10px; min-width: 300px;
+        let div_min_width = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "min-width-test".into())],
+        });
+        dom.append_child(body, div_min_width);
+
+        // 3. min beats max: width: 500px; max-width: 100px; min-width: 300px;
+        let div_min_beats_max = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "min-beats-max-test".into())],
+        });
+        dom.append_child(body, div_min_beats_max);
+
+        // 4. max-height clamps: height: 1000px; max-height: 50px;
+        let div_max_height = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "max-height-test".into())],
+        });
+        dom.append_child(body, div_max_height);
+
+        // 5. min-height clamps: height: 10px; min-height: 400px;
+        let div_min_height = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "min-height-test".into())],
+        });
+        dom.append_child(body, div_min_height);
+
+        // 6. no constraints (regression guard)
+        let div_no_constraints = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "no-constraints-test".into())],
+        });
+        dom.append_child(body, div_no_constraints);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 1200px; }
+            .max-width-test { display: block; width: 1000px; max-width: 200px; }
+            .min-width-test { display: block; width: 10px; min-width: 300px; }
+            .min-beats-max-test { display: block; width: 500px; max-width: 100px; min-width: 300px; }
+            .max-height-test { display: block; height: 1000px; max-height: 50px; }
+            .min-height-test { display: block; height: 10px; min-height: 400px; }
+            .no-constraints-test { display: block; width: 150px; height: 150px; }
+            ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 1200.0);
+        let body_box = &layout_tree.children[0];
+
+        // Ensure we laid out the children
+        assert_eq!(body_box.children.len(), 6);
+
+        let box_max_width = &body_box.children[0];
+        let box_min_width = &body_box.children[1];
+        let box_min_beats_max = &body_box.children[2];
+        let box_max_height = &body_box.children[3];
+        let box_min_height = &body_box.children[4];
+        let box_no_constraints = &body_box.children[5];
+
+        // Assert width constraints
+        assert!(approx_eq(box_max_width.rect.size.width, 200.0));
+        assert!(approx_eq(box_min_width.rect.size.width, 300.0));
+        assert!(approx_eq(box_min_beats_max.rect.size.width, 300.0));
+
+        // Assert height constraints
+        assert!(approx_eq(box_max_height.rect.size.height, 50.0));
+        assert!(approx_eq(box_min_height.rect.size.height, 400.0));
+
+        // Assert no constraints (regression guard)
+        assert!(approx_eq(box_no_constraints.rect.size.width, 150.0));
+        assert!(approx_eq(box_no_constraints.rect.size.height, 150.0));
     }
 }
