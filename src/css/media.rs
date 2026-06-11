@@ -6,6 +6,28 @@
 
 use crate::css::parser::{ComponentValue, QualifiedRule, Rule, Stylesheet};
 use crate::css::{CssToken, CssTokenizer};
+use std::cell::Cell;
+
+/// Represents the preferred color scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorScheme {
+    Light,
+    Dark,
+}
+
+thread_local! {
+    static PREFERRED_COLOR_SCHEME: Cell<ColorScheme> = const { Cell::new(ColorScheme::Light) };
+}
+
+/// Sets the preferred color scheme for the current thread.
+pub fn set_preferred_color_scheme(scheme: ColorScheme) {
+    PREFERRED_COLOR_SCHEME.with(|c| c.set(scheme));
+}
+
+/// Gets the preferred color scheme for the current thread.
+pub fn preferred_color_scheme() -> ColorScheme {
+    PREFERRED_COLOR_SCHEME.with(|c| c.get())
+}
 
 /// Serializes component values back to a CSS string.
 pub fn serialize_component_values(values: &[ComponentValue]) -> String {
@@ -217,7 +239,7 @@ fn evaluate_single_query(tokens: &[CssToken], viewport_w: f32) -> bool {
 
 /// Evaluates a single media feature, e.g., max-width: 600px.
 fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
-    if tokens.len() < 3 {
+    if tokens.is_empty() {
         return false;
     }
 
@@ -227,7 +249,31 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         return false;
     };
 
+    if tokens.len() == 1 {
+        match feature_name.as_str() {
+            "prefers-color-scheme" => return true,
+            _ => return false,
+        }
+    }
+
+    if tokens.len() < 3 {
+        return false;
+    }
+
     if !matches!(tokens[1], CssToken::Colon) {
+        return false;
+    }
+
+    if feature_name == "prefers-color-scheme" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = preferred_color_scheme();
+            match (current, val_lower.as_str()) {
+                (ColorScheme::Light, "light") => return true,
+                (ColorScheme::Dark, "dark") => return true,
+                _ => return false,
+            }
+        }
         return false;
     }
 
@@ -550,5 +596,38 @@ mod tests {
         // Assert it successfully executed without stack overflow.
         // It might be empty or some rules depending on depth guard, which is correct.
         let _ = matched;
+    }
+
+    #[test]
+    fn test_prefers_color_scheme_default() {
+        // Default is light
+        assert!(media_matches("(prefers-color-scheme: light)", 1000.0));
+        assert!(!media_matches("(prefers-color-scheme: dark)", 1000.0));
+        // Boolean context
+        assert!(media_matches("(prefers-color-scheme)", 1000.0));
+    }
+
+    #[test]
+    fn test_prefers_color_scheme_configured() {
+        // Set to dark
+        set_preferred_color_scheme(ColorScheme::Dark);
+        assert!(!media_matches("(prefers-color-scheme: light)", 1000.0));
+        assert!(media_matches("(prefers-color-scheme: dark)", 1000.0));
+        assert!(media_matches("(prefers-color-scheme)", 1000.0));
+
+        // Set back to light
+        set_preferred_color_scheme(ColorScheme::Light);
+        assert!(media_matches("(prefers-color-scheme: light)", 1000.0));
+        assert!(!media_matches("(prefers-color-scheme: dark)", 1000.0));
+        assert!(media_matches("(prefers-color-scheme)", 1000.0));
+    }
+
+    #[test]
+    fn test_prefers_color_scheme_case_insensitive() {
+        set_preferred_color_scheme(ColorScheme::Dark);
+        assert!(media_matches("(PREFERS-COLOR-SCHEME: DaRk)", 1000.0));
+        assert!(!media_matches("(PREFERS-COLOR-SCHEME: LiGhT)", 1000.0));
+        // Reset to default
+        set_preferred_color_scheme(ColorScheme::Light);
     }
 }
