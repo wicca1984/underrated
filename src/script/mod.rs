@@ -95,6 +95,7 @@ pub struct BoaHost {
 thread_local! {
     static CURRENT_DOM: RefCell<Option<Dom>> = const { RefCell::new(None) };
     static KEY_TO_NODE: RefCell<HashMap<String, NodeId>> = RefCell::new(HashMap::new());
+    static CURRENT_STYLES: RefCell<Option<HashMap<NodeId, crate::style::ComputedStyle>>> = const { RefCell::new(None) };
 }
 
 impl BoaHost {
@@ -290,6 +291,11 @@ impl BoaHost {
             .function(
                 NativeFunction::from_fn_ptr(bridge_clone_node),
                 JsString::from("cloneNode"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_get_computed_style_value),
+                JsString::from("getComputedStyleValue"),
                 2,
             )
             .build();
@@ -1085,6 +1091,17 @@ impl BoaHost {
                         return undefined;
                     }
                 });
+
+                window.getComputedStyle = function(element) {
+                    if (!element || !element.__key__) {
+                        throw new TypeError("getComputedStyle requires an element");
+                    }
+                    return {
+                        getPropertyValue(propertyName) {
+                            return bridge.getComputedStyleValue(element.__key__, String(propertyName));
+                        }
+                    };
+                };
             })();
         "#;
 
@@ -1218,6 +1235,28 @@ impl BoaHost {
             .map_err(|e| ScriptError::Runtime(e.to_string()))?;
 
         Ok(res_str)
+    }
+
+    /// Evaluates the given script with the provided DOM context and computed styles.
+    ///
+    /// The computed styles are exposed via window.getComputedStyle().
+    pub fn eval_with_dom_and_styles(
+        &mut self,
+        src: &str,
+        dom: &mut Dom,
+        styles: &HashMap<NodeId, crate::style::ComputedStyle>,
+    ) -> Result<String, ScriptError> {
+        CURRENT_STYLES.with(|cell| {
+            *cell.borrow_mut() = Some(styles.clone());
+        });
+
+        let res = self.eval_with_dom(src, dom);
+
+        CURRENT_STYLES.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+
+        res
     }
 
     /// Dispatches an event of type `event_type` to the element with `id`.
@@ -2377,6 +2416,137 @@ fn bridge_clone_node(
     }
 }
 
+fn camel_to_kebab(s: &str) -> String {
+    let mut result = String::new();
+    for c in s.chars() {
+        if c.is_ascii_uppercase() {
+            result.push('-');
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
+    use crate::css::values::{
+        AlignItemsValue, BoxSizingValue, Color, CssValue, DisplayValue, FlexDirectionValue,
+        JustifyContentValue, LengthUnit, OverflowValue, PositionValue,
+    };
+    match val {
+        CssValue::Keyword(s) => s.clone(),
+        CssValue::Length(v, unit) => {
+            let unit_str = match unit {
+                LengthUnit::Px => "px",
+                LengthUnit::Em => "em",
+                LengthUnit::Rem => "rem",
+                LengthUnit::Pt => "pt",
+                LengthUnit::Percent => "%",
+                LengthUnit::Vw => "vw",
+                LengthUnit::Vh => "vh",
+            };
+            format!("{}{}", v, unit_str)
+        }
+        CssValue::Number(v) => format!("{}", v),
+        CssValue::Color(Color::Rgba(r, g, b, a)) => {
+            if *a == 255 {
+                format!("rgb({}, {}, {})", r, g, b)
+            } else {
+                format!("rgba({}, {}, {}, {})", r, g, b, *a as f32 / 255.0)
+            }
+        }
+        CssValue::Multiple(vec) => vec
+            .iter()
+            .map(css_value_to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
+        CssValue::Position(pv) => match pv {
+            PositionValue::Static => "static".to_string(),
+            PositionValue::Relative => "relative".to_string(),
+            PositionValue::Absolute => "absolute".to_string(),
+            PositionValue::Fixed => "fixed".to_string(),
+        },
+        CssValue::Overflow(ov) => match ov {
+            OverflowValue::Visible => "visible".to_string(),
+            OverflowValue::Hidden => "hidden".to_string(),
+            OverflowValue::Scroll => "scroll".to_string(),
+            OverflowValue::Auto => "auto".to_string(),
+        },
+        CssValue::BoxSizing(bs) => match bs {
+            BoxSizingValue::ContentBox => "content-box".to_string(),
+            BoxSizingValue::BorderBox => "border-box".to_string(),
+        },
+        CssValue::Display(dv) => match dv {
+            DisplayValue::Block => "block".to_string(),
+            DisplayValue::Inline => "inline".to_string(),
+            DisplayValue::InlineBlock => "inline-block".to_string(),
+            DisplayValue::None => "none".to_string(),
+            DisplayValue::Flex => "flex".to_string(),
+            DisplayValue::Table => "table".to_string(),
+            DisplayValue::TableRow => "table-row".to_string(),
+            DisplayValue::TableCell => "table-cell".to_string(),
+        },
+        CssValue::FlexDirection(fd) => match fd {
+            FlexDirectionValue::Row => "row".to_string(),
+            FlexDirectionValue::RowReverse => "row-reverse".to_string(),
+            FlexDirectionValue::Column => "column".to_string(),
+            FlexDirectionValue::ColumnReverse => "column-reverse".to_string(),
+        },
+        CssValue::JustifyContent(jc) => match jc {
+            JustifyContentValue::FlexStart => "flex-start".to_string(),
+            JustifyContentValue::FlexEnd => "flex-end".to_string(),
+            JustifyContentValue::Center => "center".to_string(),
+            JustifyContentValue::SpaceBetween => "space-between".to_string(),
+            JustifyContentValue::SpaceAround => "space-around".to_string(),
+            JustifyContentValue::SpaceEvenly => "space-evenly".to_string(),
+        },
+        CssValue::AlignItems(ai) => match ai {
+            AlignItemsValue::Stretch => "stretch".to_string(),
+            AlignItemsValue::FlexStart => "flex-start".to_string(),
+            AlignItemsValue::FlexEnd => "flex-end".to_string(),
+            AlignItemsValue::Center => "center".to_string(),
+            AlignItemsValue::Baseline => "baseline".to_string(),
+        },
+    }
+}
+
+fn bridge_get_computed_style_value(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let element_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(JsString::from("")));
+    };
+
+    let property_name = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(JsString::from("")));
+    };
+
+    let mut resolved_value = String::new();
+    with_dom(|_dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&element_key) {
+            CURRENT_STYLES.with(|styles_cell| {
+                if let Some(styles) = styles_cell.borrow().as_ref()
+                    && let Some(computed_style) = styles.get(&node_id)
+                {
+                    let kebab = camel_to_kebab(&property_name);
+                    if let Some(css_val) = computed_style.get(&kebab) {
+                        resolved_value = css_value_to_string(css_val);
+                    }
+                }
+            });
+        }
+    })?;
+
+    Ok(JsValue::from(JsString::from(resolved_value)))
+}
+
 impl Default for BoaHost {
     fn default() -> Self {
         Self::new()
@@ -2492,6 +2662,46 @@ mod tests {
                 .is_ok()
         );
         assert!(host.eval("if (window.navigator.userAgent !== 'underrated/1.0') throw 'window userAgent mismatch';").is_ok());
+    }
+
+    #[test]
+    fn test_get_computed_style() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "my-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let css = "div { color: red; display: flex; }";
+        let stylesheet = crate::css::parser::parse_stylesheet(css);
+        let styles = crate::style::compute_styles(&dom, &stylesheet);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.getElementById('my-div');
+            const style = window.getComputedStyle(el);
+            const color = style.getPropertyValue('color');
+            const display = style.getPropertyValue('display');
+            const margin = style.getPropertyValue('margin');
+            
+            if (color !== 'rgb(255, 0, 0)') {
+                throw new Error('Expected rgb(255, 0, 0), got ' + color);
+            }
+            if (display !== 'flex') {
+                throw new Error('Expected flex, got ' + display);
+            }
+            if (margin !== '') {
+                throw new Error('Expected empty string, got ' + margin);
+            }
+            'SUCCESS'
+        "#;
+
+        let res = host.eval_with_dom_and_styles(script, &mut dom, &styles);
+        assert_eq!(res, Ok("SUCCESS".to_string()));
     }
 
     #[test]
