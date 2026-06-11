@@ -2,6 +2,9 @@
 //!
 //! This module provides a simple, fixed-cell monospace bitmap font for printable ASCII.
 
+pub mod stack;
+pub use stack::{FontStack, Glyph};
+
 /// A fixed-cell monospace bitmap font.
 pub struct BitmapFont {
     width: u32,
