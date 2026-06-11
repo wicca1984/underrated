@@ -418,6 +418,29 @@ pub trait ResourceLoader {
             _ => Err(LoadError::UnsupportedScheme),
         }
     }
+
+    /// Performs a single load "hop", returning HTTP-level redirect metadata
+    /// (status code + optional Location header) alongside the response, so that
+    /// callers can drive [`follow_redirects`]. The default implementation performs
+    /// an ordinary [`ResourceLoader::load_request`] and reports a terminal 200
+    /// response with no Location, preserving existing non-redirecting behavior.
+    /// Loaders able to surface real HTTP status and headers override this.
+    fn load_request_hop(
+        &self,
+        url: &Url,
+        method: HttpMethod,
+        body: &[u8],
+        content_type: Option<&str>,
+    ) -> Result<(RedirectMeta, LoaderResponse), LoadError> {
+        let resp = self.load_request(url, method, body, content_type)?;
+        Ok((
+            RedirectMeta {
+                status: 200,
+                location: None,
+            },
+            resp,
+        ))
+    }
 }
 
 /// A filesystem-based resource loader.
@@ -906,5 +929,126 @@ mod tests {
 
         assert_eq!(result.bytes, b"302 No Location");
         assert_eq!(seen, vec!["http://example.com/redir_no_loc".to_string()]);
+    }
+
+    struct DefaultMockLoader;
+
+    impl ResourceLoader for DefaultMockLoader {
+        fn load(&self, _url: &Url) -> Result<Vec<u8>, LoadError> {
+            Ok(b"hello".to_vec())
+        }
+    }
+
+    #[test]
+    fn test_load_request_hop_default_behavior() {
+        let loader = DefaultMockLoader;
+        let url = Url::parse("http://example.com/test").unwrap();
+        let (meta, resp) = loader
+            .load_request_hop(&url, HttpMethod::Get, b"", None)
+            .unwrap();
+
+        assert_eq!(meta.status, 200);
+        assert_eq!(meta.location, None);
+        assert_eq!(resp.bytes, b"hello");
+    }
+
+    struct OverridingMockLoader;
+
+    impl ResourceLoader for OverridingMockLoader {
+        fn load(&self, _url: &Url) -> Result<Vec<u8>, LoadError> {
+            Ok(vec![])
+        }
+
+        fn load_request_hop(
+            &self,
+            url: &Url,
+            _method: HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<(RedirectMeta, LoaderResponse), LoadError> {
+            if url.serialize() == "http://example.com/start" {
+                Ok((
+                    RedirectMeta {
+                        status: 302,
+                        location: Some("/final".to_string()),
+                    },
+                    LoaderResponse {
+                        bytes: b"Redirecting...".to_vec(),
+                        content_type: "text/html".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            } else if url.serialize() == "http://example.com/final" {
+                Ok((
+                    RedirectMeta {
+                        status: 200,
+                        location: None,
+                    },
+                    LoaderResponse {
+                        bytes: b"FINAL".to_vec(),
+                        content_type: "text/plain".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            } else {
+                Err(LoadError::NotFound)
+            }
+        }
+    }
+
+    #[test]
+    fn test_load_request_hop_driving_follow_redirects() {
+        let loader = OverridingMockLoader;
+        let start_url = Url::parse("http://example.com/start").unwrap();
+
+        let result = follow_redirects(&start_url, |u| {
+            loader.load_request_hop(u, HttpMethod::Get, b"", None)
+        })
+        .unwrap();
+
+        assert_eq!(result.bytes, b"FINAL");
+        assert_eq!(result.content_type, "text/plain");
+    }
+
+    struct NonRedirectMockLoader;
+
+    impl ResourceLoader for NonRedirectMockLoader {
+        fn load(&self, _url: &Url) -> Result<Vec<u8>, LoadError> {
+            Ok(vec![])
+        }
+
+        fn load_request_hop(
+            &self,
+            _url: &Url,
+            _method: HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<(RedirectMeta, LoaderResponse), LoadError> {
+            Ok((
+                RedirectMeta {
+                    status: 200,
+                    location: None,
+                },
+                LoaderResponse {
+                    bytes: b"OK".to_vec(),
+                    content_type: "text/plain".to_string(),
+                    charset: Some("utf-8".to_string()),
+                },
+            ))
+        }
+    }
+
+    #[test]
+    fn test_load_request_hop_non_redirect_passes_through() {
+        let loader = NonRedirectMockLoader;
+        let start_url = Url::parse("http://example.com/any").unwrap();
+
+        let result = follow_redirects(&start_url, |u| {
+            loader.load_request_hop(u, HttpMethod::Get, b"", None)
+        })
+        .unwrap();
+
+        assert_eq!(result.bytes, b"OK");
+        assert_eq!(result.content_type, "text/plain");
     }
 }
