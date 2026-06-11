@@ -23,6 +23,17 @@ impl Dom {
         }
     }
 
+    /// Removes an attribute from an element node.
+    /// No-op for non-element nodes or invalid ids.
+    // spec: https://dom.spec.whatwg.org/#dom-element-removeattribute
+    pub fn remove_attribute(&mut self, node: NodeId, name: &str) {
+        if let Some(n) = self.arena.get_mut(node)
+            && let NodeData::Element { attrs, .. } = &mut n.data
+        {
+            attrs.retain(|(k, _)| k != name);
+        }
+    }
+
     /// Returns the value of an element's attribute, or `None`.
     // spec: https://dom.spec.whatwg.org/#dom-element-getattribute
     pub fn get_attribute(&self, node: NodeId, name: &str) -> Option<&str> {
