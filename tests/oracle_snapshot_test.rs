@@ -513,3 +513,98 @@ fn test_fixture_07_google_mock() {
         "Canvas should have drawn some non-white pixels"
     );
 }
+
+// TODO(spec): B-3 verification — proves relative-URL <img> resolves against page base, fetches via loader,
+// and blits. Real external fetch (HttpLoader/network) and placeholder-on-failure rendering are out of scope.
+#[test]
+fn test_b3_relative_url_image_blits() {
+    let mut img_canvas = underrated::raster::Canvas::new(40, 20);
+    img_canvas.pixels.fill(0xFF0000FF);
+    let png = underrated::image::encode_png(&img_canvas);
+    assert!(!png.is_empty(), "PNG encoding must not be empty");
+
+    struct StubLoader {
+        png: Vec<u8>,
+    }
+    impl underrated::loader::ResourceLoader for StubLoader {
+        fn load(
+            &self,
+            url: &underrated::url::Url,
+        ) -> Result<Vec<u8>, underrated::loader::LoadError> {
+            if url.serialize() == "https://www.example.com/images/logo.png" {
+                Ok(self.png.clone())
+            } else {
+                Err(underrated::loader::LoadError::NotFound)
+            }
+        }
+        fn load_request(
+            &self,
+            _url: &underrated::url::Url,
+            _method: underrated::loader::HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> {
+            Err(underrated::loader::LoadError::NotFound)
+        }
+    }
+
+    let html = r#"
+        <!DOCTYPE html>
+        <html>
+        <body>
+            <img src="/images/logo.png" width="40" height="20">
+        </body>
+        </html>
+    "#;
+    let base_url = underrated::url::Url::parse("https://www.example.com/").unwrap();
+    let stub_loader = StubLoader { png };
+
+    let canvas_positive =
+        underrated::engine::render_page_to_canvas(html, &base_url, &stub_loader, 200, 100);
+
+    let blue_pixel_count_positive = canvas_positive
+        .pixels
+        .iter()
+        .filter(|&&p| p == 0xFF0000FF)
+        .count();
+
+    assert!(
+        blue_pixel_count_positive > 100,
+        "Rendered canvas should have drawn blue pixels. Found count: {}",
+        blue_pixel_count_positive
+    );
+
+    struct DummyLoader;
+    impl underrated::loader::ResourceLoader for DummyLoader {
+        fn load(
+            &self,
+            _url: &underrated::url::Url,
+        ) -> Result<Vec<u8>, underrated::loader::LoadError> {
+            Err(underrated::loader::LoadError::NotFound)
+        }
+        fn load_request(
+            &self,
+            _url: &underrated::url::Url,
+            _method: underrated::loader::HttpMethod,
+            _body: &[u8],
+            _content_type: Option<&str>,
+        ) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> {
+            Err(underrated::loader::LoadError::NotFound)
+        }
+    }
+
+    let canvas_negative =
+        underrated::engine::render_page_to_canvas(html, &base_url, &DummyLoader, 200, 100);
+
+    let blue_pixel_count_negative = canvas_negative
+        .pixels
+        .iter()
+        .filter(|&&p| p == 0xFF0000FF)
+        .count();
+
+    assert_eq!(
+        blue_pixel_count_negative, 0,
+        "Negative control canvas must have zero blue pixels. Found: {}",
+        blue_pixel_count_negative
+    );
+}
