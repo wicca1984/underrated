@@ -694,6 +694,7 @@ pub fn build_display_list(
             }
 
             let mut btn_label_item = None;
+            let mut input_text_item = None;
 
             if is_btn_or_submit {
                 skip_children = true;
@@ -725,7 +726,51 @@ pub fn build_display_list(
                 });
             } else if is_text_input {
                 skip_children = true;
-                // TODO(spec): render input value/placeholder/caret
+
+                let rect = layout_box.rect;
+                let x = rect.origin.x;
+                let y = rect.origin.y;
+                let w = rect.size.width.max(0.0);
+                let h = rect.size.height.max(0.0);
+
+                let value = dom.get_attribute(node_id, "value").map(|v| v.to_string());
+                let placeholder = dom
+                    .get_attribute(node_id, "placeholder")
+                    .map(|v| v.to_string());
+
+                let mut to_draw = None;
+                let mut text_color = Color::Rgba(0, 0, 0, 255);
+
+                if let Some(val) = value.as_ref().filter(|v| !v.is_empty()) {
+                    to_draw = Some(val.clone());
+                    text_color = match style.get("color") {
+                        Some(CssValue::Color(color)) => color.clone(),
+                        _ => Color::Rgba(0, 0, 0, 255),
+                    };
+                } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+                    to_draw = Some(ph.clone());
+                    text_color = Color::Rgba(117, 117, 117, 255); // CSS #757575
+                }
+
+                if let Some(text) = to_draw {
+                    let font = crate::font::BitmapFont::builtin();
+                    let text_w = font.measure(&text) as f32;
+                    let text_h = font.line_height() as f32;
+
+                    let text_x = x + 2.0;
+                    let text_y = y + ((h - text_h) / 2.0).max(0.0);
+
+                    let avail = (w - 2.0).max(0.0);
+                    let draw_w = text_w.min(avail);
+
+                    let corrected_rect = Rect::new(text_x, text_y, draw_w, text_h);
+                    input_text_item = Some(DisplayItem::Text {
+                        rect: corrected_rect,
+                        text,
+                        color: scale_color_alpha(&text_color, effective_opacity),
+                    });
+                }
+                // TODO(spec): caret rendering requires shell caret state
             }
 
             if !node_hidden {
@@ -1378,8 +1423,13 @@ pub fn build_display_list(
                 }
             }
 
-            if !node_hidden && let Some(item) = btn_label_item {
-                items.push(item);
+            if !node_hidden {
+                if let Some(item) = btn_label_item {
+                    items.push(item);
+                }
+                if let Some(item) = input_text_item {
+                    items.push(item);
+                }
             }
         }
 
@@ -4779,5 +4829,152 @@ mod tests {
             image_items.is_empty(),
             "Expected 0 Image items since default Fill stretches using inline blit"
         );
+    }
+
+    #[test]
+    fn test_paint_input_value_and_placeholder() {
+        // Case 1: Input with non-empty value
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let input = dom.create_node(NodeData::Element {
+                name: "input".into(),
+                attrs: vec![
+                    ("type".into(), "text".into()),
+                    ("value".into(), "hello".into()),
+                ],
+            });
+            dom.append_child(doc, input);
+
+            let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+            css.push_str("input { width: 100px; height: 30px; color: rgb(255, 0, 0); }");
+            let stylesheet = parse_stylesheet(&css);
+            let styles = compute_styles(&dom, &stylesheet);
+            let layout = layout_document(&dom, &styles, 100.0);
+
+            let display_list = build_display_list(&layout, &dom, &styles);
+            let items = display_list.0;
+
+            let text_items: Vec<&DisplayItem> = items
+                .iter()
+                .filter(|item| matches!(item, DisplayItem::Text { .. }))
+                .collect();
+
+            assert_eq!(text_items.len(), 1);
+            if let DisplayItem::Text { text, color, rect } = text_items[0] {
+                assert_eq!(text, "hello");
+                assert_eq!(color, &Color::Rgba(255, 0, 0, 255));
+                assert!(rect.origin.x > layout.rect.origin.x); // Left padding applied
+            } else {
+                panic!("Expected Text display item");
+            }
+        }
+
+        // Case 2: Input with only non-empty placeholder
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let input = dom.create_node(NodeData::Element {
+                name: "input".into(),
+                attrs: vec![
+                    ("type".into(), "text".into()),
+                    ("placeholder".into(), "Search...".into()),
+                ],
+            });
+            dom.append_child(doc, input);
+
+            let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+            css.push_str("input { width: 100px; height: 30px; }");
+            let stylesheet = parse_stylesheet(&css);
+            let styles = compute_styles(&dom, &stylesheet);
+            let layout = layout_document(&dom, &styles, 100.0);
+
+            let display_list = build_display_list(&layout, &dom, &styles);
+            let items = display_list.0;
+
+            let text_items: Vec<&DisplayItem> = items
+                .iter()
+                .filter(|item| matches!(item, DisplayItem::Text { .. }))
+                .collect();
+
+            assert_eq!(text_items.len(), 1);
+            if let DisplayItem::Text { text, color, .. } = text_items[0] {
+                assert_eq!(text, "Search...");
+                assert_eq!(color, &Color::Rgba(117, 117, 117, 255)); // Gray color
+            } else {
+                panic!("Expected Text display item");
+            }
+        }
+
+        // Case 3: Input with both value and placeholder (value takes precedence)
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let input = dom.create_node(NodeData::Element {
+                name: "input".into(),
+                attrs: vec![
+                    ("type".into(), "text".into()),
+                    ("value".into(), "real value".into()),
+                    ("placeholder".into(), "Search...".into()),
+                ],
+            });
+            dom.append_child(doc, input);
+
+            let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+            css.push_str("input { width: 100px; height: 30px; }");
+            let stylesheet = parse_stylesheet(&css);
+            let styles = compute_styles(&dom, &stylesheet);
+            let layout = layout_document(&dom, &styles, 100.0);
+
+            let display_list = build_display_list(&layout, &dom, &styles);
+            let items = display_list.0;
+
+            let text_items: Vec<&DisplayItem> = items
+                .iter()
+                .filter(|item| matches!(item, DisplayItem::Text { .. }))
+                .collect();
+
+            assert_eq!(text_items.len(), 1);
+            if let DisplayItem::Text { text, color, .. } = text_items[0] {
+                assert_eq!(text, "real value");
+                assert_eq!(color, &Color::Rgba(0, 0, 0, 255)); // Default color
+            } else {
+                panic!("Expected Text display item");
+            }
+        }
+
+        // Case 4: Input with empty value and empty placeholder
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let input = dom.create_node(NodeData::Element {
+                name: "input".into(),
+                attrs: vec![
+                    ("type".into(), "text".into()),
+                    ("value".into(), "".into()),
+                    ("placeholder".into(), "".into()),
+                ],
+            });
+            dom.append_child(doc, input);
+
+            let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+            css.push_str("input { width: 100px; height: 30px; }");
+            let stylesheet = parse_stylesheet(&css);
+            let styles = compute_styles(&dom, &stylesheet);
+            let layout = layout_document(&dom, &styles, 100.0);
+
+            let display_list = build_display_list(&layout, &dom, &styles);
+            let items = display_list.0;
+
+            let text_items: Vec<&DisplayItem> = items
+                .iter()
+                .filter(|item| matches!(item, DisplayItem::Text { .. }))
+                .collect();
+
+            assert!(
+                text_items.is_empty(),
+                "Should not paint any text if both value and placeholder are empty"
+            );
+        }
     }
 }
