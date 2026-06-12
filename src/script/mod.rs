@@ -4526,6 +4526,69 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             AlignItemsValue::Center => "center".to_string(),
             AlignItemsValue::Baseline => "baseline".to_string(),
         },
+        CssValue::Transform(vec) => vec
+            .iter()
+            .map(|tf| match tf {
+                crate::css::values::TransformFn::Translate { x, y } => {
+                    let fmt_lp = |lp: &crate::css::values::LengthOrPercent| {
+                        let u_str = match lp.unit {
+                            LengthUnit::Px => "px",
+                            LengthUnit::Em => "em",
+                            LengthUnit::Rem => "rem",
+                            LengthUnit::Pt => "pt",
+                            LengthUnit::Percent => "%",
+                            LengthUnit::Vw => "vw",
+                            LengthUnit::Vh => "vh",
+                        };
+                        format!("{}{}", lp.value, u_str)
+                    };
+                    format!("translate({}, {})", fmt_lp(x), fmt_lp(y))
+                }
+                crate::css::values::TransformFn::TranslateX(x) => {
+                    let fmt_lp = |lp: &crate::css::values::LengthOrPercent| {
+                        let u_str = match lp.unit {
+                            LengthUnit::Px => "px",
+                            LengthUnit::Em => "em",
+                            LengthUnit::Rem => "rem",
+                            LengthUnit::Pt => "pt",
+                            LengthUnit::Percent => "%",
+                            LengthUnit::Vw => "vw",
+                            LengthUnit::Vh => "vh",
+                        };
+                        format!("{}{}", lp.value, u_str)
+                    };
+                    format!("translatex({})", fmt_lp(x))
+                }
+                crate::css::values::TransformFn::TranslateY(y) => {
+                    let fmt_lp = |lp: &crate::css::values::LengthOrPercent| {
+                        let u_str = match lp.unit {
+                            LengthUnit::Px => "px",
+                            LengthUnit::Em => "em",
+                            LengthUnit::Rem => "rem",
+                            LengthUnit::Pt => "pt",
+                            LengthUnit::Percent => "%",
+                            LengthUnit::Vw => "vw",
+                            LengthUnit::Vh => "vh",
+                        };
+                        format!("{}{}", lp.value, u_str)
+                    };
+                    format!("translatey({})", fmt_lp(y))
+                }
+                crate::css::values::TransformFn::Scale { x, y } => {
+                    if x == y {
+                        format!("scale({})", x)
+                    } else {
+                        format!("scale({}, {})", x, y)
+                    }
+                }
+                crate::css::values::TransformFn::ScaleX(x) => format!("scalex({})", x),
+                crate::css::values::TransformFn::ScaleY(y) => format!("scaley({})", y),
+                crate::css::values::TransformFn::Rotate(crate::css::values::AngleDeg(deg)) => {
+                    format!("rotate({}deg)", deg)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
     }
 }
 

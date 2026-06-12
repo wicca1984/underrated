@@ -78,6 +78,32 @@ pub enum AlignItemsValue {
     Baseline,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LengthOrPercent {
+    pub value: f32,
+    pub unit: LengthUnit,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AngleDeg(pub f32);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransformFn {
+    Translate {
+        x: LengthOrPercent,
+        y: LengthOrPercent,
+    },
+    TranslateX(LengthOrPercent),
+    TranslateY(LengthOrPercent),
+    Scale {
+        x: f32,
+        y: f32,
+    },
+    ScaleX(f32),
+    ScaleY(f32),
+    Rotate(AngleDeg),
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum CssValue {
     Keyword(String),
@@ -92,6 +118,7 @@ pub enum CssValue {
     FlexDirection(FlexDirectionValue),
     JustifyContent(JustifyContentValue),
     AlignItems(AlignItemsValue),
+    Transform(Vec<TransformFn>),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -468,6 +495,205 @@ fn parse_rgb_function(components: &[ComponentValue]) -> Option<Color> {
         ))
     } else {
         None
+    }
+}
+
+fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
+    let mut args = Vec::new();
+    let mut expect_comma = false;
+
+    for comp in components {
+        match comp {
+            ComponentValue::Token(CssToken::Whitespace) => {
+                continue;
+            }
+            ComponentValue::Token(CssToken::Comma) => {
+                if !expect_comma {
+                    return None;
+                }
+                expect_comma = false;
+            }
+            other => {
+                if expect_comma {
+                    return None;
+                }
+                args.push(other);
+                expect_comma = true;
+            }
+        }
+    }
+
+    if !expect_comma && !components.is_empty() && !args.is_empty() {
+        return None;
+    }
+
+    Some(args)
+}
+
+fn parse_length_or_percent(comp: &ComponentValue) -> Option<LengthOrPercent> {
+    match comp {
+        ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+            let unit_enum = match unit.to_ascii_lowercase().as_str() {
+                "px" => LengthUnit::Px,
+                "em" => LengthUnit::Em,
+                "rem" => LengthUnit::Rem,
+                "pt" => LengthUnit::Pt,
+                "vw" => LengthUnit::Vw,
+                "vh" => LengthUnit::Vh,
+                _ => return None,
+            };
+            Some(LengthOrPercent {
+                value: *value as f32,
+                unit: unit_enum,
+            })
+        }
+        ComponentValue::Token(CssToken::Percentage(v)) => Some(LengthOrPercent {
+            value: *v as f32,
+            unit: LengthUnit::Percent,
+        }),
+        ComponentValue::Token(CssToken::Number(v)) => {
+            if *v == 0.0 {
+                Some(LengthOrPercent {
+                    value: 0.0,
+                    unit: LengthUnit::Px,
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_number(comp: &ComponentValue) -> Option<f32> {
+    match comp {
+        ComponentValue::Token(CssToken::Number(v)) => Some(*v as f32),
+        _ => None,
+    }
+}
+
+fn parse_angle(comp: &ComponentValue) -> Option<AngleDeg> {
+    match comp {
+        ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+            let deg = match unit.to_ascii_lowercase().as_str() {
+                "deg" => *value as f32,
+                "rad" => (*value as f32) * 180.0 / std::f32::consts::PI,
+                "grad" => (*value as f32) * 0.9,
+                "turn" => (*value as f32) * 360.0,
+                _ => return None,
+            };
+            Some(AngleDeg(deg))
+        }
+        ComponentValue::Token(CssToken::Number(v)) => {
+            if *v == 0.0 {
+                Some(AngleDeg(0.0))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_transform_function(name: &str, value: &[ComponentValue]) -> Option<TransformFn> {
+    let args = parse_args(value)?;
+    match name.to_ascii_lowercase().as_str() {
+        "translate" => {
+            if args.len() == 1 {
+                let x = parse_length_or_percent(args[0])?;
+                let y = LengthOrPercent {
+                    value: 0.0,
+                    unit: LengthUnit::Px,
+                };
+                Some(TransformFn::Translate { x, y })
+            } else if args.len() == 2 {
+                let x = parse_length_or_percent(args[0])?;
+                let y = parse_length_or_percent(args[1])?;
+                Some(TransformFn::Translate { x, y })
+            } else {
+                None
+            }
+        }
+        "translatex" => {
+            if args.len() == 1 {
+                let x = parse_length_or_percent(args[0])?;
+                Some(TransformFn::TranslateX(x))
+            } else {
+                None
+            }
+        }
+        "translatey" => {
+            if args.len() == 1 {
+                let y = parse_length_or_percent(args[0])?;
+                Some(TransformFn::TranslateY(y))
+            } else {
+                None
+            }
+        }
+        "scale" => {
+            if args.len() == 1 {
+                let s = parse_number(args[0])?;
+                Some(TransformFn::Scale { x: s, y: s })
+            } else if args.len() == 2 {
+                let x = parse_number(args[0])?;
+                let y = parse_number(args[1])?;
+                Some(TransformFn::Scale { x, y })
+            } else {
+                None
+            }
+        }
+        "scalex" => {
+            if args.len() == 1 {
+                let x = parse_number(args[0])?;
+                Some(TransformFn::ScaleX(x))
+            } else {
+                None
+            }
+        }
+        "scaley" => {
+            if args.len() == 1 {
+                let y = parse_number(args[0])?;
+                Some(TransformFn::ScaleY(y))
+            } else {
+                None
+            }
+        }
+        "rotate" => {
+            if args.len() == 1 {
+                let angle = parse_angle(args[0])?;
+                Some(TransformFn::Rotate(angle))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn parse_transform(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut fns = Vec::new();
+    for comp in components {
+        match comp {
+            ComponentValue::Token(CssToken::Whitespace) => {
+                continue;
+            }
+            ComponentValue::Function { name, value } => {
+                if let Some(tf) = parse_transform_function(name, value) {
+                    fns.push(tf);
+                } else {
+                    return None;
+                }
+            }
+            _ => {
+                return None;
+            }
+        }
+    }
+
+    if fns.is_empty() {
+        None
+    } else {
+        Some(CssValue::Transform(fns))
     }
 }
 
@@ -866,5 +1092,165 @@ mod tests {
             parse_property_value("color", &[token(CssToken::Ident("red".to_string()))]),
             Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
         );
+    }
+
+    #[test]
+    fn test_parse_transform() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_transform(&components)
+        };
+
+        // 1. translate(10px, 20px)
+        let val1 = parse("translate(10px, 20px)").unwrap();
+        assert_eq!(
+            val1,
+            CssValue::Transform(vec![TransformFn::Translate {
+                x: LengthOrPercent {
+                    value: 10.0,
+                    unit: LengthUnit::Px
+                },
+                y: LengthOrPercent {
+                    value: 20.0,
+                    unit: LengthUnit::Px
+                },
+            }])
+        );
+
+        // 2. translate(10px) -> y defaults to 0
+        let val2 = parse("translate(10px)").unwrap();
+        assert_eq!(
+            val2,
+            CssValue::Transform(vec![TransformFn::Translate {
+                x: LengthOrPercent {
+                    value: 10.0,
+                    unit: LengthUnit::Px
+                },
+                y: LengthOrPercent {
+                    value: 0.0,
+                    unit: LengthUnit::Px
+                },
+            }])
+        );
+
+        // 3. translateX(5px) and translateY(50%)
+        let val3 = parse("translateX(5px)").unwrap();
+        assert_eq!(
+            val3,
+            CssValue::Transform(vec![TransformFn::TranslateX(LengthOrPercent {
+                value: 5.0,
+                unit: LengthUnit::Px,
+            })])
+        );
+
+        let val4 = parse("translateY(50%)").unwrap();
+        assert_eq!(
+            val4,
+            CssValue::Transform(vec![TransformFn::TranslateY(LengthOrPercent {
+                value: 50.0,
+                unit: LengthUnit::Percent,
+            })])
+        );
+
+        // 4. scale(2) -> uniform x=y=2
+        let val5 = parse("scale(2)").unwrap();
+        assert_eq!(
+            val5,
+            CssValue::Transform(vec![TransformFn::Scale { x: 2.0, y: 2.0 }])
+        );
+
+        // scale(2, 3) -> x=2, y=3
+        let val6 = parse("scale(2, 3)").unwrap();
+        assert_eq!(
+            val6,
+            CssValue::Transform(vec![TransformFn::Scale { x: 2.0, y: 3.0 }])
+        );
+
+        // scaleX(0.5)
+        let val7 = parse("scaleX(0.5)").unwrap();
+        assert_eq!(val7, CssValue::Transform(vec![TransformFn::ScaleX(0.5)]));
+
+        // 5. rotate(45deg), rotate(0) (unitless zero), and rotate(1turn), rotate(100grad), rotate(3.14159265rad)
+        let val8 = parse("rotate(45deg)").unwrap();
+        if let CssValue::Transform(ref fns) = val8 {
+            if let TransformFn::Rotate(AngleDeg(deg)) = fns[0] {
+                assert_eq!(deg, 45.0);
+            } else {
+                panic!("Expected Rotate");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        let val9 = parse("rotate(0)").unwrap();
+        if let CssValue::Transform(ref fns) = val9 {
+            if let TransformFn::Rotate(AngleDeg(deg)) = fns[0] {
+                assert_eq!(deg, 0.0);
+            } else {
+                panic!("Expected Rotate");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        let val10 = parse("rotate(1turn)").unwrap();
+        if let CssValue::Transform(ref fns) = val10 {
+            if let TransformFn::Rotate(AngleDeg(deg)) = fns[0] {
+                assert_eq!(deg, 360.0);
+            } else {
+                panic!("Expected Rotate");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        let val11 = parse("rotate(100grad)").unwrap();
+        if let CssValue::Transform(ref fns) = val11 {
+            if let TransformFn::Rotate(AngleDeg(deg)) = fns[0] {
+                assert_eq!(deg, 90.0);
+            } else {
+                panic!("Expected Rotate");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        let val12 = parse("rotate(3.141592653589793rad)").unwrap();
+        if let CssValue::Transform(ref fns) = val12 {
+            if let TransformFn::Rotate(AngleDeg(deg)) = fns[0] {
+                assert!((deg - 180.0).abs() < 1e-4);
+            } else {
+                panic!("Expected Rotate");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        // 6. A chained list: translate(1px, 2px) rotate(45deg) scale(2)
+        let val13 = parse("translate(1px, 2px) rotate(45deg) scale(2)").unwrap();
+        assert_eq!(
+            val13,
+            CssValue::Transform(vec![
+                TransformFn::Translate {
+                    x: LengthOrPercent {
+                        value: 1.0,
+                        unit: LengthUnit::Px
+                    },
+                    y: LengthOrPercent {
+                        value: 2.0,
+                        unit: LengthUnit::Px
+                    },
+                },
+                TransformFn::Rotate(AngleDeg(45.0)),
+                TransformFn::Scale { x: 2.0, y: 2.0 },
+            ])
+        );
+
+        // 7. Invalid inputs return None
+        assert!(parse("skew(10deg)").is_none());
+        assert!(parse("translate(1px, 2px, 3px)").is_none());
+        assert!(parse("scale(10px)").is_none());
+        assert!(parse("rotate(45)").is_none()); // unitless non-zero angle is invalid
+        assert!(parse("translate(10)").is_none()); // unitless non-zero length is invalid
     }
 }
