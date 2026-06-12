@@ -378,6 +378,13 @@ fn get_border_color(style: &CategorizedComputedStyle) -> Color {
             return c;
         }
     }
+    // Then the base `border-color` shorthand value. This survives the outset/inset
+    // per-edge color stripping, letting the UA button bevel recover its silver border.
+    if style.reset_surround.border_color != "currentcolor" {
+        if let Some(c) = parse_css_color(&style.reset_surround.border_color) {
+            return c;
+        }
+    }
     // Fall back to computed text "color"
     if let Some(c) = parse_css_color(&style.inherited_text.color) {
         return c;

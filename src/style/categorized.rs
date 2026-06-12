@@ -208,6 +208,12 @@ pub struct ResetSurround {
     pub border_right_color: String,
     pub border_bottom_color: String,
     pub border_left_color: String,
+    /// Base `border-color` (the non-per-edge shorthand value). Unlike the per-edge
+    /// colors, this is NOT stripped when an `outset`/`inset` style triggers the UA
+    /// bevel synthesis, so paint can still recover the resolved border color (e.g. the
+    /// UA button's silver) that the legacy HashMap kept on the `border`/`border-color`
+    /// shorthand entries.
+    pub border_color: String,
     pub border_top_left_radius: i32,
     pub border_top_right_radius: i32,
     pub border_bottom_right_radius: i32,
@@ -245,6 +251,7 @@ impl Default for ResetSurround {
             border_right_color: "currentcolor".to_string(),
             border_bottom_color: "currentcolor".to_string(),
             border_left_color: "currentcolor".to_string(),
+            border_color: "currentcolor".to_string(),
             border_top_left_radius: -1,
             border_top_right_radius: -1,
             border_bottom_right_radius: -1,
@@ -878,6 +885,12 @@ impl CategorizedComputedStyle {
                 Arc::make_mut(&mut self.reset_surround).border_left_color =
                     css_value_to_string(value)
             }
+            // Base (non-per-edge) border-color. The cascade also expands this to the
+            // per-edge longhands (which may be stripped for an outset/inset bevel), but
+            // the base value is retained so paint can recover the resolved color.
+            "border-color" => {
+                Arc::make_mut(&mut self.reset_surround).border_color = css_value_to_string(value)
+            }
             "border-top-left-radius" => {
                 Arc::make_mut(&mut self.reset_surround).border_top_left_radius =
                     value_to_px(value, fs)
@@ -1022,7 +1035,8 @@ impl CategorizedComputedStyle {
                             surround.border_top_color = col.clone();
                             surround.border_right_color = col.clone();
                             surround.border_bottom_color = col.clone();
-                            surround.border_left_color = col;
+                            surround.border_left_color = col.clone();
+                            surround.border_color = col;
                         }
                         CssValue::Keyword(ref kw) => {
                             if kw == "thin" || kw == "medium" || kw == "thick" {
@@ -1053,7 +1067,8 @@ impl CategorizedComputedStyle {
                                 surround.border_top_color = col.clone();
                                 surround.border_right_color = col.clone();
                                 surround.border_bottom_color = col.clone();
-                                surround.border_left_color = col;
+                                surround.border_left_color = col.clone();
+                                surround.border_color = col;
                             }
                         }
                         _ => {}
