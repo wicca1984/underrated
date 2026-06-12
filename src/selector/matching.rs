@@ -220,6 +220,16 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     return false;
                 }
                 false
+            } else if name.starts_with("nth-child(") && name.ends_with(')') {
+                let content = &name["nth-child(".len()..name.len() - 1];
+                let mut parts = content.split(',');
+                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
+                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
+                });
+                if let Some((a, b)) = parsed {
+                    return nth_child(dom, node, a, b);
+                }
+                false
             } else if name.starts_with("nth-last-child(") && name.ends_with(')') {
                 let content = &name["nth-last-child(".len()..name.len() - 1];
                 let mut parts = content.split(',');
@@ -227,28 +237,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
                 });
                 if let Some((a, b)) = parsed {
-                    if let Some(parent) = dom.parent(node) {
-                        let children = dom.children(parent);
-                        let mut element_index = 0;
-                        for &child in children.iter().rev() {
-                            if child == node {
-                                let i = element_index + 1; // 1-indexed
-                                if a == 0 {
-                                    return i == b;
-                                }
-                                let diff = i - b;
-                                if a > 0 {
-                                    return diff >= 0 && diff % a == 0;
-                                } else {
-                                    return diff <= 0 && diff % a == 0;
-                                }
-                            }
-                            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
-                                element_index += 1;
-                            }
-                        }
-                    }
-                    return false;
+                    return nth_last_child(dom, node, a, b);
                 }
                 false
             } else if name.starts_with("nth-last-of-type(") && name.ends_with(')') {
@@ -296,6 +285,8 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "hover" => get_node_state(node).hover,
                     "focus" => get_node_state(node).focus,
                     "active" => get_node_state(node).active,
+                    "first-child" => is_first_child(dom, node),
+                    "last-child" => is_last_child(dom, node),
                     "first-of-type" => is_first_of_type(dom, node),
                     "last-of-type" => is_last_of_type(dom, node),
                     "only-child" => is_only_child(dom, node),
@@ -310,55 +301,11 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
             }
         }
         Component::PseudoElement(_) => true, // Match any pseudo-element by name for now.
-        Component::NthChild(a, b) => {
-            if let Some(parent) = dom.parent(node) {
-                let children = dom.children(parent);
-                // Only count elements
-                let mut element_index = 0;
-                for &child in children {
-                    if child == node {
-                        let i = element_index + 1; // 1-indexed
-                        if *a == 0 {
-                            return i == *b;
-                        }
-                        let diff = i - *b;
-                        if *a > 0 {
-                            return diff >= 0 && diff % *a == 0;
-                        } else {
-                            return diff <= 0 && diff % *a == 0;
-                        }
-                    }
-                    if matches!(dom.data(child), Some(NodeData::Element { .. })) {
-                        element_index += 1;
-                    }
-                }
-            }
-            false
-        }
+        Component::NthChild(a, b) => nth_child(dom, node, *a, *b),
         Component::Not(compound) => !matches_compound(compound, dom, node),
         Component::Is(list) | Component::Where(list) => matches(list, dom, node),
-        Component::FirstChild => {
-            if let Some(parent) = dom.parent(node) {
-                let children = dom.children(parent);
-                for &child in children {
-                    if matches!(dom.data(child), Some(NodeData::Element { .. })) {
-                        return child == node;
-                    }
-                }
-            }
-            false
-        }
-        Component::LastChild => {
-            if let Some(parent) = dom.parent(node) {
-                let children = dom.children(parent);
-                for &child in children.iter().rev() {
-                    if matches!(dom.data(child), Some(NodeData::Element { .. })) {
-                        return child == node;
-                    }
-                }
-            }
-            false
-        }
+        Component::FirstChild => is_first_child(dom, node),
+        Component::LastChild => is_last_child(dom, node),
     }
 }
 
@@ -393,6 +340,96 @@ pub fn clear_node_states() {
     NODE_STATES.with(|states| {
         states.borrow_mut().clear();
     });
+}
+
+fn is_first_child(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                return child == node;
+            }
+        }
+    }
+    false
+}
+
+fn is_last_child(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children.iter().rev() {
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                return child == node;
+            }
+        }
+    }
+    false
+}
+
+fn nth_child(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                if a == 0 {
+                    return i == b;
+                }
+                let diff = i - b;
+                if a > 0 {
+                    return diff >= 0 && diff % a == 0;
+                } else {
+                    return diff <= 0 && diff % a == 0;
+                }
+            }
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                element_index += 1;
+            }
+        }
+    }
+    false
+}
+
+fn nth_last_child(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children.iter().rev() {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                if a == 0 {
+                    return i == b;
+                }
+                let diff = i - b;
+                if a > 0 {
+                    return diff >= 0 && diff % a == 0;
+                } else {
+                    return diff <= 0 && diff % a == 0;
+                }
+            }
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                element_index += 1;
+            }
+        }
+    }
+    false
 }
 
 fn is_first_of_type(dom: &Dom, node: NodeId) -> bool {
@@ -1513,6 +1550,109 @@ mod tests {
         ));
         assert!(!matches(&parse_selector_list(":root").unwrap(), &dom, p1));
         assert!(!matches(&parse_selector_list("p:root").unwrap(), &dom, p1));
+    }
+
+    #[test]
+    fn test_child_structural_pseudo_classes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, parent);
+
+        // mixed children: <h1>, <p>, <p>, <span>
+        let h1 = dom.create_node(NodeData::Element {
+            name: "h1".into(),
+            attrs: vec![],
+        });
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+
+        dom.append_child(parent, h1);
+        dom.append_child(parent, p1);
+        dom.append_child(parent, p2);
+        dom.append_child(parent, span1);
+
+        // 1. :first-child and :last-child select first/last element child regardless of tag
+        assert!(matches(
+            &parse_selector_list(":first-child").unwrap(),
+            &dom,
+            h1
+        ));
+        assert!(!matches(
+            &parse_selector_list(":first-child").unwrap(),
+            &dom,
+            p1
+        ));
+        assert!(matches(
+            &parse_selector_list(":last-child").unwrap(),
+            &dom,
+            span1
+        ));
+        assert!(!matches(
+            &parse_selector_list(":last-child").unwrap(),
+            &dom,
+            p2
+        ));
+
+        // 2. p:nth-child(2) matches a p only when it is the 2nd element child overall (which is p1)
+        // Note: element children are [h1, p1, p2, span1] (1-indexed: 1, 2, 3, 4)
+        assert!(matches(
+            &parse_selector_list("p:nth-child(2)").unwrap(),
+            &dom,
+            p1
+        ));
+        // p2 is the 3rd element child, so it does NOT match p:nth-child(2)
+        assert!(!matches(
+            &parse_selector_list("p:nth-child(2)").unwrap(),
+            &dom,
+            p2
+        ));
+        // h1 is the 1st element child, so it does NOT match :nth-child(2)
+        assert!(!matches(
+            &parse_selector_list(":nth-child(2)").unwrap(),
+            &dom,
+            h1
+        ));
+
+        // 3. :nth-child(odd) / :nth-child(2n) select the expected positions
+        // odd indices: 1 (h1), 3 (p2)
+        // even indices (2n): 2 (p1), 4 (span1)
+        let odd_sel = parse_selector_list(":nth-child(odd)").unwrap();
+        assert!(matches(&odd_sel, &dom, h1));
+        assert!(!matches(&odd_sel, &dom, p1));
+        assert!(matches(&odd_sel, &dom, p2));
+        assert!(!matches(&odd_sel, &dom, span1));
+
+        let even_sel = parse_selector_list(":nth-child(even)").unwrap();
+        assert!(!matches(&even_sel, &dom, h1));
+        assert!(matches(&even_sel, &dom, p1));
+        assert!(!matches(&even_sel, &dom, p2));
+        assert!(matches(&even_sel, &dom, span1));
+
+        // 4. :nth-last-child(1) equals :last-child
+        assert!(matches(
+            &parse_selector_list(":nth-last-child(1)").unwrap(),
+            &dom,
+            span1
+        ));
+        assert!(!matches(
+            &parse_selector_list(":nth-last-child(1)").unwrap(),
+            &dom,
+            p2
+        ));
     }
 
     #[test]
