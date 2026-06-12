@@ -313,7 +313,35 @@ pub fn decode_bmp(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, or BMP) into a DecodedImage by sniffing the format.
+/// Decodes a WebP byte stream into a DecodedImage.
+pub fn decode_webp(bytes: &[u8]) -> Option<DecodedImage> {
+    let mut decoder = image_webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+    let (width, height) = decoder.dimensions();
+    let has_alpha = decoder.has_alpha();
+    let size = decoder.output_buffer_size()?;
+    let mut buf = vec![0; size];
+    decoder.read_image(&mut buf).ok()?;
+
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    if has_alpha {
+        rgba = buf;
+    } else {
+        for chunk in buf.chunks_exact(3) {
+            rgba.push(chunk[0]);
+            rgba.push(chunk[1]);
+            rgba.push(chunk[2]);
+            rgba.push(255);
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, or WebP) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -323,6 +351,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_gif(bytes)
     } else if bytes.starts_with(b"BM") {
         decode_bmp(bytes)
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        decode_webp(bytes)
     } else {
         None
     }
@@ -361,6 +391,54 @@ mod tests {
     }
 
     #[test]
+    fn test_webp_round_trip() {
+        let mut buf = Vec::new();
+        let encoder = image_webp::WebPEncoder::new(&mut buf);
+        let pixels = vec![
+            255, 0, 0, 255, // Red
+            0, 255, 0, 255, // Green
+            0, 0, 255, 255, // Blue
+            255, 255, 255, 128, // Semi-transparent White
+        ];
+        encoder
+            .encode(&pixels, 2, 2, image_webp::ColorType::Rgba8)
+            .expect("Should encode successfully");
+
+        let decoded = decode_webp(&buf).expect("Should decode successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 2 * 2 * 4);
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 128]);
+    }
+
+    #[test]
+    fn test_webp_round_trip_rgb() {
+        let mut buf = Vec::new();
+        let encoder = image_webp::WebPEncoder::new(&mut buf);
+        let pixels = vec![
+            255, 0, 0, // Red
+            0, 255, 0, // Green
+            0, 0, 255, // Blue
+            255, 255, 255, // White
+        ];
+        encoder
+            .encode(&pixels, 2, 2, image_webp::ColorType::Rgb8)
+            .expect("Should encode successfully");
+
+        let decoded = decode_webp(&buf).expect("Should decode successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 2 * 2 * 4);
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
     fn test_decode_garbage() {
         assert!(decode_png(b"not a png").is_none());
         assert!(decode_png(&[]).is_none());
@@ -368,6 +446,8 @@ mod tests {
         assert!(decode_jpeg(&[]).is_none());
         assert!(decode_gif(b"not a gif").is_none());
         assert!(decode_gif(&[]).is_none());
+        assert!(decode_webp(b"not a webp").is_none());
+        assert!(decode_webp(&[]).is_none());
     }
 
     #[test]
@@ -382,6 +462,16 @@ mod tests {
 
         let gif_bytes = crate::loader::decode_base64(GIF_BASE64).unwrap();
         assert!(decode_gif(&gif_bytes[0..gif_bytes.len() / 2]).is_none());
+
+        let mut webp_buf = Vec::new();
+        let encoder = image_webp::WebPEncoder::new(&mut webp_buf);
+        let pixels = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128,
+        ];
+        encoder
+            .encode(&pixels, 2, 2, image_webp::ColorType::Rgba8)
+            .unwrap();
+        assert!(decode_webp(&webp_buf[0..webp_buf.len() - 10]).is_none());
     }
 
     #[test]
@@ -435,6 +525,18 @@ mod tests {
         assert_eq!(decoded_gif.width, 1);
         assert_eq!(decoded_gif.height, 1);
         assert_eq!(decoded_gif.rgba.len(), 4);
+
+        // Test WebP decoding via decode_image
+        let mut webp_buf = Vec::new();
+        let encoder = image_webp::WebPEncoder::new(&mut webp_buf);
+        let pixels = vec![255, 0, 0, 255];
+        encoder
+            .encode(&pixels, 1, 1, image_webp::ColorType::Rgba8)
+            .expect("Should encode successfully");
+        let decoded_webp = decode_image(&webp_buf).expect("Should sniff and decode WebP");
+        assert_eq!(decoded_webp.width, 1);
+        assert_eq!(decoded_webp.height, 1);
+        assert_eq!(&decoded_webp.rgba[..], &[255, 0, 0, 255]);
 
         // Test garbage rejected by decode_image
         assert!(decode_image(b"neither png nor jpeg nor gif nor bmp").is_none());
