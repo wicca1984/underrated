@@ -415,6 +415,28 @@ pub fn navigate_from_click(
     Some(navigate(&req, base, loader, viewport_width))
 }
 
+// TODO(spec): implicit submission should select the form's default submit button as submitter
+/// Resolves an implicit form submission from pressing Enter on a focused control into a navigated result page.
+///
+/// Returns `Some(Page)` when `focused` is a form control that is associated with a form
+/// (either via its `form` attribute or its ancestor chain, where `forms::find_form_for_button`
+/// resolves the form element and `forms::submit` yields a `NavigationRequest`): the request is
+/// dispatched through `navigate` against `base` and the rendered result page
+/// is returned. Returns `None` when `focused` is not associated with any form,
+/// or when building the submission request fails. Never panics (I-6).
+pub fn navigate_from_enter(
+    dom: &crate::dom::Dom,
+    focused: crate::infra::NodeId,
+    values: &crate::forms::FormState,
+    base: &Url,
+    loader: &dyn ResourceLoader,
+    viewport_width: f32,
+) -> Option<Page> {
+    let form = crate::forms::find_form_for_button(dom, focused)?;
+    let req = crate::forms::submit(dom, form, values)?;
+    Some(navigate(&req, base, loader, viewport_width))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2398,6 +2420,104 @@ mod tests {
             img_narrow_opt.unwrap().width,
             3,
             "Should have loaded narrow.png at viewport width 500.0"
+        );
+    }
+
+    #[test]
+    fn test_navigate_from_enter_submits_owning_form() {
+        use std::collections::HashMap;
+
+        // Base URL
+        let base_url = Url::parse("https://example.com/").unwrap();
+
+        // Prepare MockLoader with response for GET search
+        let mut responses = HashMap::new();
+        responses.insert(
+            "GET:https://example.com/search?q=query|body:[]|ct:None".to_string(),
+            Ok(b"<html><body><h1>Search results: query</h1></body></html>".to_vec()),
+        );
+
+        let loader = MockLoader { responses };
+
+        // Parse HTML to DOM
+        let html = r#"
+            <form action="/search" method="get">
+                <input type="text" name="q" id="input-q">
+            </form>
+        "#;
+        let input = crate::encoding::InputStream::from_utf8(html.as_bytes());
+        let dom = crate::html::parse_document(input);
+
+        // Find the input element NodeId
+        let doc = dom.document();
+        let mut input_id = None;
+        for id in dom.descendants(doc) {
+            if let Some(NodeData::Element { name, attrs }) = dom.data(id)
+                && name == "input"
+                && attrs.iter().any(|(k, v)| k == "id" && v == "input-q")
+            {
+                input_id = Some(id);
+                break;
+            }
+        }
+        let input_id = input_id.expect("Should find input node");
+
+        // Set FormState
+        let mut values = crate::forms::FormState::new();
+        values.set_value(input_id, "query");
+
+        // Call navigate_from_enter
+        let page = navigate_from_enter(&dom, input_id, &values, &base_url, &loader, 800.0)
+            .expect("navigate_from_enter should return Some(Page)");
+
+        // Assert DOM of returned Page contains the expected text from mock loader
+        let mut found_text = false;
+        let page_doc = page.dom.document();
+        for id in page.dom.descendants(page_doc) {
+            if let Some(NodeData::Text(text)) = page.dom.data(id)
+                && text.contains("Search results: query")
+            {
+                found_text = true;
+            }
+        }
+        assert!(found_text, "Page should contain mock results text");
+    }
+
+    #[test]
+    fn test_navigate_from_enter_no_form_returns_none() {
+        use std::collections::HashMap;
+
+        let base_url = Url::parse("https://example.com/").unwrap();
+        let loader = MockLoader {
+            responses: HashMap::new(),
+        };
+
+        // Parse HTML to DOM (input with no form)
+        let html = r#"<input type="text" id="input-no-form">"#;
+        let input = crate::encoding::InputStream::from_utf8(html.as_bytes());
+        let dom = crate::html::parse_document(input);
+
+        // Find the input NodeId
+        let doc = dom.document();
+        let mut input_id = None;
+        for id in dom.descendants(doc) {
+            if let Some(NodeData::Element { name, attrs }) = dom.data(id)
+                && name == "input"
+                && attrs.iter().any(|(k, v)| k == "id" && v == "input-no-form")
+            {
+                input_id = Some(id);
+                break;
+            }
+        }
+        let input_id = input_id.expect("Should find input node");
+
+        let values = crate::forms::FormState::new();
+
+        // Call navigate_from_enter
+        let result = navigate_from_enter(&dom, input_id, &values, &base_url, &loader, 800.0);
+        assert!(
+            result.is_none(),
+            "Should return None when input is not associated with any form"
         );
     }
 }
