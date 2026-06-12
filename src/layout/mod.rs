@@ -1,8 +1,10 @@
 mod flex;
+mod float;
 mod inline;
 mod position;
 mod table;
 
+pub(crate) use float::get_float_value;
 pub(crate) use position::is_absolute_or_fixed;
 
 use crate::css::values::{CssValue, DisplayValue, LengthUnit};
@@ -278,38 +280,69 @@ pub(crate) fn layout_node(
                 continue;
             }
 
-            let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
-                (prev_margin_bottom, last_child_box_max_y)
-            {
-                let child_style = styles.get(&child);
-                let margin_top = child_style
-                    .map(|s| get_px(s, "margin-top", 0.0))
-                    .unwrap_or(0.0);
-                let collapsed = collapse_margins(prev_mb, margin_top);
-                last_max_y + collapsed - margin_top
+            let child_style = styles.get(&child);
+            let float_val = child_style.and_then(get_float_value);
+
+            if let Some(fv) = float_val {
+                let float_offset_y = child_cursor_y;
+                let containing_content_left = border_box_x + border_left + padding_left;
+
+                if let Some(mut child_box) = layout_node(
+                    dom,
+                    styles,
+                    child,
+                    content_width,
+                    containing_content_left,
+                    float_offset_y,
+                    depth + 1,
+                ) {
+                    if fv == "right" {
+                        let child_margin_left = child_style
+                            .map(|s| get_px(s, "margin-left", 0.0))
+                            .unwrap_or(0.0);
+                        let child_margin_right = child_style
+                            .map(|s| get_px(s, "margin-right", 0.0))
+                            .unwrap_or(0.0);
+                        let shift_dx = content_width
+                            - child_box.rect.size.width
+                            - child_margin_right
+                            - child_margin_left;
+                        position::shift_layout_box(&mut child_box, styles, shift_dx, 0.0, 0);
+                    }
+                    children.push(child_box);
+                }
             } else {
-                child_cursor_y
-            };
+                let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                    (prev_margin_bottom, last_child_box_max_y)
+                {
+                    let margin_top = child_style
+                        .map(|s| get_px(s, "margin-top", 0.0))
+                        .unwrap_or(0.0);
+                    let collapsed = collapse_margins(prev_mb, margin_top);
+                    last_max_y + collapsed - margin_top
+                } else {
+                    child_cursor_y
+                };
 
-            if let Some(child_box) = layout_node(
-                dom,
-                styles,
-                child,
-                content_width,
-                border_box_x + border_left + padding_left,
-                offset_y,
-                depth + 1,
-            ) {
-                let margin_bottom = styles
-                    .get(&child)
-                    .map(|s| get_px(s, "margin-bottom", 0.0))
-                    .unwrap_or(0.0);
+                if let Some(child_box) = layout_node(
+                    dom,
+                    styles,
+                    child,
+                    content_width,
+                    border_box_x + border_left + padding_left,
+                    offset_y,
+                    depth + 1,
+                ) {
+                    let margin_bottom = child_style
+                        .map(|s| get_px(s, "margin-bottom", 0.0))
+                        .unwrap_or(0.0);
 
-                last_child_box_max_y = Some(child_box.rect.max_y());
-                prev_margin_bottom = Some(margin_bottom);
+                    last_child_box_max_y = Some(child_box.rect.max_y());
+                    prev_margin_bottom = Some(margin_bottom);
 
-                child_cursor_y = child_box.rect.max_y() + margin_bottom;
-                children.push(child_box);
+                    child_cursor_y = child_box.rect.max_y() + margin_bottom;
+                    children.push(child_box);
+                }
             }
         }
     } else {
@@ -672,38 +705,69 @@ fn layout_mixed_children(
                 children.push(anon_box);
             }
         } else {
-            let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
-                (prev_margin_bottom, last_child_box_max_y)
-            {
-                let child_style = styles.get(&child);
-                let margin_top = child_style
-                    .map(|s| get_px(s, "margin-top", 0.0))
-                    .unwrap_or(0.0);
-                let collapsed = collapse_margins(prev_mb, margin_top);
-                last_max_y + collapsed - margin_top
+            let child_style = styles.get(&child);
+            let float_val = child_style.and_then(get_float_value);
+
+            if let Some(fv) = float_val {
+                let float_offset_y = child_cursor_y;
+                let containing_content_left = content_x;
+
+                if let Some(mut child_box) = layout_node(
+                    dom,
+                    styles,
+                    child,
+                    content_width,
+                    containing_content_left,
+                    float_offset_y,
+                    depth + 1,
+                ) {
+                    if fv == "right" {
+                        let child_margin_left = child_style
+                            .map(|s| get_px(s, "margin-left", 0.0))
+                            .unwrap_or(0.0);
+                        let child_margin_right = child_style
+                            .map(|s| get_px(s, "margin-right", 0.0))
+                            .unwrap_or(0.0);
+                        let shift_dx = content_width
+                            - child_box.rect.size.width
+                            - child_margin_right
+                            - child_margin_left;
+                        position::shift_layout_box(&mut child_box, styles, shift_dx, 0.0, 0);
+                    }
+                    children.push(child_box);
+                }
             } else {
-                child_cursor_y
-            };
+                let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                    (prev_margin_bottom, last_child_box_max_y)
+                {
+                    let margin_top = child_style
+                        .map(|s| get_px(s, "margin-top", 0.0))
+                        .unwrap_or(0.0);
+                    let collapsed = collapse_margins(prev_mb, margin_top);
+                    last_max_y + collapsed - margin_top
+                } else {
+                    child_cursor_y
+                };
 
-            if let Some(child_box) = layout_node(
-                dom,
-                styles,
-                child,
-                content_width,
-                content_x,
-                offset_y,
-                depth + 1,
-            ) {
-                let margin_bottom = styles
-                    .get(&child)
-                    .map(|s| get_px(s, "margin-bottom", 0.0))
-                    .unwrap_or(0.0);
+                if let Some(child_box) = layout_node(
+                    dom,
+                    styles,
+                    child,
+                    content_width,
+                    content_x,
+                    offset_y,
+                    depth + 1,
+                ) {
+                    let margin_bottom = child_style
+                        .map(|s| get_px(s, "margin-bottom", 0.0))
+                        .unwrap_or(0.0);
 
-                last_child_box_max_y = Some(child_box.rect.max_y());
-                prev_margin_bottom = Some(margin_bottom);
+                    last_child_box_max_y = Some(child_box.rect.max_y());
+                    prev_margin_bottom = Some(margin_bottom);
 
-                child_cursor_y = child_box.rect.max_y() + margin_bottom;
-                children.push(child_box);
+                    child_cursor_y = child_box.rect.max_y() + margin_bottom;
+                    children.push(child_box);
+                }
             }
             i += 1;
         }
@@ -787,9 +851,10 @@ fn calculate_shrink_to_fit_width(
             style.get("display"),
             Some(CssValue::Display(DisplayValue::InlineBlock))
         );
+    let is_float = get_float_value(style).is_some();
     let has_width = matches!(style.get("width"), Some(CssValue::Length(_, _)))
         || matches!(style.get("width"), Some(CssValue::Number(n)) if *n == 0.0);
-    if is_inline_blk && !has_width {
+    if (is_inline_blk || is_float) && !has_width {
         if has_block_children {
             let candidate = max_content_width(dom, styles, node, depth);
             Some(candidate.min(auto_width.max(0.0)))
@@ -896,9 +961,41 @@ fn relayout_block_children(
             continue;
         }
 
-        let offset_y =
-            if let (Some(prev_mb), Some(last_max_y)) = (prev_margin_bottom, last_child_box_max_y) {
-                let child_style = styles.get(&child);
+        let child_style = styles.get(&child);
+        let float_val = child_style.and_then(get_float_value);
+
+        if let Some(fv) = float_val {
+            let float_offset_y = child_cursor_y;
+            let containing_content_left = border_box_x + border_left + padding_left;
+
+            if let Some(mut child_box) = layout_node(
+                dom,
+                styles,
+                child,
+                content_width,
+                containing_content_left,
+                float_offset_y,
+                depth + 1,
+            ) {
+                if fv == "right" {
+                    let child_margin_left = child_style
+                        .map(|s| get_px(s, "margin-left", 0.0))
+                        .unwrap_or(0.0);
+                    let child_margin_right = child_style
+                        .map(|s| get_px(s, "margin-right", 0.0))
+                        .unwrap_or(0.0);
+                    let shift_dx = content_width
+                        - child_box.rect.size.width
+                        - child_margin_right
+                        - child_margin_left;
+                    position::shift_layout_box(&mut child_box, styles, shift_dx, 0.0, 0);
+                }
+                children.push(child_box);
+            }
+        } else {
+            let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                (prev_margin_bottom, last_child_box_max_y)
+            {
                 let margin_top = child_style
                     .map(|s| get_px(s, "margin-top", 0.0))
                     .unwrap_or(0.0);
@@ -908,25 +1005,25 @@ fn relayout_block_children(
                 child_cursor_y
             };
 
-        if let Some(child_box) = layout_node(
-            dom,
-            styles,
-            child,
-            content_width,
-            border_box_x + border_left + padding_left,
-            offset_y,
-            depth + 1,
-        ) {
-            let margin_bottom = styles
-                .get(&child)
-                .map(|s| get_px(s, "margin-bottom", 0.0))
-                .unwrap_or(0.0);
+            if let Some(child_box) = layout_node(
+                dom,
+                styles,
+                child,
+                content_width,
+                border_box_x + border_left + padding_left,
+                offset_y,
+                depth + 1,
+            ) {
+                let margin_bottom = child_style
+                    .map(|s| get_px(s, "margin-bottom", 0.0))
+                    .unwrap_or(0.0);
 
-            last_child_box_max_y = Some(child_box.rect.max_y());
-            prev_margin_bottom = Some(margin_bottom);
+                last_child_box_max_y = Some(child_box.rect.max_y());
+                prev_margin_bottom = Some(margin_bottom);
 
-            child_cursor_y = child_box.rect.max_y() + margin_bottom;
-            children.push(child_box);
+                child_cursor_y = child_box.rect.max_y() + margin_bottom;
+                children.push(child_box);
+            }
         }
     }
 
@@ -934,6 +1031,11 @@ fn relayout_block_children(
 }
 
 fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: NodeId) -> bool {
+    if let Some(style) = styles.get(&child)
+        && get_float_value(style).is_some()
+    {
+        return false;
+    }
     if let Some(data) = dom.data(child) {
         match data {
             NodeData::Text(_) => true,
