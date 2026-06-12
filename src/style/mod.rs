@@ -311,6 +311,14 @@ fn compute_node_style(
                     }
                     // TODO(spec): other background longhands (image/position/repeat/size/etc.)
                 }
+                "list-style" => {
+                    if let Some(expanded) = expand_list_style_shorthand(&matched.declaration.value)
+                    {
+                        for (longhand_name, longhand_val) in expanded {
+                            properties.insert(longhand_name, longhand_val);
+                        }
+                    }
+                }
                 // TODO(spec): other shorthand properties like font, transition, etc.
                 name => {
                     properties.insert(name.to_string(), value);
@@ -1105,6 +1113,108 @@ fn expand_1_to_4(value: &CssValue) -> (CssValue, CssValue, CssValue, CssValue) {
         },
         v => (v.clone(), v.clone(), v.clone(), v.clone()),
     }
+}
+
+fn is_list_style_type_keyword(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "disc"
+            | "circle"
+            | "square"
+            | "decimal"
+            | "lower-alpha"
+            | "upper-alpha"
+            | "lower-roman"
+            | "upper-roman"
+    )
+}
+
+fn is_list_style_position_keyword(s: &str) -> bool {
+    matches!(s.to_ascii_lowercase().as_str(), "inside" | "outside")
+}
+
+fn expand_list_style_shorthand(
+    values: &[crate::css::parser::ComponentValue],
+) -> Option<Vec<(String, CssValue)>> {
+    use crate::css::CssToken;
+    use crate::css::parser::ComponentValue;
+
+    let mut non_ws = Vec::new();
+    for cv in values {
+        if !matches!(cv, ComponentValue::Token(CssToken::Whitespace)) {
+            non_ws.push(cv);
+        }
+    }
+
+    if non_ws.is_empty() {
+        return None;
+    }
+
+    // Handle global keywords
+    if non_ws.len() == 1
+        && let ComponentValue::Token(CssToken::Ident(s)) = non_ws[0]
+        && (s == "inherit" || s == "initial")
+    {
+        let val = CssValue::Keyword(s.clone());
+        return Some(vec![
+            ("list-style-type".to_string(), val.clone()),
+            ("list-style-position".to_string(), val.clone()),
+            ("list-style-image".to_string(), val),
+        ]);
+    }
+
+    let mut list_style_type: Option<CssValue> = None;
+    let mut list_style_position: Option<CssValue> = None;
+    let mut list_style_image: Option<CssValue> = None;
+    let mut has_none = false;
+
+    for cv in non_ws {
+        match cv {
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                let s_lower = s.to_ascii_lowercase();
+                if s_lower == "none" {
+                    has_none = true;
+                } else if is_list_style_position_keyword(&s_lower) {
+                    list_style_position = Some(CssValue::Keyword(s.clone()));
+                } else if is_list_style_type_keyword(&s_lower) {
+                    list_style_type = Some(CssValue::Keyword(s.clone()));
+                } else {
+                    // Unknown keywords are treated as type
+                    list_style_type = Some(CssValue::Keyword(s.clone()));
+                }
+            }
+            ComponentValue::Token(CssToken::Url(v)) => {
+                list_style_image = Some(CssValue::Keyword(format!("url({})", v)));
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("url") => {
+                let s = serialize_component_values(std::slice::from_ref(cv));
+                list_style_image = Some(CssValue::Keyword(s));
+            }
+            _ => {}
+        }
+    }
+
+    if has_none {
+        if list_style_type.is_none() && list_style_image.is_none() {
+            list_style_type = Some(CssValue::Keyword("none".to_string()));
+            list_style_image = Some(CssValue::Keyword("none".to_string()));
+        } else if list_style_type.is_some() && list_style_image.is_none() {
+            list_style_image = Some(CssValue::Keyword("none".to_string()));
+        } else if list_style_image.is_some() && list_style_type.is_none() {
+            list_style_type = Some(CssValue::Keyword("none".to_string()));
+        }
+    }
+
+    let final_type = list_style_type.unwrap_or_else(|| CssValue::Keyword("disc".to_string()));
+    let final_position =
+        list_style_position.unwrap_or_else(|| CssValue::Keyword("outside".to_string()));
+    let final_image = list_style_image.unwrap_or_else(|| CssValue::Keyword("none".to_string()));
+
+    Some(vec![
+        ("list-style-type".to_string(), final_type),
+        ("list-style-position".to_string(), final_position),
+        ("list-style-image".to_string(), final_image),
+    ])
 }
 
 fn expand_font_shorthand(
@@ -2749,6 +2859,119 @@ mod tests {
         assert_eq!(
             style2.get("background-color"),
             style_ref.get("background-color")
+        );
+    }
+
+    #[test]
+    fn test_list_style_shorthand_expands_type() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let ul = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, ul);
+
+        let stylesheet = parse_stylesheet("ul { list-style: square; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&ul).unwrap();
+
+        assert_eq!(
+            style.get("list-style-type"),
+            Some(&CssValue::Keyword("square".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-position"),
+            Some(&CssValue::Keyword("outside".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-image"),
+            Some(&CssValue::Keyword("none".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_list_style_shorthand_type_and_position() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let ul = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, ul);
+
+        let stylesheet = parse_stylesheet("ul { list-style: circle inside; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&ul).unwrap();
+
+        assert_eq!(
+            style.get("list-style-type"),
+            Some(&CssValue::Keyword("circle".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-position"),
+            Some(&CssValue::Keyword("inside".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-image"),
+            Some(&CssValue::Keyword("none".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_list_style_shorthand_single_none_resets_type_and_image() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let ul = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, ul);
+
+        let stylesheet = parse_stylesheet("ul { list-style: none; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&ul).unwrap();
+
+        assert_eq!(
+            style.get("list-style-type"),
+            Some(&CssValue::Keyword("none".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-position"),
+            Some(&CssValue::Keyword("outside".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-image"),
+            Some(&CssValue::Keyword("none".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_list_style_shorthand_overrides_previous() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let ul = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, ul);
+
+        // Later rule overrides earlier rule, resetting omitted position back to outside
+        let stylesheet = parse_stylesheet("ul { list-style: square inside; list-style: circle; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&ul).unwrap();
+
+        assert_eq!(
+            style.get("list-style-type"),
+            Some(&CssValue::Keyword("circle".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-position"),
+            Some(&CssValue::Keyword("outside".to_string()))
+        );
+        assert_eq!(
+            style.get("list-style-image"),
+            Some(&CssValue::Keyword("none".to_string()))
         );
     }
 }
