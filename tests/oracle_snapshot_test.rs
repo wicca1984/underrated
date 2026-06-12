@@ -756,3 +756,83 @@ fn test_b3_relative_url_image_blits() {
         blue_pixel_count_negative
     );
 }
+
+#[test]
+fn test_fixture_09_wiki_article() {
+    let snapshot = load_fixture_snapshot("09_wiki_article.html");
+    assert_eq!(snapshot["tag"], "html");
+
+    // Headings verification
+    let h1 = find_element_by_tag(&snapshot, "h1")
+        .unwrap_or_else(|| panic!("h1 element must exist in 09_wiki_article"));
+    let h1_w = h1["rect"]["width"].as_f64().unwrap();
+    let h1_h = h1["rect"]["height"].as_f64().unwrap();
+    assert!(h1_w > 0.0, "h1 width must be positive, got {}", h1_w);
+    assert!(h1_h > 0.0, "h1 height must be positive, got {}", h1_h);
+
+    let mut h2s = Vec::new();
+    find_elements_by_tag(&snapshot, "h2", &mut h2s);
+    assert_eq!(h2s.len(), 3, "Should find exactly 3 h2 headings");
+    for h2 in &h2s {
+        let h2_w = h2["rect"]["width"].as_f64().unwrap();
+        let h2_h = h2["rect"]["height"].as_f64().unwrap();
+        assert!(h2_w > 0.0, "h2 width must be positive");
+        assert!(h2_h > 0.0, "h2 height must be positive");
+    }
+
+    // Paragraphs verification
+    let mut ps = Vec::new();
+    find_elements_by_tag(&snapshot, "p", &mut ps);
+    assert_eq!(ps.len(), 2, "Should find exactly 2 paragraphs");
+
+    let p1_y = ps[0]["rect"]["y"].as_f64().unwrap();
+    let p1_h = ps[0]["rect"]["height"].as_f64().unwrap();
+    let p2_y = ps[1]["rect"]["y"].as_f64().unwrap();
+    assert!(
+        p2_y >= p1_y + p1_h - 0.1,
+        "Paragraph 2 (y={}) should be below Paragraph 1 bottom (y={})",
+        p2_y,
+        p1_y + p1_h
+    );
+
+    // Lists and list items verification
+    let ul =
+        find_element_by_tag(&snapshot, "ul").unwrap_or_else(|| panic!("ul element must exist"));
+    let mut lis = Vec::new();
+    find_elements_by_tag(ul, "li", &mut lis);
+    assert_eq!(lis.len(), 3, "Should find exactly 3 list items");
+    for li in &lis {
+        let li_w = li["rect"]["width"].as_f64().unwrap();
+        let li_h = li["rect"]["height"].as_f64().unwrap();
+        assert!(li_w > 0.0, "list item width must be positive");
+        assert!(li_h > 0.0, "list item height must be positive");
+    }
+
+    // Inline elements verification (b, i, a)
+    let b = find_element_by_tag(&snapshot, "b").unwrap_or_else(|| panic!("b element must exist"));
+    let i = find_element_by_tag(&snapshot, "i").unwrap_or_else(|| panic!("i element must exist"));
+    let a = find_element_by_tag(&snapshot, "a").unwrap_or_else(|| panic!("a element must exist"));
+
+    assert!(b["rect"]["width"].as_f64().unwrap() > 0.0);
+    assert!(i["rect"]["width"].as_f64().unwrap() > 0.0);
+    assert!(a["rect"]["width"].as_f64().unwrap() > 0.0);
+
+    // Infobox column and main-content column verification
+    let infobox = find_element_by_class(&snapshot, "infobox")
+        .unwrap_or_else(|| panic!("infobox element must exist"));
+    let info_w = infobox["rect"]["width"].as_f64().unwrap();
+    let info_h = infobox["rect"]["height"].as_f64().unwrap();
+    assert_eq!(
+        info_w, 262.0,
+        "Infobox width should be 262.0 (240px width + 20px padding + 2px border)"
+    );
+    assert!(info_h > 0.0, "Infobox height must be positive");
+
+    let main_content = find_element_by_class(&snapshot, "main-content")
+        .unwrap_or_else(|| panic!("main-content element must exist"));
+    let main_w = main_content["rect"]["width"].as_f64().unwrap();
+    assert_eq!(
+        main_w, 480.0,
+        "Main content width should match specified 480.0"
+    );
+}
