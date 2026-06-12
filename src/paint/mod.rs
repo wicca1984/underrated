@@ -1409,11 +1409,18 @@ pub fn build_display_list_with_caret(
                 let border_bottom = get_border_width(style, "border-bottom-width");
                 let border_left = get_border_width(style, "border-left-width");
 
+                // Borders from the presentational `border` attribute on a table are
+                // drawn by `table::table_border_items` (gray frame, empty-cells aware).
+                // Skip the generic painter for those so the frame is not double-drawn.
+                let skip_presentational_table_border =
+                    table::has_presentational_table_border(dom, node_id);
+
                 // If any border has a non-zero width, emit SolidRects for the active edges
-                if border_top > 0.0
-                    || border_right > 0.0
-                    || border_bottom > 0.0
-                    || border_left > 0.0
+                if !skip_presentational_table_border
+                    && (border_top > 0.0
+                        || border_right > 0.0
+                        || border_bottom > 0.0
+                        || border_left > 0.0)
                 {
                     let rect = layout_box.rect;
                     let x = rect.origin.x;
