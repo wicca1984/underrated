@@ -13,6 +13,13 @@ pub enum InputEvent {
     Key { key: String },
 }
 
+/// Returns true if the high-level input event triggers a window redraw.
+pub fn input_event_triggers_redraw(ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::Click { .. } | InputEvent::Key { .. } => true,
+    }
+}
+
 /// Represents the visual rendering geometry of the text insertion caret.
 /// spec: S-34, t0176
 #[derive(Debug, Clone, PartialEq)]
@@ -659,7 +666,11 @@ mod winit_adapter {
                     },
                     other => other,
                 };
+                let triggers_redraw = input_event_triggers_redraw(&adjusted_event);
                 (self.on_event)(adjusted_event);
+                if triggers_redraw && let Some(state) = &self.state {
+                    state.window.request_redraw();
+                }
             }
 
             match event {
@@ -1093,5 +1104,16 @@ mod tests {
         // Unfocused node caret geometry should be None
         let geom_unfocused = manager.calculate_caret_geometry(node_id_2, 100.0, 50.0, 20.0, 15.5);
         assert!(geom_unfocused.is_none());
+    }
+
+    #[test]
+    fn test_input_event_triggers_redraw() {
+        let click_event = InputEvent::Click { x: 10.0, y: 20.0 };
+        assert!(input_event_triggers_redraw(&click_event));
+
+        let key_event = InputEvent::Key {
+            key: "a".to_string(),
+        };
+        assert!(input_event_triggers_redraw(&key_event));
     }
 }
