@@ -126,6 +126,7 @@ pub enum CssValue {
     AlignItems(AlignItemsValue),
     Transform(Vec<TransformFn>),
     ZIndex(ZIndex),
+    Opacity(f32),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -747,6 +748,33 @@ pub fn parse_z_index(components: &[ComponentValue]) -> Option<CssValue> {
         }
         _ => None,
     }
+}
+
+pub fn parse_opacity(value: &str) -> Option<CssValue> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let is_percentage = trimmed.ends_with('%');
+    let parsed_val = if is_percentage {
+        let num_part = &trimmed[..trimmed.len() - 1];
+        if num_part.is_empty() {
+            return None;
+        }
+        let val: f32 = num_part.parse::<f32>().ok()?;
+        val / 100.0
+    } else {
+        trimmed.parse::<f32>().ok()?
+    };
+
+    if !parsed_val.is_finite() {
+        return None;
+    }
+
+    let clamped = parsed_val.clamp(0.0, 1.0);
+
+    Some(CssValue::Opacity(clamped))
 }
 
 #[cfg(test)]
@@ -1380,5 +1408,32 @@ mod tests {
             ]),
             None
         );
+    }
+
+    #[test]
+    fn test_parse_opacity() {
+        // 1. Bare numbers
+        assert_eq!(parse_opacity("0"), Some(CssValue::Opacity(0.0)));
+        assert_eq!(parse_opacity("1"), Some(CssValue::Opacity(1.0)));
+        assert_eq!(parse_opacity("0.5"), Some(CssValue::Opacity(0.5)));
+        assert_eq!(parse_opacity(".25"), Some(CssValue::Opacity(0.25)));
+
+        // 2. Percentages
+        assert_eq!(parse_opacity("50%"), Some(CssValue::Opacity(0.5)));
+        assert_eq!(parse_opacity("100%"), Some(CssValue::Opacity(1.0)));
+
+        // 3. Clamping
+        assert_eq!(parse_opacity("1.5"), Some(CssValue::Opacity(1.0)));
+        assert_eq!(parse_opacity("-0.2"), Some(CssValue::Opacity(0.0)));
+        assert_eq!(parse_opacity("150%"), Some(CssValue::Opacity(1.0)));
+        assert_eq!(parse_opacity("-10%"), Some(CssValue::Opacity(0.0)));
+
+        // 4. Whitespace
+        assert_eq!(parse_opacity("  0.3  "), Some(CssValue::Opacity(0.3)));
+
+        // 5. Invalid -> None
+        assert_eq!(parse_opacity(""), None);
+        assert_eq!(parse_opacity("abc"), None);
+        assert_eq!(parse_opacity("%"), None);
     }
 }

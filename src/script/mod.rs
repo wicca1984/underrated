@@ -4593,6 +4593,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             ZIndex::Auto => "auto".to_string(),
             ZIndex::Index(n) => n.to_string(),
         },
+        CssValue::Opacity(val) => val.to_string(),
     }
 }
 
