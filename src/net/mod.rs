@@ -239,6 +239,90 @@ pub fn send_request(
     })
 }
 
+/// Fetches multiple URLs concurrently with GET, honoring a maximum number of in-flight
+/// requests (`max_concurrency`, clamped to at least 1). Results are returned in the SAME
+/// order as `urls`. Each element is the individual `send_request` outcome for that URL, so a
+/// single failed fetch does NOT abort the others.
+pub fn fetch_all_concurrent(
+    urls: &[Url],
+    max_concurrency: usize,
+) -> Vec<Result<LoaderResponse, LoadError>> {
+    if urls.is_empty() {
+        return Vec::new();
+    }
+
+    let concurrency = max_concurrency.max(1).min(urls.len());
+    let urls_shared = std::sync::Arc::new(urls.to_vec());
+    let next_index = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut results_vec = Vec::with_capacity(urls.len());
+    for _ in 0..urls.len() {
+        results_vec.push(None);
+    }
+    let results = std::sync::Arc::new(std::sync::Mutex::new(results_vec));
+
+    let mut handles = Vec::with_capacity(concurrency);
+    for _ in 0..concurrency {
+        let next_index = std::sync::Arc::clone(&next_index);
+        let urls_shared = std::sync::Arc::clone(&urls_shared);
+        let results = std::sync::Arc::clone(&results);
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                let idx = next_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if idx >= urls_shared.len() {
+                    break;
+                }
+                let url = &urls_shared[idx];
+                let res = send_request(url, HttpMethod::Get, &[], None);
+
+                match results.lock() {
+                    Ok(mut guard) => {
+                        if idx < guard.len() {
+                            guard[idx] = Some(res);
+                        }
+                    }
+                    Err(_) => {
+                        // Poisoned lock, gracefully skip writing to avoid panic.
+                    }
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all threads to finish
+    let mut any_join_failed = false;
+    for handle in handles {
+        if handle.join().is_err() {
+            any_join_failed = true;
+        }
+    }
+
+    // Extract the results vector safely without unwrap or expect
+    let locked_results = match results.lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(err) => std::mem::take(&mut *err.into_inner()),
+    };
+
+    let mut final_results = Vec::with_capacity(urls.len());
+    for opt in locked_results {
+        match opt {
+            Some(res) => final_results.push(res),
+            None => {
+                let err_msg = if any_join_failed {
+                    "Thread join failed during concurrent fetch".to_string()
+                } else {
+                    "Fetch task was not completed successfully".to_string()
+                };
+                final_results.push(Err(LoadError::Io(err_msg)));
+            }
+        }
+    }
+
+    final_results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +448,94 @@ mod tests {
         let url2 = Url::parse(&format!("http://127.0.0.1:{}/post_cookie", port)).unwrap();
         let res2 = send_request(&url2, HttpMethod::Post, b"some body", Some("text/plain")).unwrap();
         assert_eq!(String::from_utf8_lossy(&res2.bytes), "cookie-echo");
+    }
+
+    #[test]
+    fn test_fetch_all_concurrent_order() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        thread::spawn(move || {
+            // Serve 3 requests
+            for _ in 0..3 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let request_str = read_http_request(&mut stream);
+                    let response = if request_str.contains("GET /a ") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nbody-aa"
+                    } else if request_str.contains("GET /b ") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nbody-bb"
+                    } else if request_str.contains("GET /c ") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nbody-cc"
+                    } else {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nbody-44"
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            }
+        });
+
+        let url_a = Url::parse(&format!("http://127.0.0.1:{}/a", port)).unwrap();
+        let url_b = Url::parse(&format!("http://127.0.0.1:{}/b", port)).unwrap();
+        let url_c = Url::parse(&format!("http://127.0.0.1:{}/c", port)).unwrap();
+
+        // Pass them in a mixed order and assert that order is preserved
+        let urls = vec![url_c, url_a, url_b];
+        let results = fetch_all_concurrent(&urls, 2);
+
+        assert_eq!(results.len(), 3);
+
+        let res_c = results[0].as_ref().unwrap();
+        let res_a = results[1].as_ref().unwrap();
+        let res_b = results[2].as_ref().unwrap();
+
+        assert_eq!(String::from_utf8_lossy(&res_c.bytes), "body-cc");
+        assert_eq!(String::from_utf8_lossy(&res_a.bytes), "body-aa");
+        assert_eq!(String::from_utf8_lossy(&res_b.bytes), "body-bb");
+    }
+
+    #[test]
+    fn test_fetch_all_concurrent_respects_failure_isolation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        thread::spawn(move || {
+            // Serve 2 requests (since one is bad scheme and won't hit server)
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let request_str = read_http_request(&mut stream);
+                    let response = if request_str.contains("GET /a ") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nbody-aa"
+                    } else if request_str.contains("GET /b ") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nbody-bb"
+                    } else {
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nbody-44"
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            }
+        });
+
+        let url_a = Url::parse(&format!("http://127.0.0.1:{}/a", port)).unwrap();
+        let url_bad = Url::parse("file:///x").unwrap();
+        let url_b = Url::parse(&format!("http://127.0.0.1:{}/b", port)).unwrap();
+
+        let urls = vec![url_a, url_bad, url_b];
+        let results = fetch_all_concurrent(&urls, 3);
+
+        assert_eq!(results.len(), 3);
+
+        let res_a = results[0].as_ref().unwrap();
+        assert_eq!(String::from_utf8_lossy(&res_a.bytes), "body-aa");
+
+        assert_eq!(results[1], Err(LoadError::UnsupportedScheme));
+
+        let res_b = results[2].as_ref().unwrap();
+        assert_eq!(String::from_utf8_lossy(&res_b.bytes), "body-bb");
+    }
+
+    #[test]
+    fn test_fetch_all_concurrent_empty() {
+        let results = fetch_all_concurrent(&[], 4);
+        assert!(results.is_empty());
     }
 }
