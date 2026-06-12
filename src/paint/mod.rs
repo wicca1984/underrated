@@ -1057,152 +1057,170 @@ pub fn build_display_list(
                         None => text.clone(),
                     };
 
-                    // Paint text-shadow if present
-                    if let Some(text_shadow_val) = resolve_text_shadow(dom, node_id, styles) {
-                        let mut leaves = Vec::new();
-                        flatten_value(&text_shadow_val, &mut leaves);
+                    let is_marker = layout_box.text.as_deref() == Some("\u{2022}");
 
-                        // Check for Keyword("none")
-                        let mut is_none = false;
-                        for leaf in &leaves {
-                            if let CssValue::Keyword(kw) = leaf
-                                && kw.eq_ignore_ascii_case("none")
-                            {
-                                is_none = true;
-                            }
-                        }
+                    if is_marker {
+                        // TODO(spec): a true circular `disc` would need a filled-ellipse paint primitive; this uses a filled square as a pragmatic, ASCII-font-safe stand-in (visually matches `list-style-type: square`), and `circle`/`square`/image markers and `list-style-position: inside` remain out of scope.
+                        let s = (corrected_rect.size.width.min(corrected_rect.size.height) * 0.5)
+                            .clamp(2.0, 10.0);
+                        let x = corrected_rect.origin.x + (corrected_rect.size.width - s) / 2.0;
+                        let y = corrected_rect.origin.y + (corrected_rect.size.height - s) / 2.0;
+                        let marker_rect = Rect::new(x, y, s, s);
+                        items.push(DisplayItem::SolidRect {
+                            rect: marker_rect,
+                            color: scale_color_alpha(&color, effective_opacity),
+                        });
+                    } else {
+                        // Paint text-shadow if present
+                        if let Some(text_shadow_val) = resolve_text_shadow(dom, node_id, styles) {
+                            let mut leaves = Vec::new();
+                            flatten_value(&text_shadow_val, &mut leaves);
 
-                        if !is_none && !leaves.is_empty() {
-                            // Split leaves by comma to support multiple shadows
-                            let mut shadow_groups = Vec::new();
-                            let mut current_group = Vec::new();
-                            for leaf in leaves {
+                            // Check for Keyword("none")
+                            let mut is_none = false;
+                            for leaf in &leaves {
                                 if let CssValue::Keyword(kw) = leaf
-                                    && kw == ","
+                                    && kw.eq_ignore_ascii_case("none")
                                 {
-                                    if !current_group.is_empty() {
-                                        shadow_groups.push(current_group);
-                                        current_group = Vec::new();
-                                    }
-                                } else {
-                                    current_group.push(leaf);
+                                    is_none = true;
                                 }
                             }
-                            if !current_group.is_empty() {
-                                shadow_groups.push(current_group);
-                            }
 
-                            // CSS paints the first shadow on top, so paint later list entries
-                            // first: iterate in reverse so the first shadow is pushed (and drawn) last.
-                            for group in shadow_groups.into_iter().rev() {
-                                let mut length_values = Vec::new();
-                                let mut color_value = None;
+                            if !is_none && !leaves.is_empty() {
+                                // Split leaves by comma to support multiple shadows
+                                // CSS paints the first shadow on top, so paint later list entries
+                                // first: iterate in reverse so the first shadow is pushed (and drawn) last.
+                                let mut shadow_groups = Vec::new();
+                                let mut current_group = Vec::new();
+                                for leaf in leaves {
+                                    if let CssValue::Keyword(kw) = leaf
+                                        && kw == ","
+                                    {
+                                        if !current_group.is_empty() {
+                                            shadow_groups.push(current_group);
+                                            current_group = Vec::new();
+                                        }
+                                    } else {
+                                        current_group.push(leaf);
+                                    }
+                                }
+                                if !current_group.is_empty() {
+                                    shadow_groups.push(current_group);
+                                }
 
-                                for leaf in group {
-                                    match leaf {
-                                        CssValue::Length(v, _) => {
-                                            length_values.push(*v);
-                                        }
-                                        CssValue::Number(v) => {
-                                            length_values.push(*v);
-                                        }
-                                        CssValue::Color(c) => {
-                                            color_value = Some(c.clone());
-                                        }
-                                        _ => {
-                                            if let Some(c) = find_color(leaf) {
-                                                color_value = Some(c);
+                                for group in shadow_groups.into_iter().rev() {
+                                    let mut length_values = Vec::new();
+                                    let mut color_value = None;
+
+                                    for leaf in group {
+                                        match leaf {
+                                            CssValue::Length(v, _) => {
+                                                length_values.push(*v);
+                                            }
+                                            CssValue::Number(v) => {
+                                                length_values.push(*v);
+                                            }
+                                            CssValue::Color(c) => {
+                                                color_value = Some(c.clone());
+                                            }
+                                            _ => {
+                                                if let Some(c) = find_color(leaf) {
+                                                    color_value = Some(c);
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                if length_values.len() >= 2 {
-                                    let offset_x = length_values[0];
-                                    let offset_y = length_values[1];
-                                    if length_values.len() >= 3 {
-                                        // TODO(spec): text-shadow blur not rasterized
+                                    if length_values.len() >= 2 {
+                                        let offset_x = length_values[0];
+                                        let offset_y = length_values[1];
+                                        if length_values.len() >= 3 {
+                                            // TODO(spec): text-shadow blur not rasterized
+                                        }
+
+                                        // Determine shadow color: default to resolved text color
+                                        let shadow_color = if let Some(c) = color_value {
+                                            c
+                                        } else {
+                                            color.clone()
+                                        };
+
+                                        let shadow_rect = Rect::new(
+                                            corrected_rect.origin.x + offset_x,
+                                            corrected_rect.origin.y + offset_y,
+                                            corrected_rect.size.width,
+                                            corrected_rect.size.height,
+                                        );
+
+                                        items.push(DisplayItem::Text {
+                                            rect: shadow_rect,
+                                            text: display_text.clone(),
+                                            color: scale_color_alpha(
+                                                &shadow_color,
+                                                effective_opacity,
+                                            ),
+                                        });
                                     }
-
-                                    // Determine shadow color: default to resolved text color
-                                    let shadow_color = if let Some(c) = color_value {
-                                        c
-                                    } else {
-                                        color.clone()
-                                    };
-
-                                    let shadow_rect = Rect::new(
-                                        corrected_rect.origin.x + offset_x,
-                                        corrected_rect.origin.y + offset_y,
-                                        corrected_rect.size.width,
-                                        corrected_rect.size.height,
-                                    );
-
-                                    items.push(DisplayItem::Text {
-                                        rect: shadow_rect,
-                                        text: display_text.clone(),
-                                        color: scale_color_alpha(&shadow_color, effective_opacity),
-                                    });
                                 }
                             }
                         }
-                    }
 
-                    items.push(DisplayItem::Text {
-                        rect: corrected_rect,
-                        text: display_text,
-                        color: scale_color_alpha(&color, effective_opacity),
-                    });
+                        items.push(DisplayItem::Text {
+                            rect: corrected_rect,
+                            text: display_text,
+                            color: scale_color_alpha(&color, effective_opacity),
+                        });
 
-                    // spec: S-82: if computed text-decorations are present (underline, overline, line-through)
-                    // or we are inside an <a> (and not explicitly styled text-decoration: none),
-                    // emit the corresponding SolidRects.
-                    let decorations = resolve_text_decorations(dom, node_id, styles);
+                        // spec: S-82: if computed text-decorations are present (underline, overline, line-through)
+                        // or we are inside an <a> (and not explicitly styled text-decoration: none),
+                        // emit the corresponding SolidRects.
+                        let decorations = resolve_text_decorations(dom, node_id, styles);
 
-                    let x = corrected_rect.origin.x;
-                    let width = corrected_rect.size.width;
+                        let x = corrected_rect.origin.x;
+                        let width = corrected_rect.size.width;
 
-                    let deco_color = decorations.color.unwrap_or(color.clone());
+                        let deco_color = decorations.color.unwrap_or(color.clone());
 
-                    let scaled_deco_color = scale_color_alpha(&deco_color, effective_opacity);
+                        let scaled_deco_color = scale_color_alpha(&deco_color, effective_opacity);
 
-                    if decorations.underline {
-                        // Position underline relative to the baseline-corrected text position
-                        let underline_y = corrected_rect.origin.y + font_height - 1.0;
-                        paint_decoration_line(
-                            &mut items,
-                            decorations.style,
-                            x,
-                            underline_y,
-                            width,
-                            scaled_deco_color.clone(),
-                        );
-                    }
+                        if decorations.underline {
+                            // Position underline relative to the baseline-corrected text position
+                            let underline_y = corrected_rect.origin.y + font_height - 1.0;
+                            paint_decoration_line(
+                                &mut items,
+                                decorations.style,
+                                x,
+                                underline_y,
+                                width,
+                                scaled_deco_color.clone(),
+                            );
+                        }
 
-                    if decorations.overline {
-                        // Position overline at the top of the baseline-corrected text position
-                        let overline_y = corrected_rect.origin.y;
-                        paint_decoration_line(
-                            &mut items,
-                            decorations.style,
-                            x,
-                            overline_y,
-                            width,
-                            scaled_deco_color.clone(),
-                        );
-                    }
+                        if decorations.overline {
+                            // Position overline at the top of the baseline-corrected text position
+                            let overline_y = corrected_rect.origin.y;
+                            paint_decoration_line(
+                                &mut items,
+                                decorations.style,
+                                x,
+                                overline_y,
+                                width,
+                                scaled_deco_color.clone(),
+                            );
+                        }
 
-                    if decorations.line_through {
-                        // Position line-through in the middle of the baseline-corrected text position
-                        let line_through_y = corrected_rect.origin.y + (font_height / 2.0);
-                        paint_decoration_line(
-                            &mut items,
-                            decorations.style,
-                            x,
-                            line_through_y,
-                            width,
-                            scaled_deco_color.clone(),
-                        );
+                        if decorations.line_through {
+                            // Position line-through in the middle of the baseline-corrected text position
+                            let line_through_y = corrected_rect.origin.y + (font_height / 2.0);
+                            paint_decoration_line(
+                                &mut items,
+                                decorations.style,
+                                x,
+                                line_through_y,
+                                width,
+                                scaled_deco_color.clone(),
+                            );
+                        }
                     }
                 }
 
@@ -4351,6 +4369,95 @@ mod tests {
             }
         } else {
             panic!("First item should be second shadow");
+        }
+    }
+
+    #[test]
+    fn test_ul_disc_marker_paints_solid_rect_not_tofu_glyph() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let ul = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, ul);
+
+        let li = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul, li);
+
+        let text = dom.create_node(NodeData::Text("item".into()));
+        dom.append_child(li, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            ul { display: block; padding-left: 40px; margin-top: 16px; margin-bottom: 16px; list-style-type: disc; }
+            li { display: block; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 500.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_bullet_text = false;
+        let mut bullet_rect = None;
+        let mut item_text_origin_x = None;
+
+        for item in &items {
+            match item {
+                DisplayItem::Text { text, rect, .. } => {
+                    if text == "\u{2022}" {
+                        found_bullet_text = true;
+                    } else if text == "item" {
+                        item_text_origin_x = Some(rect.origin.x);
+                    }
+                }
+                DisplayItem::SolidRect { rect, .. }
+                    if rect.size.width <= 10.0 && rect.size.height <= 10.0 =>
+                {
+                    bullet_rect = Some(*rect);
+                }
+                _ => {}
+            }
+        }
+
+        // 1. Assert NO DisplayItem::Text item has text == "\u{2022}"
+        assert!(
+            !found_bullet_text,
+            "Bullet glyph should not be drawn as text"
+        );
+
+        // 2. Assert at least one DisplayItem::SolidRect exists whose rect is the small marker square positioned to the LEFT of the list item's content
+        if let Some(b_rect) = bullet_rect {
+            if let Some(t_x) = item_text_origin_x {
+                assert!(
+                    b_rect.origin.x < t_x,
+                    "Marker (x={}) should be to the left of the item text (x={})",
+                    b_rect.origin.x,
+                    t_x
+                );
+            } else {
+                panic!(
+                    "Did not find 'item' text fragment in display items: {:?}",
+                    items
+                );
+            }
+        } else {
+            panic!(
+                "Did not find bullet SolidRect in display items: {:?}",
+                items
+            );
         }
     }
 }
