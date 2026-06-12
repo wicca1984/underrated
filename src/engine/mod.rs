@@ -1,3 +1,5 @@
+pub mod flush;
+
 use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
