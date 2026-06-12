@@ -1027,6 +1027,109 @@ fn test_lazy_loading_image_pipeline_end_to_end() {
     }
 }
 
+// Guards: a responsive <img srcset> is resolved to a candidate URL, fetched, decoded, and blitted (t0427).
+#[test]
+fn test_srcset_image_pipeline_end_to_end() {
+    // 1. Generate a valid 1x1 PNG image bytes as a sanity precondition
+    let mut source_canvas = underrated::raster::Canvas::new(1, 1);
+    source_canvas.pixels[0] = 0xFFFF0000; // Red
+    let png_bytes = underrated::image::encode_png(&source_canvas);
+    assert!(!png_bytes.is_empty(), "PNG encoding must not be empty");
+
+    let decoded_precondition =
+        underrated::image::decode_image(&png_bytes).expect("Should decode PNG bytes successfully");
+    assert_eq!(
+        decoded_precondition.width, 1,
+        "Sanity check: width should be 1"
+    );
+    assert_eq!(
+        decoded_precondition.height, 1,
+        "Sanity check: height should be 1"
+    );
+
+    // 2. Set up MockLoader to record requested URLs and return PNG bytes
+    struct SrcsetMockLoader {
+        png_bytes: Vec<u8>,
+        expected_url: String,
+        requested_urls: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl underrated::loader::ResourceLoader for SrcsetMockLoader {
+        fn load(
+            &self,
+            url: &underrated::url::Url,
+        ) -> Result<Vec<u8>, underrated::loader::LoadError> {
+            let url_str = url.serialize();
+            self.requested_urls.borrow_mut().push(url_str.clone());
+            if url_str == self.expected_url {
+                Ok(self.png_bytes.clone())
+            } else {
+                Err(underrated::loader::LoadError::NotFound)
+            }
+        }
+    }
+
+    let base_url = underrated::url::Url::parse("http://example.com/").unwrap();
+    let expected_url = "http://example.com/large.png".to_string();
+
+    let mock_loader = SrcsetMockLoader {
+        png_bytes,
+        expected_url: expected_url.clone(),
+        requested_urls: std::cell::RefCell::new(Vec::new()),
+    };
+
+    // 3. Render HTML containing an <img> with a srcset listing two candidates and a fallback src
+    let html = r#"<html><body><img id="responsive-img" src="http://example.com/fallback.png" srcset="http://example.com/small.png 200w, http://example.com/large.png 800w" style="width:1px;height:1px;"></body></html>"#;
+    let page = underrated::engine::render_page(html, &base_url, &mock_loader, 800.0);
+
+    // 4. Build DisplayList and verify it contains DisplayItem::Image
+    let display_list = underrated::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+    let items = display_list.0;
+
+    let image_items: Vec<&underrated::paint::DisplayItem> = items
+        .iter()
+        .filter(|item| matches!(item, underrated::paint::DisplayItem::Image { .. }))
+        .collect();
+
+    assert_eq!(
+        image_items.len(),
+        1,
+        "Should have exactly 1 image display item in the display list"
+    );
+
+    // 5. Assert the MockLoader recorded a request for the SELECTED candidate, and NOT the fallback or other candidate
+    let requested = mock_loader.requested_urls.borrow();
+    assert!(
+        requested.contains(&expected_url),
+        "MockLoader should have requested '{}', but requested: {:?}",
+        expected_url,
+        requested
+    );
+    assert!(
+        !requested.contains(&"http://example.com/small.png".to_string()),
+        "MockLoader should NOT have requested small candidate, but requested: {:?}",
+        requested
+    );
+    assert!(
+        !requested.contains(&"http://example.com/fallback.png".to_string()),
+        "MockLoader should NOT have requested fallback src, but requested: {:?}",
+        requested
+    );
+
+    // 6. Assert fetch, decode, and blit succeeded
+    if let underrated::paint::DisplayItem::Image { src, decoded, .. } = image_items[0] {
+        assert_eq!(src, "http://example.com/fallback.png");
+
+        let decoded_img = decoded
+            .as_ref()
+            .expect("Srcset image should have a decoded DecodedImage");
+        assert_eq!(decoded_img.width, 1);
+        assert_eq!(decoded_img.height, 1);
+    } else {
+        panic!("Expected DisplayItem::Image");
+    }
+}
+
 #[test]
 fn test_fixture_09_wiki_article() {
     let snapshot = load_fixture_snapshot("09_wiki_article.html");
