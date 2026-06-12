@@ -34,6 +34,30 @@ pub fn parse_loading_attr(value: &str) -> LoadingMode {
     }
 }
 
+/// The HTML `decoding` attribute value for images: a hint for whether the image decoding
+/// should be performed synchronously or asynchronously. Per the HTML spec the attribute is an
+/// enumerated attribute whose missing/invalid default maps to auto decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DecodingMode {
+    #[default]
+    Auto,
+    Sync,
+    Async,
+}
+
+/// Parses the HTML `decoding` attribute value. Matching is ASCII-case-insensitive.
+/// `sync` => Sync, `async` => Async, everything else (including absent/empty/unknown) => Auto (spec default).
+pub fn parse_decoding_attr(value: &str) -> DecodingMode {
+    let trimmed = value.trim_matches(crate::ascii::is_html_whitespace);
+    if trimmed.eq_ignore_ascii_case("sync") {
+        DecodingMode::Sync
+    } else if trimmed.eq_ignore_ascii_case("async") {
+        DecodingMode::Async
+    } else {
+        DecodingMode::Auto
+    }
+}
+
 /// The outcome of planning/fetching an image resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLoadOutcome {
@@ -1138,6 +1162,43 @@ mod tests {
         assert_eq!(parse_loading_attr("garbage"), LoadingMode::Eager);
         assert_eq!(parse_loading_attr("lazyx"), LoadingMode::Eager);
         assert_eq!(parse_loading_attr("xlazy"), LoadingMode::Eager);
+    }
+
+    #[test]
+    fn test_decoding_mode_default() {
+        assert_eq!(DecodingMode::default(), DecodingMode::Auto);
+    }
+
+    #[test]
+    fn test_parse_decoding_attr() {
+        // 1. "sync" => Sync
+        assert_eq!(parse_decoding_attr("sync"), DecodingMode::Sync);
+        assert_eq!(parse_decoding_attr("SYNC"), DecodingMode::Sync);
+        assert_eq!(parse_decoding_attr("Sync"), DecodingMode::Sync);
+        assert_eq!(parse_decoding_attr("  sync  "), DecodingMode::Sync);
+        assert_eq!(parse_decoding_attr("\t\n sync\r\x0C "), DecodingMode::Sync);
+
+        // 2. "async" => Async
+        assert_eq!(parse_decoding_attr("async"), DecodingMode::Async);
+        assert_eq!(parse_decoding_attr("ASYNC"), DecodingMode::Async);
+        assert_eq!(parse_decoding_attr("Async"), DecodingMode::Async);
+        assert_eq!(parse_decoding_attr("  async  "), DecodingMode::Async);
+        assert_eq!(
+            parse_decoding_attr("\t\n async\r\x0C "),
+            DecodingMode::Async
+        );
+
+        // 3. "auto" => Auto
+        assert_eq!(parse_decoding_attr("auto"), DecodingMode::Auto);
+        assert_eq!(parse_decoding_attr("AUTO"), DecodingMode::Auto);
+        assert_eq!(parse_decoding_attr("Auto"), DecodingMode::Auto);
+        assert_eq!(parse_decoding_attr("  auto  "), DecodingMode::Auto);
+
+        // 4. Missing/invalid defaults to Auto
+        assert_eq!(parse_decoding_attr(""), DecodingMode::Auto);
+        assert_eq!(parse_decoding_attr("garbage"), DecodingMode::Auto);
+        assert_eq!(parse_decoding_attr("syncx"), DecodingMode::Auto);
+        assert_eq!(parse_decoding_attr("xsync"), DecodingMode::Auto);
     }
 
     #[test]
