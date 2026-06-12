@@ -7,9 +7,136 @@ use crate::infra::NodeId;
 /// Parses an HTML document from the given input stream.
 // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-loop
 pub fn parse_document(input: InputStream) -> Dom {
+    let (dom, _quirks) = parse_document_with_quirks(input);
+    dom
+}
+
+/// Parses an HTML document from the given input stream and also returns the detected quirks mode.
+pub fn parse_document_with_quirks(input: InputStream) -> (Dom, QuirksMode) {
     let mut builder = TreeBuilder::new(input);
     builder.run();
-    builder.dom
+    (builder.dom, builder.quirks_mode)
+}
+
+/// Represents the document's quirks mode as determined by the DOCTYPE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuirksMode {
+    #[default]
+    NoQuirks,
+    Quirks,
+    LimitedQuirks,
+}
+
+const QUIRKS_PREFIXES: &[&str] = &[
+    "+//idat/otst ",
+    "-//advasoft inpage html 3.2//",
+    "-//aserve//dtd google html//",
+    "-//ietf//dtd html 2.0 level 1//",
+    "-//ietf//dtd html 2.0 level 2//",
+    "-//ietf//dtd html 2.0 strict level 1//",
+    "-//ietf//dtd html 2.0 strict level 2//",
+    "-//ietf//dtd html 2.0 strict//",
+    "-//ietf//dtd html 2.0//",
+    "-//ietf//dtd html 3.0//",
+    "-//ietf//dtd html 3.2 final//",
+    "-//ietf//dtd html 3.2//",
+    "-//ietf//dtd html 3//",
+    "-//ietf//dtd html level 1//",
+    "-//ietf//dtd html level 2//",
+    "-//ietf//dtd html level 3//",
+    "-//ietf//dtd html strict level 1//",
+    "-//ietf//dtd html strict level 2//",
+    "-//ietf//dtd html strict level 3//",
+    "-//ietf//dtd html strict//",
+    "-//ietf//dtd html//",
+    "-//metrius//dtd metrius presentational//",
+    "-//microsoft//dtd internet explorer 2.0 html strict//",
+    "-//microsoft//dtd internet explorer 2.0 html//",
+    "-//microsoft//dtd internet explorer 2.0 tables//",
+    "-//microsoft//dtd internet explorer 3.0 html strict//",
+    "-//microsoft//dtd internet explorer 3.0 html//",
+    "-//microsoft//dtd internet explorer 3.0 tables//",
+    "-//netscape comm. corp.//dtd html//",
+    "-//netscape comm. corp.//dtd strict html//",
+    "-//o'reilly and associates//dtd html 2.0//",
+    "-//o'reilly and associates//dtd html extended 1.0//",
+    "-//o'reilly and associates//dtd html extended 2.0//",
+    "-//spyglass//dtd html 2.0 extended//",
+    "-//sq//dtd html 2.0 hotmetal + extensions//",
+    "-//sun microsystems database wells//dtd hotjava html//",
+    "-//sun microsystems database wells//dtd hotjava strict html//",
+    "-//w3c//dtd html 3 1995-03-24//",
+    "-//w3c//dtd html 3.2 draft//",
+    "-//w3c//dtd html 3.2 final//",
+    "-//w3c//dtd html 3.2//",
+    "-//w3c//dtd html 3.2s draft//",
+    "-//w3c//dtd html 4.0 frameset//",
+    "-//w3c//dtd html 4.0 transitional//",
+    "-//w3c//dtd html experimental 19960712//",
+    "-//w3c//dtd html experimental 970421//",
+    "-//w3c//dtd w3 html//",
+    "-//w3o//dtd w3 html 3.0//",
+    "-//webtechs//dtd mozilla html 2.0//",
+    "-//webtechs//dtd mozilla html//",
+];
+
+/// Determines the quirks mode for a DOCTYPE per the HTML Standard algorithm.
+pub fn quirks_mode_for_doctype(
+    name: Option<&str>,
+    public_id: Option<&str>,
+    system_id: Option<&str>,
+    force_quirks: bool,
+) -> QuirksMode {
+    if force_quirks {
+        return QuirksMode::Quirks;
+    }
+
+    let name_ok = match name {
+        Some(n) => n.eq_ignore_ascii_case("html"),
+        None => false,
+    };
+    if !name_ok {
+        return QuirksMode::Quirks;
+    }
+
+    if let Some(pub_id) = public_id {
+        let pub_id_lower = pub_id.to_ascii_lowercase();
+
+        // Exact matches that force Quirks
+        if pub_id_lower == "-/w3c/dtd html 4.0 transitional/en"
+            || pub_id_lower == "html"
+            || pub_id_lower == "-//w3o//dtd w3 html strict 3.0//en//"
+        {
+            return QuirksMode::Quirks;
+        }
+
+        // Conditional rule: HTML 4.01 Frameset / Transitional
+        if pub_id_lower.starts_with("-//w3c//dtd html 4.01 frameset//")
+            || pub_id_lower.starts_with("-//w3c//dtd html 4.01 transitional//")
+        {
+            if system_id.is_some() {
+                return QuirksMode::LimitedQuirks;
+            } else {
+                return QuirksMode::Quirks;
+            }
+        }
+
+        // XHTML 1.0 Frameset / Transitional (Always Limited Quirks)
+        if pub_id_lower.starts_with("-//w3c//dtd xhtml 1.0 frameset//")
+            || pub_id_lower.starts_with("-//w3c//dtd xhtml 1.0 transitional//")
+        {
+            return QuirksMode::LimitedQuirks;
+        }
+
+        // Always-quirks prefixes
+        for prefix in QUIRKS_PREFIXES {
+            if pub_id_lower.starts_with(prefix) {
+                return QuirksMode::Quirks;
+            }
+        }
+    }
+
+    QuirksMode::NoQuirks
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +184,7 @@ pub struct TreeBuilder {
     head_element_pointer: Option<NodeId>,
     template_insertion_modes: Vec<InsertionMode>,
     foster_parenting: bool,
+    pub quirks_mode: QuirksMode,
 }
 
 impl TreeBuilder {
@@ -70,6 +198,7 @@ impl TreeBuilder {
             head_element_pointer: None,
             template_insertion_modes: Vec::new(),
             foster_parenting: false,
+            quirks_mode: QuirksMode::default(),
         }
     }
 
@@ -126,9 +255,15 @@ impl TreeBuilder {
                 name,
                 public_id,
                 system_id,
-                force_quirks: _,
+                force_quirks,
             } => {
-                // TODO(spec): handle quirks mode
+                // TODO(spec): surface quirks_mode onto the Document node / Dom once a dom-side field exists
+                self.quirks_mode = quirks_mode_for_doctype(
+                    name.as_deref(),
+                    public_id.as_deref(),
+                    system_id.as_deref(),
+                    force_quirks,
+                );
                 let node = self.dom.create_node(NodeData::Doctype {
                     name: name.unwrap_or_default(),
                     public_id: public_id.unwrap_or_default(),
@@ -138,6 +273,8 @@ impl TreeBuilder {
                 self.insertion_mode = InsertionMode::BeforeHtml;
             }
             _ => {
+                // TODO(spec): surface quirks_mode onto the Document node / Dom once a dom-side field exists
+                self.quirks_mode = QuirksMode::Quirks;
                 self.insertion_mode = InsertionMode::BeforeHtml;
                 self.process_token(token);
             }
@@ -2315,5 +2452,99 @@ mod tests {
             dom.serialize(dom.document()),
             "<html><head></head><frameset><frame></frame></frameset>   </html>"
         );
+    }
+
+    #[test]
+    fn test_quirks_mode_for_doctype_direct() {
+        // - `<!DOCTYPE html>` => NoQuirks
+        assert_eq!(
+            quirks_mode_for_doctype(Some("html"), None, None, false),
+            QuirksMode::NoQuirks
+        );
+
+        // - A DOCTYPE with `force_quirks` true => Quirks
+        assert_eq!(
+            quirks_mode_for_doctype(Some("html"), None, None, true),
+            QuirksMode::Quirks
+        );
+
+        // - name other than "html" => Quirks
+        assert_eq!(
+            quirks_mode_for_doctype(Some("foo"), None, None, false),
+            QuirksMode::Quirks
+        );
+        assert_eq!(
+            quirks_mode_for_doctype(None, None, None, false),
+            QuirksMode::Quirks
+        );
+
+        // - public_id "-//W3C//DTD HTML 4.01 Transitional//EN" with NO system_id => Quirks
+        assert_eq!(
+            quirks_mode_for_doctype(
+                Some("html"),
+                Some("-//W3C//DTD HTML 4.01 Transitional//EN"),
+                None,
+                false
+            ),
+            QuirksMode::Quirks
+        );
+
+        // - public_id "-//W3C//DTD HTML 4.01 Transitional//EN" WITH a system_id present => LimitedQuirks
+        assert_eq!(
+            quirks_mode_for_doctype(
+                Some("html"),
+                Some("-//W3C//DTD HTML 4.01 Transitional//EN"),
+                Some("http://www.w3.org/TR/html4/loose.dtd"),
+                false
+            ),
+            QuirksMode::LimitedQuirks
+        );
+
+        // - public_id "-//W3C//DTD XHTML 1.0 Transitional//EN" => LimitedQuirks
+        assert_eq!(
+            quirks_mode_for_doctype(
+                Some("html"),
+                Some("-//W3C//DTD XHTML 1.0 Transitional//EN"),
+                None,
+                false
+            ),
+            QuirksMode::LimitedQuirks
+        );
+
+        // Always-quirks prefix check (case insensitive)
+        assert_eq!(
+            quirks_mode_for_doctype(Some("html"), Some("-//IETF//DTD HTML 2.0//"), None, false),
+            QuirksMode::Quirks
+        );
+        assert_eq!(
+            quirks_mode_for_doctype(Some("html"), Some("-//ietf//dtd html 2.0//"), None, false),
+            QuirksMode::Quirks
+        );
+
+        // Exact match check (case insensitive)
+        assert_eq!(
+            quirks_mode_for_doctype(
+                Some("html"),
+                Some("-/W3C/DTD HTML 4.0 Transitional/EN"),
+                None,
+                false
+            ),
+            QuirksMode::Quirks
+        );
+    }
+
+    #[test]
+    fn test_quirks_mode_integration() {
+        // - No DOCTYPE at all => Quirks
+        let html_no_doctype = "<html><head></head><body>hello</body></html>";
+        let (_, quirks_no_doctype) =
+            parse_document_with_quirks(InputStream::from_utf8(html_no_doctype.as_bytes()));
+        assert_eq!(quirks_no_doctype, QuirksMode::Quirks);
+
+        // - Valid standard DOCTYPE => NoQuirks
+        let html_with_doctype = "<!DOCTYPE html><html><head></head><body>hello</body></html>";
+        let (_, quirks_with_doctype) =
+            parse_document_with_quirks(InputStream::from_utf8(html_with_doctype.as_bytes()));
+        assert_eq!(quirks_with_doctype, QuirksMode::NoQuirks);
     }
 }
