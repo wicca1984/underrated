@@ -165,7 +165,9 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                 src,
                 base_url,
                 decoded,
+                object_fit,
             } => {
+                let object_fit = *object_fit;
                 let rect_w = rect.size.width;
                 let rect_h = rect.size.height;
                 if rect_w <= 0.0 || rect_h <= 0.0 {
@@ -193,25 +195,78 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                     let x_end = (rect.max_x().max(0.0).ceil() as u32).min(width);
                     let y_end = (rect.max_y().max(0.0).ceil() as u32).min(height);
 
-                    for y in y_start..y_end {
-                        let fy = ((y as f32 - rect.origin.y) / rect_h).clamp(0.0, 1.0);
-                        let src_y =
-                            ((fy * decoded.height as f32).floor() as u32).min(decoded.height - 1);
-                        for x in x_start..x_end {
-                            let fx = ((x as f32 - rect.origin.x) / rect_w).clamp(0.0, 1.0);
-                            let src_x =
-                                ((fx * decoded.width as f32).floor() as u32).min(decoded.width - 1);
+                    if object_fit == crate::paint::ObjectFit::Fill {
+                        for y in y_start..y_end {
+                            let fy = ((y as f32 - rect.origin.y) / rect_h).clamp(0.0, 1.0);
+                            let src_y = ((fy * decoded.height as f32).floor() as u32)
+                                .min(decoded.height - 1);
+                            for x in x_start..x_end {
+                                let fx = ((x as f32 - rect.origin.x) / rect_w).clamp(0.0, 1.0);
+                                let src_x = ((fx * decoded.width as f32).floor() as u32)
+                                    .min(decoded.width - 1);
 
-                            let pixel_idx = ((src_y * decoded.width + src_x) * 4) as usize;
-                            if pixel_idx + 3 < decoded.rgba.len() {
-                                let r = decoded.rgba[pixel_idx];
-                                let g = decoded.rgba[pixel_idx + 1];
-                                let b = decoded.rgba[pixel_idx + 2];
-                                let a = decoded.rgba[pixel_idx + 3];
+                                let pixel_idx = ((src_y * decoded.width + src_x) * 4) as usize;
+                                if pixel_idx + 3 < decoded.rgba.len() {
+                                    let r = decoded.rgba[pixel_idx];
+                                    let g = decoded.rgba[pixel_idx + 1];
+                                    let b = decoded.rgba[pixel_idx + 2];
+                                    let a = decoded.rgba[pixel_idx + 3];
 
-                                let index = (y as usize) * (width as usize) + (x as usize);
-                                if let Some(pixel) = canvas.pixels.get_mut(index) {
-                                    *pixel = blend((r, g, b, a), *pixel);
+                                    let index = (y as usize) * (width as usize) + (x as usize);
+                                    if let Some(pixel) = canvas.pixels.get_mut(index) {
+                                        *pixel = blend((r, g, b, a), *pixel);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        let img_w = decoded.width as f32;
+                        let img_h = decoded.height as f32;
+
+                        let s = match object_fit {
+                            crate::paint::ObjectFit::Contain => {
+                                (rect_w / img_w).min(rect_h / img_h)
+                            }
+                            crate::paint::ObjectFit::Cover => (rect_w / img_w).max(rect_h / img_h),
+                            crate::paint::ObjectFit::None => 1.0,
+                            crate::paint::ObjectFit::ScaleDown => {
+                                1.0f32.min((rect_w / img_w).min(rect_h / img_h))
+                            }
+                            crate::paint::ObjectFit::Fill => unreachable!(),
+                        };
+
+                        let dw = img_w * s;
+                        let dh = img_h * s;
+
+                        let draw_x0 = rect.origin.x + (rect_w - dw) / 2.0;
+                        let draw_y0 = rect.origin.y + (rect_h - dh) / 2.0;
+
+                        for y in y_start..y_end {
+                            let src_fy = (y as f32 + 0.5 - draw_y0) / dh;
+                            if !(0.0..1.0).contains(&src_fy) {
+                                continue;
+                            }
+                            let src_y = ((src_fy * img_h).floor() as u32).min(decoded.height - 1);
+
+                            for x in x_start..x_end {
+                                let src_fx = (x as f32 + 0.5 - draw_x0) / dw;
+                                if !(0.0..1.0).contains(&src_fx) {
+                                    continue;
+                                }
+                                let src_x =
+                                    ((src_fx * img_w).floor() as u32).min(decoded.width - 1);
+
+                                let pixel_idx = ((src_y * decoded.width + src_x) * 4) as usize;
+                                if pixel_idx + 3 < decoded.rgba.len() {
+                                    let r = decoded.rgba[pixel_idx];
+                                    let g = decoded.rgba[pixel_idx + 1];
+                                    let b = decoded.rgba[pixel_idx + 2];
+                                    let a = decoded.rgba[pixel_idx + 3];
+
+                                    let index = (y as usize) * (width as usize) + (x as usize);
+                                    if let Some(pixel) = canvas.pixels.get_mut(index) {
+                                        *pixel = blend((r, g, b, a), *pixel);
+                                    }
                                 }
                             }
                         }
@@ -939,6 +994,7 @@ mod tests {
             src: temp_filename.to_string(),
             base_url: None,
             decoded: None,
+            object_fit: crate::paint::ObjectFit::Fill,
         }];
         let list = DisplayList(items);
 
@@ -984,6 +1040,7 @@ mod tests {
             src: "this_file_does_not_exist_at_all.png".to_string(),
             base_url: None,
             decoded: None,
+            object_fit: crate::paint::ObjectFit::Fill,
         }];
         let list = DisplayList(items);
         let canvas = rasterize(&list, 4, 4);
@@ -1000,6 +1057,7 @@ mod tests {
             src: corrupt_filename.to_string(),
             base_url: None,
             decoded: None,
+            object_fit: crate::paint::ObjectFit::Fill,
         }];
         let list_corrupt = DisplayList(items_corrupt);
         let canvas_corrupt = rasterize(&list_corrupt, 4, 4);
@@ -1008,5 +1066,191 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(corrupt_filename);
+    }
+
+    #[test]
+    fn test_rasterize_image_contain() {
+        use crate::geom::Rect;
+        // Generate 2x1 image: Red on left, Green on right
+        let mut source_canvas = Canvas::new(2, 1);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_test_rasterize_image_contain.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        // Canvas: 4x4, Blue background
+        let items = vec![
+            DisplayItem::SolidRect {
+                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                color: Color::Rgba(0, 0, 255, 255), // Blue
+            },
+            DisplayItem::Image {
+                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                src: temp_filename.to_string(),
+                base_url: None,
+                decoded: None,
+                object_fit: crate::paint::ObjectFit::Contain,
+            },
+        ];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 4, 4);
+
+        // Top row (y=0) and bottom row (y=3) should remain Blue background
+        for x in 0..4 {
+            assert_eq!(canvas.pixel(x, 0), 0xFF0000FF);
+            assert_eq!(canvas.pixel(x, 3), 0xFF0000FF);
+        }
+
+        // Center rows (y=1 and y=2) should contain scaled image
+        // Left half is Red (x=0,1), Right half is Green (x=2,3)
+        for y in 1..3 {
+            assert_eq!(canvas.pixel(0, y), 0xFFFF0000);
+            assert_eq!(canvas.pixel(1, y), 0xFFFF0000);
+            assert_eq!(canvas.pixel(2, y), 0xFF00FF00);
+            assert_eq!(canvas.pixel(3, y), 0xFF00FF00);
+        }
+
+        let _ = std::fs::remove_file(temp_filename);
+    }
+
+    #[test]
+    fn test_rasterize_image_cover() {
+        use crate::geom::Rect;
+        // Generate 2x1 image: Red on left, Green on right
+        let mut source_canvas = Canvas::new(2, 1);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_test_rasterize_image_cover.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        // Canvas: 2x2, Blue background (should be completely covered)
+        let items = vec![
+            DisplayItem::SolidRect {
+                rect: Rect::new(0.0, 0.0, 2.0, 2.0),
+                color: Color::Rgba(0, 0, 255, 255), // Blue
+            },
+            DisplayItem::Image {
+                rect: Rect::new(0.0, 0.0, 2.0, 2.0),
+                src: temp_filename.to_string(),
+                base_url: None,
+                decoded: None,
+                object_fit: crate::paint::ObjectFit::Cover,
+            },
+        ];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 2, 2);
+
+        // Entire 2x2 rect is painted, left column is Red, right column is Green
+        assert_eq!(canvas.pixel(0, 0), 0xFFFF0000);
+        assert_eq!(canvas.pixel(0, 1), 0xFFFF0000);
+        assert_eq!(canvas.pixel(1, 0), 0xFF00FF00);
+        assert_eq!(canvas.pixel(1, 1), 0xFF00FF00);
+
+        let _ = std::fs::remove_file(temp_filename);
+    }
+
+    #[test]
+    fn test_rasterize_image_none() {
+        use crate::geom::Rect;
+        // Generate 2x2 image:
+        // Red, Green
+        // Blue, Yellow
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        source_canvas.pixels[2] = 0xFF0000FF; // Blue
+        source_canvas.pixels[3] = 0xFFFFFF00; // Yellow
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_test_rasterize_image_none.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        // Canvas: 4x4, Black background (image drawn intrinsic 2x2 at center x=1..2, y=1..2)
+        let items = vec![
+            DisplayItem::SolidRect {
+                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                color: Color::Rgba(0, 0, 0, 255), // Black
+            },
+            DisplayItem::Image {
+                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                src: temp_filename.to_string(),
+                base_url: None,
+                decoded: None,
+                object_fit: crate::paint::ObjectFit::None,
+            },
+        ];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 4, 4);
+
+        // Surrounding border remains Black
+        for x in 0..4 {
+            assert_eq!(canvas.pixel(x, 0), 0xFF000000);
+            assert_eq!(canvas.pixel(x, 3), 0xFF000000);
+        }
+        assert_eq!(canvas.pixel(0, 1), 0xFF000000);
+        assert_eq!(canvas.pixel(3, 1), 0xFF000000);
+        assert_eq!(canvas.pixel(0, 2), 0xFF000000);
+        assert_eq!(canvas.pixel(3, 2), 0xFF000000);
+
+        // Center 2x2 should match intrinsic image
+        assert_eq!(canvas.pixel(1, 1), 0xFFFF0000); // Red
+        assert_eq!(canvas.pixel(2, 1), 0xFF00FF00); // Green
+        assert_eq!(canvas.pixel(1, 2), 0xFF0000FF); // Blue
+        assert_eq!(canvas.pixel(2, 2), 0xFFFFFF00); // Yellow
+
+        let _ = std::fs::remove_file(temp_filename);
+    }
+
+    #[test]
+    fn test_rasterize_image_scale_down() {
+        use crate::geom::Rect;
+        // ScaleDown with a smaller image acts like None. Let's reuse the 2x2 image onto 4x4 rect.
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        source_canvas.pixels[2] = 0xFF0000FF; // Blue
+        source_canvas.pixels[3] = 0xFFFFFF00; // Yellow
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_test_rasterize_image_scaledown.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        let items = vec![
+            DisplayItem::SolidRect {
+                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                color: Color::Rgba(0, 0, 0, 255), // Black
+            },
+            DisplayItem::Image {
+                rect: Rect::new(0.0, 0.0, 4.0, 4.0),
+                src: temp_filename.to_string(),
+                base_url: None,
+                decoded: None,
+                object_fit: crate::paint::ObjectFit::ScaleDown,
+            },
+        ];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 4, 4);
+
+        // Surrounding border remains Black
+        for x in 0..4 {
+            assert_eq!(canvas.pixel(x, 0), 0xFF000000);
+            assert_eq!(canvas.pixel(x, 3), 0xFF000000);
+        }
+        assert_eq!(canvas.pixel(0, 1), 0xFF000000);
+        assert_eq!(canvas.pixel(3, 1), 0xFF000000);
+        assert_eq!(canvas.pixel(0, 2), 0xFF000000);
+        assert_eq!(canvas.pixel(3, 2), 0xFF000000);
+
+        // Center 2x2 should match intrinsic image
+        assert_eq!(canvas.pixel(1, 1), 0xFFFF0000); // Red
+        assert_eq!(canvas.pixel(2, 1), 0xFF00FF00); // Green
+        assert_eq!(canvas.pixel(1, 2), 0xFF0000FF); // Blue
+        assert_eq!(canvas.pixel(2, 2), 0xFFFFFF00); // Yellow
+
+        let _ = std::fs::remove_file(temp_filename);
     }
 }

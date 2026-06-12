@@ -6,6 +6,17 @@ use crate::layout::LayoutBox;
 use crate::style::ComputedStyle;
 use std::collections::HashMap;
 
+/// spec: object-fit keyword values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectFit {
+    #[default]
+    Fill,
+    Contain,
+    Cover,
+    None,
+    ScaleDown,
+}
+
 /// A single item to be displayed on the screen.
 /// spec: S-12
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +35,7 @@ pub enum DisplayItem {
         src: String,
         base_url: Option<String>,
         decoded: Option<crate::image::DecodedImage>,
+        object_fit: ObjectFit,
     },
 }
 
@@ -504,6 +516,21 @@ fn get_opacity(style: &ComputedStyle) -> f32 {
             (p / 100.0).clamp(0.0, 1.0)
         }
         _ => 1.0,
+    }
+}
+
+/// Resolve object-fit from style.
+fn get_object_fit(style: &ComputedStyle) -> ObjectFit {
+    if let Some(CssValue::Keyword(kw)) = style.get("object-fit") {
+        match kw.to_ascii_lowercase().as_str() {
+            "contain" => ObjectFit::Contain,
+            "cover" => ObjectFit::Cover,
+            "none" => ObjectFit::None,
+            "scale-down" => ObjectFit::ScaleDown,
+            _ => ObjectFit::Fill,
+        }
+    } else {
+        ObjectFit::Fill
     }
 }
 
@@ -1289,8 +1316,10 @@ pub fn build_display_list(
                             src: src.to_string(),
                             base_url,
                             decoded: Some(pre_decoded),
+                            object_fit: get_object_fit(style),
                         });
                     } else {
+                        // TODO(spec): object-fit is applied only on the pre-decoded DisplayItem::Image path (see raster); the inline non-pre-decoded blit fallback still stretches (fill).
                         let mut painted_as_pixels = false;
                         if let Some(bytes) =
                             crate::loader::load_image_safely(src, base_url_parsed.as_ref())
@@ -1337,6 +1366,7 @@ pub fn build_display_list(
                                 src: src.to_string(),
                                 base_url,
                                 decoded: None,
+                                object_fit: get_object_fit(style),
                             });
                         }
                     }
