@@ -100,10 +100,31 @@ pub fn compute_styles_with_viewport(
     let mut styles = HashMap::new();
     let root = dom.document();
 
+    let ua_rules_count = stylesheet
+        .rules
+        .iter()
+        .position(|rule| {
+            if let Rule::Qualified(qr) = rule {
+                let s = serialize_component_values(&qr.prelude);
+                s.replace(" ", "") == "head,style,script,meta,link,title"
+            } else {
+                false
+            }
+        })
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+
     // Traverse the DOM in pre-order to resolve styles, allowing inheritance from parents.
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        let computed = compute_node_style(dom, node, stylesheet, &styles, viewport_width);
+        let computed = compute_node_style(
+            dom,
+            node,
+            stylesheet,
+            &styles,
+            viewport_width,
+            ua_rules_count,
+        );
         styles.insert(node, computed);
 
         // Add children to stack in reverse order to maintain pre-order traversal.
@@ -121,6 +142,7 @@ fn compute_node_style(
     stylesheet: &Stylesheet,
     computed_styles: &HashMap<NodeId, ComputedStyle>,
     viewport_width: f32,
+    ua_rules_count: usize,
 ) -> ComputedStyle {
     let mut properties = HashMap::new();
 
@@ -136,20 +158,6 @@ fn compute_node_style(
     );
 
     // 1.5. Collect presentational hints.
-    let ua_rules_count = stylesheet
-        .rules
-        .iter()
-        .position(|rule| {
-            if let Rule::Qualified(qr) = rule {
-                let s = serialize_component_values(&qr.prelude);
-                s.replace(" ", "") == "head,style,script,meta,link,title"
-            } else {
-                false
-            }
-        })
-        .map(|pos| pos + 1)
-        .unwrap_or(0);
-
     for decl in &mut matched_declarations {
         if decl.source_order >= ua_rules_count {
             decl.source_order += 1;
