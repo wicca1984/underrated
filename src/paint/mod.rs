@@ -621,6 +621,17 @@ pub fn build_display_list(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
 ) -> DisplayList {
+    build_display_list_with_caret(layout, dom, styles, None)
+}
+
+/// Builds a display list from the layout tree, with optional caret state.
+/// spec: S-12
+pub fn build_display_list_with_caret(
+    layout: &LayoutBox,
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    caret: Option<(NodeId, usize)>,
+) -> DisplayList {
     let mut items = Vec::new();
     let mut stack = vec![(layout, 1.0)];
 
@@ -696,6 +707,7 @@ pub fn build_display_list(
 
             let mut btn_label_item = None;
             let mut input_text_item = None;
+            let mut caret_item = None;
 
             if is_btn_or_submit {
                 skip_children = true;
@@ -771,7 +783,31 @@ pub fn build_display_list(
                         color: scale_color_alpha(&text_color, effective_opacity),
                     });
                 }
-                // TODO(spec): caret rendering requires shell caret state
+
+                if let Some((focus_id, caret_index)) = caret
+                    && focus_id == node_id
+                {
+                    let font = crate::font::BitmapFont::builtin();
+                    let text_h = font.line_height() as f32;
+                    let text_x = x + 2.0;
+
+                    let val_str = value.clone().unwrap_or_default();
+                    let val_chars: Vec<char> = val_str.chars().collect();
+                    let clamped_index = caret_index.min(val_chars.len());
+                    let prefix: String = val_chars[..clamped_index].iter().collect();
+
+                    let caret_x = text_x + font.measure(&prefix) as f32;
+                    let caret_x = caret_x.min(x + w);
+
+                    let caret_y = y + ((h - text_h) / 2.0).max(0.0);
+                    let caret_color =
+                        scale_color_alpha(&Color::Rgba(0, 0, 0, 255), effective_opacity);
+
+                    caret_item = Some(DisplayItem::SolidRect {
+                        rect: Rect::new(caret_x, caret_y, 1.0, text_h),
+                        color: caret_color,
+                    });
+                }
             }
 
             if !node_hidden {
@@ -1438,6 +1474,9 @@ pub fn build_display_list(
                     items.push(item);
                 }
                 if let Some(item) = input_text_item {
+                    items.push(item);
+                }
+                if let Some(item) = caret_item {
                     items.push(item);
                 }
             }
@@ -4985,6 +5024,141 @@ mod tests {
                 text_items.is_empty(),
                 "Should not paint any text if both value and placeholder are empty"
             );
+        }
+    }
+
+    #[test]
+    fn test_paint_input_caret_rendering() {
+        let font = crate::font::BitmapFont::builtin();
+        let font_h = font.line_height() as f32;
+
+        // Test 1: Focused empty input
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let input = dom.create_node(NodeData::Element {
+                name: "input".into(),
+                attrs: vec![("type".into(), "text".into())],
+            });
+            dom.append_child(doc, input);
+
+            let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+            css.push_str("input { width: 100px; height: 30px; }");
+            let stylesheet = parse_stylesheet(&css);
+            let styles = compute_styles(&dom, &stylesheet);
+            let layout = layout_document(&dom, &styles, 100.0);
+
+            let input_rect =
+                crate::layout::find_box_rect(&layout, input).expect("Input rect should exist");
+
+            // Build display list with caret focused on this input
+            let display_list =
+                build_display_list_with_caret(&layout, &dom, &styles, Some((input, 0)));
+            let items = display_list.0;
+
+            // Find caret SolidRect item. Remember UA chrome of input also emits SolidRects (e.g. background & border),
+            // so we should identify the thin caret rect: width == 1.0, height == font_h.
+            let caret_item = items
+                .iter()
+                .find(|item| {
+                    if let DisplayItem::SolidRect { rect, .. } = item {
+                        rect.size.width == 1.0 && rect.size.height == font_h
+                    } else {
+                        false
+                    }
+                })
+                .expect("Should find a caret SolidRect");
+
+            if let DisplayItem::SolidRect { rect, color } = caret_item {
+                let input_x = input_rect.origin.x;
+                assert!((rect.origin.x - (input_x + 2.0)).abs() < 0.1);
+                assert_eq!(color, &Color::Rgba(0, 0, 0, 255));
+            }
+        }
+
+        // Test 2: Focused input with value "ab" and caret_index 2
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let input = dom.create_node(NodeData::Element {
+                name: "input".into(),
+                attrs: vec![
+                    ("type".into(), "text".into()),
+                    ("value".into(), "ab".into()),
+                ],
+            });
+            dom.append_child(doc, input);
+
+            let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+            css.push_str("input { width: 100px; height: 30px; }");
+            let stylesheet = parse_stylesheet(&css);
+            let styles = compute_styles(&dom, &stylesheet);
+            let layout = layout_document(&dom, &styles, 100.0);
+
+            let input_rect =
+                crate::layout::find_box_rect(&layout, input).expect("Input rect should exist");
+
+            let display_list =
+                build_display_list_with_caret(&layout, &dom, &styles, Some((input, 2)));
+            let items = display_list.0;
+
+            let caret_item = items
+                .iter()
+                .find(|item| {
+                    if let DisplayItem::SolidRect { rect, .. } = item {
+                        rect.size.width == 1.0 && rect.size.height == font_h
+                    } else {
+                        false
+                    }
+                })
+                .expect("Should find a caret SolidRect");
+
+            if let DisplayItem::SolidRect { rect, .. } = caret_item {
+                let expected_x = input_rect.origin.x + 2.0 + font.measure("ab") as f32;
+                assert!((rect.origin.x - expected_x).abs() < 0.1);
+            }
+        }
+
+        // Test 3: Regression: build_display_list yields NO caret rect
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let input = dom.create_node(NodeData::Element {
+                name: "input".into(),
+                attrs: vec![
+                    ("type".into(), "text".into()),
+                    ("value".into(), "ab".into()),
+                ],
+            });
+            dom.append_child(doc, input);
+
+            let mut css = crate::engine::UA_DEFAULT_CSS.to_string();
+            css.push_str("input { width: 100px; height: 30px; }");
+            let stylesheet = parse_stylesheet(&css);
+            let styles = compute_styles(&dom, &stylesheet);
+            let layout = layout_document(&dom, &styles, 100.0);
+
+            let display_list = build_display_list(&layout, &dom, &styles);
+            let items = display_list.0;
+
+            // Caret rect should NOT be present (since we pass None for caret)
+            let caret_item = items.iter().find(|item| {
+                if let DisplayItem::SolidRect { rect, .. } = item {
+                    rect.size.width == 1.0 && rect.size.height == font_h
+                } else {
+                    false
+                }
+            });
+            assert!(
+                caret_item.is_none(),
+                "Caret should not render when caret state is None"
+            );
+
+            // But the text should still render
+            let text_item = items
+                .iter()
+                .find(|item| matches!(item, DisplayItem::Text { text, .. } if text == "ab"));
+            assert!(text_item.is_some(), "Value text 'ab' should still render");
         }
     }
 }
