@@ -701,8 +701,18 @@ fn compute_node_style(
         CategorizedComputedStyle::initial()
     };
 
-    for (name, value) in properties {
-        style.set_property(&name, &value);
+    // font-size must be applied before any em/%-relative property (vertical-align,
+    // line-height, etc.) so that self.inherited_text.font_size is already this
+    // element's resolved size when those values resolve. `properties` is a HashMap,
+    // so iterating it directly is order-nondeterministic (was a flaky source).
+    if let Some(fs_val) = properties.get("font-size") {
+        style.set_property("font-size", fs_val);
+    }
+    for (name, value) in &properties {
+        if name == "font-size" {
+            continue;
+        }
+        style.set_property(name, value);
     }
 
     style

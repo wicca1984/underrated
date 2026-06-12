@@ -790,6 +790,12 @@ impl CategorizedComputedStyle {
                         "middle" => -6,
                         _ => -1,
                     },
+                    // Percentage is relative to the line-height, which is unknown
+                    // at style time; store the raw percent in a distinct band and
+                    // resolve it during layout.
+                    CssValue::Length(val, crate::css::values::LengthUnit::Percent) => {
+                        (val.round() as i32) + 200000
+                    }
                     _ => value_to_px(value, fs) + 100000,
                 };
                 Arc::make_mut(&mut self.reset_box).vertical_align = v;
@@ -964,13 +970,20 @@ impl CategorizedComputedStyle {
             "row-gap" => Arc::make_mut(&mut self.reset_flex).row_gap = value_to_px(value, fs),
             "column-gap" => Arc::make_mut(&mut self.reset_flex).column_gap = value_to_px(value, fs),
             "gap" => {
-                let val_px = value_to_px(value, fs);
+                let mut leaves = Vec::new();
+                flatten_value(value, &mut leaves);
+                let (row_px, col_px) = if leaves.len() >= 2 {
+                    (value_to_px(&leaves[0], fs), value_to_px(&leaves[1], fs))
+                } else {
+                    let p = value_to_px(value, fs);
+                    (p, p)
+                };
                 let flex = Arc::make_mut(&mut self.reset_flex);
                 if flex.row_gap == -1 {
-                    flex.row_gap = val_px;
+                    flex.row_gap = row_px;
                 }
                 if flex.column_gap == -1 {
-                    flex.column_gap = val_px;
+                    flex.column_gap = col_px;
                 }
             }
 

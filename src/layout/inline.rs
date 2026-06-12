@@ -59,6 +59,11 @@ fn get_vertical_align_shift(
                 -4 => -line_height + border_box_height,
                 -5 => 0.0,
                 -6 => -0.25 * font_size + (border_box_height / 2.0),
+                v if v >= 150000 => {
+                    // Percentage band: relative to the line-height.
+                    let pct = (v - 200000) as f32;
+                    -(pct / 100.0) * line_height
+                }
                 v if v >= 50000 => {
                     let raise = (v - 100000) as f32;
                     -raise
