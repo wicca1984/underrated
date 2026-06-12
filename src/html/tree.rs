@@ -105,8 +105,8 @@ impl TreeBuilder {
             InsertionMode::InSelectInTable => self.handle_in_select_in_table(token),
             InsertionMode::InTemplate => self.handle_in_template(token),
             InsertionMode::AfterBody => self.handle_after_body(token),
-            InsertionMode::InFrameset => self.handle_in_body(token), // TODO(spec)
-            InsertionMode::AfterFrameset => self.handle_in_body(token), // TODO(spec)
+            InsertionMode::InFrameset => self.handle_in_frameset(token),
+            InsertionMode::AfterFrameset => self.handle_after_frameset(token),
             InsertionMode::AfterAfterBody => self.handle_after_after_body(token),
             InsertionMode::AfterAfterFrameset => self.handle_after_after_body(token), // TODO(spec)
         }
@@ -661,6 +661,32 @@ impl TreeBuilder {
                     self.close_p_element_if_in_button_scope();
                     self.create_and_insert_element(name, attrs);
                 }
+                "frameset" => {
+                    let has_body_as_second = if self.stack_of_open_elements.len() >= 2 {
+                        let second_id = self.stack_of_open_elements[1];
+                        matches!(self.dom.data(second_id), Some(NodeData::Element { name, .. }) if name == "body")
+                    } else {
+                        false
+                    };
+
+                    if !has_body_as_second {
+                        // Parse error. Ignore the token.
+                    } else {
+                        let body_id = self.stack_of_open_elements[1];
+                        if let Some(parent_id) = self.dom.parent(body_id) {
+                            self.dom.remove_child(parent_id, body_id);
+                        }
+
+                        while self.stack_of_open_elements.len() > 1 {
+                            self.stack_of_open_elements.pop();
+                        }
+
+                        let node = self.create_and_insert_element(name, attrs);
+                        self.stack_of_open_elements.push(node);
+
+                        self.insertion_mode = InsertionMode::InFrameset;
+                    }
+                }
                 "template" => {
                     self.handle_in_head(Token::StartTag {
                         name,
@@ -766,6 +792,140 @@ impl TreeBuilder {
             }
             Token::Eof => {
                 // Stop parsing.
+            }
+        }
+    }
+
+    // spec: §13.2.6.4.20 The "in frameset" insertion mode
+    fn handle_in_frameset(&mut self, token: Token) {
+        match token {
+            Token::Character(c) if is_html_whitespace(c) => {
+                self.insert_character(c);
+            }
+            Token::Comment(data) => {
+                self.insert_comment(data);
+            }
+            Token::Doctype { .. } => {
+                // Parse error. Ignore the token.
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => match name.as_str() {
+                "html" => {
+                    self.handle_in_body(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                "frameset" => {
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "frame" => {
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                    self.stack_of_open_elements.pop();
+                }
+                "noframes" => {
+                    self.handle_in_head(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                _ => {
+                    // Parse error. Ignore the token.
+                }
+            },
+            Token::EndTag { name, .. } => match name.as_str() {
+                "frameset" => {
+                    let is_root_html = if let Some(&top_id) = self.stack_of_open_elements.last() {
+                        self.stack_of_open_elements.first() == Some(&top_id)
+                    } else {
+                        false
+                    };
+
+                    if is_root_html {
+                        // Parse error. Ignore.
+                    } else {
+                        self.stack_of_open_elements.pop();
+                        // TODO(spec): fragment case
+                        let is_frameset = if let Some(&top_id) = self.stack_of_open_elements.last()
+                        {
+                            matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "frameset")
+                        } else {
+                            false
+                        };
+                        if !is_frameset {
+                            self.insertion_mode = InsertionMode::AfterFrameset;
+                        }
+                    }
+                }
+                _ => {
+                    // Parse error. Ignore.
+                }
+            },
+            Token::Eof => {
+                // Stop parsing.
+                // TODO(spec): parse error if current node is not root html
+            }
+            _ => {
+                // Parse error. Ignore the token.
+            }
+        }
+    }
+
+    // spec: §13.2.6.4.21 The "after frameset" insertion mode
+    fn handle_after_frameset(&mut self, token: Token) {
+        match token {
+            Token::Character(c) if is_html_whitespace(c) => {
+                self.insert_character(c);
+            }
+            Token::Comment(data) => {
+                self.insert_comment(data);
+            }
+            Token::Doctype { .. } => {
+                // Parse error. Ignore.
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => match name.as_str() {
+                "html" => {
+                    self.handle_in_body(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                "noframes" => {
+                    self.handle_in_head(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                _ => {
+                    // Parse error. Ignore.
+                }
+            },
+            Token::EndTag { name, .. } => match name.as_str() {
+                "html" => {
+                    self.insertion_mode = InsertionMode::AfterAfterFrameset;
+                }
+                _ => {
+                    // Parse error. Ignore.
+                }
+            },
+            Token::Eof => {
+                // Stop parsing.
+            }
+            _ => {
+                // Parse error. Ignore.
             }
         }
     }
@@ -2134,6 +2294,26 @@ mod tests {
         assert_eq!(
             dom.serialize(dom.document()),
             "<html><head><noscript></noscript></head><body></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_frameset_basic() {
+        let html = "<html><head></head><frameset><frame src=\"a.html\"><frame src=\"b.html\"></frameset></html>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><frameset><frame src=\"a.html\"></frame><frame src=\"b.html\"></frame></frameset></html>"
+        );
+    }
+
+    #[test]
+    fn test_after_frameset_whitespace() {
+        let html = "<html><head></head><frameset><frame></frameset>   </html>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><frameset><frame></frame></frameset>   </html>"
         );
     }
 }
