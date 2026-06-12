@@ -305,6 +305,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "flex-wrap"
             | "float"
             | "clear"
+            | "visibility"
     )
 }
 
@@ -416,6 +417,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "none" | "left" | "right" | "both"
+                )
+            }
+            _ => false,
+        },
+        "visibility" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "visible" | "hidden" | "collapse"
                 )
             }
             _ => false,
@@ -571,6 +581,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "none" | "left" | "right" | "both" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "visibility" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "visible" | "hidden" | "collapse" => Some(val),
                     _ => None,
                 }
             } else {
@@ -1917,6 +1937,57 @@ mod tests {
         );
         assert_eq!(
             parse_property_value("clear", &[token(CssToken::Ident("up".to_string()))]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_visibility_property() {
+        // Test known properties
+        assert!(is_known_layout_property("visibility"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "visibility",
+            &CssValue::Keyword("visible".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "visibility",
+            &CssValue::Keyword("hidden".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "visibility",
+            &CssValue::Keyword("collapse".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "visibility",
+            &CssValue::Keyword("gone".to_string())
+        ));
+
+        // Test parse_property_value for visibility
+        assert_eq!(
+            parse_property_value(
+                "visibility",
+                &[token(CssToken::Ident("visible".to_string()))]
+            ),
+            Some(CssValue::Keyword("visible".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "visibility",
+                &[token(CssToken::Ident("hidden".to_string()))]
+            ),
+            Some(CssValue::Keyword("hidden".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "visibility",
+                &[token(CssToken::Ident("collapse".to_string()))]
+            ),
+            Some(CssValue::Keyword("collapse".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("visibility", &[token(CssToken::Ident("gone".to_string()))]),
             None
         );
     }
