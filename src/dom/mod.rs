@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod classlist;
+mod dirty;
 mod focus;
 mod mutate;
 mod query;
@@ -44,6 +45,7 @@ pub struct Dom {
     document: NodeId,
     focused_node: std::cell::Cell<Option<NodeId>>,
     images: std::cell::RefCell<std::collections::HashMap<String, crate::image::DecodedImage>>,
+    dirty_nodes: Vec<NodeId>,
 }
 
 impl Default for Dom {
@@ -69,6 +71,7 @@ impl Dom {
             document,
             focused_node: std::cell::Cell::new(None),
             images: std::cell::RefCell::new(std::collections::HashMap::new()),
+            dirty_nodes: Vec::new(),
         }
     }
 
