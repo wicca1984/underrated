@@ -3,17 +3,12 @@ use crate::dom::{Dom, NodeData};
 use crate::geom::{Point, Rect, Size};
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
-use crate::style::ComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
-fn is_inline_block(styles: &HashMap<NodeId, ComputedStyle>, node: NodeId) -> bool {
+fn is_inline_block(styles: &HashMap<NodeId, CategorizedComputedStyle>, node: NodeId) -> bool {
     if let Some(style) = styles.get(&node) {
-        matches!(
-            style.get("display"),
-            Some(crate::css::values::CssValue::Display(
-                crate::css::values::DisplayValue::InlineBlock
-            ))
-        ) || matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "inline-block")
+        style.reset_box.display == "inline-block"
     } else {
         false
     }
@@ -33,11 +28,8 @@ fn shift_x(layout_box: &mut LayoutBox, delta: f32) {
     }
 }
 
-fn get_font_size(style: &ComputedStyle) -> f32 {
-    match style.get("font-size") {
-        Some(crate::css::values::CssValue::Length(px, _)) => *px,
-        _ => 16.0,
-    }
+fn get_font_size(style: &CategorizedComputedStyle) -> f32 {
+    style.inherited_text.font_size as f32
 }
 
 #[allow(clippy::collapsible_if)]
@@ -45,7 +37,7 @@ fn get_vertical_align_shift(
     node: NodeId,
     block_container: Option<NodeId>,
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     line_height: f32,
     border_box_height: f32,
 ) -> f32 {
@@ -58,45 +50,30 @@ fn get_vertical_align_shift(
         }
 
         if let Some(style) = styles.get(&curr_node) {
-            if let Some(val) = style.get("vertical-align") {
-                match val {
-                    crate::css::values::CssValue::Keyword(kw) => {
-                        let font_size = get_font_size(style);
-                        let shift = match kw.as_str() {
-                            "baseline" => 0.0,
-                            "sub" => 0.2 * font_size,
-                            "super" => -0.2 * font_size,
-                            "text-top" | "top" => -line_height + border_box_height,
-                            "text-bottom" | "bottom" => 0.0,
-                            "middle" => -0.25 * font_size + (border_box_height / 2.0),
-                            _ => {
-                                // TODO(spec): <percentage> and <length> vertical-align values and precise font-metric-based x-height/text-top/text-bottom are out of scope for v1
-                                0.0
-                            }
-                        };
-                        total_shift += shift;
-                    }
-                    crate::css::values::CssValue::Length(v, unit) => {
-                        let raise = match unit {
-                            crate::css::values::LengthUnit::Px
-                            | crate::css::values::LengthUnit::Pt => *v,
-                            crate::css::values::LengthUnit::Em => *v * get_font_size(style),
-                            crate::css::values::LengthUnit::Rem => {
-                                // NOTE: Approximate rem to em as the layout engine has no separate root font-size plumbing here
-                                *v * get_font_size(style)
-                            }
-                            crate::css::values::LengthUnit::Percent => (*v / 100.0) * line_height,
-                            crate::css::values::LengthUnit::Vw
-                            | crate::css::values::LengthUnit::Vh => {
-                                // TODO(spec): viewport units vertical-align are out of scope
-                                0.0
-                            }
-                        };
-                        total_shift += -raise;
-                    }
-                    _ => {}
+            let font_size = get_font_size(style);
+            let val = style.reset_box.vertical_align;
+            let shift = match val {
+                -1 => 0.0,
+                -2 => 0.2 * font_size,
+                -3 => -0.2 * font_size,
+                -4 => -line_height + border_box_height,
+                -5 => 0.0,
+                -6 => -0.25 * font_size + (border_box_height / 2.0),
+                v if v >= 150000 => {
+                    // Percentage band: relative to the line-height.
+                    let pct = (v - 200000) as f32;
+                    -(pct / 100.0) * line_height
                 }
-            }
+                v if v >= 50000 => {
+                    let raise = (v - 100000) as f32;
+                    -raise
+                }
+                v => {
+                    let raise = v as f32;
+                    -raise
+                }
+            };
+            total_shift += shift;
         }
 
         current = dom.parent(curr_node);
@@ -114,7 +91,7 @@ fn create_line_box_adjusted(
     offset_y: f32,
     width: f32,
     line_height: f32,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     text_align: &str,
     containing_width: f32,
     is_last_line: bool,
@@ -207,7 +184,7 @@ fn create_line_box_adjusted(
 #[allow(clippy::too_many_arguments)]
 pub fn layout_inline_run(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     children: &[NodeId],
     containing_width: f32,
     offset_x: f32,
@@ -244,85 +221,47 @@ pub fn layout_inline_run(
             match data {
                 NodeData::Text(text) => {
                     let mut node_line_height = line_height;
-                    if let Some(style) = styles.get(&node) {
-                        match style.get("line-height") {
-                            Some(crate::css::values::CssValue::Length(px, _)) => {
-                                node_line_height = *px;
-                            }
-                            Some(crate::css::values::CssValue::Number(n)) => {
-                                let font_size = get_font_size(style);
-                                node_line_height = n * font_size;
-                                // TODO(spec): confirm line-height number resolution locus
-                            }
-                            _ => {}
-                        }
+                    if let Some(style) = styles.get(&node)
+                        && style.inherited_text.line_height
+                            != crate::style::categorized::LINE_HEIGHT_NORMAL
+                    {
+                        node_line_height = style.inherited_text.line_height as f32;
                     }
                     current_line_height = current_line_height.max(node_line_height);
 
                     let style_ws = if let Some(style) = styles.get(&node) {
-                        style.get("white-space")
+                        style.inherited_text.white_space.as_str()
                     } else {
-                        None
+                        "normal"
                     };
 
                     let (collapse, preserve_newlines, allow_wrap) = match style_ws {
-                        Some(crate::css::values::CssValue::Keyword(kw)) => match kw.as_str() {
-                            "nowrap" => (true, false, false),
-                            "pre" => (false, true, false),
-                            "pre-wrap" => (false, true, true),
-                            "pre-line" => (true, true, true),
-                            _ => (true, false, true),
-                        },
+                        "nowrap" => (true, false, false),
+                        "pre" => (false, true, false),
+                        "pre-wrap" => (false, true, true),
+                        "pre-line" => (true, true, true),
                         _ => (true, false, true),
                     };
 
                     let style_wb = if let Some(style) = styles.get(&node) {
-                        style.get("word-break")
+                        style.inherited_text.word_break.as_str()
                     } else {
-                        None
+                        "normal"
                     };
 
-                    let break_all = match style_wb {
-                        Some(crate::css::values::CssValue::Keyword(kw)) => {
-                            kw.as_str() == "break-all"
-                        }
-                        _ => false,
-                    };
+                    let break_all = style_wb == "break-all";
 
-                    let mut current_node = Some(node);
-                    let mut overflow_wrap_val = None;
-                    while let Some(n) = current_node {
-                        if let Some(style) = styles.get(&n) {
-                            if let Some(val) = style.get("overflow-wrap") {
-                                overflow_wrap_val = Some(val);
-                                break;
-                            } else if let Some(val) = style.get("word-wrap") {
-                                overflow_wrap_val = Some(val);
-                                break;
-                            }
-                        }
-                        current_node = dom.parent(n);
-                    }
-
-                    // TODO(spec): overflow-wrap: anywhere affects min-content sizing, which is out of scope.
-                    // Only `break-word` and `normal` are implemented here.
-                    let break_word = match overflow_wrap_val {
-                        Some(crate::css::values::CssValue::Keyword(kw)) => {
-                            kw.as_str() == "break-word"
-                        }
-                        _ => false,
+                    let break_word = if let Some(style) = styles.get(&node) {
+                        style.inherited_text.overflow_wrap == "break-word"
+                    } else {
+                        false
                     };
 
                     let preprocessed = preprocess_text(text, collapse, preserve_newlines);
 
                     let transformed = if let Some(style) = styles.get(&node) {
-                        if let Some(crate::css::values::CssValue::Keyword(kw)) =
-                            style.get("text-transform")
-                        {
-                            apply_text_transform(&preprocessed, &kw.to_ascii_lowercase())
-                        } else {
-                            preprocessed
-                        }
+                        let text_transform = style.inherited_text.text_transform.as_str();
+                        apply_text_transform(&preprocessed, &text_transform.to_ascii_lowercase())
                     } else {
                         preprocessed
                     };
@@ -558,7 +497,10 @@ pub fn layout_inline_run(
                 }
                 NodeData::Element { name, .. } => {
                     if name.eq_ignore_ascii_case("br") {
-                        if styles.get(&node).is_some_and(|style| matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "none")) {
+                        if styles
+                            .get(&node)
+                            .is_some_and(|style| style.reset_box.display == "none")
+                        {
                             continue;
                         }
                         // Force a line break!
@@ -653,14 +595,7 @@ pub fn layout_inline_run(
                             // Add box to current line children
                             current_line_children.push(box_);
                             cursor_x += margin_box_width;
-                        } else if matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "inline")
-                            || matches!(
-                                style.get("display"),
-                                Some(crate::css::values::CssValue::Display(
-                                    crate::css::values::DisplayValue::Inline
-                                ))
-                            )
-                        {
+                        } else if style.reset_box.display == "inline" {
                             // Descend into grandchildren.
                             // To preserve order, push them to the stack in reverse order.
                             for &grandchild in dom.children(node).iter().rev() {
@@ -700,7 +635,7 @@ pub fn layout_inline_run(
 #[allow(clippy::too_many_arguments)]
 pub fn layout_inline(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     containing_width: f32,
     offset_x: f32,

@@ -8,12 +8,11 @@ pub(crate) use float::{find_clearance_y, get_clear_value, get_float_value};
 pub(crate) use position::is_absolute_or_fixed;
 pub(crate) use table::is_border_collapse;
 
-use crate::css::values::{CssValue, DisplayValue, LengthUnit};
 use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
 use crate::layout::inline::{layout_inline, layout_inline_run};
-use crate::style::ComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
 /// A box in the layout tree.
@@ -98,7 +97,7 @@ fn collapse_margins(m1: f32, m2: f32) -> f32 {
 /// spec: S-11
 pub fn layout_document(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     viewport_width: f32,
 ) -> LayoutBox {
     let mut root_box = LayoutBox {
@@ -166,7 +165,7 @@ pub fn layout_document(
 #[allow(clippy::too_many_arguments)]
 fn recenter_inline_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     children: &mut Vec<LayoutBox>,
     width: f32,
@@ -196,7 +195,7 @@ fn recenter_inline_children(
 
 pub(crate) fn layout_node(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     containing_width: f32,
     offset_x: f32,
@@ -211,12 +210,12 @@ pub(crate) fn layout_node(
     let style = styles.get(&node)?;
 
     // display: none -> no box
-    if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "none") {
+    if style.reset_box.display == "none" {
         return None;
     }
 
     // display: flex
-    if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "flex") {
+    if style.reset_box.display == "flex" {
         return crate::layout::flex::layout_flex_container(
             dom,
             styles,
@@ -230,13 +229,7 @@ pub(crate) fn layout_node(
 
     // display: table
     let is_table_element = matches!(dom.data(node), Some(crate::dom::NodeData::Element { name, .. }) if name == "table");
-    if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "table")
-        || matches!(
-            style.get("display"),
-            Some(CssValue::Display(DisplayValue::Table))
-        )
-        || is_table_element
-    {
+    if style.reset_box.display == "table" || is_table_element {
         return crate::layout::table::layout_table_container(
             dom,
             styles,
@@ -494,12 +487,7 @@ pub(crate) fn layout_node(
 
     // Apply aspect-ratio if height is not explicitly set (i.e. is auto or absent)
     // TODO(spec): The inverse direction (width-from-height using aspect-ratio) is ambiguous/not implemented in our simplified model.
-    let height_is_auto_or_absent = match style.get("height") {
-        None => true,
-        Some(CssValue::Keyword(kw)) if kw == "auto" => true,
-        Some(CssValue::Number(n)) if *n != 0.0 => true,
-        _ => false,
-    };
+    let height_is_auto_or_absent = style.reset_box.height == -1;
     if height_is_auto_or_absent && let Some(r) = get_aspect_ratio(style) {
         let border_box_width =
             content_width + padding_left + padding_right + border_left + border_right;
@@ -529,9 +517,7 @@ pub(crate) fn layout_node(
             name: list_name, ..
         }) = dom.data(list_node)
     {
-        let list_style_type = style.get("list-style-type");
-        let suppress_marker =
-            matches!(list_style_type, Some(CssValue::Keyword(val)) if val == "none");
+        let suppress_marker = style.inherited_list.list_style_type == "none";
 
         // TODO(spec): support other list-style-type values like circle, square
         // TODO(spec): support list-style-position: inside
@@ -549,6 +535,7 @@ pub(crate) fn layout_node(
             let first_line_center_y = first_line_y + first_line_h / 2.0;
 
             let fs = get_font_size(style);
+            let list_style_type = &style.inherited_list.list_style_type;
 
             if list_name == "ul" {
                 let side = 0.4 * fs;
@@ -557,12 +544,9 @@ pub(crate) fn layout_node(
 
                 // TODO(spec): disc marker needs a paint-side fill primitive — layout cannot emit a fill for a node without background-color
                 // As a fallback to actually paint a visible bullet, we render a Unicode bullet glyph per list-style-type.
-                let bullet = match list_style_type {
-                    Some(CssValue::Keyword(kw)) => match kw.as_str() {
-                        "circle" => "\u{25E6}",
-                        "square" => "\u{25AA}",
-                        _ => "\u{2022}",
-                    },
+                let bullet = match list_style_type.as_str() {
+                    "circle" => "\u{25E6}",
+                    "square" => "\u{25AA}",
                     _ => "\u{2022}",
                 };
 
@@ -578,38 +562,35 @@ pub(crate) fn layout_node(
                 children.push(marker_box);
             } else if list_name == "ol" {
                 let index = get_li_decimal_index(dom, node, list_node);
-                let formatted = match list_style_type {
-                    Some(CssValue::Keyword(kw)) => match kw.as_str() {
-                        "lower-alpha" | "lower-latin" => {
-                            if index >= 1 {
-                                to_alpha(index as usize, false)
-                            } else {
-                                index.to_string()
-                            }
+                let formatted = match list_style_type.as_str() {
+                    "lower-alpha" | "lower-latin" => {
+                        if index >= 1 {
+                            to_alpha(index as usize, false)
+                        } else {
+                            index.to_string()
                         }
-                        "upper-alpha" | "upper-latin" => {
-                            if index >= 1 {
-                                to_alpha(index as usize, true)
-                            } else {
-                                index.to_string()
-                            }
+                    }
+                    "upper-alpha" | "upper-latin" => {
+                        if index >= 1 {
+                            to_alpha(index as usize, true)
+                        } else {
+                            index.to_string()
                         }
-                        "lower-roman" => {
-                            if index >= 1 {
-                                to_roman(index as usize, false)
-                            } else {
-                                index.to_string()
-                            }
+                    }
+                    "lower-roman" => {
+                        if index >= 1 {
+                            to_roman(index as usize, false)
+                        } else {
+                            index.to_string()
                         }
-                        "upper-roman" => {
-                            if index >= 1 {
-                                to_roman(index as usize, true)
-                            } else {
-                                index.to_string()
-                            }
+                    }
+                    "upper-roman" => {
+                        if index >= 1 {
+                            to_roman(index as usize, true)
+                        } else {
+                            index.to_string()
                         }
-                        _ => index.to_string(),
-                    },
+                    }
                     _ => index.to_string(),
                 };
                 let marker_text = format!("{formatted}.");
@@ -648,7 +629,7 @@ pub(crate) fn layout_node(
 
 pub(crate) fn get_layoutable_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
 ) -> Vec<NodeId> {
     if matches!(dom.data(node), Some(NodeData::Element { name, .. }) if name == "template") {
@@ -668,8 +649,7 @@ pub(crate) fn get_layoutable_children(
                 }
                 NodeData::Element { .. } => {
                     if let Some(style) = styles.get(&child) {
-                        if matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "none")
-                        {
+                        if style.reset_box.display == "none" {
                             continue;
                         }
                         result.push(child);
@@ -714,7 +694,7 @@ fn get_form_control_button_label(dom: &Dom, node: NodeId) -> Option<String> {
 #[allow(clippy::too_many_arguments)]
 fn layout_mixed_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     layoutable_children: &[NodeId],
     content_width: f32,
     content_x: f32,
@@ -872,9 +852,9 @@ fn layout_mixed_children(
 #[allow(clippy::too_many_arguments)]
 fn apply_block_shrink_to_fit(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
-    style: &ComputedStyle,
+    style: &CategorizedComputedStyle,
     children: &mut Vec<LayoutBox>,
     content_width: &mut f32,
     child_cursor_y: &mut f32,
@@ -925,23 +905,18 @@ fn apply_block_shrink_to_fit(
 #[allow(clippy::too_many_arguments)]
 fn calculate_shrink_to_fit_width(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
-    style: &ComputedStyle,
+    style: &CategorizedComputedStyle,
     children: &[LayoutBox],
     content_start_x: f32,
     auto_width: f32,
     has_block_children: bool,
     depth: usize,
 ) -> Option<f32> {
-    let is_inline_blk = matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline-block")
-        || matches!(
-            style.get("display"),
-            Some(CssValue::Display(DisplayValue::InlineBlock))
-        );
+    let is_inline_blk = style.reset_box.display == "inline-block";
     let is_float = get_float_value(style).is_some();
-    let has_width = matches!(style.get("width"), Some(CssValue::Length(_, _)))
-        || matches!(style.get("width"), Some(CssValue::Number(n)) if *n == 0.0);
+    let has_width = style.reset_box.width != -1;
     if (is_inline_blk || is_float) && !has_width {
         if has_block_children {
             let candidate = max_content_width(dom, styles, node, depth);
@@ -967,7 +942,7 @@ fn calculate_shrink_to_fit_width(
 #[inline(never)]
 fn max_content_width(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     depth: usize,
 ) -> f32 {
@@ -976,13 +951,9 @@ fn max_content_width(
     }
 
     if let Some(style) = styles.get(&node)
-        && let Some(width_val) = style.get("width")
+        && style.reset_box.width != -1
     {
-        match width_val {
-            CssValue::Length(v, LengthUnit::Px) => return *v,
-            CssValue::Number(n) if *n == 0.0 => return 0.0,
-            _ => {}
-        }
+        return style.reset_box.width as f32;
     }
 
     if let Some(label) = get_form_control_button_label(dom, node) {
@@ -1029,7 +1000,7 @@ fn max_content_width(
 #[allow(clippy::too_many_arguments)]
 fn relayout_block_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     children: &mut Vec<LayoutBox>,
     prev_len: usize,
@@ -1133,7 +1104,11 @@ fn relayout_block_children(
     child_cursor_y
 }
 
-fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: NodeId) -> bool {
+fn is_inline_level(
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    dom: &Dom,
+    child: NodeId,
+) -> bool {
     if let Some(style) = styles.get(&child)
         && get_float_value(style).is_some()
     {
@@ -1148,22 +1123,16 @@ fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: No
                 }
                 if name.eq_ignore_ascii_case("br") {
                     if let Some(style) = styles.get(&child) {
-                        let disp = style.get("display");
-                        if matches!(disp, Some(CssValue::Keyword(kw)) if kw == "block" || kw == "flex" || kw == "table" || kw == "none")
-                        {
+                        let disp = &style.reset_box.display;
+                        if disp == "block" || disp == "flex" || disp == "table" || disp == "none" {
                             return false;
                         }
                     }
                     return true;
                 }
                 if let Some(style) = styles.get(&child) {
-                    let disp = style.get("display");
-                    matches!(disp, Some(CssValue::Keyword(kw)) if kw == "inline" || kw == "inline-block")
-                        || matches!(
-                            disp,
-                            Some(CssValue::Display(DisplayValue::Inline))
-                                | Some(CssValue::Display(DisplayValue::InlineBlock))
-                        )
+                    let disp = &style.reset_box.display;
+                    disp == "inline" || disp == "inline-block"
                 } else {
                     false
                 }
@@ -1175,12 +1144,60 @@ fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: No
     }
 }
 
-pub(crate) fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
-    match style.get(prop) {
-        Some(CssValue::Length(v, LengthUnit::Px)) => *v,
-        Some(CssValue::Number(n)) if *n == 0.0 => 0.0,
-        _ => default,
-    }
+pub(crate) fn get_px(
+    style: &crate::style::CategorizedComputedStyle,
+    prop: &str,
+    default: f32,
+) -> f32 {
+    let val = match prop {
+        "width" => style.reset_box.width,
+        "height" => style.reset_box.height,
+        "min-width" => style.reset_box.min_width,
+        "min-height" => style.reset_box.min_height,
+        "max-width" => style.reset_box.max_width,
+        "max-height" => style.reset_box.max_height,
+
+        "margin-top" => style.reset_surround.margin_top,
+        "margin-right" => style.reset_surround.margin_right,
+        "margin-bottom" => style.reset_surround.margin_bottom,
+        "margin-left" => style.reset_surround.margin_left,
+        "margin-block-start" => style.reset_surround.margin_block_start,
+        "margin-block-end" => style.reset_surround.margin_block_end,
+
+        "padding-top" => style.reset_surround.padding_top,
+        "padding-right" => style.reset_surround.padding_right,
+        "padding-bottom" => style.reset_surround.padding_bottom,
+        "padding-left" => style.reset_surround.padding_left,
+        "padding-block-start" => style.reset_surround.padding_block_start,
+        "padding-block-end" => style.reset_surround.padding_block_end,
+
+        "border-top-width" => style.reset_surround.border_top_width,
+        "border-right-width" => style.reset_surround.border_right_width,
+        "border-bottom-width" => style.reset_surround.border_bottom_width,
+        "border-left-width" => style.reset_surround.border_left_width,
+
+        "top" => style.reset_surround.top,
+        "right" => style.reset_surround.right,
+        "bottom" => style.reset_surround.bottom,
+        "left" => style.reset_surround.left,
+
+        "flex-basis" => style.reset_flex.flex_basis,
+        "outline-width" => style.reset_effects.outline_width,
+        "border-spacing" => style.inherited_table.border_spacing as i32,
+        "font-size" => style.inherited_text.font_size as i32,
+        "line-height" => {
+            if style.inherited_text.line_height == crate::style::categorized::LINE_HEIGHT_NORMAL {
+                crate::font::BitmapFont::builtin().line_height() as i32
+            } else {
+                style.inherited_text.line_height as i32
+            }
+        }
+        "letter-spacing" => style.inherited_text.letter_spacing,
+        "word-spacing" => style.inherited_text.word_spacing,
+        "text-indent" => style.inherited_text.text_indent,
+        _ => -1,
+    };
+    if val == -1 { default } else { val as f32 }
 }
 
 /// Performs hit-testing on the layout tree.
@@ -1212,125 +1229,72 @@ fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut
     }
 }
 
-fn clamp_width(style: &ComputedStyle, mut width: f32, containing_width: f32) -> f32 {
-    if let Some(max_val) = style.get("max-width") {
-        match max_val {
-            CssValue::Length(v, LengthUnit::Px) => {
-                if width > *v {
-                    width = *v;
-                }
-            }
-            CssValue::Number(n) if *n == 0.0 => {
-                if width > 0.0 {
-                    width = 0.0;
-                }
-            }
-            CssValue::Length(p, LengthUnit::Percent) => {
-                let max_width = containing_width * p / 100.0;
-                if width > max_width {
-                    width = max_width;
-                }
-            }
-            _ => {}
+fn clamp_width(style: &CategorizedComputedStyle, mut width: f32, containing_width: f32) -> f32 {
+    // Resolve a stored min/max-width: -1 means absent, the percentage band encodes
+    // a percentage of the containing block, otherwise it is a plain px value.
+    let resolve = |stored: i32| -> f32 {
+        if stored >= crate::style::categorized::WIDTH_PERCENT_BAND {
+            (stored - crate::style::categorized::WIDTH_PERCENT_BAND) as f32 / 100.0
+                * containing_width
+        } else {
+            stored as f32
+        }
+    };
+    if style.reset_box.max_width != -1 {
+        let max_val = resolve(style.reset_box.max_width);
+        if width > max_val {
+            width = max_val;
         }
     }
-    if let Some(min_val) = style.get("min-width") {
-        match min_val {
-            CssValue::Length(v, LengthUnit::Px) => {
-                if width < *v {
-                    width = *v;
-                }
-            }
-            CssValue::Number(n) if *n == 0.0 => {
-                if width < 0.0 {
-                    width = 0.0;
-                }
-            }
-            CssValue::Length(p, LengthUnit::Percent) => {
-                let min_width = containing_width * p / 100.0;
-                if width < min_width {
-                    width = min_width;
-                }
-            }
-            _ => {}
+    if style.reset_box.min_width != -1 {
+        let min_val = resolve(style.reset_box.min_width);
+        if width < min_val {
+            width = min_val;
         }
     }
     width.max(0.0)
 }
 
-fn get_aspect_ratio(style: &ComputedStyle) -> Option<f32> {
-    if let Some(val) = style.get("aspect-ratio") {
-        match val {
-            CssValue::Number(r) => {
-                if *r > 0.0 {
-                    return Some(*r);
-                }
-            }
-            CssValue::Keyword(kw) => {
-                if kw == "auto" {
-                    return None;
-                }
-                if let Some(pos) = kw.find('/') {
-                    let w_str = &kw[..pos];
-                    let h_str = &kw[pos + 1..];
-                    if let (Ok(w), Ok(h)) =
-                        (w_str.trim().parse::<f32>(), h_str.trim().parse::<f32>())
-                        && w > 0.0
-                        && h > 0.0
-                    {
-                        return Some(w / h);
-                    }
-                } else if let Ok(r) = kw.trim().parse::<f32>()
-                    && r > 0.0
-                {
-                    return Some(r);
-                }
-            }
-            CssValue::Multiple(vals) if vals.len() == 3 => {
-                if let (
-                    Some(CssValue::Number(w)),
-                    Some(CssValue::Keyword(op)),
-                    Some(CssValue::Number(h)),
-                ) = (vals.first(), vals.get(1), vals.get(2))
-                    && op == "/"
-                    && *w > 0.0
-                    && *h > 0.0
-                {
-                    return Some(*w / *h);
-                }
-            }
-            _ => {}
+fn get_aspect_ratio(style: &CategorizedComputedStyle) -> Option<f32> {
+    let kw = style.reset_box.aspect_ratio.as_str();
+    if kw == "auto" || kw.is_empty() {
+        return None;
+    }
+    if let Some(pos) = kw.find('/') {
+        let w_str = &kw[..pos];
+        let h_str = &kw[pos + 1..];
+        if let (Ok(w), Ok(h)) = (w_str.trim().parse::<f32>(), h_str.trim().parse::<f32>())
+            && w > 0.0
+            && h > 0.0
+        {
+            return Some(w / h);
         }
+    } else if let Ok(r) = kw.trim().parse::<f32>()
+        && r > 0.0
+    {
+        return Some(r);
     }
     None
 }
 
-fn clamp_height(style: &ComputedStyle, mut height: f32) -> f32 {
-    let has_max_height = matches!(
-        style.get("max-height"),
-        Some(CssValue::Length(_, LengthUnit::Px))
-    ) || matches!(style.get("max-height"), Some(CssValue::Number(n)) if *n == 0.0);
-    if has_max_height {
-        let max_height = get_px(style, "max-height", 0.0);
-        if height > max_height {
-            height = max_height;
+fn clamp_height(style: &CategorizedComputedStyle, mut height: f32) -> f32 {
+    if style.reset_box.max_height != -1 {
+        let max_val = style.reset_box.max_height as f32;
+        if height > max_val {
+            height = max_val;
         }
     }
-    let has_min_height = matches!(
-        style.get("min-height"),
-        Some(CssValue::Length(_, LengthUnit::Px))
-    ) || matches!(style.get("min-height"), Some(CssValue::Number(n)) if *n == 0.0);
-    if has_min_height {
-        let min_height = get_px(style, "min-height", 0.0);
-        if height < min_height {
-            height = min_height;
+    if style.reset_box.min_height != -1 {
+        let min_val = style.reset_box.min_height as f32;
+        if height < min_val {
+            height = min_val;
         }
     }
     height.max(0.0)
 }
 
 pub(crate) fn resolve_margins_and_width(
-    style: &ComputedStyle,
+    style: &CategorizedComputedStyle,
     containing_width: f32,
     is_inline: bool,
     border_left: f32,
@@ -1338,10 +1302,8 @@ pub(crate) fn resolve_margins_and_width(
     padding_left: f32,
     padding_right: f32,
 ) -> (f32, f32, f32, f32) {
-    let margin_left_is_auto =
-        matches!(style.get("margin-left"), Some(CssValue::Keyword(kw)) if kw == "auto");
-    let margin_right_is_auto =
-        matches!(style.get("margin-right"), Some(CssValue::Keyword(kw)) if kw == "auto");
+    let margin_left_is_auto = style.reset_surround.margin_left == -1;
+    let margin_right_is_auto = style.reset_surround.margin_right == -1;
 
     let mut resolved_margin_left = get_px(style, "margin-left", 0.0);
     let mut resolved_margin_right = get_px(style, "margin-right", 0.0);
@@ -1364,8 +1326,7 @@ pub(crate) fn resolve_margins_and_width(
         - padding_right;
 
     if !is_inline {
-        let has_definite_width = matches!(style.get("width"), Some(CssValue::Length(_, _)))
-            || matches!(style.get("width"), Some(CssValue::Number(n)) if *n == 0.0);
+        let has_definite_width = style.reset_box.width != -1;
 
         if !has_definite_width {
             // width is auto. any auto margins are treated as 0.
@@ -1455,7 +1416,7 @@ pub(crate) fn resolve_margins_and_width(
     )
 }
 
-fn get_text_align(dom: &Dom, node: NodeId, style: &ComputedStyle) -> &'static str {
+fn get_text_align(dom: &Dom, node: NodeId, style: &CategorizedComputedStyle) -> &'static str {
     let is_center_element = matches!(
         dom.data(node),
         Some(NodeData::Element { name, .. }) if name == "center"
@@ -1463,23 +1424,12 @@ fn get_text_align(dom: &Dom, node: NodeId, style: &ComputedStyle) -> &'static st
     if is_center_element {
         "center"
     } else {
-        style
-            .get("text-align")
-            .and_then(|val| match val {
-                CssValue::Keyword(kw) => {
-                    if kw == "center" {
-                        Some("center")
-                    } else if kw == "right" {
-                        Some("right")
-                    } else if kw == "justify" {
-                        Some("justify")
-                    } else {
-                        Some("left")
-                    }
-                }
-                _ => None,
-            })
-            .unwrap_or("left")
+        match style.inherited_text.text_align.as_str() {
+            "center" => "center",
+            "right" => "right",
+            "justify" => "justify",
+            _ => "left",
+        }
     }
 }
 
@@ -1519,11 +1469,8 @@ fn find_first_line_rect_and_height(
     (current.rect.origin.y, current.rect.size.height)
 }
 
-fn get_font_size(style: &ComputedStyle) -> f32 {
-    match style.get("font-size") {
-        Some(CssValue::Length(px, LengthUnit::Px)) => *px,
-        _ => 16.0,
-    }
+fn get_font_size(style: &CategorizedComputedStyle) -> f32 {
+    style.inherited_text.font_size as f32
 }
 
 fn to_alpha(mut n: usize, upper: bool) -> String {
@@ -1657,6 +1604,7 @@ fn find_first_text_node(dom: &Dom, node: NodeId) -> Option<NodeId> {
 mod tests {
     use super::*;
     use crate::css::parser::parse_stylesheet;
+    use crate::css::values::{CssValue, LengthUnit};
     use crate::dom::NodeData;
     use crate::style::compute_styles;
 
@@ -3217,7 +3165,7 @@ mod tests {
         let mut styles = std::collections::HashMap::new();
 
         // Style for body
-        let mut body_style = ComputedStyle::default();
+        let mut body_style = CategorizedComputedStyle::default();
         body_style.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3226,7 +3174,7 @@ mod tests {
         styles.insert(body, body_style);
 
         // Style for div1: width 200px, aspect-ratio: 2 / 1 (as Keyword)
-        let mut style1 = ComputedStyle::default();
+        let mut style1 = CategorizedComputedStyle::default();
         style1.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3239,7 +3187,7 @@ mod tests {
         styles.insert(div1, style1);
 
         // Style for div2: width 200px, aspect-ratio: 4 (as Number)
-        let mut style2 = ComputedStyle::default();
+        let mut style2 = CategorizedComputedStyle::default();
         style2.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3249,7 +3197,7 @@ mod tests {
         styles.insert(div2, style2);
 
         // Style for div3: width 200px, height 30px, aspect-ratio: 2 / 1
-        let mut style3 = ComputedStyle::default();
+        let mut style3 = CategorizedComputedStyle::default();
         style3.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3263,7 +3211,7 @@ mod tests {
         styles.insert(div3, style3);
 
         // Style for div4: width 200px, no aspect-ratio
-        let mut style4 = ComputedStyle::default();
+        let mut style4 = CategorizedComputedStyle::default();
         style4.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
