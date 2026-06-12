@@ -838,6 +838,136 @@ fn test_fixture_09_wiki_article() {
 }
 
 #[test]
+fn test_fixture_09_wiki_infobox_internal_layout() {
+    let snapshot = load_fixture_snapshot("09_wiki_article.html");
+
+    // Locate the infobox element via find_element_by_class. Read its rect.
+    let infobox = find_element_by_class(&snapshot, "infobox")
+        .unwrap_or_else(|| panic!("infobox element must exist"));
+    let info_x = infobox["rect"]["x"].as_f64().unwrap();
+    let _info_y = infobox["rect"]["y"].as_f64().unwrap();
+    let info_w = infobox["rect"]["width"].as_f64().unwrap();
+    let info_h = infobox["rect"]["height"].as_f64().unwrap();
+
+    assert!(
+        info_h > 0.0,
+        "Infobox height must be positive, got {}",
+        info_h
+    );
+
+    // Locate the infobox-title via find_element_by_class.
+    let title = find_element_by_class(&snapshot, "infobox-title")
+        .unwrap_or_else(|| panic!("infobox-title element must exist"));
+    let title_x = title["rect"]["x"].as_f64().unwrap();
+    let title_y = title["rect"]["y"].as_f64().unwrap();
+    let title_w = title["rect"]["width"].as_f64().unwrap();
+    let title_h = title["rect"]["height"].as_f64().unwrap();
+
+    // Assert each row and the title has positive width and positive height.
+    assert!(
+        title_w > 0.0,
+        "Title width must be positive, got {}",
+        title_w
+    );
+    assert!(
+        title_h > 0.0,
+        "Title height must be positive, got {}",
+        title_h
+    );
+
+    // Collect the three infobox-row elements via find_elements_by_class.
+    let mut rows = Vec::new();
+    find_elements_by_class(&snapshot, "infobox-row", &mut rows);
+    assert_eq!(rows.len(), 3, "Should find exactly 3 infobox rows");
+
+    // Assert vertical stacking and positive dimensions for each row
+    let mut last_y = title_y;
+    let mut last_bottom = title_y + title_h;
+
+    // Title vertical stacking: title sits above first row
+    let first_row_y = rows[0]["rect"]["y"].as_f64().unwrap();
+    assert!(
+        title_y < first_row_y,
+        "Title y ({}) must be strictly less than first row y ({})",
+        title_y,
+        first_row_y
+    );
+
+    // Verify row layout
+    for (idx, row) in rows.iter().enumerate() {
+        let r_y = row["rect"]["y"].as_f64().unwrap();
+        let r_w = row["rect"]["width"].as_f64().unwrap();
+        let r_h = row["rect"]["height"].as_f64().unwrap();
+
+        assert!(r_w > 0.0, "Row {} width must be positive, got {}", idx, r_w);
+        assert!(
+            r_h > 0.0,
+            "Row {} height must be positive, got {}",
+            idx,
+            r_h
+        );
+
+        // Strict increasing y order
+        if idx > 0 {
+            assert!(
+                last_y < r_y,
+                "Row {} y ({}) must be strictly greater than previous row y ({})",
+                idx,
+                r_y,
+                last_y
+            );
+        }
+
+        // Must not horizontally overlap sibling: next element's y is at or below previous element's bottom - 0.5
+        assert!(
+            r_y >= last_bottom - 0.5,
+            "Element {} y ({}) must be at or below previous bottom ({}) - 0.5",
+            idx,
+            r_y,
+            last_bottom
+        );
+
+        last_y = r_y;
+        last_bottom = r_y + r_h;
+    }
+
+    // Assert CONTAINMENT: each of the title and the three rows has x >= infobox.x - 0.5
+    // and (x + width) <= (infobox.x + infobox.width) + 0.5
+    assert!(
+        title_x >= info_x - 0.5,
+        "Title x ({}) must be >= infobox.x ({}) - 0.5",
+        title_x,
+        info_x
+    );
+    assert!(
+        (title_x + title_w) <= (info_x + info_w) + 0.5,
+        "Title right ({}) must be <= infobox right ({}) + 0.5",
+        title_x + title_w,
+        info_x + info_w
+    );
+
+    for (idx, row) in rows.iter().enumerate() {
+        let r_x = row["rect"]["x"].as_f64().unwrap();
+        let r_w = row["rect"]["width"].as_f64().unwrap();
+
+        assert!(
+            r_x >= info_x - 0.5,
+            "Row {} x ({}) must be >= infobox.x ({}) - 0.5",
+            idx,
+            r_x,
+            info_x
+        );
+        assert!(
+            (r_x + r_w) <= (info_x + info_w) + 0.5,
+            "Row {} right ({}) must be <= infobox right ({}) + 0.5",
+            idx,
+            r_x + r_w,
+            info_x + info_w
+        );
+    }
+}
+
+#[test]
 fn test_fixture_10_news_article() {
     let snapshot = load_fixture_snapshot("10_news_article.html");
     assert_eq!(snapshot["tag"], "html");
