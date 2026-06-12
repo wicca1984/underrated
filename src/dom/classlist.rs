@@ -79,6 +79,70 @@ impl Dom {
             self.set_attribute(node, "class", &new_value);
         }
     }
+
+    /// Toggles the presence of class `name` in the element's `class` attribute.
+    ///
+    /// If the class is present, removes all its occurrences and returns `false`.
+    /// If the class is absent, adds it (appends) and returns `true`.
+    /// If the node is not an Element, or if `name` is empty, this is a no-op returning `false`.
+    /// The resulting `class` attribute is normalized to be space-separated.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-toggle
+    pub fn toggle_class(&mut self, node: NodeId, name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        if let Some(NodeData::Element { .. }) = self.data(node) {
+            let classes = self.class_list(node);
+            if classes.contains(&name.to_string()) {
+                let new_classes: Vec<String> = classes.into_iter().filter(|c| c != name).collect();
+                let new_value = new_classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+                false
+            } else {
+                let mut new_classes = classes;
+                new_classes.push(name.to_string());
+                let new_value = new_classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Replaces class `old` with class `new` in the element's `class` attribute.
+    ///
+    /// If `old` is present, it is replaced with `new` and returns `true`.
+    /// If `new` is already present, `old` is just dropped.
+    /// If `old` is not present, or if `old` or `new` is empty, or if the node is
+    /// not an Element, this is a no-op returning `false`.
+    /// The resulting `class` attribute is normalized to be space-separated.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-replace
+    pub fn replace_class(&mut self, node: NodeId, old: &str, new: &str) -> bool {
+        if old.is_empty() || new.is_empty() {
+            return false;
+        }
+        if let Some(NodeData::Element { .. }) = self.data(node) {
+            let classes = self.class_list(node);
+            if !classes.contains(&old.to_string()) {
+                return false;
+            }
+            let has_new = classes.contains(&new.to_string());
+            let new_classes: Vec<String> = if has_new {
+                classes.into_iter().filter(|c| c != old).collect()
+            } else {
+                classes
+                    .into_iter()
+                    .map(|c| if c == old { new.to_string() } else { c })
+                    .collect()
+            };
+            let new_value = new_classes.join(" ");
+            self.set_attribute(node, "class", &new_value);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -192,5 +256,62 @@ mod tests {
         assert!(!dom.has_class(invalid, "foo"));
         dom.add_class(invalid, "foo");
         dom.remove_class(invalid, "foo");
+    }
+
+    #[test]
+    fn test_toggle_class() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // Toggle on empty -> adds class, returns true
+        assert!(dom.toggle_class(el, "foo"));
+        assert_eq!(dom.class_list(el), vec!["foo"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo"));
+
+        // Toggle existing -> removes class, returns false
+        assert!(!dom.toggle_class(el, "foo"));
+        assert!(dom.class_list(el).is_empty());
+        assert_eq!(dom.get_attribute(el, "class"), Some(""));
+
+        // Toggle empty string -> returns false (no-op)
+        assert!(!dom.toggle_class(el, ""));
+        assert!(dom.class_list(el).is_empty());
+
+        // Toggle non-element -> returns false (no-op)
+        let text = dom.create_node(NodeData::Text("hello".into()));
+        assert!(!dom.toggle_class(text, "foo"));
+    }
+
+    #[test]
+    fn test_replace_class() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // Setting initial classes
+        dom.set_attribute(el, "class", "foo baz");
+
+        // Replace present class -> returns true, class replaced
+        assert!(dom.replace_class(el, "foo", "bar"));
+        assert_eq!(dom.class_list(el), vec!["bar", "baz"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("bar baz"));
+
+        // Replace absent class -> returns false (no-op)
+        assert!(!dom.replace_class(el, "absent", "qux"));
+        assert_eq!(dom.class_list(el), vec!["bar", "baz"]);
+
+        // Replace with existing 'new' -> old is dropped
+        dom.set_attribute(el, "class", "foo bar baz");
+        assert!(dom.replace_class(el, "foo", "bar"));
+        assert_eq!(dom.class_list(el), vec!["bar", "baz"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("bar baz"));
+
+        // Replace with empty old or new -> returns false (no-op)
+        assert!(!dom.replace_class(el, "", "bar"));
+        assert!(!dom.replace_class(el, "bar", ""));
+        assert_eq!(dom.class_list(el), vec!["bar", "baz"]);
+
+        // Replace on non-element -> returns false (no-op)
+        let text = dom.create_node(NodeData::Text("hello".into()));
+        assert!(!dom.replace_class(text, "foo", "bar"));
     }
 }
