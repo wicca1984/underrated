@@ -193,6 +193,8 @@ fn compute_node_style(
 
         let value_opt = if name.eq_ignore_ascii_case("transform") {
             crate::css::values::parse_transform(&matched.declaration.value)
+        } else if name.eq_ignore_ascii_case("z-index") {
+            crate::css::values::parse_z_index(&matched.declaration.value)
         } else {
             parse_value(&matched.declaration.value)
         };

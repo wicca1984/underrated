@@ -104,6 +104,12 @@ pub enum TransformFn {
     Rotate(AngleDeg),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZIndex {
+    Auto,
+    Index(i32),
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum CssValue {
     Keyword(String),
@@ -119,6 +125,7 @@ pub enum CssValue {
     JustifyContent(JustifyContentValue),
     AlignItems(AlignItemsValue),
     Transform(Vec<TransformFn>),
+    ZIndex(ZIndex),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -697,6 +704,51 @@ pub fn parse_transform(components: &[ComponentValue]) -> Option<CssValue> {
     }
 }
 
+pub fn parse_z_index(components: &[ComponentValue]) -> Option<CssValue> {
+    // Trim leading and trailing whitespace
+    let mut start = 0;
+    while start < components.len()
+        && matches!(
+            components[start],
+            ComponentValue::Token(CssToken::Whitespace)
+        )
+    {
+        start += 1;
+    }
+    let mut end = components.len();
+    while end > start
+        && matches!(
+            components[end - 1],
+            ComponentValue::Token(CssToken::Whitespace)
+        )
+    {
+        end -= 1;
+    }
+    let trimmed = &components[start..end];
+
+    if trimmed.len() != 1 {
+        return None;
+    }
+
+    match &trimmed[0] {
+        ComponentValue::Token(CssToken::Ident(s)) => {
+            if s.eq_ignore_ascii_case("auto") {
+                Some(CssValue::ZIndex(ZIndex::Auto))
+            } else {
+                None
+            }
+        }
+        ComponentValue::Token(CssToken::Number(val)) => {
+            if val.fract() == 0.0 && *val >= i32::MIN as f64 && *val <= i32::MAX as f64 {
+                Some(CssValue::ZIndex(ZIndex::Index(*val as i32)))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,5 +1304,81 @@ mod tests {
         assert!(parse("scale(10px)").is_none());
         assert!(parse("rotate(45)").is_none()); // unitless non-zero angle is invalid
         assert!(parse("translate(10)").is_none()); // unitless non-zero length is invalid
+    }
+
+    #[test]
+    fn test_parse_z_index() {
+        // Valid auto and case-insensitive
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Ident("auto".to_string()))]),
+            Some(CssValue::ZIndex(ZIndex::Auto))
+        );
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Ident("AUTO".to_string()))]),
+            Some(CssValue::ZIndex(ZIndex::Auto))
+        );
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Ident("aUtO".to_string()))]),
+            Some(CssValue::ZIndex(ZIndex::Auto))
+        );
+
+        // Valid integers
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Number(0.0))]),
+            Some(CssValue::ZIndex(ZIndex::Index(0)))
+        );
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Number(5.0))]),
+            Some(CssValue::ZIndex(ZIndex::Index(5)))
+        );
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Number(-1.0))]),
+            Some(CssValue::ZIndex(ZIndex::Index(-1)))
+        );
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Number(123456.0))]),
+            Some(CssValue::ZIndex(ZIndex::Index(123456)))
+        );
+
+        // Whitespace handling
+        assert_eq!(
+            parse_z_index(&[
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("auto".to_string())),
+                token(CssToken::Whitespace)
+            ]),
+            Some(CssValue::ZIndex(ZIndex::Auto))
+        );
+        assert_eq!(
+            parse_z_index(&[
+                token(CssToken::Whitespace),
+                token(CssToken::Number(42.0)),
+                token(CssToken::Whitespace)
+            ]),
+            Some(CssValue::ZIndex(ZIndex::Index(42)))
+        );
+
+        // Invalid inputs
+        assert_eq!(parse_z_index(&[token(CssToken::Number(1.5))]), None);
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Dimension {
+                value: 5.0,
+                unit: "px".to_string()
+            })]),
+            None
+        );
+        assert_eq!(parse_z_index(&[token(CssToken::Percentage(50.0))]), None);
+        assert_eq!(
+            parse_z_index(&[token(CssToken::Ident("foo".to_string()))]),
+            None
+        );
+        assert_eq!(
+            parse_z_index(&[
+                token(CssToken::Number(1.0)),
+                token(CssToken::Whitespace),
+                token(CssToken::Number(2.0))
+            ]),
+            None
+        );
     }
 }
