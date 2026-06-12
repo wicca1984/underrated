@@ -9,6 +9,9 @@ use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
 use std::collections::HashMap;
 
+pub mod input_type;
+pub use input_type::{InputType, parse_input_type};
+
 /// HTTP method of a form submission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
