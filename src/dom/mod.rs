@@ -30,6 +30,31 @@ pub enum NodeData {
     Comment(String),
 }
 
+impl NodeData {
+    /// Returns the value of the `role` attribute if present.
+    pub fn role(&self) -> Option<&str> {
+        match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "role")
+                .map(|(_, v)| v.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns the value of attribute `aria-{name}` (e.g. `el.aria("label")` reads `aria-label`).
+    pub fn aria(&self, name: &str) -> Option<&str> {
+        let key = format!("aria-{name}");
+        match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == &key)
+                .map(|(_, v)| v.as_str()),
+            _ => None,
+        }
+    }
+}
+
 /// Internal node structure to be stored in the arena.
 struct Node {
     data: NodeData,
@@ -137,6 +162,16 @@ impl Dom {
     /// invalid or stale (mirrors the generational arena's `get`).
     pub fn data(&self, node: NodeId) -> Option<&NodeData> {
         self.arena.get(node).map(|n| &n.data)
+    }
+
+    /// Returns the value of the `role` attribute if present on the given node.
+    pub fn role(&self, node: NodeId) -> Option<&str> {
+        self.get_attribute(node, "role")
+    }
+
+    /// Returns the value of the `aria-{name}` attribute if present on the given node.
+    pub fn aria(&self, node: NodeId, name: &str) -> Option<&str> {
+        self.get_attribute(node, &format!("aria-{name}"))
     }
 
     /// Returns an iterator over all descendants of the given node in pre-order.
@@ -406,5 +441,69 @@ mod tests {
             dom.serialize(doc),
             "<!DOCTYPE html><!--secret--><html></html>"
         );
+    }
+
+    #[test]
+    fn test_role_attribute_retained() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<div role="button">x</div>"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        // Find the div node
+        let div_id = dom.query_selector("div").expect("Should find div");
+
+        // Verify role via Dom accessor
+        assert_eq!(dom.role(div_id), Some("button"));
+
+        // Verify role via NodeData accessor
+        let node_data = dom.data(div_id).expect("Should have data");
+        assert_eq!(node_data.role(), Some("button"));
+    }
+
+    #[test]
+    fn test_aria_attribute_retained() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<div aria-label="Close" aria-hidden="true">x</div>"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        // Find the div node
+        let div_id = dom.query_selector("div").expect("Should find div");
+
+        // Verify aria via Dom accessor
+        assert_eq!(dom.aria(div_id, "label"), Some("Close"));
+        assert_eq!(dom.aria(div_id, "hidden"), Some("true"));
+
+        // Verify aria via NodeData accessor
+        let node_data = dom.data(div_id).expect("Should have data");
+        assert_eq!(node_data.aria("label"), Some("Close"));
+        assert_eq!(node_data.aria("hidden"), Some("true"));
+    }
+
+    #[test]
+    fn test_role_absent() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = "<div>x</div>";
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        // Find the div node
+        let div_id = dom.query_selector("div").expect("Should find div");
+
+        // Verify role and aria are None via Dom accessor
+        assert_eq!(dom.role(div_id), None);
+        assert_eq!(dom.aria(div_id, "label"), None);
+
+        // Verify role and aria are None via NodeData accessor
+        let node_data = dom.data(div_id).expect("Should have data");
+        assert_eq!(node_data.role(), None);
+        assert_eq!(node_data.aria("label"), None);
     }
 }
