@@ -870,6 +870,136 @@ fn collect_presentational_hints(
                 });
             }
         }
+
+        // 4. border on <table> -> CSS borders (and inherit on <td>/<th> from nearest ancestor <table>)
+        if name.eq_ignore_ascii_case("table")
+            && let Some((_, border_val)) = attrs
+                .iter()
+                .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("border"))
+        {
+            // Treat present-but-non-numeric or empty border attribute as n = 1, absent as no hint
+            let trimmed = border_val.trim();
+            let border_width = if trimmed.is_empty() {
+                Some(1)
+            } else {
+                match trimmed.parse::<u32>() {
+                    Ok(num) => Some(num),
+                    Err(_) => Some(1),
+                }
+            };
+
+            if let Some(n) = border_width
+                && n > 0
+            {
+                // border-width: <n>px
+                let width_str = format!("{}px", n);
+                let width_components = crate::css::parser::parse_component_values(&width_str);
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "border-width".to_string(),
+                        value: width_components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+
+                // border-style: solid
+                // TODO(spec): table[border] should use outset/inset bevel per HTML spec; paint renders solid only.
+                let style_components = crate::css::parser::parse_component_values("solid");
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "border-style".to_string(),
+                        value: style_components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+
+                // border-color: gray
+                let color_components = crate::css::parser::parse_component_values("gray");
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "border-color".to_string(),
+                        value: color_components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+            }
+        }
+
+        if name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th") {
+            let mut curr = dom.parent(node);
+            let mut found_table_with_border = false;
+            while let Some(curr_node) = curr {
+                if let Some(crate::dom::NodeData::Element {
+                    name: ancestor_name,
+                    attrs: ancestor_attrs,
+                }) = dom.data(curr_node)
+                    && ancestor_name.eq_ignore_ascii_case("table")
+                {
+                    // Stop at first ancestor table
+                    if let Some((_, border_val)) = ancestor_attrs
+                        .iter()
+                        .find(|(attr_name, _)| attr_name.eq_ignore_ascii_case("border"))
+                    {
+                        let trimmed = border_val.trim();
+                        let border_width = if trimmed.is_empty() {
+                            1
+                        } else {
+                            trimmed.parse::<u32>().unwrap_or(1)
+                        };
+                        if border_width > 0 {
+                            found_table_with_border = true;
+                        }
+                    }
+                    break;
+                }
+                curr = dom.parent(curr_node);
+            }
+
+            if found_table_with_border {
+                // border-width: 1px
+                let width_components = crate::css::parser::parse_component_values("1px");
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "border-width".to_string(),
+                        value: width_components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+
+                // border-style: solid
+                // TODO(spec): table[border] should use outset/inset bevel per HTML spec; paint renders solid only.
+                let style_components = crate::css::parser::parse_component_values("solid");
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "border-style".to_string(),
+                        value: style_components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+
+                // border-color: gray
+                let color_components = crate::css::parser::parse_component_values("gray");
+                matched_declarations.push(MatchedDeclaration {
+                    declaration: Declaration {
+                        name: "border-color".to_string(),
+                        value: color_components,
+                        important: false,
+                    },
+                    specificity: (0, 0, 0, 0),
+                    source_order: ua_rules_count,
+                });
+            }
+        }
     }
 }
 
@@ -2972,6 +3102,170 @@ mod tests {
         assert_eq!(
             style.get("list-style-image"),
             Some(&CssValue::Keyword("none".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_table_border_presentational_hints() {
+        // 1. <table border="1"><tr><td>x</td></tr></table>
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "1".into())],
+        });
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, table);
+        dom.append_child(table, tr);
+        dom.append_child(tr, td);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let table_style = styles.get(&table).unwrap();
+        assert_eq!(
+            table_style.get("border-top-width"),
+            Some(&CssValue::Length(1.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            table_style.get("border-top-style"),
+            Some(&CssValue::Keyword("solid".to_string()))
+        );
+        assert_eq!(
+            table_style.get("border-top-color"),
+            Some(&CssValue::Keyword("gray".to_string()))
+        );
+
+        let td_style = styles.get(&td).unwrap();
+        assert_eq!(
+            td_style.get("border-top-width"),
+            Some(&CssValue::Length(1.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            td_style.get("border-top-style"),
+            Some(&CssValue::Keyword("solid".to_string()))
+        );
+        assert_eq!(
+            td_style.get("border-top-color"),
+            Some(&CssValue::Keyword("gray".to_string()))
+        );
+
+        // 2. <table border="3">...
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "3".into())],
+        });
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, table);
+        dom.append_child(table, tr);
+        dom.append_child(tr, td);
+
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let table_style = styles.get(&table).unwrap();
+        assert_eq!(
+            table_style.get("border-top-width"),
+            Some(&CssValue::Length(3.0, LengthUnit::Px))
+        );
+
+        let td_style = styles.get(&td).unwrap();
+        assert_eq!(
+            td_style.get("border-top-width"),
+            Some(&CssValue::Length(1.0, LengthUnit::Px))
+        );
+
+        // 3. <table border="0">...
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "0".into())],
+        });
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, table);
+        dom.append_child(table, tr);
+        dom.append_child(tr, td);
+
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let table_style = styles.get(&table).unwrap();
+        assert_eq!(table_style.get("border-top-width"), None);
+
+        let td_style = styles.get(&td).unwrap();
+        assert_eq!(td_style.get("border-top-width"), None);
+
+        // 4. Author CSS overrides: <table border="1" style="border-style:none">
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![
+                ("border".into(), "1".into()),
+                ("style".into(), "border-style: none".into()),
+            ],
+        });
+        dom.append_child(doc, table);
+
+        let styles = compute_styles(&dom, &stylesheet);
+        let table_style = styles.get(&table).unwrap();
+        assert_eq!(
+            table_style.get("border-top-style"),
+            Some(&CssValue::Keyword("none".to_string()))
+        );
+
+        // 5. Present but empty border attribute: <table border="">... -> n = 1
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "".into())],
+        });
+        dom.append_child(doc, table);
+
+        let styles = compute_styles(&dom, &stylesheet);
+        let table_style = styles.get(&table).unwrap();
+        assert_eq!(
+            table_style.get("border-top-width"),
+            Some(&CssValue::Length(1.0, LengthUnit::Px))
+        );
+
+        // 6. Present but non-numeric border attribute: <table border="invalid">... -> n = 1
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "invalid".into())],
+        });
+        dom.append_child(doc, table);
+
+        let styles = compute_styles(&dom, &stylesheet);
+        let table_style = styles.get(&table).unwrap();
+        assert_eq!(
+            table_style.get("border-top-width"),
+            Some(&CssValue::Length(1.0, LengthUnit::Px))
         );
     }
 }
