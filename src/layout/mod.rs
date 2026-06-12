@@ -385,6 +385,11 @@ pub(crate) fn layout_node(
     if get_form_control_button_label(dom, node).is_some() && children.is_empty() {
         content_height = crate::font::BitmapFont::builtin().line_height() as f32;
     }
+    if let Some(crate::dom::NodeData::Element { name, .. }) = dom.data(node)
+        && name.eq_ignore_ascii_case("br")
+    {
+        content_height = crate::font::BitmapFont::builtin().line_height() as f32;
+    }
 
     // Apply aspect-ratio if height is not explicitly set (i.e. is auto or absent)
     // TODO(spec): The inverse direction (width-from-height using aspect-ratio) is ambiguous/not implemented in our simplified model.
@@ -3619,5 +3624,30 @@ mod tests {
             "test_consecutive_br_block_advance passed with: y_one={}, y_two={}, y_three_empty={}, y_four={}",
             y_line_one, y_line_two, y_line_three_empty, y_line_four
         );
+    }
+
+    #[test]
+    fn test_leading_consecutive_br_empty_line() {
+        use crate::encoding::input_stream::InputStream;
+        use crate::html::parse_document;
+
+        let html = "<html><body>A<br><br>B</body></html>";
+        let input_stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(input_stream);
+
+        let stylesheet = parse_stylesheet(crate::engine::UA_DEFAULT_CSS);
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 1);
+        let real_body_box = &body_box.children[0];
+        assert_eq!(real_body_box.children.len(), 3);
+
+        let y_of_a = real_body_box.children[0].rect.origin.y;
+        let y_of_b = real_body_box.children[2].rect.origin.y;
+
+        let line_height = 8.0;
+        assert!(y_of_b >= y_of_a + 2.0 * line_height - EPSILON);
     }
 }
