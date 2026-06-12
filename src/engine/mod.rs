@@ -201,13 +201,18 @@ fn load_image_safely_with_loader(
         crate::url::Url::parse(src).ok()
     };
 
+    eprintln!("[img] src={} resolved={:?}", src, resolved_url.as_ref().map(|u| u.serialize()));
+
     if let Some(url) = resolved_url {
         if url.scheme == "data" {
             return crate::loader::load_data_uri(&url.serialize());
         }
 
         if url.scheme == "http" || url.scheme == "https" {
-            if let Ok(bytes) = loader.load(&url) {
+            let load_res = loader.load(&url);
+            eprintln!("[img] load result for {}: ok={}", url.serialize(), load_res.is_ok());
+            if let Ok(bytes) = load_res {
+                eprintln!("[img] fetched {} bytes", bytes.len());
                 return Some(bytes);
             }
             return None;

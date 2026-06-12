@@ -201,18 +201,23 @@ impl ResourceLoader for HttpLoader {
         }
 
         let url_str = url.serialize();
-        let mut req = ureq::get(url_str);
+        let mut req = ureq::get(&url_str);
 
         // Add cookies
         if let Some(cookie_hdr) = get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path) {
             req = req.header("Cookie", cookie_hdr);
         }
 
+        eprintln!("[img fetch] HttpLoader GET {}", url_str);
+
         // // spec: follow redirects, decode gzip
         // ureq v3 follows redirects and decodes gzip by default if the features are enabled.
-        let response = req.call().map_err(|e| match e {
-            ureq::Error::StatusCode(404) => LoadError::NotFound,
-            _ => LoadError::Io(e.to_string()),
+        let response = req.call().map_err(|e| {
+            eprintln!("[img fetch] req.call failed: {}", e);
+            match e {
+                ureq::Error::StatusCode(404) => LoadError::NotFound,
+                _ => LoadError::Io(e.to_string()),
+            }
         })?;
 
         // Extract Set-Cookie headers
