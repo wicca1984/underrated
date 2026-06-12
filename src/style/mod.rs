@@ -191,7 +191,13 @@ fn compute_node_style(
             continue;
         }
 
-        if let Some(value) = parse_value(&matched.declaration.value) {
+        let value_opt = if name.eq_ignore_ascii_case("transform") {
+            crate::css::values::parse_transform(&matched.declaration.value)
+        } else {
+            parse_value(&matched.declaration.value)
+        };
+
+        if let Some(value) = value_opt {
             match name {
                 "margin" => {
                     // spec: https://www.w3.org/TR/css-box-3/#propdef-margin
