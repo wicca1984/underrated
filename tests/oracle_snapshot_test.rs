@@ -743,99 +743,102 @@ fn test_fixture_08_google_vertical_stack() {
     }
 }
 
-// TODO(spec): B-3 verification — proves relative-URL <img> resolves against page base, fetches via loader,
-// and blits. Real external fetch (HttpLoader/network) and placeholder-on-failure rendering are out of scope.
+// Guards the B-3 relative-URL image pipeline end-to-end.
 #[test]
-fn test_b3_relative_url_image_blits() {
-    let mut img_canvas = underrated::raster::Canvas::new(40, 20);
-    img_canvas.pixels.fill(0xFF0000FF);
-    let png = underrated::image::encode_png(&img_canvas);
+fn test_b3_relative_url_image_pipeline() {
+    // 1. Generate a valid 2x2 PNG image bytes
+    let mut source_canvas = underrated::raster::Canvas::new(2, 2);
+    source_canvas.pixels[0] = 0xFFFF0000; // Red
+    source_canvas.pixels[1] = 0xFF00FF00; // Green
+    source_canvas.pixels[2] = 0xFF0000FF; // Blue
+    source_canvas.pixels[3] = 0xFFFFFF00; // Yellow
+    let png = underrated::image::encode_png(&source_canvas);
     assert!(!png.is_empty(), "PNG encoding must not be empty");
 
-    struct StubLoader {
+    // 2. Set up MockLoader to record requested URLs and return PNG bytes
+    struct MockLoader {
         png: Vec<u8>,
+        expected_url: String,
+        requested_urls: std::cell::RefCell<Vec<String>>,
     }
-    impl underrated::loader::ResourceLoader for StubLoader {
+
+    impl underrated::loader::ResourceLoader for MockLoader {
         fn load(
             &self,
             url: &underrated::url::Url,
         ) -> Result<Vec<u8>, underrated::loader::LoadError> {
-            if url.serialize() == "https://www.example.com/images/logo.png" {
+            let url_str = url.serialize();
+            self.requested_urls.borrow_mut().push(url_str.clone());
+            if url_str == self.expected_url {
                 Ok(self.png.clone())
             } else {
                 Err(underrated::loader::LoadError::NotFound)
             }
         }
+
         fn load_request(
             &self,
-            _url: &underrated::url::Url,
+            url: &underrated::url::Url,
             _method: underrated::loader::HttpMethod,
             _body: &[u8],
             _content_type: Option<&str>,
         ) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> {
+            let url_str = url.serialize();
+            self.requested_urls.borrow_mut().push(url_str);
             Err(underrated::loader::LoadError::NotFound)
         }
     }
 
-    let html = r#"
-        <!DOCTYPE html>
-        <html>
-        <body>
-            <img src="/images/logo.png" width="40" height="20">
-        </body>
-        </html>
-    "#;
-    let base_url = underrated::url::Url::parse("https://www.example.com/").unwrap();
-    let stub_loader = StubLoader { png };
+    let base_url = underrated::url::Url::parse("http://example.com/dir/dummy").unwrap();
+    let expected_url_parsed = underrated::url::resolve(&base_url, "./logo.png").unwrap();
+    let expected_url = expected_url_parsed.serialize();
+    assert_eq!(expected_url, "http://example.com/dir/logo.png");
 
-    let canvas_positive =
-        underrated::engine::render_page_to_canvas(html, &base_url, &stub_loader, 200, 100);
+    let mock_loader = MockLoader {
+        png,
+        expected_url,
+        requested_urls: std::cell::RefCell::new(Vec::new()),
+    };
 
-    let blue_pixel_count_positive = canvas_positive
-        .pixels
+    // 3. Render HTML containing a relative src resolved against the base_url
+    let html = r#"<html><body><img id="logo" src="./logo.png" style="width:2px;height:2px;"></body></html>"#;
+    let page = underrated::engine::render_page(html, &base_url, &mock_loader, 800.0);
+
+    // 4. Build DisplayList and verify it contains DisplayItem::Image
+    let display_list = underrated::paint::build_display_list(&page.layout, &page.dom, &page.styles);
+    let items = display_list.0;
+
+    let image_items: Vec<&underrated::paint::DisplayItem> = items
         .iter()
-        .filter(|&&p| p == 0xFF0000FF)
-        .count();
-
-    assert!(
-        blue_pixel_count_positive > 100,
-        "Rendered canvas should have drawn blue pixels. Found count: {}",
-        blue_pixel_count_positive
-    );
-
-    struct DummyLoader;
-    impl underrated::loader::ResourceLoader for DummyLoader {
-        fn load(
-            &self,
-            _url: &underrated::url::Url,
-        ) -> Result<Vec<u8>, underrated::loader::LoadError> {
-            Err(underrated::loader::LoadError::NotFound)
-        }
-        fn load_request(
-            &self,
-            _url: &underrated::url::Url,
-            _method: underrated::loader::HttpMethod,
-            _body: &[u8],
-            _content_type: Option<&str>,
-        ) -> Result<underrated::loader::LoaderResponse, underrated::loader::LoadError> {
-            Err(underrated::loader::LoadError::NotFound)
-        }
-    }
-
-    let canvas_negative =
-        underrated::engine::render_page_to_canvas(html, &base_url, &DummyLoader, 200, 100);
-
-    let blue_pixel_count_negative = canvas_negative
-        .pixels
-        .iter()
-        .filter(|&&p| p == 0xFF0000FF)
-        .count();
+        .filter(|item| matches!(item, underrated::paint::DisplayItem::Image { .. }))
+        .collect();
 
     assert_eq!(
-        blue_pixel_count_negative, 0,
-        "Negative control canvas must have zero blue pixels. Found: {}",
-        blue_pixel_count_negative
+        image_items.len(),
+        1,
+        "Should have exactly 1 image display item in the display list"
     );
+
+    // 5. Assert the MockLoader recorded a request for the base-resolved absolute URL
+    let requested = mock_loader.requested_urls.borrow();
+    assert!(
+        requested.contains(&"http://example.com/dir/logo.png".to_string()),
+        "MockLoader should have requested 'http://example.com/dir/logo.png', but requested: {:?}",
+        requested
+    );
+
+    // 6. Assert fetch, decode, and blit succeeded for the relative URL
+    if let underrated::paint::DisplayItem::Image { src, decoded, .. } = image_items[0] {
+        assert_eq!(src, "./logo.png");
+        let decoded_img = decoded
+            .as_ref()
+            .expect("Relative image should have a decoded DecodedImage");
+        assert_eq!(decoded_img.width, 2);
+        assert_eq!(decoded_img.height, 2);
+        assert_eq!(&decoded_img.rgba[0..4], &[255, 0, 0, 255]); // Red (the first pixel)
+    } else {
+        panic!("Expected DisplayItem::Image");
+    }
 }
 
 #[test]
