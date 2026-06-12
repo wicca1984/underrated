@@ -313,103 +313,24 @@ pub(crate) fn layout_node(
             }
         }
     } else {
-        // MIXED: wrap each maximal run of consecutive inline-level children in an anonymous block box
-        // spec: S-anonymous-block-boxes
+        // MIXED: wrap each maximal run of consecutive inline-level children in an anonymous
+        // block box (spec: S-anonymous-block-boxes). Delegated to an `#[inline(never)]`
+        // helper so its temporaries stay off `layout_node`'s deep recursion frame.
         // TODO(spec): same shrink-to-fit re-centering needed for mixed inline runs
-        let mut prev_margin_bottom: Option<f32> = None;
-        let mut last_child_box_max_y: Option<f32> = None;
-
-        let mut i = 0;
-        while i < layoutable_children.len() {
-            let child = layoutable_children[i];
-            if is_inline_level(styles, dom, child) {
-                let mut inline_run = Vec::new();
-                while i < layoutable_children.len()
-                    && is_inline_level(styles, dom, layoutable_children[i])
-                {
-                    inline_run.push(layoutable_children[i]);
-                    i += 1;
-                }
-
-                // Treat anonymous block as having margin_top = 0.0
-                let start_y = if let (Some(prev_mb), Some(last_max_y)) =
-                    (prev_margin_bottom, last_child_box_max_y)
-                {
-                    let collapsed = collapse_margins(prev_mb, 0.0);
-                    last_max_y + collapsed
-                } else {
-                    child_cursor_y
-                };
-
-                let (line_boxes, total_height) = layout_inline_run(
-                    dom,
-                    styles,
-                    &inline_run,
-                    content_width,
-                    border_box_x + border_left + padding_left,
-                    start_y,
-                    depth,
-                    text_align,
-                    text_indent,
-                    word_spacing,
-                );
-                if !line_boxes.is_empty() {
-                    let anon_box = LayoutBox {
-                        node: None,
-                        rect: Rect::new(
-                            border_box_x + border_left + padding_left,
-                            start_y,
-                            content_width,
-                            total_height,
-                        ),
-                        children: line_boxes,
-                        text: None,
-                    };
-
-                    last_child_box_max_y = Some(anon_box.rect.max_y());
-                    // Treat anonymous block as having margin_bottom = 0.0
-                    prev_margin_bottom = Some(0.0);
-                    child_cursor_y = anon_box.rect.max_y();
-
-                    children.push(anon_box);
-                }
-            } else {
-                let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
-                    (prev_margin_bottom, last_child_box_max_y)
-                {
-                    let child_style = styles.get(&child);
-                    let margin_top = child_style
-                        .map(|s| get_px(s, "margin-top", 0.0))
-                        .unwrap_or(0.0);
-                    let collapsed = collapse_margins(prev_mb, margin_top);
-                    last_max_y + collapsed - margin_top
-                } else {
-                    child_cursor_y
-                };
-
-                if let Some(child_box) = layout_node(
-                    dom,
-                    styles,
-                    child,
-                    content_width,
-                    border_box_x + border_left + padding_left,
-                    offset_y,
-                    depth + 1,
-                ) {
-                    let margin_bottom = styles
-                        .get(&child)
-                        .map(|s| get_px(s, "margin-bottom", 0.0))
-                        .unwrap_or(0.0);
-
-                    last_child_box_max_y = Some(child_box.rect.max_y());
-                    prev_margin_bottom = Some(margin_bottom);
-
-                    child_cursor_y = child_box.rect.max_y() + margin_bottom;
-                    children.push(child_box);
-                }
-                i += 1;
-            }
-        }
+        let (mixed_children, new_cursor_y) = layout_mixed_children(
+            dom,
+            styles,
+            &layoutable_children,
+            content_width,
+            border_box_x + border_left + padding_left,
+            child_cursor_y,
+            depth,
+            text_align,
+            text_indent,
+            word_spacing,
+        );
+        children.extend(mixed_children);
+        child_cursor_y = new_cursor_y;
     }
 
     // Shrink-to-fit width resolution plus the conditional all-block relayout are
@@ -676,6 +597,119 @@ fn get_form_control_button_label(dom: &Dom, node: NodeId) -> Option<String> {
         }
     }
     None
+}
+
+/// Lay out a mixed (inline + block) child sequence, wrapping each maximal run of
+/// consecutive inline-level children in an anonymous block box (spec:
+/// S-anonymous-block-boxes). Kept `#[inline(never)]` and out of `layout_node` so its
+/// `inline_run`/`anon_box` temporaries stay off the deep recursion frame (Windows 1 MiB
+/// stack regression guard: test_deep_tree_recursion_cap).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn layout_mixed_children(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    layoutable_children: &[NodeId],
+    content_width: f32,
+    content_x: f32,
+    mut child_cursor_y: f32,
+    depth: usize,
+    text_align: &str,
+    text_indent: f32,
+    word_spacing: f32,
+) -> (Vec<LayoutBox>, f32) {
+    let mut children = Vec::new();
+    let mut prev_margin_bottom: Option<f32> = None;
+    let mut last_child_box_max_y: Option<f32> = None;
+
+    let mut i = 0;
+    while i < layoutable_children.len() {
+        let child = layoutable_children[i];
+        if is_inline_level(styles, dom, child) {
+            let mut inline_run = Vec::new();
+            while i < layoutable_children.len()
+                && is_inline_level(styles, dom, layoutable_children[i])
+            {
+                inline_run.push(layoutable_children[i]);
+                i += 1;
+            }
+
+            // Treat anonymous block as having margin_top = 0.0
+            let start_y = if let (Some(prev_mb), Some(last_max_y)) =
+                (prev_margin_bottom, last_child_box_max_y)
+            {
+                let collapsed = collapse_margins(prev_mb, 0.0);
+                last_max_y + collapsed
+            } else {
+                child_cursor_y
+            };
+
+            let (line_boxes, total_height) = layout_inline_run(
+                dom,
+                styles,
+                &inline_run,
+                content_width,
+                content_x,
+                start_y,
+                depth,
+                text_align,
+                text_indent,
+                word_spacing,
+            );
+            if !line_boxes.is_empty() {
+                let anon_box = LayoutBox {
+                    node: None,
+                    rect: Rect::new(content_x, start_y, content_width, total_height),
+                    children: line_boxes,
+                    text: None,
+                };
+
+                last_child_box_max_y = Some(anon_box.rect.max_y());
+                // Treat anonymous block as having margin_bottom = 0.0
+                prev_margin_bottom = Some(0.0);
+                child_cursor_y = anon_box.rect.max_y();
+
+                children.push(anon_box);
+            }
+        } else {
+            let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                (prev_margin_bottom, last_child_box_max_y)
+            {
+                let child_style = styles.get(&child);
+                let margin_top = child_style
+                    .map(|s| get_px(s, "margin-top", 0.0))
+                    .unwrap_or(0.0);
+                let collapsed = collapse_margins(prev_mb, margin_top);
+                last_max_y + collapsed - margin_top
+            } else {
+                child_cursor_y
+            };
+
+            if let Some(child_box) = layout_node(
+                dom,
+                styles,
+                child,
+                content_width,
+                content_x,
+                offset_y,
+                depth + 1,
+            ) {
+                let margin_bottom = styles
+                    .get(&child)
+                    .map(|s| get_px(s, "margin-bottom", 0.0))
+                    .unwrap_or(0.0);
+
+                last_child_box_max_y = Some(child_box.rect.max_y());
+                prev_margin_bottom = Some(margin_bottom);
+
+                child_cursor_y = child_box.rect.max_y() + margin_bottom;
+                children.push(child_box);
+            }
+            i += 1;
+        }
+    }
+
+    (children, child_cursor_y)
 }
 
 /// Resolve the shrink-to-fit content width and, for the all-block case, re-run the
