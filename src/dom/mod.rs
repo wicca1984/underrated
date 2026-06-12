@@ -104,6 +104,28 @@ impl NodeData {
             _ => false,
         }
     }
+
+    /// Returns the parsed value of the `colspan` attribute if present.
+    pub fn colspan(&self) -> Option<u32> {
+        match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "colspan")
+                .and_then(|(_, v)| v.trim().parse::<u32>().ok()),
+            _ => None,
+        }
+    }
+
+    /// Returns the parsed value of the `rowspan` attribute if present.
+    pub fn rowspan(&self) -> Option<u32> {
+        match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "rowspan")
+                .and_then(|(_, v)| v.trim().parse::<u32>().ok()),
+            _ => None,
+        }
+    }
 }
 
 /// Internal node structure to be stored in the arena.
@@ -239,6 +261,16 @@ impl Dom {
     /// Returns true if the `hidden` attribute is present on the given node.
     pub fn hidden(&self, node: NodeId) -> bool {
         self.get_attribute(node, "hidden").is_some()
+    }
+
+    /// Returns the parsed value of the `colspan` attribute if present on the given node.
+    pub fn colspan(&self, node: NodeId) -> Option<u32> {
+        self.data(node).and_then(|data| data.colspan())
+    }
+
+    /// Returns the parsed value of the `rowspan` attribute if present on the given node.
+    pub fn rowspan(&self, node: NodeId) -> Option<u32> {
+        self.data(node).and_then(|data| data.rowspan())
     }
 
     /// Returns an iterator over all descendants of the given node in pre-order.
@@ -801,6 +833,102 @@ mod tests {
             let text_id = children[0];
             assert!(!dom.hidden(text_id));
             assert!(!dom.data(text_id).is_some_and(|n| n.hidden()));
+        }
+    }
+
+    #[test]
+    fn test_colspan_rowspan_attribute_accessors() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Positive value for colspan
+        {
+            let html = r#"<td colspan="3">x</td>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("td").expect("Should find td");
+            assert_eq!(dom.colspan(id), Some(3));
+            assert_eq!(dom.data(id).and_then(|n| n.colspan()), Some(3));
+        }
+
+        // 2. Positive value for rowspan
+        {
+            let html = r#"<td rowspan="2">x</td>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("td").expect("Should find td");
+            assert_eq!(dom.rowspan(id), Some(2));
+            assert_eq!(dom.data(id).and_then(|n| n.rowspan()), Some(2));
+        }
+
+        // 3. No attributes
+        {
+            let html = r#"<td>x</td>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("td").expect("Should find td");
+            assert_eq!(dom.colspan(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.colspan()), None);
+            assert_eq!(dom.rowspan(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.rowspan()), None);
+        }
+
+        // 4. Invalid non-numeric values
+        {
+            let html = r#"<td colspan="abc" rowspan="xyz">x</td>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("td").expect("Should find td");
+            assert_eq!(dom.colspan(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.colspan()), None);
+            assert_eq!(dom.rowspan(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.rowspan()), None);
+        }
+
+        // 5. Whitespace handling
+        {
+            let html = r#"<td colspan=" 5 " rowspan="  12  ">x</td>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("td").expect("Should find td");
+            assert_eq!(dom.colspan(id), Some(5));
+            assert_eq!(dom.data(id).and_then(|n| n.colspan()), Some(5));
+            assert_eq!(dom.rowspan(id), Some(12));
+            assert_eq!(dom.data(id).and_then(|n| n.rowspan()), Some(12));
+        }
+
+        // 6. Negative values are invalid for u32 and should return None
+        {
+            let html = r#"<td colspan="-3" rowspan="-2">x</td>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("td").expect("Should find td");
+            assert_eq!(dom.colspan(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.colspan()), None);
+            assert_eq!(dom.rowspan(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.rowspan()), None);
+        }
+
+        // 7. Non-element node (Document, Text)
+        {
+            let html = r#"<td colspan="3" rowspan="2">x</td>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert_eq!(dom.colspan(doc_id), None);
+            assert_eq!(dom.data(doc_id).and_then(|n| n.colspan()), None);
+            assert_eq!(dom.rowspan(doc_id), None);
+            assert_eq!(dom.data(doc_id).and_then(|n| n.rowspan()), None);
+
+            // Text node
+            let children = dom.children(dom.query_selector("td").unwrap());
+            let text_id = children[0];
+            assert_eq!(dom.colspan(text_id), None);
+            assert_eq!(dom.data(text_id).and_then(|n| n.colspan()), None);
+            assert_eq!(dom.rowspan(text_id), None);
+            assert_eq!(dom.data(text_id).and_then(|n| n.rowspan()), None);
         }
     }
 }
