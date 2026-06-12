@@ -31,8 +31,7 @@ pub struct LayoutBox {
 /// using an iterative depth-first search (DFS) pre-order traversal (parent before children).
 ///
 /// If multiple boxes share the same `NodeId`, the first match in DFS pre-order is returned.
-///
-/// // TODO(spec): getBoundingClientRect should eventually union all fragments of an element.
+/// For unioning all fragments of an element, use `bounding_client_rect`.
 pub fn find_box_rect(root: &LayoutBox, node: NodeId) -> Option<Rect> {
     let mut stack = vec![root];
     while let Some(current) = stack.pop() {
@@ -44,6 +43,40 @@ pub fn find_box_rect(root: &LayoutBox, node: NodeId) -> Option<Rect> {
         }
     }
     None
+}
+
+/// Finds the union of absolute rects of all `LayoutBox`es matching the given `NodeId`
+/// using an iterative depth-first search (DFS) pre-order traversal (parent before children).
+///
+/// Returns None if no boxes match the given NodeId.
+pub fn bounding_client_rect(root: &LayoutBox, node: NodeId) -> Option<Rect> {
+    let mut stack = vec![root];
+    let mut min_left: Option<f32> = None;
+    let mut min_top: Option<f32> = None;
+    let mut max_right: Option<f32> = None;
+    let mut max_bottom: Option<f32> = None;
+
+    while let Some(current) = stack.pop() {
+        if current.node == Some(node) {
+            let left = current.rect.origin.x;
+            let top = current.rect.origin.y;
+            let right = current.rect.max_x();
+            let bottom = current.rect.max_y();
+
+            min_left = Some(min_left.map_or(left, |val| val.min(left)));
+            min_top = Some(min_top.map_or(top, |val| val.min(top)));
+            max_right = Some(max_right.map_or(right, |val| val.max(right)));
+            max_bottom = Some(max_bottom.map_or(bottom, |val| val.max(bottom)));
+        }
+        for child in current.children.iter().rev() {
+            stack.push(child);
+        }
+    }
+
+    match (min_left, min_top, max_right, max_bottom) {
+        (Some(l), Some(t), Some(r), Some(b)) => Some(Rect::new(l, t, r - l, b - t)),
+        _ => None,
+    }
 }
 
 pub(crate) const MAX_DEPTH: usize = 500;
@@ -1697,6 +1730,101 @@ mod tests {
         assert!(approx_eq(rect2.origin.y, 10.0));
         assert!(approx_eq(rect2.size.width, 100.0));
         assert!(approx_eq(rect2.size.height, 100.0));
+    }
+
+    #[test]
+    fn test_bounding_rect_single_fragment() {
+        let mut dom = crate::dom::Dom::new();
+        let node1 = dom.document();
+        let node2 = dom.create_node(crate::dom::NodeData::Text("child1".into()));
+
+        let tree = LayoutBox {
+            node: Some(node1),
+            rect: Rect::new(0.0, 0.0, 500.0, 500.0),
+            children: vec![LayoutBox {
+                node: Some(node2),
+                rect: Rect::new(10.0, 15.0, 100.0, 80.0),
+                children: vec![],
+                text: None,
+            }],
+            text: None,
+        };
+
+        let found = bounding_client_rect(&tree, node2);
+        assert!(found.is_some());
+        let rect = found.unwrap();
+        assert!(approx_eq(rect.origin.x, 10.0));
+        assert!(approx_eq(rect.origin.y, 15.0));
+        assert!(approx_eq(rect.size.width, 100.0));
+        assert!(approx_eq(rect.size.height, 80.0));
+
+        let single = find_box_rect(&tree, node2);
+        assert_eq!(found, single);
+    }
+
+    #[test]
+    fn test_bounding_rect_unions_multiple_fragments() {
+        let mut dom = crate::dom::Dom::new();
+        let node1 = dom.document();
+        let node2 = dom.create_node(crate::dom::NodeData::Text("child1".into()));
+
+        // Create a hand-crafted LayoutBox tree with two fragments sharing node2
+        // Fragment 1: rect(10.0, 20.0, 50.0, 30.0) -> bounds: left 10, top 20, right 60, bottom 50
+        // Fragment 2: rect(25.0, 10.0, 60.0, 70.0) -> bounds: left 25, top 10, right 85, bottom 80
+        // Union: min left = 10, min top = 10, max right = 85, max bottom = 80
+        // Union rect width = 75, height = 70
+        let tree = LayoutBox {
+            node: Some(node1),
+            rect: Rect::new(0.0, 0.0, 500.0, 500.0),
+            children: vec![
+                LayoutBox {
+                    node: Some(node2),
+                    rect: Rect::new(10.0, 20.0, 50.0, 30.0),
+                    children: vec![],
+                    text: None,
+                },
+                LayoutBox {
+                    node: Some(node2),
+                    rect: Rect::new(25.0, 10.0, 60.0, 70.0),
+                    children: vec![],
+                    text: None,
+                },
+            ],
+            text: None,
+        };
+
+        let found = bounding_client_rect(&tree, node2);
+        assert!(found.is_some());
+        let rect = found.unwrap();
+        assert!(approx_eq(rect.origin.x, 10.0));
+        assert!(approx_eq(rect.origin.y, 10.0));
+        assert!(approx_eq(rect.size.width, 75.0));
+        assert!(approx_eq(rect.size.height, 70.0));
+
+        // It must differ from find_box_rect, which returns only the first fragment
+        let first = find_box_rect(&tree, node2).unwrap();
+        assert!(approx_eq(first.origin.x, 10.0));
+        assert!(approx_eq(first.origin.y, 20.0));
+        assert!(approx_eq(first.size.width, 50.0));
+        assert!(approx_eq(first.size.height, 30.0));
+        assert_ne!(rect, first);
+    }
+
+    #[test]
+    fn test_bounding_rect_absent_node() {
+        let mut dom = crate::dom::Dom::new();
+        let node1 = dom.document();
+        let node2 = dom.create_node(crate::dom::NodeData::Text("child1".into()));
+
+        let tree = LayoutBox {
+            node: Some(node1),
+            rect: Rect::new(0.0, 0.0, 500.0, 500.0),
+            children: vec![],
+            text: None,
+        };
+
+        let found = bounding_client_rect(&tree, node2);
+        assert!(found.is_none());
     }
 
     #[test]
