@@ -910,7 +910,7 @@ fn parse_hsl_function(components: &[ComponentValue]) -> Option<Color> {
     let alpha = if args.len() == 4 {
         let a_val = match args[3] {
             HslArg::Number(v) => v,
-            _ => return None,
+            HslArg::Percentage(v) => v / 100.0,
         };
         (a_val.clamp(0.0, 1.0) * 255.0) as u8
     } else {
@@ -1411,6 +1411,18 @@ mod tests {
                 assert!((alpha as i32 - 127).abs() <= 1);
             }
             _ => panic!("Expected hsla(0, 100%, 50%, 0.5) to parse as a color"),
+        }
+
+        // Percentage alpha: hsla(0, 100%, 50%, 50%) -> alpha within 1 of 127
+        let alpha_pct = parse("hsla(0, 100%, 50%, 50%)");
+        match alpha_pct {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 0);
+                assert_eq!(b, 0);
+                assert!((alpha as i32 - 127).abs() <= 1);
+            }
+            _ => panic!("Expected hsla(0, 100%, 50%, 50%) to parse as a color"),
         }
 
         // Negative hues wrapping: hsl(-240, 100%, 50%) wraps to 120 (green)
