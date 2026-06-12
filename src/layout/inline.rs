@@ -216,7 +216,10 @@ pub fn layout_inline_run(
             match data {
                 NodeData::Text(text) => {
                     let mut node_line_height = line_height;
-                    if let Some(style) = styles.get(&node) {
+                    if let Some(style) = styles.get(&node)
+                        && style.inherited_text.line_height
+                            != crate::style::categorized::LINE_HEIGHT_NORMAL
+                    {
                         node_line_height = style.inherited_text.line_height as f32;
                     }
                     current_line_height = current_line_height.max(node_line_height);

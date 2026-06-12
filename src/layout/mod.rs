@@ -1185,7 +1185,13 @@ pub(crate) fn get_px(
         "outline-width" => style.reset_effects.outline_width,
         "border-spacing" => style.inherited_table.border_spacing as i32,
         "font-size" => style.inherited_text.font_size as i32,
-        "line-height" => style.inherited_text.line_height as i32,
+        "line-height" => {
+            if style.inherited_text.line_height == crate::style::categorized::LINE_HEIGHT_NORMAL {
+                crate::font::BitmapFont::builtin().line_height() as i32
+            } else {
+                style.inherited_text.line_height as i32
+            }
+        }
         "letter-spacing" => style.inherited_text.letter_spacing,
         "word-spacing" => style.inherited_text.word_spacing,
         "text-indent" => style.inherited_text.text_indent,

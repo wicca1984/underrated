@@ -4,6 +4,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+/// Sentinel for `line-height: normal` / unset. The typed `line_height: u32` px field
+/// cannot otherwise distinguish an unspecified line-height (which must fall back to the
+/// font's intrinsic line height at layout time) from an authored pixel value — a
+/// distinction the legacy HashMap `ComputedStyle` preserved via `Option`.
+pub const LINE_HEIGHT_NORMAL: u32 = u32::MAX;
+
 /// Group of inherited text and font properties.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InheritedText {
@@ -38,7 +44,7 @@ impl Default for InheritedText {
             font_size: 16,
             font_style: "normal".to_string(),
             font_weight: "normal".to_string(),
-            line_height: 20,
+            line_height: LINE_HEIGHT_NORMAL,
             text_align: "start".to_string(),
             letter_spacing: -1,
             word_spacing: -1,
@@ -646,7 +652,9 @@ impl CategorizedComputedStyle {
                 let px = match value {
                     CssValue::Length(v, _) => v.round().max(0.0) as u32,
                     CssValue::Number(v) => (v * fs as f32).round().max(0.0) as u32,
-                    _ => (1.2 * fs as f32).round().max(0.0) as u32,
+                    // `normal` (and any non-length keyword) stays unspecified so layout
+                    // falls back to the font's intrinsic line height.
+                    _ => LINE_HEIGHT_NORMAL,
                 };
                 Arc::make_mut(&mut self.inherited_text).line_height = px;
             }
@@ -1177,7 +1185,11 @@ impl CategorizedComputedStyle {
             "font-size" => Some(format!("{}px", self.inherited_text.font_size)),
             "font-style" => Some(self.inherited_text.font_style.clone()),
             "font-weight" => Some(self.inherited_text.font_weight.clone()),
-            "line-height" => Some(format!("{}px", self.inherited_text.line_height)),
+            "line-height" => Some(if self.inherited_text.line_height == LINE_HEIGHT_NORMAL {
+                "normal".to_string()
+            } else {
+                format!("{}px", self.inherited_text.line_height)
+            }),
             "text-align" => Some(self.inherited_text.text_align.clone()),
             "letter-spacing" => Some(if self.inherited_text.letter_spacing == -1 {
                 "normal".to_string()
