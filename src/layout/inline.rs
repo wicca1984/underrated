@@ -243,6 +243,22 @@ pub fn layout_inline_run(
         if let Some(data) = dom.data(node) {
             match data {
                 NodeData::Text(text) => {
+                    let mut node_line_height = line_height;
+                    if let Some(style) = styles.get(&node) {
+                        match style.get("line-height") {
+                            Some(crate::css::values::CssValue::Length(px, _)) => {
+                                node_line_height = *px;
+                            }
+                            Some(crate::css::values::CssValue::Number(n)) => {
+                                let font_size = get_font_size(style);
+                                node_line_height = n * font_size;
+                                // TODO(spec): confirm line-height number resolution locus
+                            }
+                            _ => {}
+                        }
+                    }
+                    current_line_height = current_line_height.max(node_line_height);
+
                     let style_ws = if let Some(style) = styles.get(&node) {
                         style.get("white-space")
                     } else {
@@ -332,7 +348,7 @@ pub fn layout_inline_run(
                             ));
                             cursor_x = 0.0;
                             cursor_y += current_line_height;
-                            current_line_height = line_height;
+                            current_line_height = node_line_height;
                         }
 
                         let words = segment.split_inclusive(' ');
@@ -368,7 +384,7 @@ pub fn layout_inline_run(
                                                 },
                                                 size: Size {
                                                     width: rem_width,
-                                                    height: line_height,
+                                                    height: node_line_height,
                                                 },
                                             },
                                             children: Vec::new(),
@@ -418,7 +434,7 @@ pub fn layout_inline_run(
                                         ));
                                         cursor_x = 0.0;
                                         cursor_y += current_line_height;
-                                        current_line_height = line_height;
+                                        current_line_height = node_line_height;
                                         // Continue loop - now cursor_x is 0.0, so the next iteration will retry with the full line.
                                         continue;
                                     }
@@ -457,7 +473,7 @@ pub fn layout_inline_run(
                                             },
                                             size: Size {
                                                 width: last_valid_width,
-                                                height: line_height,
+                                                height: node_line_height,
                                             },
                                         },
                                         children: Vec::new(),
@@ -484,7 +500,7 @@ pub fn layout_inline_run(
                                     ));
                                     cursor_x = 0.0;
                                     cursor_y += current_line_height;
-                                    current_line_height = line_height;
+                                    current_line_height = node_line_height;
                                 }
                             } else {
                                 if allow_wrap
@@ -507,7 +523,7 @@ pub fn layout_inline_run(
                                     ));
                                     cursor_x = 0.0;
                                     cursor_y += current_line_height;
-                                    current_line_height = line_height;
+                                    current_line_height = node_line_height;
                                 }
 
                                 // Skip leading whitespace on a new line (only if collapsing whitespace)
@@ -525,7 +541,7 @@ pub fn layout_inline_run(
                                         },
                                         size: Size {
                                             width: word_width,
-                                            height: line_height,
+                                            height: node_line_height,
                                         },
                                     },
                                     children: Vec::new(),
@@ -2165,5 +2181,89 @@ mod tests {
         // 4. vertical-align: 50% raises span by 50% of line_height
         // line_height is 50px, so 50% of 50px = 25px delta
         assert_eq!(box_pct.rect.origin.y, box_base.rect.origin.y - 25.0);
+    }
+
+    #[test]
+    fn test_line_height_px_sets_line_box() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t1 = dom.create_node(NodeData::Text("hello line height px".into()));
+        dom.append_child(div, t1);
+
+        let stylesheet = parse_stylesheet("div { line-height: 40px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, total_height) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.rect.size.height, 40.0);
+        assert_eq!(total_height, 40.0);
+    }
+
+    #[test]
+    fn test_line_height_absent_uses_font_default() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t1 = dom.create_node(NodeData::Text("hello default font height".into()));
+        dom.append_child(div, t1);
+
+        let stylesheet = parse_stylesheet(""); // No styles
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, total_height) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        let font = crate::font::BitmapFont::builtin();
+        let expected_default_height = font.line_height() as f32;
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.rect.size.height, expected_default_height);
+        assert_eq!(total_height, expected_default_height);
+    }
+
+    #[test]
+    fn test_line_height_number_multiplier() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t1 = dom.create_node(NodeData::Text("hello line height multiplier".into()));
+        dom.append_child(div, t1);
+
+        let stylesheet = parse_stylesheet("div { font-size: 20px; line-height: 2; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, total_height) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.rect.size.height, 40.0);
+        assert_eq!(total_height, 40.0);
     }
 }
