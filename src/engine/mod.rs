@@ -28,6 +28,8 @@ pub struct BrowsingContext {
     pub scroll_y: f32,
     /// Total laid-out content height in CSS px (for clamping scroll).
     pub content_height: f32,
+    history: Vec<Url>,
+    history_index: usize,
 }
 
 impl BrowsingContext {
@@ -40,6 +42,8 @@ impl BrowsingContext {
             caret_index: 0,
             scroll_y: 0.0,
             content_height,
+            history: Vec::new(),
+            history_index: 0,
         }
     }
 
@@ -70,6 +74,57 @@ impl BrowsingContext {
     pub fn scroll_by(&mut self, dy: f32, viewport_height: f32) {
         let max = self.max_scroll(viewport_height);
         self.scroll_y = (self.scroll_y + dy).clamp(0.0, max);
+    }
+
+    /// Records a new forward navigation, truncating any existing forward entries.
+    /// On the very first push, the history index becomes 0.
+    pub fn push_history(&mut self, url: Url) {
+        if !self.history.is_empty() {
+            self.history.truncate(self.history_index + 1);
+        }
+        self.history.push(url);
+        self.history_index = self.history.len().saturating_sub(1);
+    }
+
+    /// Returns true if there is a previous entry in the history.
+    pub fn can_go_back(&self) -> bool {
+        !self.history.is_empty() && self.history_index > 0
+    }
+
+    /// Returns true if there is a next entry in the history.
+    pub fn can_go_forward(&self) -> bool {
+        !self.history.is_empty() && self.history_index + 1 < self.history.len()
+    }
+
+    /// Navigates back in history by decrementing the history index and returns the URL.
+    /// // TODO(spec): wire Alt+Left/back navigation in main.rs to drive go_back()
+    pub fn go_back(&mut self) -> Option<Url> {
+        if self.can_go_back() {
+            self.history_index -= 1;
+            self.history.get(self.history_index).cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Navigates forward in history by incrementing the history index and returns the URL.
+    /// // TODO(spec): wire Alt+Left/back navigation in main.rs to drive go_back()
+    pub fn go_forward(&mut self) -> Option<Url> {
+        if self.can_go_forward() {
+            self.history_index += 1;
+            self.history.get(self.history_index).cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Returns the URL of the current entry in history, or None if history is empty.
+    pub fn current_url(&self) -> Option<&Url> {
+        if self.history.is_empty() {
+            None
+        } else {
+            self.history.get(self.history_index)
+        }
     }
 }
 
@@ -547,6 +602,115 @@ pub fn navigate_from_enter(
 mod tests {
     use super::*;
     use crate::dom::NodeData;
+
+    #[test]
+    fn test_history_push_and_current() {
+        let page = render_html_for_test("", 800.0);
+        let mut context = BrowsingContext::new(page);
+
+        assert_eq!(context.current_url(), None);
+        assert!(!context.can_go_back());
+        assert!(!context.can_go_forward());
+
+        let url_a = Url::parse("https://a.test/").expect("valid url a");
+        let url_b = Url::parse("https://b.test/").expect("valid url b");
+
+        context.push_history(url_a.clone());
+        assert_eq!(context.current_url(), Some(&url_a));
+        assert!(!context.can_go_back());
+        assert!(!context.can_go_forward());
+
+        context.push_history(url_b.clone());
+        assert_eq!(context.current_url(), Some(&url_b));
+        assert!(context.can_go_back());
+        assert!(!context.can_go_forward());
+    }
+
+    #[test]
+    fn test_go_back_and_forward() {
+        let page = render_html_for_test("", 800.0);
+        let mut context = BrowsingContext::new(page);
+
+        let url_a = Url::parse("https://a.test/").expect("valid url a");
+        let url_b = Url::parse("https://b.test/").expect("valid url b");
+        let url_c = Url::parse("https://c.test/").expect("valid url c");
+
+        context.push_history(url_a.clone());
+        context.push_history(url_b.clone());
+        context.push_history(url_c.clone());
+
+        assert_eq!(context.current_url(), Some(&url_c));
+        assert!(context.can_go_back());
+        assert!(!context.can_go_forward());
+
+        // Go back once
+        assert_eq!(context.go_back(), Some(url_b.clone()));
+        assert_eq!(context.current_url(), Some(&url_b));
+        assert!(context.can_go_back());
+        assert!(context.can_go_forward());
+
+        // Go back twice
+        assert_eq!(context.go_back(), Some(url_a.clone()));
+        assert_eq!(context.current_url(), Some(&url_a));
+        assert!(!context.can_go_back());
+        assert!(context.can_go_forward());
+
+        // Try going back again (should be None)
+        assert_eq!(context.go_back(), None);
+        assert_eq!(context.current_url(), Some(&url_a));
+
+        // Go forward once
+        assert_eq!(context.go_forward(), Some(url_b.clone()));
+        assert_eq!(context.current_url(), Some(&url_b));
+        assert!(context.can_go_back());
+        assert!(context.can_go_forward());
+
+        // Go forward twice
+        assert_eq!(context.go_forward(), Some(url_c.clone()));
+        assert_eq!(context.current_url(), Some(&url_c));
+        assert!(context.can_go_back());
+        assert!(!context.can_go_forward());
+
+        // Try going forward again (should be None)
+        assert_eq!(context.go_forward(), None);
+        assert_eq!(context.current_url(), Some(&url_c));
+    }
+
+    #[test]
+    fn test_push_truncates_forward() {
+        let page = render_html_for_test("", 800.0);
+        let mut context = BrowsingContext::new(page);
+
+        let url_a = Url::parse("https://a.test/").expect("valid url a");
+        let url_b = Url::parse("https://b.test/").expect("valid url b");
+        let url_c = Url::parse("https://c.test/").expect("valid url c");
+        let url_d = Url::parse("https://d.test/").expect("valid url d");
+
+        context.push_history(url_a.clone());
+        context.push_history(url_b.clone());
+        context.push_history(url_c.clone());
+
+        // Go back to a (two go_back calls)
+        assert_eq!(context.go_back(), Some(url_b.clone()));
+        assert_eq!(context.go_back(), Some(url_a.clone()));
+        assert_eq!(context.current_url(), Some(&url_a));
+
+        // Push d (truncates forward entries b, c)
+        context.push_history(url_d.clone());
+        assert_eq!(context.current_url(), Some(&url_d));
+        assert!(context.can_go_back());
+        assert!(!context.can_go_forward());
+
+        // Verify that going back now goes to a, and going forward is not possible.
+        assert_eq!(context.go_back(), Some(url_a.clone()));
+        assert_eq!(context.current_url(), Some(&url_a));
+        assert!(!context.can_go_back());
+        assert!(context.can_go_forward());
+
+        assert_eq!(context.go_forward(), Some(url_d.clone()));
+        assert_eq!(context.current_url(), Some(&url_d));
+    }
+
     struct DummyLoader;
     impl crate::loader::ResourceLoader for DummyLoader {
         fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
