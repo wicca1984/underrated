@@ -78,6 +78,53 @@ pub enum AlignItemsValue {
     Baseline,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum WhiteSpaceValue {
+    Normal,
+    Nowrap,
+    Pre,
+    PreWrap,
+    PreLine,
+}
+
+impl WhiteSpaceValue {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Nowrap => "nowrap",
+            Self::Pre => "pre",
+            Self::PreWrap => "pre-wrap",
+            Self::PreLine => "pre-line",
+        }
+    }
+}
+
+impl std::str::FromStr for WhiteSpaceValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Ok(Self::Normal),
+            "nowrap" => Ok(Self::Nowrap),
+            "pre" => Ok(Self::Pre),
+            "pre-wrap" => Ok(Self::PreWrap),
+            "pre-line" => Ok(Self::PreLine),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<&CssValue> for WhiteSpaceValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -194,6 +241,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "flex-direction"
             | "justify-content"
             | "align-items"
+            | "white-space"
     )
 }
 
@@ -274,6 +322,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::AlignItems(_) => true,
+            _ => false,
+        },
+        "white-space" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "normal" | "nowrap" | "pre" | "pre-wrap" | "pre-line" | "initial" | "inherit"
+                )
+            }
             _ => false,
         },
         _ => true,
@@ -387,6 +444,17 @@ pub fn parse_property_value(
                     _ => return None,
                 };
                 Some(CssValue::AlignItems(typed))
+            } else {
+                None
+            }
+        }
+        "white-space" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "normal" | "nowrap" | "pre" | "pre-wrap" | "pre-line" | "initial"
+                    | "inherit" => Some(val),
+                    _ => None,
+                }
             } else {
                 None
             }
@@ -1166,6 +1234,73 @@ mod tests {
             ),
             None
         );
+
+        // Test white-space keywords
+        assert_eq!(
+            parse_property_value(
+                "white-space",
+                &[token(CssToken::Ident("normal".to_string()))]
+            ),
+            Some(CssValue::Keyword("normal".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "white-space",
+                &[token(CssToken::Ident("nowrap".to_string()))]
+            ),
+            Some(CssValue::Keyword("nowrap".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("white-space", &[token(CssToken::Ident("pre".to_string()))]),
+            Some(CssValue::Keyword("pre".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "white-space",
+                &[token(CssToken::Ident("pre-wrap".to_string()))]
+            ),
+            Some(CssValue::Keyword("pre-wrap".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "white-space",
+                &[token(CssToken::Ident("pre-line".to_string()))]
+            ),
+            Some(CssValue::Keyword("pre-line".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "white-space",
+                &[token(CssToken::Ident("initial".to_string()))]
+            ),
+            Some(CssValue::Keyword("initial".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "white-space",
+                &[token(CssToken::Ident("inherit".to_string()))]
+            ),
+            Some(CssValue::Keyword("inherit".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "white-space",
+                &[token(CssToken::Ident("bogus".to_string()))]
+            ),
+            None
+        );
+
+        // Test WhiteSpaceValue parsing and conversion
+        assert_eq!(
+            "pre-wrap".parse::<WhiteSpaceValue>(),
+            Ok(WhiteSpaceValue::PreWrap)
+        );
+        assert_eq!("BOGUS".parse::<WhiteSpaceValue>(), Err(()));
+        assert_eq!(
+            WhiteSpaceValue::try_from(&CssValue::Keyword("nowrap".to_string())),
+            Ok(WhiteSpaceValue::Nowrap)
+        );
+        assert_eq!(WhiteSpaceValue::try_from(&CssValue::Number(1.0)), Err(()));
 
         // Test non-layout properties
         assert_eq!(
