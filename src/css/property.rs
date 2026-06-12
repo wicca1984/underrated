@@ -546,6 +546,101 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
     },
 ];
 
+/// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShorthandExpansion {
+    /// The canonical lowercase name of the shorthand property.
+    pub name: &'static str,
+    /// The ordered longhand property names this shorthand sets.
+    pub longhands: &'static [&'static str],
+}
+
+/// Static table of shorthand properties and their corresponding ordered longhands.
+static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
+    ShorthandExpansion {
+        name: "margin",
+        longhands: &["margin-top", "margin-right", "margin-bottom", "margin-left"],
+    },
+    ShorthandExpansion {
+        name: "padding",
+        longhands: &[
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-width",
+        longhands: &[
+            "border-top-width",
+            "border-right-width",
+            "border-bottom-width",
+            "border-left-width",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-style",
+        longhands: &[
+            "border-top-style",
+            "border-right-style",
+            "border-bottom-style",
+            "border-left-style",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-color",
+        longhands: &[
+            "border-top-color",
+            "border-right-color",
+            "border-bottom-color",
+            "border-left-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-radius",
+        longhands: &[
+            "border-top-left-radius",
+            "border-top-right-radius",
+            "border-bottom-right-radius",
+            "border-bottom-left-radius",
+        ],
+    },
+    ShorthandExpansion {
+        name: "overflow",
+        longhands: &["overflow-x", "overflow-y"],
+    },
+    ShorthandExpansion {
+        name: "gap",
+        longhands: &["row-gap", "column-gap"],
+    },
+    ShorthandExpansion {
+        name: "inset",
+        longhands: &["top", "right", "bottom", "left"],
+    },
+    ShorthandExpansion {
+        name: "place-items",
+        longhands: &["align-items", "justify-items"],
+    },
+    ShorthandExpansion {
+        name: "place-content",
+        longhands: &["align-content", "justify-content"],
+    },
+    ShorthandExpansion {
+        name: "place-self",
+        longhands: &["align-self", "justify-self"],
+    },
+];
+
+/// Returns the ordered longhand property names for a shorthand, if `name` is a known shorthand.
+/// The lookup is ASCII-case-insensitive, matching `lookup`.
+pub fn shorthand_longhands(name: &str) -> Option<&'static [&'static str]> {
+    SHORTHAND_EXPANSIONS
+        .iter()
+        .find(|sh| sh.name.eq_ignore_ascii_case(name))
+        .map(|sh| sh.longhands)
+}
+
 /// Looks up the metadata for a CSS property by name.
 ///
 /// This lookup is case-insensitive.
@@ -630,5 +725,44 @@ mod tests {
             );
         }
         assert_eq!(names.len(), PROPERTY_METADATA.len());
+    }
+
+    #[test]
+    fn test_shorthand_longhands() {
+        assert_eq!(
+            shorthand_longhands("margin"),
+            Some(&["margin-top", "margin-right", "margin-bottom", "margin-left"][..])
+        );
+
+        let overflow = shorthand_longhands("OVERFLOW");
+        assert!(overflow.is_some());
+        assert_eq!(overflow.unwrap().len(), 2);
+
+        assert_eq!(shorthand_longhands("color"), None);
+
+        let radius = shorthand_longhands("border-radius");
+        assert!(radius.is_some());
+        let radius_slice = radius.unwrap();
+        assert_eq!(radius_slice.len(), 4);
+        assert_eq!(radius_slice[0], "border-top-left-radius");
+    }
+
+    #[test]
+    fn test_shorthand_expansions_no_duplicates() {
+        let mut names = HashSet::new();
+        for sh in SHORTHAND_EXPANSIONS {
+            assert_eq!(
+                sh.name,
+                sh.name.to_lowercase(),
+                "Shorthand name '{}' must be lowercase",
+                sh.name
+            );
+            assert!(
+                names.insert(sh.name),
+                "Duplicate shorthand name found: {}",
+                sh.name
+            );
+        }
+        assert_eq!(names.len(), SHORTHAND_EXPANSIONS.len());
     }
 }
