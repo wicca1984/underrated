@@ -778,9 +778,13 @@ impl CategorizedComputedStyle {
             "box-sizing" => {
                 Arc::make_mut(&mut self.reset_box).box_sizing = css_value_to_string(value)
             }
-            "min-width" => Arc::make_mut(&mut self.reset_box).min_width = value_to_px(value, fs),
+            "min-width" => {
+                Arc::make_mut(&mut self.reset_box).min_width = width_px_or_percent_band(value, fs)
+            }
             "min-height" => Arc::make_mut(&mut self.reset_box).min_height = value_to_px(value, fs),
-            "max-width" => Arc::make_mut(&mut self.reset_box).max_width = value_to_px(value, fs),
+            "max-width" => {
+                Arc::make_mut(&mut self.reset_box).max_width = width_px_or_percent_band(value, fs)
+            }
             "max-height" => Arc::make_mut(&mut self.reset_box).max_height = value_to_px(value, fs),
             "vertical-align" => {
                 let v = match value {
@@ -1339,6 +1343,8 @@ impl CategorizedComputedStyle {
             "box-sizing" => Some(self.reset_box.box_sizing.clone()),
             "min-width" => Some(if self.reset_box.min_width == -1 {
                 "0px".to_string()
+            } else if self.reset_box.min_width >= WIDTH_PERCENT_BAND {
+                format!("{}%", self.reset_box.min_width - WIDTH_PERCENT_BAND)
             } else {
                 format!("{}px", self.reset_box.min_width)
             }),
@@ -1349,6 +1355,8 @@ impl CategorizedComputedStyle {
             }),
             "max-width" => Some(if self.reset_box.max_width == -1 {
                 "none".to_string()
+            } else if self.reset_box.max_width >= WIDTH_PERCENT_BAND {
+                format!("{}%", self.reset_box.max_width - WIDTH_PERCENT_BAND)
             } else {
                 format!("{}px", self.reset_box.max_width)
             }),
@@ -1739,6 +1747,20 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
 fn value_to_px_or_auto(val: &crate::css::values::CssValue, font_size: u32) -> i32 {
     if let crate::css::values::CssValue::Number(v) = val {
         return if *v == 0.0 { 0 } else { -1 };
+    }
+    value_to_px(val, font_size)
+}
+
+/// Percentage offset for min/max-width: values `>= WIDTH_PERCENT_BAND` encode a
+/// percentage (`stored - WIDTH_PERCENT_BAND`) to be resolved against the
+/// containing block at layout time; lower non-`-1` values are plain px. The i32
+/// typed field cannot otherwise represent a percentage, which the pre-migration
+/// HashMap style preserved.
+pub const WIDTH_PERCENT_BAND: i32 = 1_000_000;
+
+fn width_px_or_percent_band(val: &crate::css::values::CssValue, font_size: u32) -> i32 {
+    if let crate::css::values::CssValue::Length(p, crate::css::values::LengthUnit::Percent) = val {
+        return p.round() as i32 + WIDTH_PERCENT_BAND;
     }
     value_to_px(val, font_size)
 }

@@ -1229,15 +1229,25 @@ fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut
     }
 }
 
-fn clamp_width(style: &CategorizedComputedStyle, mut width: f32, _containing_width: f32) -> f32 {
+fn clamp_width(style: &CategorizedComputedStyle, mut width: f32, containing_width: f32) -> f32 {
+    // Resolve a stored min/max-width: -1 means absent, the percentage band encodes
+    // a percentage of the containing block, otherwise it is a plain px value.
+    let resolve = |stored: i32| -> f32 {
+        if stored >= crate::style::categorized::WIDTH_PERCENT_BAND {
+            (stored - crate::style::categorized::WIDTH_PERCENT_BAND) as f32 / 100.0
+                * containing_width
+        } else {
+            stored as f32
+        }
+    };
     if style.reset_box.max_width != -1 {
-        let max_val = style.reset_box.max_width as f32;
+        let max_val = resolve(style.reset_box.max_width);
         if width > max_val {
             width = max_val;
         }
     }
     if style.reset_box.min_width != -1 {
-        let min_val = style.reset_box.min_width as f32;
+        let min_val = resolve(style.reset_box.min_width);
         if width < min_val {
             width = min_val;
         }
