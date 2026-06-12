@@ -300,6 +300,8 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "enabled" => is_enabled(dom, node),
                     "required" => is_required(dom, node),
                     "optional" => is_optional(dom, node),
+                    "read-only" => is_read_only(dom, node),
+                    "read-write" => is_read_write(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -659,6 +661,41 @@ fn is_optional(dom: &Dom, node: NodeId) -> bool {
                 && !attrs
                     .iter()
                     .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "required"))
+        }
+        _ => false,
+    }
+}
+
+fn is_read_write(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = ascii::eq_ignore_ascii_case(name, "input")
+                || ascii::eq_ignore_ascii_case(name, "textarea");
+            // TODO(spec): Per HTML/CSS Selectors Level 4, some input types (like checkbox, radio, button, hidden)
+            // are technically always read-only or not applicable. This implementation treats any mutable-by-default
+            // input/textarea as read-write, leaving the complex per-type table out of scope.
+            is_applicable
+                && !attrs.iter().any(|(k, _)| {
+                    ascii::eq_ignore_ascii_case(k, "readonly")
+                        || ascii::eq_ignore_ascii_case(k, "disabled")
+                })
+        }
+        _ => false,
+    }
+}
+
+fn is_read_only(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = ascii::eq_ignore_ascii_case(name, "input")
+                || ascii::eq_ignore_ascii_case(name, "textarea");
+            // TODO(spec): General "any non-editable element is :read-only" rule and contenteditable elements
+            // are out of scope for this scoped implementation.
+            is_applicable
+                && attrs.iter().any(|(k, _)| {
+                    ascii::eq_ignore_ascii_case(k, "readonly")
+                        || ascii::eq_ignore_ascii_case(k, "disabled")
+                })
         }
         _ => false,
     }
@@ -1758,6 +1795,116 @@ mod tests {
             &parse_selector_list(":optional").unwrap(),
             &dom,
             input_mixed_required
+        ));
+
+        // Test :read-only and :read-write
+        // <input>
+        let input_rw = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_rw);
+
+        // <input readonly>
+        let input_ro_readonly = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("readonly".into(), "".into())],
+        });
+        dom.append_child(doc, input_ro_readonly);
+
+        // <input disabled>
+        let input_ro_disabled = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("disabled".into(), "".into())],
+        });
+        dom.append_child(doc, input_ro_disabled);
+
+        // <textarea>
+        let textarea_rw = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, textarea_rw);
+
+        // <div>
+        let div_ro_rw_none = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_ro_rw_none);
+
+        // <input READONLY>
+        let input_mixed_readonly = dom.create_node(NodeData::Element {
+            name: "InPuT".into(),
+            attrs: vec![("READONLY".into(), "".into())],
+        });
+        dom.append_child(doc, input_mixed_readonly);
+
+        // Assertions for :read-write
+        assert!(matches(
+            &parse_selector_list(":read-write").unwrap(),
+            &dom,
+            input_rw
+        ));
+        assert!(!matches(
+            &parse_selector_list(":read-only").unwrap(),
+            &dom,
+            input_rw
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":read-only").unwrap(),
+            &dom,
+            input_ro_readonly
+        ));
+        assert!(!matches(
+            &parse_selector_list(":read-write").unwrap(),
+            &dom,
+            input_ro_readonly
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":read-only").unwrap(),
+            &dom,
+            input_ro_disabled
+        ));
+        assert!(!matches(
+            &parse_selector_list(":read-write").unwrap(),
+            &dom,
+            input_ro_disabled
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":read-write").unwrap(),
+            &dom,
+            textarea_rw
+        ));
+        assert!(!matches(
+            &parse_selector_list(":read-only").unwrap(),
+            &dom,
+            textarea_rw
+        ));
+
+        assert!(!matches(
+            &parse_selector_list(":read-only").unwrap(),
+            &dom,
+            div_ro_rw_none
+        ));
+        assert!(!matches(
+            &parse_selector_list(":read-write").unwrap(),
+            &dom,
+            div_ro_rw_none
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":read-only").unwrap(),
+            &dom,
+            input_mixed_readonly
+        ));
+        assert!(!matches(
+            &parse_selector_list(":read-write").unwrap(),
+            &dom,
+            input_mixed_readonly
         ));
     }
 
