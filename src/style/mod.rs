@@ -9,16 +9,25 @@ use std::collections::HashMap;
 #[derive(Debug, Default, Clone)]
 pub struct ComputedStyle {
     properties: HashMap<String, CssValue>,
+    opacity_compat: std::cell::OnceCell<CssValue>,
 }
 
 impl ComputedStyle {
     /// Returns the computed value for a given property, if it exists.
     pub fn get(&self, property: &str) -> Option<&CssValue> {
+        if property == "opacity"
+            && let Some(CssValue::Opacity(val)) = self.properties.get("opacity")
+        {
+            return Some(self.opacity_compat.get_or_init(|| CssValue::Number(*val)));
+        }
         self.properties.get(property)
     }
 
     /// Sets/inserts a computed value for a given property.
     pub fn insert(&mut self, property: String, value: CssValue) {
+        if property == "opacity" {
+            self.opacity_compat.take();
+        }
         self.properties.insert(property, value);
     }
 }
@@ -195,6 +204,10 @@ fn compute_node_style(
             crate::css::values::parse_transform(&matched.declaration.value)
         } else if name.eq_ignore_ascii_case("z-index") {
             crate::css::values::parse_z_index(&matched.declaration.value)
+        } else if name.eq_ignore_ascii_case("opacity") {
+            let serialized =
+                crate::css::media::serialize_component_values(&matched.declaration.value);
+            crate::css::values::parse_opacity(&serialized)
         } else {
             parse_value(&matched.declaration.value)
         };
@@ -595,7 +608,10 @@ fn compute_node_style(
     };
     properties.insert("visibility".to_string(), resolved_visibility);
 
-    ComputedStyle { properties }
+    ComputedStyle {
+        properties,
+        opacity_compat: std::cell::OnceCell::new(),
+    }
 }
 
 fn get_root_font_size(dom: &Dom, computed_styles: &HashMap<NodeId, ComputedStyle>) -> f32 {
