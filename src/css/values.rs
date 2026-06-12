@@ -305,6 +305,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "flex-wrap"
             | "float"
             | "clear"
+            | "table-layout"
             | "visibility"
     )
 }
@@ -418,6 +419,12 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                     kw.to_ascii_lowercase().as_str(),
                     "none" | "left" | "right" | "both"
                 )
+            }
+            _ => false,
+        },
+        "table-layout" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "auto" | "fixed")
             }
             _ => false,
         },
@@ -581,6 +588,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "none" | "left" | "right" | "both" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "table-layout" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "fixed" => Some(val),
                     _ => None,
                 }
             } else {
@@ -1937,6 +1954,53 @@ mod tests {
         );
         assert_eq!(
             parse_property_value("clear", &[token(CssToken::Ident("up".to_string()))]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_table_layout_property() {
+        // Test known properties
+        assert!(is_known_layout_property("table-layout"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "table-layout",
+            &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "table-layout",
+            &CssValue::Keyword("fixed".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "table-layout",
+            &CssValue::Keyword("bogus".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "table-layout",
+            &CssValue::Number(1.0)
+        ));
+
+        // Test parse_property_value for table-layout
+        assert_eq!(
+            parse_property_value(
+                "table-layout",
+                &[token(CssToken::Ident("auto".to_string()))]
+            ),
+            Some(CssValue::Keyword("auto".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "table-layout",
+                &[token(CssToken::Ident("fixed".to_string()))]
+            ),
+            Some(CssValue::Keyword("fixed".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "table-layout",
+                &[token(CssToken::Ident("bogus".to_string()))]
+            ),
             None
         );
     }
