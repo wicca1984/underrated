@@ -91,6 +91,40 @@ pub fn compute_styles(dom: &Dom, stylesheet: &Stylesheet) -> HashMap<NodeId, Com
     compute_styles_with_viewport(dom, stylesheet, 1024.0)
 }
 
+struct PreparsedRule {
+    selector_list: crate::selector::SelectorList,
+    declarations: Vec<Declaration>,
+    source_order: usize,
+}
+
+fn preparse_rules(rules: &[Rule], viewport_width: f32, preparsed: &mut Vec<PreparsedRule>) {
+    for (rule_index, rule) in rules.iter().enumerate() {
+        match rule {
+            Rule::Qualified(qualified_rule) => {
+                let selector_str = serialize_component_values(&qualified_rule.prelude);
+                if let Ok(selector_list) = crate::selector::parse_selector_list(&selector_str) {
+                    preparsed.push(PreparsedRule {
+                        selector_list,
+                        declarations: qualified_rule.declarations.clone(),
+                        source_order: rule_index,
+                    });
+                }
+            }
+            Rule::At(at_rule)
+                if at_rule.name == "media"
+                    && evaluate_media_query(&at_rule.prelude, viewport_width) =>
+            {
+                if let Some(block) = &at_rule.block {
+                    let inner_css = serialize_component_values(block);
+                    let inner_stylesheet = crate::css::parser::parse_stylesheet(&inner_css);
+                    preparse_rules(&inner_stylesheet.rules, viewport_width, preparsed);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Computes the styles for all nodes in the DOM based on the given stylesheet and viewport width.
 pub fn compute_styles_with_viewport(
     dom: &Dom,
@@ -114,17 +148,13 @@ pub fn compute_styles_with_viewport(
         .map(|pos| pos + 1)
         .unwrap_or(0);
 
+    let mut preparsed_rules = Vec::new();
+    preparse_rules(&stylesheet.rules, viewport_width, &mut preparsed_rules);
+
     // Traverse the DOM in pre-order to resolve styles, allowing inheritance from parents.
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        let computed = compute_node_style(
-            dom,
-            node,
-            stylesheet,
-            &styles,
-            viewport_width,
-            ua_rules_count,
-        );
+        let computed = compute_node_style(dom, node, &preparsed_rules, &styles, ua_rules_count);
         styles.insert(node, computed);
 
         // Add children to stack in reverse order to maintain pre-order traversal.
@@ -139,9 +169,8 @@ pub fn compute_styles_with_viewport(
 fn compute_node_style(
     dom: &Dom,
     node: NodeId,
-    stylesheet: &Stylesheet,
+    preparsed_rules: &[PreparsedRule],
     computed_styles: &HashMap<NodeId, ComputedStyle>,
-    viewport_width: f32,
     ua_rules_count: usize,
 ) -> ComputedStyle {
     let mut properties = HashMap::new();
@@ -149,13 +178,7 @@ fn compute_node_style(
     // 1. Collect all matching rules and their declarations.
     let mut matched_declarations = Vec::new();
 
-    collect_matched_rules(
-        dom,
-        node,
-        &stylesheet.rules,
-        viewport_width,
-        &mut matched_declarations,
-    );
+    collect_matched_rules(dom, node, preparsed_rules, &mut matched_declarations);
 
     // 1.5. Collect presentational hints.
     for decl in &mut matched_declarations {
@@ -655,46 +678,21 @@ fn get_root_font_size(dom: &Dom, computed_styles: &HashMap<NodeId, ComputedStyle
 fn collect_matched_rules(
     dom: &Dom,
     node: NodeId,
-    rules: &[Rule],
-    viewport_width: f32,
+    preparsed_rules: &[PreparsedRule],
     matched_declarations: &mut Vec<MatchedDeclaration>,
 ) {
-    for (rule_index, rule) in rules.iter().enumerate() {
-        match rule {
-            Rule::Qualified(qualified_rule) => {
-                let selector_str = serialize_component_values(&qualified_rule.prelude);
-                if let Ok(selector_list) = crate::selector::parse_selector_list(&selector_str) {
-                    for sel in &selector_list.0 {
-                        if matches_complex(sel, dom, node) {
-                            let spec = specificity(sel);
-                            for decl in &qualified_rule.declarations {
-                                matched_declarations.push(MatchedDeclaration {
-                                    declaration: decl.clone(),
-                                    specificity: spec,
-                                    source_order: rule_index,
-                                });
-                            }
-                        }
-                    }
+    for rule in preparsed_rules {
+        for sel in &rule.selector_list.0 {
+            if matches_complex(sel, dom, node) {
+                let spec = specificity(sel);
+                for decl in &rule.declarations {
+                    matched_declarations.push(MatchedDeclaration {
+                        declaration: decl.clone(),
+                        specificity: spec,
+                        source_order: rule.source_order,
+                    });
                 }
             }
-            Rule::At(at_rule)
-                if at_rule.name == "media"
-                    && evaluate_media_query(&at_rule.prelude, viewport_width) =>
-            {
-                if let Some(block) = &at_rule.block {
-                    let inner_css = serialize_component_values(block);
-                    let inner_stylesheet = crate::css::parser::parse_stylesheet(&inner_css);
-                    collect_matched_rules(
-                        dom,
-                        node,
-                        &inner_stylesheet.rules,
-                        viewport_width,
-                        matched_declarations,
-                    );
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -3314,6 +3312,69 @@ mod tests {
         assert_eq!(
             table_style.get("border-top-width"),
             Some(&CssValue::Length(1.0, LengthUnit::Px))
+        );
+    }
+
+    #[test]
+    fn test_hoisted_rule_matching_optimization() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![
+                ("id".into(), "my-id".into()),
+                ("class".into(), "my-class".into()),
+            ],
+        });
+        dom.append_child(doc, div);
+
+        // 1. Tag vs Class vs ID: ID wins (highest specificity)
+        let stylesheet = parse_stylesheet(
+            "
+            div { color: red; }
+            .my-class { color: blue; }
+            #my-id { color: green; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let div_style = styles.get(&div).unwrap();
+        assert_eq!(
+            div_style.get("color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 128, 0, 255
+            ))) // green
+        );
+
+        // 2. Class vs Tag: Class wins (higher specificity)
+        let stylesheet = parse_stylesheet(
+            "
+            .my-class { color: blue; }
+            div { color: red; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let div_style = styles.get(&div).unwrap();
+        assert_eq!(
+            div_style.get("color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            ))) // blue
+        );
+
+        // 3. Same specificity: later source-order wins
+        let stylesheet = parse_stylesheet(
+            "
+            #my-id { color: red; }
+            #my-id { color: blue; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let div_style = styles.get(&div).unwrap();
+        assert_eq!(
+            div_style.get("color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            ))) // blue
         );
     }
 }
