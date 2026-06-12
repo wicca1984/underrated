@@ -6,6 +6,34 @@ use crate::url::Url;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The HTML `loading` attribute value for resources (img/iframe): a hint for whether the
+/// resource may be deferred until near the viewport. Per the HTML spec the attribute is an
+/// enumerated attribute whose missing/invalid default maps to eager loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LoadingMode {
+    #[default]
+    Eager,
+    Lazy,
+}
+
+impl LoadingMode {
+    /// Whether the resource fetch may be deferred (true only for `Lazy`).
+    pub fn is_deferred(self) -> bool {
+        matches!(self, LoadingMode::Lazy)
+    }
+}
+
+/// Parses the HTML `loading` attribute value. Matching is ASCII-case-insensitive.
+/// `lazy` => Lazy; everything else (including absent/empty/unknown) => Eager (spec default).
+pub fn parse_loading_attr(value: &str) -> LoadingMode {
+    let trimmed = value.trim_matches(crate::ascii::is_html_whitespace);
+    if trimmed.eq_ignore_ascii_case("lazy") {
+        LoadingMode::Lazy
+    } else {
+        LoadingMode::Eager
+    }
+}
+
 /// Decodes a simple base64 encoded string.
 /// Returns `None` if the input contains invalid base64 characters.
 pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
@@ -1050,5 +1078,40 @@ mod tests {
 
         assert_eq!(result.bytes, b"OK");
         assert_eq!(result.content_type, "text/plain");
+    }
+
+    #[test]
+    fn test_loading_mode_default() {
+        assert_eq!(LoadingMode::default(), LoadingMode::Eager);
+    }
+
+    #[test]
+    fn test_loading_mode_is_deferred() {
+        assert!(LoadingMode::Lazy.is_deferred());
+        assert!(!LoadingMode::Eager.is_deferred());
+    }
+
+    #[test]
+    fn test_parse_loading_attr() {
+        // 1. "lazy" => Lazy
+        assert_eq!(parse_loading_attr("lazy"), LoadingMode::Lazy);
+
+        // 2. Case-insensitivity and whitespace trimming
+        assert_eq!(parse_loading_attr("LAZY"), LoadingMode::Lazy);
+        assert_eq!(parse_loading_attr("Lazy"), LoadingMode::Lazy);
+        assert_eq!(parse_loading_attr("  lazy  "), LoadingMode::Lazy);
+        assert_eq!(parse_loading_attr("\t\n lazy\r\x0C "), LoadingMode::Lazy);
+
+        // 3. "eager" => Eager
+        assert_eq!(parse_loading_attr("eager"), LoadingMode::Eager);
+        assert_eq!(parse_loading_attr("EAGER"), LoadingMode::Eager);
+        assert_eq!(parse_loading_attr("  eager  "), LoadingMode::Eager);
+
+        // 4. Missing/invalid defaults to Eager
+        assert_eq!(parse_loading_attr(""), LoadingMode::Eager);
+        assert_eq!(parse_loading_attr("auto"), LoadingMode::Eager);
+        assert_eq!(parse_loading_attr("garbage"), LoadingMode::Eager);
+        assert_eq!(parse_loading_attr("lazyx"), LoadingMode::Eager);
+        assert_eq!(parse_loading_attr("xlazy"), LoadingMode::Eager);
     }
 }
