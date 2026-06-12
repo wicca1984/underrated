@@ -3,6 +3,20 @@ use crate::infra::NodeId;
 use crate::selector;
 
 impl Dom {
+    /// Returns true if `other` is an inclusive descendant of `node`
+    /// (i.e. `other` is `node` itself, or a descendant of `node`).
+    // spec: https://dom.spec.whatwg.org/#dom-node-contains
+    pub fn contains(&self, node: NodeId, other: NodeId) -> bool {
+        let mut curr = Some(other);
+        while let Some(curr_node) = curr {
+            if curr_node == node {
+                return true;
+            }
+            curr = self.parent(curr_node);
+        }
+        false
+    }
+
     /// Returns the first element in the document with the given `id`.
     // spec: https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
     pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
@@ -252,5 +266,56 @@ mod tests {
         });
         assert_eq!(dom.next_element_sibling(unattached), None);
         assert_eq!(dom.previous_element_sibling(unattached), None);
+    }
+
+    #[test]
+    fn test_node_contains_query() {
+        let mut dom = setup_test_dom();
+        let doc = dom.document();
+        let html = dom.query_selector("html").unwrap();
+        let body = dom.query_selector("body").unwrap();
+        let div = dom.query_selector("#container").unwrap();
+        let p1 = dom.query_selector("#p1").unwrap();
+        let span = dom.query_selector("span").unwrap();
+
+        // 1. A node contains itself (contains(n, n) == true).
+        assert!(dom.contains(doc, doc));
+        assert!(dom.contains(html, html));
+        assert!(dom.contains(p1, p1));
+
+        // 2. A parent contains its direct child.
+        assert!(dom.contains(html, body));
+        assert!(dom.contains(div, p1));
+        assert!(dom.contains(div, span));
+
+        // 3. An ancestor contains a deep (grand+) descendant.
+        assert!(dom.contains(html, p1));
+        assert!(dom.contains(doc, span));
+
+        // 4. A node does NOT contain its own ancestor (contains(child, parent) == false).
+        assert!(!dom.contains(body, html));
+        assert!(!dom.contains(p1, div));
+        assert!(!dom.contains(span, doc));
+
+        // 5. Two sibling subtrees do not contain each other.
+        assert!(!dom.contains(p1, span));
+        assert!(!dom.contains(span, p1));
+
+        // 6. The document root contains every node in the tree.
+        assert!(dom.contains(doc, doc));
+        assert!(dom.contains(doc, html));
+        assert!(dom.contains(doc, body));
+        assert!(dom.contains(doc, div));
+        assert!(dom.contains(doc, p1));
+        assert!(dom.contains(doc, span));
+
+        // Extra: Unattached node in the same DOM
+        let unattached = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![],
+        });
+        assert!(dom.contains(unattached, unattached));
+        assert!(!dom.contains(doc, unattached));
+        assert!(!dom.contains(unattached, doc));
     }
 }
