@@ -495,7 +495,7 @@ pub fn layout_table_container(
     })
 }
 
-fn is_border_collapse(style: &ComputedStyle) -> bool {
+pub(crate) fn is_border_collapse(style: &ComputedStyle) -> bool {
     match style.get("border-collapse") {
         Some(CssValue::Keyword(kw)) => kw == "collapse",
         _ => false,

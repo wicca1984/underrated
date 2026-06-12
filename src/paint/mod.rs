@@ -812,11 +812,26 @@ pub fn build_display_list_with_caret(
 
             if !node_hidden {
                 if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
+                    let mut current = Some(node_id);
+                    let mut collapse = false;
+                    while let Some(curr) = current {
+                        if let Some(NodeData::Element { name: el_name, .. }) = dom.data(curr)
+                            && el_name.eq_ignore_ascii_case("table")
+                        {
+                            if let Some(table_style) = styles.get(&curr) {
+                                collapse = crate::layout::is_border_collapse(table_style);
+                            }
+                            break;
+                        }
+                        current = dom.parent(curr);
+                    }
+
                     items.extend(table::table_border_items(
                         dom,
                         node_id,
                         name,
                         layout_box.rect,
+                        collapse,
                     ));
                 }
 
