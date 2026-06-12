@@ -304,6 +304,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "white-space"
             | "flex-wrap"
             | "float"
+            | "clear"
     )
 }
 
@@ -407,6 +408,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "float" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "none" | "left" | "right")
+            }
+            _ => false,
+        },
+        "clear" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "none" | "left" | "right" | "both"
+                )
             }
             _ => false,
         },
@@ -551,6 +561,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "none" | "left" | "right" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "clear" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "none" | "left" | "right" | "both" => Some(val),
                     _ => None,
                 }
             } else {
@@ -1847,6 +1867,56 @@ mod tests {
         );
         assert_eq!(
             parse_property_value("float", &[token(CssToken::Ident("up".to_string()))]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_clear_property() {
+        // Test known properties
+        assert!(is_known_layout_property("clear"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "clear",
+            &CssValue::Keyword("left".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "clear",
+            &CssValue::Keyword("right".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "clear",
+            &CssValue::Keyword("none".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "clear",
+            &CssValue::Keyword("both".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "clear",
+            &CssValue::Keyword("up".to_string())
+        ));
+
+        // Test parse_property_value for clear
+        assert_eq!(
+            parse_property_value("clear", &[token(CssToken::Ident("left".to_string()))]),
+            Some(CssValue::Keyword("left".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("clear", &[token(CssToken::Ident("right".to_string()))]),
+            Some(CssValue::Keyword("right".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("clear", &[token(CssToken::Ident("none".to_string()))]),
+            Some(CssValue::Keyword("none".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("clear", &[token(CssToken::Ident("both".to_string()))]),
+            Some(CssValue::Keyword("both".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("clear", &[token(CssToken::Ident("up".to_string()))]),
             None
         );
     }
