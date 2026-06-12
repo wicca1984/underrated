@@ -25,12 +25,17 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
 
     // 2. Transport label (e.g. Content-Type header)
     if let Some(label) = transport_label {
-        match label.to_ascii_lowercase().as_str() {
-            "utf-8" => return Charset::Utf8,
-            "utf-16le" => return Charset::Utf16Le,
-            "utf-16be" => return Charset::Utf16Be,
-            "windows-1252" => return Charset::Windows1252,
-            _ => {} // TODO(spec): Full label table
+        let trimmed = label.trim_matches(|c: char| c.is_ascii_whitespace());
+        match trimmed.to_ascii_lowercase().as_str() {
+            "utf-8" | "utf8" | "unicode-1-1-utf-8" | "unicode11utf8" | "unicode20utf8"
+            | "x-unicode20utf8" => return Charset::Utf8,
+            "utf-16le" | "utf-16" | "csunicode" | "iso-10646-ucs-2" | "ucs-2" | "unicode"
+            | "unicodefeff" => return Charset::Utf16Le,
+            "utf-16be" | "unicodefffe" => return Charset::Utf16Be,
+            "windows-1252" | "ansi_x3.4-1968" | "ascii" | "us-ascii" | "iso-8859-1"
+            | "iso8859-1" | "iso_8859-1" | "latin1" | "l1" | "cp1252" | "cp819" | "ibm819"
+            | "x-cp1252" => return Charset::Windows1252,
+            _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
     }
 
@@ -258,5 +263,50 @@ mod tests {
         assert_eq!(decode(&[0x80], Charset::Windows1252), "€");
         // 0xA3 is £ (U+00A3)
         assert_eq!(decode(&[0xA3], Charset::Windows1252), "£");
+    }
+
+    #[test]
+    fn test_label_utf8_aliases() {
+        assert_eq!(sniff_charset(b"abc", Some("UTF8")), Charset::Utf8);
+        assert_eq!(
+            sniff_charset(b"abc", Some("unicode-1-1-uTf-8")),
+            Charset::Utf8
+        );
+    }
+
+    #[test]
+    fn test_label_latin1_alias() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-8859-1")),
+            Charset::Windows1252
+        );
+        assert_eq!(sniff_charset(b"abc", Some("latin1")), Charset::Windows1252);
+    }
+
+    #[test]
+    fn test_label_ascii_alias() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("us-ascii")),
+            Charset::Windows1252
+        );
+    }
+
+    #[test]
+    fn test_label_utf16_bare() {
+        assert_eq!(sniff_charset(b"abc", Some("utf-16")), Charset::Utf16Le);
+    }
+
+    #[test]
+    fn test_label_whitespace_trimmed() {
+        assert_eq!(sniff_charset(b"abc", Some("  utf-8  ")), Charset::Utf8);
+        assert_eq!(sniff_charset(b"abc", Some("\tutf-8\r\n")), Charset::Utf8);
+    }
+
+    #[test]
+    fn test_label_unknown_falls_through_to_default() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("unknown-charset")),
+            Charset::Windows1252
+        );
     }
 }
