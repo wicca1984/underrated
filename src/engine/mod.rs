@@ -896,14 +896,7 @@ mod tests {
             .styles
             .get(&div_node_id)
             .expect("Div should have computed style");
-        if let Some(crate::css::values::CssValue::Color(c)) = style.get("background-color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 0, 255));
-        } else {
-            panic!(
-                "Expected background-color red, got {:?}",
-                style.get("background-color")
-            );
-        }
+        assert_eq!(style.reset_background.background_color, "rgb(255, 0, 0)");
     }
 
     #[test]
@@ -959,14 +952,7 @@ mod tests {
             .styles
             .get(&div_node_id)
             .expect("Div should have computed style");
-        if let Some(crate::css::values::CssValue::Color(c)) = style.get("background-color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 0, 255));
-        } else {
-            panic!(
-                "Expected background-color red, got {:?}",
-                style.get("background-color")
-            );
-        }
+        assert_eq!(style.reset_background.background_color, "rgb(255, 0, 0)");
     }
 
     struct MockLoader {
@@ -1078,11 +1064,7 @@ mod tests {
             .styles
             .get(&div_id)
             .expect("Should have computed style");
-        if let Some(crate::css::values::CssValue::Color(c)) = style.get("background-color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(0, 0, 255, 255));
-        } else {
-            panic!("Expected blue background color");
-        }
+        assert_eq!(style.reset_background.background_color, "rgb(0, 0, 255)");
     }
 
     #[test]
@@ -1130,18 +1112,10 @@ mod tests {
             .expect("Should have computed style");
 
         // height should be 120px from the inline style
-        if let Some(crate::css::values::CssValue::Length(val, _)) = style.get("height") {
-            assert_eq!(*val, 120.0);
-        } else {
-            panic!("Expected height 120px");
-        }
+        assert_eq!(style.reset_box.height, 120);
 
         // width should be 150px from style2.css
-        if let Some(crate::css::values::CssValue::Length(val, _)) = style.get("width") {
-            assert_eq!(*val, 150.0);
-        } else {
-            panic!("Expected width 150px");
-        }
+        assert_eq!(style.reset_box.width, 150);
     }
 
     #[test]
@@ -1195,11 +1169,7 @@ mod tests {
             .styles
             .get(&target_id)
             .expect("Should have style");
-        if let Some(crate::css::values::CssValue::Color(c)) = style_narrow.get("background-color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 0, 255));
-        } else {
-            panic!("Expected red background color");
-        }
+        assert_eq!(style_narrow.reset_background.background_color, "rgb(255, 0, 0)");
 
         // Test with viewport > 600px
         let page_wide = render_page(html, &base_url, &loader, 800.0);
@@ -1222,11 +1192,7 @@ mod tests {
             .styles
             .get(&target_id_wide)
             .expect("Should have style");
-        if let Some(crate::css::values::CssValue::Color(c)) = style_wide.get("background-color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(0, 0, 255, 255));
-        } else {
-            panic!("Expected blue background color");
-        }
+        assert_eq!(style_wide.reset_background.background_color, "rgb(0, 0, 255)");
     }
 
     #[test]
@@ -1315,11 +1281,7 @@ mod tests {
         }
         let p_id = p_node_id.expect("Should find p element");
         let style_narrow = page_narrow.styles.get(&p_id).expect("Should have style");
-        if let Some(crate::css::values::CssValue::Color(c)) = style_narrow.get("background-color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 255, 255));
-        } else {
-            panic!("Expected magenta background color for p element at 500px width");
-        }
+        assert_eq!(style_narrow.reset_background.background_color, "rgb(255, 0, 255)");
 
         // Under 800px, responsive.css's max-width: 600px does not apply
         let page_wide = render_page(html, &base_url, &loader, 800.0);
@@ -1334,7 +1296,7 @@ mod tests {
         }
         let p_id_wide = p_node_id_wide.expect("Should find p element");
         let style_wide = page_wide.styles.get(&p_id_wide).expect("Should have style");
-        assert!(style_wide.get("background-color").is_none());
+        assert_eq!(style_wide.reset_background.background_color, "transparent");
     }
 
     #[test]
@@ -1383,57 +1345,23 @@ mod tests {
         }
 
         let p_s = p_style.expect("p should have styles");
-        assert_eq!(
-            p_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
-        );
-        // p should have margin-top and margin-bottom 1em
-        assert_eq!(
-            p_s.get("margin-top"),
-            Some(&crate::css::values::CssValue::Length(
-                1.0,
-                crate::css::values::LengthUnit::Em
-            ))
-        );
+        assert_eq!(p_s.reset_box.display, "block");
+        // p should have margin-top and margin-bottom 1em (resolved to 16px)
+        assert_eq!(p_s.reset_surround.margin_top, 16);
 
         let a_s = a_style.expect("a should have styles");
-        if let Some(crate::css::values::CssValue::Color(c)) = a_s.get("color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(0, 0, 0xee, 255));
-        } else {
-            panic!("Expected color blue #0000ee for link");
-        }
-        assert_eq!(
-            a_s.get("text-decoration"),
-            Some(&crate::css::values::CssValue::Keyword(
-                "underline".to_string()
-            ))
-        );
+        assert_eq!(a_s.inherited_text.color, "rgb(0, 0, 238)");
+        assert_eq!(a_s.reset_effects.text_decoration_line, "underline");
 
         let b_s = b_style.expect("b should have styles");
-        assert_eq!(
-            b_s.get("font-weight"),
-            Some(&crate::css::values::CssValue::Keyword("bold".to_string()))
-        );
+        assert_eq!(b_s.inherited_text.font_weight, "bold");
 
         let i_s = i_style.expect("i should have styles");
-        assert_eq!(
-            i_s.get("font-style"),
-            Some(&crate::css::values::CssValue::Keyword("italic".to_string()))
-        );
+        assert_eq!(i_s.inherited_text.font_style, "italic");
 
         let body_s = body_style.expect("body should have styles");
-        assert_eq!(
-            body_s.get("margin-top"),
-            Some(&crate::css::values::CssValue::Length(
-                8.0,
-                crate::css::values::LengthUnit::Px
-            ))
-        );
-        if let Some(crate::css::values::CssValue::Color(c)) = body_s.get("background-color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(255, 255, 255, 255));
-        } else {
-            panic!("Expected white background color for body");
-        }
+        assert_eq!(body_s.reset_surround.margin_top, 8);
+        assert_eq!(body_s.reset_background.background_color, "rgb(255, 255, 255)");
     }
 
     #[test]
@@ -1456,45 +1384,15 @@ mod tests {
         }
 
         let fig_s = figure_style.expect("figure should have styles");
-        assert_eq!(
-            fig_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
-        );
-        // figure should have margin-top/margin-bottom = 1em and margin-left/margin-right = 40px
-        assert_eq!(
-            fig_s.get("margin-top"),
-            Some(&crate::css::values::CssValue::Length(
-                1.0,
-                crate::css::values::LengthUnit::Em
-            ))
-        );
-        assert_eq!(
-            fig_s.get("margin-bottom"),
-            Some(&crate::css::values::CssValue::Length(
-                1.0,
-                crate::css::values::LengthUnit::Em
-            ))
-        );
-        assert_eq!(
-            fig_s.get("margin-left"),
-            Some(&crate::css::values::CssValue::Length(
-                40.0,
-                crate::css::values::LengthUnit::Px
-            ))
-        );
-        assert_eq!(
-            fig_s.get("margin-right"),
-            Some(&crate::css::values::CssValue::Length(
-                40.0,
-                crate::css::values::LengthUnit::Px
-            ))
-        );
+        assert_eq!(fig_s.reset_box.display, "block");
+        // figure should have margin-top/margin-bottom = 1em (resolved to 16px) and margin-left/margin-right = 40px
+        assert_eq!(fig_s.reset_surround.margin_top, 16);
+        assert_eq!(fig_s.reset_surround.margin_bottom, 16);
+        assert_eq!(fig_s.reset_surround.margin_left, 40);
+        assert_eq!(fig_s.reset_surround.margin_right, 40);
 
         let figcap_s = figcaption_style.expect("figcaption should have styles");
-        assert_eq!(
-            figcap_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
-        );
+        assert_eq!(figcap_s.reset_box.display, "block");
     }
 
     #[test]
@@ -1521,77 +1419,23 @@ mod tests {
         }
 
         let bq_s = blockquote_style.expect("blockquote should have styles");
-        assert_eq!(
-            bq_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
-        );
-        assert_eq!(
-            bq_s.get("margin-top"),
-            Some(&crate::css::values::CssValue::Length(
-                1.0,
-                crate::css::values::LengthUnit::Em
-            ))
-        );
-        assert_eq!(
-            bq_s.get("margin-bottom"),
-            Some(&crate::css::values::CssValue::Length(
-                1.0,
-                crate::css::values::LengthUnit::Em
-            ))
-        );
-        assert_eq!(
-            bq_s.get("margin-left"),
-            Some(&crate::css::values::CssValue::Length(
-                40.0,
-                crate::css::values::LengthUnit::Px
-            ))
-        );
-        assert_eq!(
-            bq_s.get("margin-right"),
-            Some(&crate::css::values::CssValue::Length(
-                40.0,
-                crate::css::values::LengthUnit::Px
-            ))
-        );
+        assert_eq!(bq_s.reset_box.display, "block");
+        assert_eq!(bq_s.reset_surround.margin_top, 16);
+        assert_eq!(bq_s.reset_surround.margin_bottom, 16);
+        assert_eq!(bq_s.reset_surround.margin_left, 40);
+        assert_eq!(bq_s.reset_surround.margin_right, 40);
 
         let dl_s = dl_style.expect("dl should have styles");
-        assert_eq!(
-            dl_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
-        );
-        assert_eq!(
-            dl_s.get("margin-top"),
-            Some(&crate::css::values::CssValue::Length(
-                1.0,
-                crate::css::values::LengthUnit::Em
-            ))
-        );
-        assert_eq!(
-            dl_s.get("margin-bottom"),
-            Some(&crate::css::values::CssValue::Length(
-                1.0,
-                crate::css::values::LengthUnit::Em
-            ))
-        );
+        assert_eq!(dl_s.reset_box.display, "block");
+        assert_eq!(dl_s.reset_surround.margin_top, 16);
+        assert_eq!(dl_s.reset_surround.margin_bottom, 16);
 
         let dt_s = dt_style.expect("dt should have styles");
-        assert_eq!(
-            dt_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
-        );
+        assert_eq!(dt_s.reset_box.display, "block");
 
         let dd_s = dd_style.expect("dd should have styles");
-        assert_eq!(
-            dd_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("block".to_string()))
-        );
-        assert_eq!(
-            dd_s.get("margin-left"),
-            Some(&crate::css::values::CssValue::Length(
-                40.0,
-                crate::css::values::LengthUnit::Px
-            ))
-        );
+        assert_eq!(dd_s.reset_box.display, "block");
+        assert_eq!(dd_s.reset_surround.margin_left, 40);
     }
 
     #[test]
@@ -1612,14 +1456,8 @@ mod tests {
         }
 
         let th_s = th_style.expect("th should have styles");
-        assert_eq!(
-            th_s.get("font-weight"),
-            Some(&crate::css::values::CssValue::Keyword("bold".to_string()))
-        );
-        assert_eq!(
-            th_s.get("text-align"),
-            Some(&crate::css::values::CssValue::Keyword("center".to_string()))
-        );
+        assert_eq!(th_s.inherited_text.font_weight, "bold");
+        assert_eq!(th_s.inherited_text.text_align, "center");
     }
 
     #[test]
@@ -1640,10 +1478,7 @@ mod tests {
         }
 
         let span_s = span_style.expect("span should have styles");
-        assert_eq!(
-            span_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("inline".to_string()))
-        );
+        assert_eq!(span_s.reset_box.display, "inline");
 
         let mut body_box = None;
         let mut stack = vec![&page.layout];
@@ -2137,29 +1972,19 @@ mod tests {
             .styles
             .get(&style_node)
             .expect("style should have computed styles");
-        assert_eq!(
-            style_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("none".to_string()))
-        );
+        assert_eq!(style_s.reset_box.display, "none");
 
         let script_s = page
             .styles
             .get(&script_node)
             .expect("script should have computed styles");
-        assert_eq!(
-            script_s.get("display"),
-            Some(&crate::css::values::CssValue::Keyword("none".to_string()))
-        );
+        assert_eq!(script_s.reset_box.display, "none");
 
         let p_s = page
             .styles
             .get(&p_node)
             .expect("p should have computed styles");
-        if let Some(crate::css::values::CssValue::Color(c)) = p_s.get("color") {
-            assert_eq!(c, &crate::css::values::Color::Rgba(255, 0, 0, 255));
-        } else {
-            panic!("Expected color red (#ff0000) for paragraph due to hoisted CSS");
-        }
+        assert_eq!(p_s.inherited_text.color, "rgb(255, 0, 0)");
 
         // 2. Build display list and verify that no text from style or script is rendered,
         // but the paragraph text IS rendered.

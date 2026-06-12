@@ -50,34 +50,25 @@ pub struct DisplayList(pub Vec<DisplayItem>);
 /// Helper to extract border width from computed styles in px.
 /// spec: S-39
 fn get_border_width(style: &CategorizedComputedStyle, prop: &str) -> f32 {
-    match style.get(prop) {
-        Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
-        _ => 0.0,
-    }
+    let w = match prop {
+        "border-top-width" => style.reset_surround.border_top_width,
+        "border-right-width" => style.reset_surround.border_right_width,
+        "border-bottom-width" => style.reset_surround.border_bottom_width,
+        "border-left-width" => style.reset_surround.border_left_width,
+        _ => -1,
+    };
+    if w < 0 { 0.0 } else { w as f32 }
 }
 
 /// Helper to extract outline width from computed styles in px, defaulting to medium (3.0px).
 fn get_outline_width(style: &CategorizedComputedStyle) -> f32 {
-    match style.get("outline-width") {
-        Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
-        Some(CssValue::Number(v)) => *v,
-        Some(CssValue::Keyword(s)) => match s.to_ascii_lowercase().as_str() {
-            "thin" => 1.0,
-            "medium" => 3.0,
-            "thick" => 5.0,
-            _ => 3.0,
-        },
-        _ => 3.0,
-    }
+    let ow = style.reset_effects.outline_width;
+    if ow == -1 { 3.0 } else { ow as f32 }
 }
 
 /// Helper to extract outline offset from computed styles in px, defaulting to 0.0px.
 fn get_outline_offset(style: &CategorizedComputedStyle) -> f32 {
-    match style.get("outline-offset") {
-        Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
-        Some(CssValue::Number(v)) => *v,
-        _ => 0.0,
-    }
+    style.reset_effects.outline_offset as f32
 }
 
 /// Helper to paint standard solid outline strips on all four sides.
@@ -226,39 +217,189 @@ fn flatten_value<'a>(value: &'a CssValue, leaves: &mut Vec<&'a CssValue>) {
     }
 }
 
+fn parse_css_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.eq_ignore_ascii_case("currentcolor") {
+        return None;
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        match hex.len() {
+            3 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+                return Some(Color::Rgba(r * 17, g * 17, b * 17, 255));
+            }
+            4 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+                let a = u8::from_str_radix(&hex[3..4], 16).ok()?;
+                return Some(Color::Rgba(r * 17, g * 17, b * 17, a * 17));
+            }
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                return Some(Color::Rgba(r, g, b, 255));
+            }
+            8 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+                return Some(Color::Rgba(r, g, b, a));
+            }
+            _ => return None,
+        }
+    }
+    if s.starts_with("rgb(") && s.ends_with(')') {
+        let inside = &s[4..s.len()-1];
+        let parts: Vec<&str> = inside.split(',').map(|p| p.trim()).collect();
+        if parts.len() == 3 {
+            let r = parts[0].parse::<u8>().ok()?;
+            let g = parts[1].parse::<u8>().ok()?;
+            let b = parts[2].parse::<u8>().ok()?;
+            return Some(Color::Rgba(r, g, b, 255));
+        }
+    }
+    if s.starts_with("rgba(") && s.ends_with(')') {
+        let inside = &s[5..s.len()-1];
+        let parts: Vec<&str> = inside.split(',').map(|p| p.trim()).collect();
+        if parts.len() == 4 {
+            let r = parts[0].parse::<u8>().ok()?;
+            let g = parts[1].parse::<u8>().ok()?;
+            let b = parts[2].parse::<u8>().ok()?;
+            let alpha = parts[3].parse::<f32>().ok()?;
+            let a = (alpha * 255.0).clamp(0.0, 255.0) as u8;
+            return Some(Color::Rgba(r, g, b, a));
+        }
+    }
+    crate::css::colors::named_color(s)
+}
+
+fn parse_background_size(s: &str) -> CssValue {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("contain") {
+        return CssValue::Keyword("contain".to_string());
+    }
+    if s.eq_ignore_ascii_case("cover") {
+        return CssValue::Keyword("cover".to_string());
+    }
+    if s.eq_ignore_ascii_case("auto") {
+        return CssValue::Keyword("auto".to_string());
+    }
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.is_empty() {
+        return CssValue::Keyword("auto".to_string());
+    }
+    
+    fn parse_single(p: &str) -> CssValue {
+        if p.eq_ignore_ascii_case("auto") {
+            return CssValue::Keyword("auto".to_string());
+        }
+        if let Some(num_str) = p.strip_suffix("px") {
+            if let Ok(v) = num_str.parse::<f32>() {
+                return CssValue::Length(v, crate::css::values::LengthUnit::Px);
+            }
+        }
+        if let Some(num_str) = p.strip_suffix('%') {
+            if let Ok(v) = num_str.parse::<f32>() {
+                return CssValue::Length(v, crate::css::values::LengthUnit::Percent);
+            }
+        }
+        if let Ok(v) = p.parse::<f32>() {
+            return CssValue::Number(v);
+        }
+        CssValue::Keyword(p.to_string())
+    }
+
+    if parts.len() == 1 {
+        parse_single(parts[0])
+    } else {
+        let list = parts.into_iter().map(parse_single).collect();
+        CssValue::Multiple(list)
+    }
+}
+
+fn parse_background_position(s: &str) -> CssValue {
+    let s = s.trim();
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.is_empty() {
+        return CssValue::Keyword("0% 0%".to_string());
+    }
+
+    fn parse_single(p: &str) -> CssValue {
+        if p.eq_ignore_ascii_case("left")
+            || p.eq_ignore_ascii_case("right")
+            || p.eq_ignore_ascii_case("center")
+            || p.eq_ignore_ascii_case("top")
+            || p.eq_ignore_ascii_case("bottom")
+        {
+            return CssValue::Keyword(p.to_string());
+        }
+        if let Some(num_str) = p.strip_suffix("px") {
+            if let Ok(v) = num_str.parse::<f32>() {
+                return CssValue::Length(v, crate::css::values::LengthUnit::Px);
+            }
+        }
+        if let Some(num_str) = p.strip_suffix('%') {
+            if let Ok(v) = num_str.parse::<f32>() {
+                return CssValue::Length(v, crate::css::values::LengthUnit::Percent);
+            }
+        }
+        if let Ok(v) = p.parse::<f32>() {
+            return CssValue::Number(v);
+        }
+        CssValue::Keyword(p.to_string())
+    }
+
+    if parts.len() == 1 {
+        parse_single(parts[0])
+    } else {
+        let list = parts.into_iter().map(parse_single).collect();
+        CssValue::Multiple(list)
+    }
+}
+
 /// Helper to resolve the general border color of an element style,
 /// with fallbacks to shorthand `border`, computed text `color`, and finally black.
 /// spec: S-39
 fn get_border_color(style: &CategorizedComputedStyle) -> Color {
-    // 1. Try "border-color" property
-    if let Some(val) = style.get("border-color")
-        && let Some(c) = find_color(val)
-    {
+    // Try the individual border colors first (e.g. top color)
+    if style.reset_surround.border_top_color != "currentcolor" {
+        if let Some(c) = parse_css_color(&style.reset_surround.border_top_color) {
+            return c;
+        }
+    }
+    // Fall back to computed text "color"
+    if let Some(c) = parse_css_color(&style.inherited_text.color) {
         return c;
     }
-    // 2. Try the shorthand "border" property
-    if let Some(val) = style.get("border")
-        && let Some(c) = find_color(val)
-    {
-        return c;
-    }
-    // 3. Fall back to computed text "color" (as standard currentColor fallback)
-    if let Some(val) = style.get("color")
-        && let Some(c) = find_color(val)
-    {
-        return c;
-    }
-    // 4. Default to black
+    // Default to black
     Color::Rgba(0, 0, 0, 255)
 }
 
 /// Helper to resolve a specific edge border color, falling back to the resolved border color.
 /// spec: S-39
 fn get_edge_color(style: &CategorizedComputedStyle, edge_prop: &str, border_color: &Color) -> Color {
-    if let Some(val) = style.get(edge_prop)
-        && let Some(c) = find_color(val)
-    {
-        return c;
+    let color_str = match edge_prop {
+        "border-top-color" => &style.reset_surround.border_top_color,
+        "border-right-color" => &style.reset_surround.border_right_color,
+        "border-bottom-color" => &style.reset_surround.border_bottom_color,
+        "border-left-color" => &style.reset_surround.border_left_color,
+        _ => "currentcolor",
+    };
+    if color_str != "currentcolor" {
+        if let Some(c) = parse_css_color(color_str) {
+            return c;
+        }
     }
     border_color.clone()
 }
@@ -285,96 +426,34 @@ struct TextDecorations {
 fn get_text_decorations(style: &CategorizedComputedStyle) -> TextDecorations {
     let mut dec = TextDecorations::default();
 
-    // spec: the `text-decoration` shorthand set to `none` clears the line,
-    // overriding any keywords (e.g. from `text-decoration-line`).
-    if let Some(CssValue::Keyword(s)) = style.get("text-decoration")
-        && s.eq_ignore_ascii_case("none")
-    {
+    let line_str = &style.reset_effects.text_decoration_line;
+    if line_str.eq_ignore_ascii_case("none") {
         return dec;
     }
-
-    for prop in &["text-decoration", "text-decoration-line"] {
-        if let Some(val) = style.get(prop) {
-            match val {
-                CssValue::Keyword(s) => {
-                    if s.eq_ignore_ascii_case("underline") {
-                        dec.underline = true;
-                    } else if s.eq_ignore_ascii_case("overline") {
-                        dec.overline = true;
-                    } else if s.eq_ignore_ascii_case("line-through") {
-                        dec.line_through = true;
-                    }
-                }
-                CssValue::Multiple(values) => {
-                    for v in values {
-                        if let CssValue::Keyword(s) = v {
-                            if s.eq_ignore_ascii_case("underline") {
-                                dec.underline = true;
-                            } else if s.eq_ignore_ascii_case("overline") {
-                                dec.overline = true;
-                            } else if s.eq_ignore_ascii_case("line-through") {
-                                dec.line_through = true;
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
+    for part in line_str.split_whitespace() {
+        if part.eq_ignore_ascii_case("underline") {
+            dec.underline = true;
+        } else if part.eq_ignore_ascii_case("overline") {
+            dec.overline = true;
+        } else if part.eq_ignore_ascii_case("line-through") {
+            dec.line_through = true;
         }
     }
 
-    // Parse text-decoration-color property
-    // TODO(spec): text-decoration-color v1 — single computed color only; `currentColor` keyword falls back to
-    // the text color (i.e. treat unset/`currentColor` as None). text-decoration shorthand color parsing and
-    // per-line distinct colors are out of scope.
-    if let Some(val) = style.get("text-decoration-color") {
-        dec.color = find_color(val);
+    let color_str = &style.reset_effects.text_decoration_color;
+    if color_str != "currentcolor" {
+        dec.color = parse_css_color(color_str);
     }
 
-    // Parse text-decoration-style property
-    if let Some(CssValue::Keyword(s)) = style.get("text-decoration-style") {
-        if s.eq_ignore_ascii_case("solid") {
-            dec.style = Some(TextDecorationStyle::Solid);
-        } else if s.eq_ignore_ascii_case("double") {
-            dec.style = Some(TextDecorationStyle::Double);
-        } else if s.eq_ignore_ascii_case("dotted") {
-            dec.style = Some(TextDecorationStyle::Dotted);
-        } else if s.eq_ignore_ascii_case("dashed") {
-            dec.style = Some(TextDecorationStyle::Dashed);
-        }
-    }
-
-    // Also accept the style value when present in the `text-decoration` shorthand
-    if let Some(val) = style.get("text-decoration") {
-        match val {
-            CssValue::Keyword(s) => {
-                if s.eq_ignore_ascii_case("solid") {
-                    dec.style = Some(TextDecorationStyle::Solid);
-                } else if s.eq_ignore_ascii_case("double") {
-                    dec.style = Some(TextDecorationStyle::Double);
-                } else if s.eq_ignore_ascii_case("dotted") {
-                    dec.style = Some(TextDecorationStyle::Dotted);
-                } else if s.eq_ignore_ascii_case("dashed") {
-                    dec.style = Some(TextDecorationStyle::Dashed);
-                }
-            }
-            CssValue::Multiple(values) => {
-                for v in values {
-                    if let CssValue::Keyword(s) = v {
-                        if s.eq_ignore_ascii_case("solid") {
-                            dec.style = Some(TextDecorationStyle::Solid);
-                        } else if s.eq_ignore_ascii_case("double") {
-                            dec.style = Some(TextDecorationStyle::Double);
-                        } else if s.eq_ignore_ascii_case("dotted") {
-                            dec.style = Some(TextDecorationStyle::Dotted);
-                        } else if s.eq_ignore_ascii_case("dashed") {
-                            dec.style = Some(TextDecorationStyle::Dashed);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+    let style_str = &style.reset_effects.text_decoration_style;
+    if style_str.eq_ignore_ascii_case("solid") {
+        dec.style = Some(TextDecorationStyle::Solid);
+    } else if style_str.eq_ignore_ascii_case("double") {
+        dec.style = Some(TextDecorationStyle::Double);
+    } else if style_str.eq_ignore_ascii_case("dotted") {
+        dec.style = Some(TextDecorationStyle::Dotted);
+    } else if style_str.eq_ignore_ascii_case("dashed") {
+        dec.style = Some(TextDecorationStyle::Dashed);
     }
 
     dec
@@ -413,11 +492,10 @@ fn resolve_text_color(
     while let Some(curr_id) = current
         && depth < 1000
     {
-        if let Some(style) = styles.get(&curr_id)
-            && let Some(val) = style.get("color")
-            && let Some(c) = find_color(val)
-        {
-            return c;
+        if let Some(style) = styles.get(&curr_id) {
+            if let Some(c) = parse_css_color(&style.inherited_text.color) {
+                return c;
+            }
         }
         if let Some(NodeData::Element { name, .. }) = dom.data(curr_id)
             && name.eq_ignore_ascii_case("a")
@@ -442,7 +520,7 @@ fn resolve_text_shadow(
         && depth < 1000
     {
         if let Some(style) = styles.get(&curr_id)
-            && let Some(val) = style.get("text-shadow")
+            && let Some(ref val) = style.inherited_text.text_shadow
         {
             return Some(val.clone());
         }
@@ -473,9 +551,7 @@ fn resolve_text_decorations(
         && depth < 1000
     {
         if let Some(style) = styles.get(&curr_id) {
-            if let Some(CssValue::Keyword(s)) = style.get("text-decoration")
-                && s.eq_ignore_ascii_case("none")
-            {
+            if style.reset_effects.text_decoration_line.eq_ignore_ascii_case("none") {
                 underline_blocked = true;
                 overline_blocked = true;
                 line_through_blocked = true;
@@ -514,27 +590,17 @@ fn resolve_text_decorations(
 /// spec: <https://www.w3.org/TR/css-color-3/#transparency>
 /// TODO(spec): True group/stacking-context opacity (compositing the element subtree as a single group, so overlapping descendants do not double-blend) is NOT implemented — this uses a multiplicative per-element alpha approximation.
 fn get_opacity(style: &CategorizedComputedStyle) -> f32 {
-    match style.get("opacity") {
-        Some(CssValue::Number(v)) => v.clamp(0.0, 1.0),
-        Some(CssValue::Length(p, crate::css::values::LengthUnit::Percent)) => {
-            (p / 100.0).clamp(0.0, 1.0)
-        }
-        _ => 1.0,
-    }
+    style.reset_effects.opacity
 }
 
 /// Resolve object-fit from style.
 fn get_object_fit(style: &CategorizedComputedStyle) -> ObjectFit {
-    if let Some(CssValue::Keyword(kw)) = style.get("object-fit") {
-        match kw.to_ascii_lowercase().as_str() {
-            "contain" => ObjectFit::Contain,
-            "cover" => ObjectFit::Cover,
-            "none" => ObjectFit::None,
-            "scale-down" => ObjectFit::ScaleDown,
-            _ => ObjectFit::Fill,
-        }
-    } else {
-        ObjectFit::Fill
+    match style.reset_box.object_fit.to_ascii_lowercase().as_str() {
+        "contain" => ObjectFit::Contain,
+        "cover" => ObjectFit::Cover,
+        "none" => ObjectFit::None,
+        "scale-down" => ObjectFit::ScaleDown,
+        _ => ObjectFit::Fill,
     }
 }
 
@@ -830,10 +896,8 @@ pub fn build_display_list_with_caret(
             effective_opacity = inherited_opacity * own_opacity;
             // Treat `collapse` the same as `hidden` for this task.
             // TODO(spec): S-12 visibility: collapse differs from hidden for table-row/column content.
-            let node_hidden = matches!(
-                style.get("visibility"),
-                Some(CssValue::Keyword(k)) if k == "hidden" || k == "collapse"
-            );
+            let node_hidden = style.inherited_effects.visibility == "hidden"
+                || style.inherited_effects.visibility == "collapse";
 
             // Check if this node is a button or input[type=submit] (S-79)
             let mut is_btn_or_submit = false;
@@ -907,10 +971,8 @@ pub fn build_display_list_with_caret(
                 let text_x = x + ((w - text_w) / 2.0).max(0.0);
                 let text_y = y + ((h - text_h) / 2.0).max(0.0);
 
-                let text_color = match style.get("color") {
-                    Some(CssValue::Color(color)) => color.clone(),
-                    _ => Color::Rgba(0, 0, 0, 255), // default black label
-                };
+                let text_color = parse_css_color(&style.inherited_text.color)
+                    .unwrap_or(Color::Rgba(0, 0, 0, 255));
 
                 let corrected_rect = Rect::new(text_x, text_y, text_w, text_h);
                 btn_label_item = Some(DisplayItem::Text {
@@ -937,10 +999,8 @@ pub fn build_display_list_with_caret(
 
                 if let Some(val) = value.as_ref().filter(|v| !v.is_empty()) {
                     to_draw = Some(val.clone());
-                    text_color = match style.get("color") {
-                        Some(CssValue::Color(color)) => color.clone(),
-                        _ => Color::Rgba(0, 0, 0, 255),
-                    };
+                    text_color = parse_css_color(&style.inherited_text.color)
+                        .unwrap_or(Color::Rgba(0, 0, 0, 255));
                 } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
                     to_draw = Some(ph.clone());
                     text_color = Color::Rgba(117, 117, 117, 255); // CSS #757575
@@ -1017,7 +1077,7 @@ pub fn build_display_list_with_caret(
                 }
 
                 // Paint box-shadow if present
-                if let Some(box_shadow_val) = style.get("box-shadow") {
+                if let Some(ref box_shadow_val) = style.reset_effects.box_shadow {
                     // Flatten values to check for none, inset, or comma
                     let mut leaves = Vec::new();
                     flatten_value(box_shadow_val, &mut leaves);
@@ -1076,9 +1136,7 @@ pub fn build_display_list_with_caret(
                                     // Determine shadow color: default to text color, falling back to black
                                     let shadow_color = if let Some(c) = color_value {
                                         c
-                                    } else if let Some(val) = style.get("color")
-                                        && let Some(c) = find_color(val)
-                                    {
+                                    } else if let Some(c) = parse_css_color(&style.inherited_text.color) {
                                         c
                                     } else {
                                         Color::Rgba(0, 0, 0, 255)
@@ -1132,27 +1190,26 @@ pub fn build_display_list_with_caret(
                 }
 
                 // spec: if node has background-color -> SolidRect
-                if let Some(CssValue::Color(color)) = style.get("background-color") {
+                if let Some(color) = parse_css_color(&style.reset_background.background_color) {
                     // B-4: do not paint background for zero/negative-area boxes
                     if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
                         // TODO(spec): border/images/gradients/rasterization
                         items.push(DisplayItem::SolidRect {
                             rect: layout_box.rect,
-                            color: scale_color_alpha(color, effective_opacity),
+                            color: scale_color_alpha(&color, effective_opacity),
                         });
                     }
                 }
 
                 // Paint background-image (t0382)
                 let mut bg_img_src = None;
-                if let Some(CssValue::Keyword(kw)) = style.get("background-image") {
-                    if kw.starts_with("url(") && kw.ends_with(')') {
-                        let inner = &kw[4..kw.len() - 1];
-                        bg_img_src =
-                            Some(inner.trim_matches(|c| c == '"' || c == '\'').to_string());
-                    } else if !kw.is_empty() && kw != "none" {
-                        bg_img_src = Some(kw.clone());
-                    }
+                let kw = &style.reset_background.background_image;
+                if kw.starts_with("url(") && kw.ends_with(')') {
+                    let inner = &kw[4..kw.len() - 1];
+                    bg_img_src =
+                        Some(inner.trim_matches(|c| c == '"' || c == '\'').to_string());
+                } else if !kw.is_empty() && kw != "none" {
+                    bg_img_src = Some(kw.clone());
                 }
 
                 if let Some(src) = bg_img_src
@@ -1161,16 +1218,7 @@ pub fn build_display_list_with_caret(
                     let box_rect = layout_box.rect;
                     if box_rect.size.width > 0.0 && box_rect.size.height > 0.0 {
                         // Extract repeat
-                        let repeat_val = style
-                            .get("background-repeat")
-                            .and_then(|v| {
-                                if let CssValue::Keyword(kw) = v {
-                                    Some(kw.to_ascii_lowercase())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_else(|| "repeat".to_string());
+                        let repeat_val = style.reset_background.background_repeat.to_ascii_lowercase();
 
                         let (repeat_x, repeat_y) = match repeat_val.as_str() {
                             "no-repeat" => (false, false),
@@ -1183,30 +1231,25 @@ pub fn build_display_list_with_caret(
                         let mut img_w = decoded.width as f32;
                         let mut img_h = decoded.height as f32;
 
-                        if let Some(size_val) = style.get("background-size") {
-                            let (resolved_w, resolved_h) = resolve_bg_size(
-                                (box_rect.size.width, box_rect.size.height),
-                                (img_w, img_h),
-                                size_val,
-                            );
-                            img_w = resolved_w;
-                            img_h = resolved_h;
-                        }
+                        let size_val = parse_background_size(&style.reset_background.background_size);
+                        let (resolved_w, resolved_h) = resolve_bg_size(
+                            (box_rect.size.width, box_rect.size.height),
+                            (img_w, img_h),
+                            &size_val,
+                        );
+                        img_w = resolved_w;
+                        img_h = resolved_h;
 
                         if img_w > 0.0 && img_h > 0.0 {
                             // Extract position
-                            let pos_val = style.get("background-position");
-                            let (x_offset, y_offset) = if let Some(p_val) = pos_val {
-                                get_background_position_offsets(
-                                    p_val,
-                                    box_rect.size.width,
-                                    box_rect.size.height,
-                                    img_w,
-                                    img_h,
-                                )
-                            } else {
-                                (0.0, 0.0)
-                            };
+                            let p_val = parse_background_position(&style.reset_background.background_position);
+                            let (x_offset, y_offset) = get_background_position_offsets(
+                                &p_val,
+                                box_rect.size.width,
+                                box_rect.size.height,
+                                img_w,
+                                img_h,
+                            );
 
                             // Calculate repeat indices
                             let min_i = if repeat_x {
@@ -1351,10 +1394,10 @@ pub fn build_display_list_with_caret(
                     let mut left_color = get_edge_color(style, "border-left-color", &border_color);
 
                     if is_btn_or_submit
-                        && style.get("border-top-color").is_none()
-                        && style.get("border-right-color").is_none()
-                        && style.get("border-bottom-color").is_none()
-                        && style.get("border-left-color").is_none()
+                        && style.reset_surround.border_top_color == "currentcolor"
+                        && style.reset_surround.border_right_color == "currentcolor"
+                        && style.reset_surround.border_bottom_color == "currentcolor"
+                        && style.reset_surround.border_left_color == "currentcolor"
                         && border_color == Color::Rgba(192, 192, 192, 255)
                     {
                         top_color = Color::Rgba(240, 240, 240, 255); // light highlight
@@ -1395,8 +1438,8 @@ pub fn build_display_list_with_caret(
                 }
 
                 // Paint outline if style is present and not none
-                let outline_style = style.get("outline-style");
-                let has_outline = matches!(outline_style, Some(CssValue::Keyword(s)) if !s.eq_ignore_ascii_case("none"));
+                let outline_style = &style.reset_effects.outline_style;
+                let has_outline = !outline_style.eq_ignore_ascii_case("none");
 
                 if has_outline {
                     let ow = get_outline_width(style);
@@ -1414,17 +1457,16 @@ pub fn build_display_list_with_caret(
                         let mut outline_color = Color::Rgba(0, 0, 0, 255);
                         let mut resolved = false;
 
-                        if let Some(val) = style.get("outline-color")
-                            && let Some(c) = find_color(val)
-                        {
-                            outline_color = c;
-                            resolved = true;
+                        let color_str = &style.reset_effects.outline_color;
+                        if color_str != "invert" {
+                            if let Some(c) = parse_css_color(color_str) {
+                                outline_color = c;
+                                resolved = true;
+                            }
                         }
 
                         if !resolved {
-                            if let Some(val) = style.get("color")
-                                && let Some(c) = find_color(val)
-                            {
+                            if let Some(c) = parse_css_color(&style.inherited_text.color) {
                                 outline_color = c;
                             } else {
                                 outline_color = Color::Rgba(0, 0, 0, 255);
@@ -1433,10 +1475,7 @@ pub fn build_display_list_with_caret(
 
                         let scaled_color = scale_color_alpha(&outline_color, effective_opacity);
 
-                        let style_keyword = match outline_style {
-                            Some(CssValue::Keyword(s)) => s.to_ascii_lowercase(),
-                            _ => "solid".to_string(),
-                        };
+                        let style_keyword = outline_style.to_ascii_lowercase();
 
                         match style_keyword.as_str() {
                             "double" => {
@@ -4094,14 +4133,9 @@ mod tests {
 
         // (a) a <button> computed style has display:inline-block and a non-empty border-width and a background-color from UA CSS
         let btn_style = styles.get(&btn).expect("button should have computed style");
-        assert_eq!(
-            btn_style.get("display"),
-            Some(&crate::css::values::CssValue::Keyword(
-                "inline-block".to_string()
-            ))
-        );
-        assert!(btn_style.get("background-color").is_some());
-        assert!(btn_style.get("border-top-width").is_some());
+        assert_eq!(btn_style.reset_box.display, "inline-block");
+        assert_ne!(btn_style.reset_background.background_color, "transparent");
+        assert_ne!(btn_style.reset_surround.border_top_width, -1);
 
         // (b) the paint display list for a submit input contains exactly one background SolidRect and four border strips, plus the centered label Text item — no duplicate fills.
         let layout = layout_document(&dom, &styles, 800.0);

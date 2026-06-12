@@ -328,6 +328,7 @@ pub struct ResetEffects {
     pub outline_width: i32,
     pub outline_style: String,
     pub outline_color: String,
+    pub outline_offset: i32,
     pub transition_duration: u32,
     pub transition_property: String,
     pub text_decoration_line: String,
@@ -344,6 +345,7 @@ impl Default for ResetEffects {
             outline_width: -1,
             outline_style: "none".to_string(),
             outline_color: "invert".to_string(),
+            outline_offset: 0,
             transition_duration: 0,
             transition_property: "all".to_string(),
             text_decoration_line: "none".to_string(),
@@ -691,6 +693,7 @@ impl CategorizedComputedStyle {
             "outline-width" => Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(value),
             "outline-style" => Arc::make_mut(&mut self.reset_effects).outline_style = css_value_to_string(value),
             "outline-color" => Arc::make_mut(&mut self.reset_effects).outline_color = css_value_to_string(value),
+            "outline-offset" => Arc::make_mut(&mut self.reset_effects).outline_offset = value_to_px(value),
             "transition-duration" => Arc::make_mut(&mut self.reset_effects).transition_duration = value_to_u32(value),
             "transition-property" => Arc::make_mut(&mut self.reset_effects).transition_property = css_value_to_string(value),
             "text-decoration-line" => Arc::make_mut(&mut self.reset_effects).text_decoration_line = css_value_to_string(value),
@@ -711,6 +714,89 @@ impl CategorizedComputedStyle {
             "border-bottom-color" => Arc::make_mut(&mut self.reset_surround).border_bottom_color = "currentcolor".to_string(),
             "border-left-color" => Arc::make_mut(&mut self.reset_surround).border_left_color = "currentcolor".to_string(),
             _ => {}
+        }
+    }
+
+    /// Get property as CssValue for compatibility and style tests.
+    pub fn get(&self, name: &str) -> Option<crate::css::values::CssValue> {
+        let s = self.get_property_as_string(name)?;
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+
+        fn parse_single(p: &str) -> crate::css::values::CssValue {
+            if let Some(num_str) = p.strip_suffix("px") {
+                if let Ok(v) = num_str.parse::<f32>() {
+                    return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Px);
+                }
+            }
+            if let Some(num_str) = p.strip_suffix("em") {
+                if let Ok(v) = num_str.parse::<f32>() {
+                    return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Em);
+                }
+            }
+            if let Some(num_str) = p.strip_suffix('%') {
+                if let Ok(v) = num_str.parse::<f32>() {
+                    return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Percent);
+                }
+            }
+            if let Ok(v) = p.parse::<f32>() {
+                return crate::css::values::CssValue::Number(v);
+            }
+            if p.starts_with("rgb(") && p.ends_with(')') {
+                let inside = &p[4..p.len() - 1];
+                let parts: Vec<&str> = inside.split(',').map(|x| x.trim()).collect();
+                if parts.len() == 3 {
+                    if let (Ok(r), Ok(g), Ok(b)) = (parts[0].parse::<u8>(), parts[1].parse::<u8>(), parts[2].parse::<u8>()) {
+                        return crate::css::values::CssValue::Color(crate::css::values::Color::Rgba(r, g, b, 255));
+                    }
+                }
+            }
+            if p.starts_with("rgba(") && p.ends_with(')') {
+                let inside = &p[5..p.len() - 1];
+                let parts: Vec<&str> = inside.split(',').map(|x| x.trim()).collect();
+                if parts.len() == 4 {
+                    if let (Ok(r), Ok(g), Ok(b), Ok(a_f)) = (parts[0].parse::<u8>(), parts[1].parse::<u8>(), parts[2].parse::<u8>(), parts[3].parse::<f32>()) {
+                        return crate::css::values::CssValue::Color(crate::css::values::Color::Rgba(r, g, b, (a_f * 255.0) as u8));
+                    }
+                }
+            }
+            crate::css::values::CssValue::Keyword(p.to_string())
+        }
+
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut in_parens = 0;
+        for c in s.chars() {
+            if c == '(' {
+                in_parens += 1;
+                current.push(c);
+            } else if c == ')' {
+                if in_parens > 0 {
+                    in_parens -= 1;
+                }
+                current.push(c);
+            } else if c.is_whitespace() && in_parens == 0 {
+                if !current.is_empty() {
+                    parts.push(current.clone());
+                    current.clear();
+                }
+            } else {
+                current.push(c);
+            }
+        }
+        if !current.is_empty() {
+            parts.push(current);
+        }
+
+        if parts.is_empty() {
+            None
+        } else if parts.len() == 1 {
+            Some(parse_single(&parts[0]))
+        } else {
+            let list = parts.into_iter().map(|x| parse_single(&x)).collect();
+            Some(crate::css::values::CssValue::Multiple(list))
         }
     }
 
@@ -850,6 +936,7 @@ impl CategorizedComputedStyle {
             "outline-width" => Some(if self.reset_effects.outline_width == -1 { "medium".to_string() } else { format!("{}px", self.reset_effects.outline_width) }),
             "outline-style" => Some(self.reset_effects.outline_style.clone()),
             "outline-color" => Some(self.reset_effects.outline_color.clone()),
+            "outline-offset" => Some(format!("{}px", self.reset_effects.outline_offset)),
             "transition-duration" => Some(format!("{}s", self.reset_effects.transition_duration)),
             "transition-property" => Some(self.reset_effects.transition_property.clone()),
             "text-decoration-line" => Some(self.reset_effects.text_decoration_line.clone()),
