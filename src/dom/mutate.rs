@@ -128,6 +128,55 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `href` content attribute of a valid element node,
+    /// but only if `href` is a defined attribute for its element tag (a, area, link, base).
+    /// Returns `None` if the node is not one of those element tags, has no `href` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_href(&self, node: NodeId) -> Option<&str> {
+        // TODO(spec): Resolving href against the document base URL is out of scope and belongs to a higher layer.
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined = name.eq_ignore_ascii_case("a")
+                || name.eq_ignore_ascii_case("area")
+                || name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("base");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("href"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
+    /// Returns the value of the `src` content attribute of a valid element node,
+    /// but only if `src` is a defined attribute for its element tag (img, script, iframe, source, audio, video, embed, track, input).
+    /// Returns `None` if the node is not one of those element tags, has no `src` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_src(&self, node: NodeId) -> Option<&str> {
+        // TODO(spec): Resolving src against the document base URL is out of scope and belongs to a higher layer.
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined = name.eq_ignore_ascii_case("img")
+                || name.eq_ignore_ascii_case("script")
+                || name.eq_ignore_ascii_case("iframe")
+                || name.eq_ignore_ascii_case("source")
+                || name.eq_ignore_ascii_case("audio")
+                || name.eq_ignore_ascii_case("video")
+                || name.eq_ignore_ascii_case("embed")
+                || name.eq_ignore_ascii_case("track")
+                || name.eq_ignore_ascii_case("input");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("src"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -342,5 +391,127 @@ mod tests {
         // Stale / foreign NodeId on dom1
         assert_eq!(dom1.get_input_value(foreign_id), None);
         assert_eq!(dom1.is_input_value_dirty(foreign_id), None);
+    }
+
+    #[test]
+    fn test_href_and_src_accessors() {
+        let mut dom = Dom::new();
+
+        // 1. <a href="/foo"> => get_href returns Some("/foo"); get_src returns None.
+        let a_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("href".to_string(), "/foo".to_string())],
+        });
+        assert_eq!(dom.get_href(a_id), Some("/foo"));
+        assert_eq!(dom.get_src(a_id), None);
+
+        // 2. <img src="a.png"> => get_src returns Some("a.png"); get_href returns None.
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![("src".to_string(), "a.png".to_string())],
+        });
+        assert_eq!(dom.get_src(img_id), Some("a.png"));
+        assert_eq!(dom.get_href(img_id), None);
+
+        // 3. <link href="style.css"> and <base href="https://x/"> => get_href returns the value.
+        let link_id = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![("href".to_string(), "style.css".to_string())],
+        });
+        assert_eq!(dom.get_href(link_id), Some("style.css"));
+
+        let base_id = dom.create_node(NodeData::Element {
+            name: "base".to_string(),
+            attrs: vec![("href".to_string(), "https://x/".to_string())],
+        });
+        assert_eq!(dom.get_href(base_id), Some("https://x/"));
+
+        // 4. <div href="x"> => get_href returns None (href not defined on div).
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("href".to_string(), "x".to_string())],
+        });
+        assert_eq!(dom.get_href(div_id), None);
+
+        // 5. An element of the right tag but missing the attribute => None.
+        let a_no_href = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_href(a_no_href), None);
+
+        // 6. A non-element node (e.g. a Text node) => both return None.
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_href(text_id), None);
+        assert_eq!(dom.get_src(text_id), None);
+
+        // 7. Case-insensitive tag name (e.g. A / IMG) is honored.
+        let a_caps = dom.create_node(NodeData::Element {
+            name: "A".to_string(),
+            attrs: vec![("href".to_string(), "/caps".to_string())],
+        });
+        assert_eq!(dom.get_href(a_caps), Some("/caps"));
+
+        let img_caps = dom.create_node(NodeData::Element {
+            name: "IMG".to_string(),
+            attrs: vec![("src".to_string(), "caps.png".to_string())],
+        });
+        assert_eq!(dom.get_src(img_caps), Some("caps.png"));
+
+        // Additional: Case-insensitive attributes.
+        let a_attr_caps = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("HREF".to_string(), "/attr-caps".to_string())],
+        });
+        assert_eq!(dom.get_href(a_attr_caps), Some("/attr-caps"));
+
+        // Let's check other tags for src: script, iframe, source, audio, video, embed, track, input
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("src".to_string(), "main.js".to_string())],
+        });
+        assert_eq!(dom.get_src(script_id), Some("main.js"));
+
+        let iframe_id = dom.create_node(NodeData::Element {
+            name: "iframe".to_string(),
+            attrs: vec![("src".to_string(), "frame.html".to_string())],
+        });
+        assert_eq!(dom.get_src(iframe_id), Some("frame.html"));
+
+        let source_id = dom.create_node(NodeData::Element {
+            name: "source".to_string(),
+            attrs: vec![("src".to_string(), "media.mp3".to_string())],
+        });
+        assert_eq!(dom.get_src(source_id), Some("media.mp3"));
+
+        let audio_id = dom.create_node(NodeData::Element {
+            name: "audio".to_string(),
+            attrs: vec![("src".to_string(), "song.mp3".to_string())],
+        });
+        assert_eq!(dom.get_src(audio_id), Some("song.mp3"));
+
+        let video_id = dom.create_node(NodeData::Element {
+            name: "video".to_string(),
+            attrs: vec![("src".to_string(), "movie.mp4".to_string())],
+        });
+        assert_eq!(dom.get_src(video_id), Some("movie.mp4"));
+
+        let embed_id = dom.create_node(NodeData::Element {
+            name: "embed".to_string(),
+            attrs: vec![("src".to_string(), "plugin".to_string())],
+        });
+        assert_eq!(dom.get_src(embed_id), Some("plugin"));
+
+        let track_id = dom.create_node(NodeData::Element {
+            name: "track".to_string(),
+            attrs: vec![("src".to_string(), "subs.vtt".to_string())],
+        });
+        assert_eq!(dom.get_src(track_id), Some("subs.vtt"));
+
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("src".to_string(), "button.png".to_string())],
+        });
+        assert_eq!(dom.get_src(input_id), Some("button.png"));
     }
 }
