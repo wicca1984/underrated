@@ -1,5 +1,6 @@
 pub mod invalidate;
 pub mod stacking;
+pub mod table;
 
 use crate::css::values::{Color, CssValue};
 use crate::dom::{Dom, NodeData};
@@ -774,6 +775,15 @@ pub fn build_display_list(
             }
 
             if !node_hidden {
+                if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
+                    items.extend(table::table_border_items(
+                        dom,
+                        node_id,
+                        name,
+                        layout_box.rect,
+                    ));
+                }
+
                 // Paint box-shadow if present
                 if let Some(box_shadow_val) = style.get("box-shadow") {
                     // Flatten values to check for none, inset, or comma
