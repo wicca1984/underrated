@@ -4,7 +4,7 @@ mod inline;
 mod position;
 mod table;
 
-pub(crate) use float::get_float_value;
+pub(crate) use float::{find_clearance_y, get_clear_value, get_float_value};
 pub(crate) use position::is_absolute_or_fixed;
 
 use crate::css::values::{CssValue, DisplayValue, LengthUnit};
@@ -256,7 +256,7 @@ pub(crate) fn layout_node(
     let mut children = Vec::new();
     // TODO(spec): Parent-child margin collapse (collapse-through) is out of scope.
     // Also, collapse suppression by intervening padding/border, collapse-through empty blocks,
-    // clear/clearance, floats, and BFC establishment via overflow are out of scope.
+    // floats, and BFC establishment via overflow are out of scope.
     let mut child_cursor_y = border_box_y + border_top + padding_top;
 
     let layoutable_children = get_layoutable_children(dom, styles, node);
@@ -303,7 +303,14 @@ pub(crate) fn layout_node(
             let float_val = child_style.and_then(get_float_value);
 
             if let Some(fv) = float_val {
-                let float_offset_y = child_cursor_y;
+                let mut float_offset_y = child_cursor_y;
+                if let Some(clearance_y) = child_style
+                    .and_then(get_clear_value)
+                    .and_then(|cv| find_clearance_y(&children, styles, cv))
+                    .filter(|&cy| float_offset_y < cy)
+                {
+                    float_offset_y = clearance_y;
+                }
                 let containing_content_left = border_box_x + border_left + padding_left;
 
                 if let Some(mut child_box) = layout_node(
@@ -331,7 +338,7 @@ pub(crate) fn layout_node(
                     children.push(child_box);
                 }
             } else {
-                let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                let mut offset_y = if let (Some(prev_mb), Some(last_max_y)) =
                     (prev_margin_bottom, last_child_box_max_y)
                 {
                     let margin_top = child_style
@@ -342,6 +349,14 @@ pub(crate) fn layout_node(
                 } else {
                     child_cursor_y
                 };
+
+                if let Some(clearance_y) = child_style
+                    .and_then(get_clear_value)
+                    .and_then(|cv| find_clearance_y(&children, styles, cv))
+                    .filter(|&cy| offset_y < cy)
+                {
+                    offset_y = clearance_y;
+                }
 
                 if let Some(child_box) = layout_node(
                     dom,
@@ -728,7 +743,14 @@ fn layout_mixed_children(
             let float_val = child_style.and_then(get_float_value);
 
             if let Some(fv) = float_val {
-                let float_offset_y = child_cursor_y;
+                let mut float_offset_y = child_cursor_y;
+                if let Some(clearance_y) = child_style
+                    .and_then(get_clear_value)
+                    .and_then(|cv| find_clearance_y(&children, styles, cv))
+                    .filter(|&cy| float_offset_y < cy)
+                {
+                    float_offset_y = clearance_y;
+                }
                 let containing_content_left = content_x;
 
                 if let Some(mut child_box) = layout_node(
@@ -756,7 +778,7 @@ fn layout_mixed_children(
                     children.push(child_box);
                 }
             } else {
-                let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+                let mut offset_y = if let (Some(prev_mb), Some(last_max_y)) =
                     (prev_margin_bottom, last_child_box_max_y)
                 {
                     let margin_top = child_style
@@ -767,6 +789,14 @@ fn layout_mixed_children(
                 } else {
                     child_cursor_y
                 };
+
+                if let Some(clearance_y) = child_style
+                    .and_then(get_clear_value)
+                    .and_then(|cv| find_clearance_y(&children, styles, cv))
+                    .filter(|&cy| offset_y < cy)
+                {
+                    offset_y = clearance_y;
+                }
 
                 if let Some(child_box) = layout_node(
                     dom,
@@ -984,7 +1014,14 @@ fn relayout_block_children(
         let float_val = child_style.and_then(get_float_value);
 
         if let Some(fv) = float_val {
-            let float_offset_y = child_cursor_y;
+            let mut float_offset_y = child_cursor_y;
+            if let Some(clearance_y) = child_style
+                .and_then(get_clear_value)
+                .and_then(|cv| find_clearance_y(children, styles, cv))
+                .filter(|&cy| float_offset_y < cy)
+            {
+                float_offset_y = clearance_y;
+            }
             let containing_content_left = border_box_x + border_left + padding_left;
 
             if let Some(mut child_box) = layout_node(
@@ -1012,7 +1049,7 @@ fn relayout_block_children(
                 children.push(child_box);
             }
         } else {
-            let offset_y = if let (Some(prev_mb), Some(last_max_y)) =
+            let mut offset_y = if let (Some(prev_mb), Some(last_max_y)) =
                 (prev_margin_bottom, last_child_box_max_y)
             {
                 let margin_top = child_style
@@ -1023,6 +1060,14 @@ fn relayout_block_children(
             } else {
                 child_cursor_y
             };
+
+            if let Some(clearance_y) = child_style
+                .and_then(get_clear_value)
+                .and_then(|cv| find_clearance_y(children, styles, cv))
+                .filter(|&cy| offset_y < cy)
+            {
+                offset_y = clearance_y;
+            }
 
             if let Some(child_box) = layout_node(
                 dom,
