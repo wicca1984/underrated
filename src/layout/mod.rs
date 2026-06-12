@@ -210,8 +210,15 @@ pub(crate) fn layout_node(
         .any(|&c| !is_inline_level(styles, dom, c));
 
     // Layout children
+    let inline_start_y = child_cursor_y;
+    let inline_prev_len = children.len();
+    let mut did_inline_pass = false;
+    let mut inline_pass_width = None;
+
     if has_inline && !has_block {
         // If ALL children are inline, keep current behavior (single inline pass)
+        did_inline_pass = true;
+        inline_pass_width = Some(content_width);
         let (line_boxes, total_height) = layout_inline(
             dom,
             styles,
@@ -273,6 +280,7 @@ pub(crate) fn layout_node(
     } else {
         // MIXED: wrap each maximal run of consecutive inline-level children in an anonymous block box
         // spec: S-anonymous-block-boxes
+        // TODO(spec): same shrink-to-fit re-centering needed for mixed inline runs
         let mut prev_margin_bottom: Option<f32> = None;
         let mut last_child_box_max_y: Option<f32> = None;
 
@@ -378,6 +386,25 @@ pub(crate) fn layout_node(
         auto_width,
     ) {
         content_width = w;
+    }
+
+    if did_inline_pass && Some(content_width) != inline_pass_width {
+        children.truncate(inline_prev_len);
+        child_cursor_y = inline_start_y;
+        let (line_boxes, total_height) = layout_inline(
+            dom,
+            styles,
+            node,
+            content_width,
+            border_box_x + border_left + padding_left,
+            child_cursor_y,
+            depth,
+            text_align,
+            text_indent,
+            word_spacing,
+        );
+        children.extend(line_boxes);
+        child_cursor_y += total_height;
     }
 
     // Calculate height
@@ -3216,6 +3243,75 @@ mod tests {
         // "ab" is measured by font as 16px wide (8px per character).
         // Plus padding-left (5px) and padding-right (5px), total border box width should be 26.0px.
         assert!(approx_eq(span_box.rect.size.width, 26.0));
+    }
+
+    #[test]
+    fn test_shrink_to_fit_inline_block_centers_child_at_left_edge() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // This is the container under text-align: center
+        let outer_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "outer".into())],
+        });
+        dom.append_child(body, outer_div);
+
+        // This is the shrink-to-fit inline-block element
+        let stf_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "stf".into())],
+        });
+        dom.append_child(outer_div, stf_div);
+
+        // This is the child inside the shrink-to-fit container
+        let child_span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(stf_div, child_span);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 1000px; }
+            .outer { display: block; text-align: center; }
+            .stf { display: inline-block; text-align: center; }
+            .child { display: inline-block; width: 200px; height: 50px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 1000.0);
+        let body_box = &layout_tree.children[0];
+        let outer_box = &body_box.children[0];
+        // stf_div is inline-block, so it's placed inside a line box under outer_box
+        let outer_line_box = &outer_box.children[0];
+        let stf_box = &outer_line_box.children[0];
+
+        // The stf_box has shrink-to-fit width, which should be exactly 200px because its child has 200px width.
+        assert!(approx_eq(stf_box.rect.size.width, 200.0));
+
+        // The children inside stf_box are inline (the .child inline-block span).
+        // Since stf_box is inline-block and has all inline children, its children are placed in a line box inside stf_box.
+        let stf_line_box = &stf_box.children[0];
+        let child_box = &stf_line_box.children[0];
+
+        // The child's origin x should be exactly equal to the left of stf_box's content area.
+        // Let's assert that the difference is very small (less than 1.0)
+        let container_left = stf_box.rect.origin.x; // no padding/border on .stf
+        let child_left = child_box.rect.origin.x;
+
+        assert!(
+            (child_left - container_left).abs() < 1.0,
+            "child_left: {}, container_left: {}",
+            child_left,
+            container_left
+        );
     }
 
     #[test]
