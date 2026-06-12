@@ -34,6 +34,31 @@ pub fn parse_loading_attr(value: &str) -> LoadingMode {
     }
 }
 
+/// The outcome of planning/fetching an image resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageLoadOutcome {
+    /// The fetch was deferred (loading="lazy"); no I/O was performed.
+    Deferred,
+    /// The image was loaded eagerly; carries the fetched bytes.
+    Loaded(Vec<u8>),
+    /// An eager load was attempted but failed (e.g. denied/unreadable/unsupported).
+    Failed,
+}
+
+/// Plans an image load honoring the HTML `loading` hint. For `LoadingMode::Lazy` the fetch is
+/// DEFERRED (returns `ImageLoadOutcome::Deferred` and performs NO I/O). For `LoadingMode::Eager`
+/// it delegates to `load_image_safely`, mapping `Some(bytes)` -> `Loaded(bytes)` and `None` -> `Failed`.
+pub fn plan_image_load(src: &str, base_url: Option<&Url>, mode: LoadingMode) -> ImageLoadOutcome {
+    if mode.is_deferred() {
+        ImageLoadOutcome::Deferred
+    } else {
+        match load_image_safely(src, base_url) {
+            Some(bytes) => ImageLoadOutcome::Loaded(bytes),
+            None => ImageLoadOutcome::Failed,
+        }
+    }
+}
+
 /// Decodes a simple base64 encoded string.
 /// Returns `None` if the input contains invalid base64 characters.
 pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
@@ -1113,5 +1138,29 @@ mod tests {
         assert_eq!(parse_loading_attr("garbage"), LoadingMode::Eager);
         assert_eq!(parse_loading_attr("lazyx"), LoadingMode::Eager);
         assert_eq!(parse_loading_attr("xlazy"), LoadingMode::Eager);
+    }
+
+    #[test]
+    fn test_plan_image_load() {
+        // 1. Lazy is deferred WITHOUT I/O: bogus src returns Deferred
+        let result_lazy = plan_image_load(
+            "http://non-existent-domain-12345.com/test.png",
+            None,
+            LoadingMode::Lazy,
+        );
+        assert_eq!(result_lazy, ImageLoadOutcome::Deferred);
+
+        // 2. Eager success: valid data: URI returns Loaded
+        let data_uri = "data:text/plain;base64,SGVsbG8=";
+        let result_eager_success = plan_image_load(data_uri, None, LoadingMode::Eager);
+        assert_eq!(
+            result_eager_success,
+            ImageLoadOutcome::Loaded(b"Hello".to_vec())
+        );
+
+        // 3. Eager failure: rejected scheme or garbage path returns Failed
+        let result_eager_fail =
+            plan_image_load("invalid-scheme://something", None, LoadingMode::Eager);
+        assert_eq!(result_eager_fail, ImageLoadOutcome::Failed);
     }
 }
