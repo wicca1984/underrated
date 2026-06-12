@@ -101,8 +101,8 @@ impl TreeBuilder {
             InsertionMode::InTableBody => self.handle_in_table_body(token),
             InsertionMode::InRow => self.handle_in_row(token),
             InsertionMode::InCell => self.handle_in_cell(token),
-            InsertionMode::InSelect => self.handle_in_body(token), // TODO(spec)
-            InsertionMode::InSelectInTable => self.handle_in_body(token), // TODO(spec)
+            InsertionMode::InSelect => self.handle_in_select(token),
+            InsertionMode::InSelectInTable => self.handle_in_select_in_table(token),
             InsertionMode::InTemplate => self.handle_in_template(token),
             InsertionMode::AfterBody => self.handle_after_body(token),
             InsertionMode::InFrameset => self.handle_in_body(token), // TODO(spec)
@@ -514,6 +514,24 @@ impl TreeBuilder {
                     }
                     let node = self.create_and_insert_element(name, attrs);
                     self.stack_of_open_elements.push(node);
+                }
+                "select" => {
+                    self.reconstruct_active_formatting_elements();
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                    // TODO(spec): set frameset-ok to not ok
+                    if matches!(
+                        self.insertion_mode,
+                        InsertionMode::InTable
+                            | InsertionMode::InCaption
+                            | InsertionMode::InTableBody
+                            | InsertionMode::InRow
+                            | InsertionMode::InCell
+                    ) {
+                        self.insertion_mode = InsertionMode::InSelectInTable;
+                    } else {
+                        self.insertion_mode = InsertionMode::InSelect;
+                    }
                 }
                 "a" => {
                     // Adoption Agency Algorithm (subset)
@@ -1095,6 +1113,143 @@ impl TreeBuilder {
         }
     }
 
+    // spec: §13.2.6.4.20 The "in select" insertion mode
+    fn handle_in_select(&mut self, token: Token) {
+        match token {
+            Token::Character(c) => {
+                if c == '\0' {
+                    // Parse error. Ignore.
+                } else {
+                    self.insert_character(c);
+                }
+            }
+            Token::Comment(data) => {
+                self.insert_comment(data);
+            }
+            Token::Doctype { .. } => {
+                // Parse error. Ignore.
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => match name.as_str() {
+                "html" => {
+                    self.handle_in_body(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                "option" => {
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
+                    }) {
+                        self.stack_of_open_elements.pop();
+                    }
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "optgroup" => {
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
+                    }) {
+                        self.stack_of_open_elements.pop();
+                    }
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "optgroup")
+                    }) {
+                        self.stack_of_open_elements.pop();
+                    }
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "select" if self.is_in_select_scope("select") => {
+                    self.pop_until("select");
+                    self.reset_insertion_mode_appropriately();
+                }
+                _ => {
+                    // Parse error. Ignore.
+                }
+            },
+            Token::EndTag { name, .. } => match name.as_str() {
+                "option" => {
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
+                    }) {
+                        self.stack_of_open_elements.pop();
+                    }
+                }
+                "optgroup" => {
+                    let len = self.stack_of_open_elements.len();
+                    if len >= 2 {
+                        let is_top_option = matches!(self.dom.data(self.stack_of_open_elements[len - 1]), Some(NodeData::Element { name, .. }) if name == "option");
+                        let is_prev_optgroup = matches!(self.dom.data(self.stack_of_open_elements[len - 2]), Some(NodeData::Element { name, .. }) if name == "optgroup");
+                        if is_top_option && is_prev_optgroup {
+                            self.stack_of_open_elements.pop();
+                        }
+                    }
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "optgroup")
+                    }) {
+                        self.stack_of_open_elements.pop();
+                    }
+                }
+                "select" if self.is_in_select_scope("select") => {
+                    self.pop_until("select");
+                    self.reset_insertion_mode_appropriately();
+                }
+                _ => {
+                    // Parse error. Ignore.
+                }
+            },
+            Token::Eof => {
+                let is_html = if let Some(&top_id) = self.stack_of_open_elements.last() {
+                    matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "html")
+                } else {
+                    false
+                };
+                if !is_html {
+                    // Parse error.
+                }
+                // Stop parsing.
+            }
+        }
+    }
+
+    // spec: §13.2.6.4.21 The "in select in table" insertion mode
+    fn handle_in_select_in_table(&mut self, token: Token) {
+        match token {
+            Token::StartTag { ref name, .. }
+                if matches!(
+                    name.as_str(),
+                    "caption" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
+                ) =>
+            {
+                // Parse error.
+                if self.is_in_select_scope("select") {
+                    self.pop_until("select");
+                    self.reset_insertion_mode_appropriately();
+                    self.process_token(token);
+                }
+            }
+            Token::EndTag { ref name, .. }
+                if matches!(
+                    name.as_str(),
+                    "caption" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
+                ) =>
+            {
+                // Parse error.
+                if self.is_in_table_scope(name) && self.is_in_select_scope("select") {
+                    self.pop_until("select");
+                    self.reset_insertion_mode_appropriately();
+                    self.process_token(token);
+                }
+            }
+            _ => self.handle_in_select(token),
+        }
+    }
+
     fn is_special_element(&self, name: &str) -> bool {
         matches!(
             name,
@@ -1330,6 +1485,20 @@ impl TreeBuilder {
         self.is_in_specific_scope(target_name, &["html", "table", "template"])
     }
 
+    fn is_in_select_scope(&self, target_name: &str) -> bool {
+        for &node_id in self.stack_of_open_elements.iter().rev() {
+            if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
+                if name == target_name {
+                    return true;
+                }
+                if name != "optgroup" && name != "option" {
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
     fn is_in_specific_scope(&self, target_name: &str, list: &[&str]) -> bool {
         for &node_id in self.stack_of_open_elements.iter().rev() {
             if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
@@ -1409,6 +1578,34 @@ impl TreeBuilder {
 
             if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
                 match name.as_str() {
+                    "select" => {
+                        if last {
+                            self.insertion_mode = InsertionMode::InSelect;
+                        } else {
+                            let mut ancestor_idx = node_idx;
+                            let mut found_table = false;
+                            while ancestor_idx > 0 {
+                                ancestor_idx -= 1;
+                                let ancestor_id = self.stack_of_open_elements[ancestor_idx];
+                                if let Some(NodeData::Element { name: a_name, .. }) =
+                                    self.dom.data(ancestor_id)
+                                {
+                                    if a_name == "template" {
+                                        break;
+                                    }
+                                    if a_name == "table" {
+                                        found_table = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if found_table {
+                                self.insertion_mode = InsertionMode::InSelectInTable;
+                            } else {
+                                self.insertion_mode = InsertionMode::InSelect;
+                            }
+                        }
+                    }
                     "template" => {
                         self.insertion_mode = *self
                             .template_insertion_modes
@@ -1799,5 +1996,35 @@ mod tests {
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
         let serialized = dom.serialize(dom.document());
         assert!(!serialized.is_empty());
+    }
+
+    #[test]
+    fn test_in_select_nested_options() {
+        let html = "<select><option>a</option><option>b</option></select>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><option>a</option><option>b</option></select></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_select_unclosed_options() {
+        let html = "<select><option>a<option>b</select>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><option>a</option><option>b</option></select></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_select_optgroup() {
+        let html = "<select><optgroup><option>a</option></optgroup></select>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><optgroup><option>a</option></optgroup></select></body></html>"
+        );
     }
 }
