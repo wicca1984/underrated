@@ -248,7 +248,14 @@ fn compute_node_style(
                         properties.insert("outline-color".to_string(), color);
                     }
                 }
-                // TODO(spec): other shorthand properties like background, font, transition, etc.
+                "background" => {
+                    // spec: https://drafts.csswg.org/css-backgrounds-3/#background
+                    if let Some(color) = find_background_color(&value) {
+                        properties.insert("background-color".to_string(), color);
+                    }
+                    // TODO(spec): other background longhands (image/position/repeat/size/etc.)
+                }
+                // TODO(spec): other shorthand properties like font, transition, etc.
                 name => {
                     properties.insert(name.to_string(), value);
                 }
@@ -1242,6 +1249,35 @@ fn find_outline_color(value: &CssValue) -> Option<CssValue> {
                 None
             }
         }
+    }
+}
+
+fn find_background_color(value: &CssValue) -> Option<CssValue> {
+    match value {
+        CssValue::Multiple(values) => {
+            for v in values {
+                if let Some(color) = to_background_color(v) {
+                    return Some(color);
+                }
+            }
+            None
+        }
+        v => to_background_color(v),
+    }
+}
+
+fn to_background_color(value: &CssValue) -> Option<CssValue> {
+    if is_outline_color_value(value) {
+        if let CssValue::Keyword(s) = value
+            && s.eq_ignore_ascii_case("invert")
+        {
+            return None;
+        }
+        Some(value.clone())
+    } else if let CssValue::Keyword(s) = value {
+        crate::css::colors::named_color(s).map(CssValue::Color)
+    } else {
+        None
     }
 }
 
@@ -2423,5 +2459,41 @@ mod tests {
         assert_eq!(img_invalid_style.get("margin-right"), None);
         assert_eq!(img_invalid_style.get("margin-top"), None);
         assert_eq!(img_invalid_style.get("margin-bottom"), None);
+    }
+
+    #[test]
+    fn test_background_shorthand_sets_background_color() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // Standard background shorthand expansion
+        let stylesheet1 = parse_stylesheet("div { background: blue; }");
+        let styles1 = compute_styles(&dom, &stylesheet1);
+        let style1 = styles1.get(&div).unwrap();
+
+        // Standard background-color
+        let stylesheet_ref = parse_stylesheet("div { background-color: blue; }");
+        let styles_ref = compute_styles(&dom, &stylesheet_ref);
+        let style_ref = styles_ref.get(&div).unwrap();
+
+        assert_eq!(
+            style1.get("background-color"),
+            style_ref.get("background-color")
+        );
+
+        // Shorthand with extra tokens (e.g., none keyword)
+        let stylesheet2 = parse_stylesheet("div { background: blue none; }");
+        let styles2 = compute_styles(&dom, &stylesheet2);
+        let style2 = styles2.get(&div).unwrap();
+
+        assert_eq!(
+            style2.get("background-color"),
+            style_ref.get("background-color")
+        );
     }
 }
