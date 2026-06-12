@@ -487,6 +487,7 @@ fn is_inherited_property_name(name: &str) -> bool {
             | "text-indent"
             | "word-break"
             | "overflow-wrap"
+            | "word-wrap"
             | "list-style-type"
             | "list-style-position"
             | "list-style-image"
@@ -703,7 +704,9 @@ impl CategorizedComputedStyle {
             "word-break" => {
                 Arc::make_mut(&mut self.inherited_text).word_break = css_value_to_string(value)
             }
-            "overflow-wrap" => {
+            // `word-wrap` is the legacy alias of `overflow-wrap`; normalize both
+            // into the same typed field (the raw alias was lost in the migration).
+            "overflow-wrap" | "word-wrap" => {
                 Arc::make_mut(&mut self.inherited_text).overflow_wrap = css_value_to_string(value)
             }
             "text-align-last" => {
