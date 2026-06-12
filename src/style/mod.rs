@@ -5,6 +5,8 @@ use crate::infra::NodeId;
 use crate::selector::{ComplexSelector, Component, matches_complex};
 use std::collections::HashMap;
 
+pub mod categorized;
+
 /// A map of property names to their computed values.
 #[derive(Debug, Default, Clone)]
 pub struct ComputedStyle {
