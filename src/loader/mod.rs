@@ -276,7 +276,8 @@ pub struct RedirectMeta {
 pub const MAX_REDIRECTS: usize = 10;
 
 /// Reusable, generic, network-free redirect-following function.
-pub fn follow_redirects<F>(start: &Url, mut fetch: F) -> Result<LoaderResponse, LoadError>
+/// Also returns the final resolved URL that was actually fetched.
+pub fn follow_redirects<F>(start: &Url, mut fetch: F) -> Result<(LoaderResponse, Url), LoadError>
 where
     F: FnMut(&Url) -> Result<(RedirectMeta, LoaderResponse), LoadError>,
 {
@@ -297,11 +298,11 @@ where
                 redirect_count += 1;
                 continue;
             } else {
-                return Ok(resp);
+                return Ok((resp, current_url));
             }
         }
 
-        return Ok(resp);
+        return Ok((resp, current_url));
     }
 }
 
@@ -845,7 +846,7 @@ mod tests {
 
         let mut seen = Vec::new();
 
-        let result = follow_redirects(&start_url, |url| {
+        let (result, final_url) = follow_redirects(&start_url, |url| {
             seen.push(url.serialize());
             if url.serialize() == "http://example.com/start" {
                 Ok((
@@ -877,6 +878,7 @@ mod tests {
 
         assert_eq!(result.bytes, b"Final Content");
         assert_eq!(result.content_type, "text/plain");
+        assert_eq!(final_url.serialize(), "http://example.com/target");
         assert_eq!(
             seen,
             vec![
@@ -892,7 +894,7 @@ mod tests {
 
         let mut seen = Vec::new();
 
-        let result = follow_redirects(&start_url, |url| {
+        let (result, final_url) = follow_redirects(&start_url, |url| {
             seen.push(url.serialize());
             if url.serialize() == "http://example.com/search/start" {
                 Ok((
@@ -923,6 +925,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.bytes, b"Search Results");
+        assert_eq!(final_url.serialize(), "http://example.com/results?q=x");
         assert_eq!(
             seen,
             vec![
@@ -966,7 +969,7 @@ mod tests {
 
         let mut seen = Vec::new();
 
-        let result = follow_redirects(&start_url, |url| {
+        let (result, final_url) = follow_redirects(&start_url, |url| {
             seen.push(url.serialize());
             Ok((
                 RedirectMeta {
@@ -983,6 +986,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.bytes, b"OK");
+        assert_eq!(final_url.serialize(), "http://example.com/ok");
         assert_eq!(seen, vec!["http://example.com/ok".to_string()]);
     }
 
@@ -992,7 +996,7 @@ mod tests {
 
         let mut seen = Vec::new();
 
-        let result = follow_redirects(&start_url, |url| {
+        let (result, final_url) = follow_redirects(&start_url, |url| {
             seen.push(url.serialize());
             Ok((
                 RedirectMeta {
@@ -1009,7 +1013,56 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.bytes, b"302 No Location");
+        assert_eq!(final_url.serialize(), "http://example.com/redir_no_loc");
         assert_eq!(seen, vec!["http://example.com/redir_no_loc".to_string()]);
+    }
+
+    #[test]
+    fn test_follow_redirects_different_host() {
+        let start_url = Url::parse("http://example.com/start").unwrap();
+
+        let mut seen = Vec::new();
+
+        let (result, final_url) = follow_redirects(&start_url, |url| {
+            seen.push(url.serialize());
+            if url.serialize() == "http://example.com/start" {
+                Ok((
+                    RedirectMeta {
+                        status: 302,
+                        location: Some("http://different-host.com/target".to_string()),
+                    },
+                    LoaderResponse {
+                        bytes: b"Redirecting...".to_vec(),
+                        content_type: "text/html".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            } else {
+                Ok((
+                    RedirectMeta {
+                        status: 200,
+                        location: None,
+                    },
+                    LoaderResponse {
+                        bytes: b"Different Host Content".to_vec(),
+                        content_type: "text/plain".to_string(),
+                        charset: Some("utf-8".to_string()),
+                    },
+                ))
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result.bytes, b"Different Host Content");
+        assert_eq!(final_url.serialize(), "http://different-host.com/target");
+        assert_ne!(final_url.serialize(), "http://example.com/start");
+        assert_eq!(
+            seen,
+            vec![
+                "http://example.com/start".to_string(),
+                "http://different-host.com/target".to_string()
+            ]
+        );
     }
 
     struct DefaultMockLoader;
@@ -1082,13 +1135,14 @@ mod tests {
         let loader = OverridingMockLoader;
         let start_url = Url::parse("http://example.com/start").unwrap();
 
-        let result = follow_redirects(&start_url, |u| {
+        let (result, final_url) = follow_redirects(&start_url, |u| {
             loader.load_request_hop(u, HttpMethod::Get, b"", None)
         })
         .unwrap();
 
         assert_eq!(result.bytes, b"FINAL");
         assert_eq!(result.content_type, "text/plain");
+        assert_eq!(final_url.serialize(), "http://example.com/final");
     }
 
     struct NonRedirectMockLoader;
@@ -1124,13 +1178,14 @@ mod tests {
         let loader = NonRedirectMockLoader;
         let start_url = Url::parse("http://example.com/any").unwrap();
 
-        let result = follow_redirects(&start_url, |u| {
+        let (result, final_url) = follow_redirects(&start_url, |u| {
             loader.load_request_hop(u, HttpMethod::Get, b"", None)
         })
         .unwrap();
 
         assert_eq!(result.bytes, b"OK");
         assert_eq!(result.content_type, "text/plain");
+        assert_eq!(final_url.serialize(), "http://example.com/any");
     }
 
     #[test]
