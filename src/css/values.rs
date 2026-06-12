@@ -302,6 +302,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "justify-content"
             | "align-items"
             | "white-space"
+            | "text-overflow"
             | "flex-wrap"
             | "float"
             | "clear"
@@ -396,6 +397,16 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "normal" | "nowrap" | "pre" | "pre-wrap" | "pre-line" | "initial" | "inherit"
+                )
+            }
+            _ => false,
+        },
+        // TODO(spec): layout-time truncation/ellipsis rendering is out of scope (a separate future task)
+        "text-overflow" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "clip" | "ellipsis" | "initial" | "inherit"
                 )
             }
             _ => false,
@@ -609,6 +620,17 @@ pub fn parse_property_value(
                 match kw.to_ascii_lowercase().as_str() {
                     "normal" | "nowrap" | "pre" | "pre-wrap" | "pre-line" | "initial"
                     | "inherit" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        // TODO(spec): layout-time truncation/ellipsis rendering is out of scope (a separate future task)
+        "text-overflow" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "clip" | "ellipsis" | "initial" | "inherit" => Some(val),
                     _ => None,
                 }
             } else {
@@ -2229,6 +2251,77 @@ mod tests {
         );
         assert_eq!(
             parse_property_value("cursor", &[token(CssToken::Ident("bogus".to_string()))]),
+            None
+        );
+    }
+
+    // Guards recognition, validation, and parsing of the text-overflow property
+    #[test]
+    fn test_text_overflow_property() {
+        // Test known properties
+        assert!(is_known_layout_property("text-overflow"));
+        assert!(is_known_layout_property("Text-Overflow"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "text-overflow",
+            &CssValue::Keyword("clip".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "text-overflow",
+            &CssValue::Keyword("ellipsis".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "text-overflow",
+            &CssValue::Keyword("initial".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "text-overflow",
+            &CssValue::Keyword("inherit".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "text-overflow",
+            &CssValue::Keyword("bogus".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "text-overflow",
+            &CssValue::Overflow(OverflowValue::Visible)
+        ));
+
+        // Test parse_property_value for text-overflow
+        assert_eq!(
+            parse_property_value(
+                "text-overflow",
+                &[token(CssToken::Ident("clip".to_string()))]
+            ),
+            Some(CssValue::Keyword("clip".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "text-overflow",
+                &[token(CssToken::Ident("ellipsis".to_string()))]
+            ),
+            Some(CssValue::Keyword("ellipsis".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "text-overflow",
+                &[token(CssToken::Ident("initial".to_string()))]
+            ),
+            Some(CssValue::Keyword("initial".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "text-overflow",
+                &[token(CssToken::Ident("inherit".to_string()))]
+            ),
+            Some(CssValue::Keyword("inherit".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "text-overflow",
+                &[token(CssToken::Ident("bogus".to_string()))]
+            ),
             None
         );
     }
