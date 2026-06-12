@@ -151,10 +151,68 @@ pub enum TransformFn {
     Rotate(AngleDeg),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ZIndex {
+    #[default]
     Auto,
     Index(i32),
+}
+
+impl ZIndex {
+    pub fn parse(s: &str) -> Self {
+        let trimmed = s.trim();
+        if trimmed.eq_ignore_ascii_case("auto") {
+            ZIndex::Auto
+        } else if let Ok(val) = trimmed.parse::<i32>() {
+            ZIndex::Index(val)
+        } else {
+            ZIndex::Auto
+        }
+    }
+}
+
+impl std::str::FromStr for ZIndex {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::parse(s))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Opacity(pub f32);
+
+impl Default for Opacity {
+    fn default() -> Self {
+        Opacity(1.0)
+    }
+}
+
+impl Opacity {
+    pub fn parse(s: &str) -> Self {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Opacity(1.0);
+        }
+
+        // TODO(spec): Percentage support is optional; we support bare <number> here.
+        if let Ok(val) = trimmed.parse::<f32>() {
+            return Opacity(if val.is_finite() {
+                val.clamp(0.0, 1.0)
+            } else {
+                1.0
+            });
+        }
+        Opacity(1.0)
+    }
+}
+
+impl std::str::FromStr for Opacity {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::parse(s))
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1570,5 +1628,37 @@ mod tests {
         assert_eq!(parse_opacity(""), None);
         assert_eq!(parse_opacity("abc"), None);
         assert_eq!(parse_opacity("%"), None);
+    }
+
+    #[test]
+    fn test_typed_z_index_and_opacity() {
+        // ZIndex
+        assert_eq!(ZIndex::parse("auto"), ZIndex::Auto);
+        assert_eq!(ZIndex::parse("AUTO"), ZIndex::Auto);
+        assert_eq!(ZIndex::parse("aUtO"), ZIndex::Auto);
+        assert_eq!(ZIndex::parse("0"), ZIndex::Index(0));
+        assert_eq!(ZIndex::parse("5"), ZIndex::Index(5));
+        assert_eq!(ZIndex::parse("-1"), ZIndex::Index(-1));
+        assert_eq!(ZIndex::parse("bogus"), ZIndex::Auto);
+        assert_eq!(ZIndex::parse(""), ZIndex::Auto);
+        assert_eq!(ZIndex::parse("1.5"), ZIndex::Auto);
+
+        // FromStr for ZIndex (also covers leading/trailing whitespace trimming)
+        use std::str::FromStr;
+        assert_eq!(ZIndex::from_str("5").unwrap(), ZIndex::Index(5));
+        assert_eq!(ZIndex::parse(" -5 "), ZIndex::Index(-5));
+
+        // Opacity
+        assert_eq!(Opacity::parse("0"), Opacity(0.0));
+        assert_eq!(Opacity::parse("0.5"), Opacity(0.5));
+        assert_eq!(Opacity::parse("1"), Opacity(1.0));
+        assert_eq!(Opacity::parse("1.5"), Opacity(1.0));
+        assert_eq!(Opacity::parse("-0.2"), Opacity(0.0));
+        assert_eq!(Opacity::parse("bogus"), Opacity(1.0));
+        assert_eq!(Opacity::parse(""), Opacity(1.0));
+
+        // FromStr for Opacity (also covers whitespace trimming + clamping)
+        assert_eq!(Opacity::from_str("0.25").unwrap(), Opacity(0.25));
+        assert_eq!(Opacity::parse(" -10.0 "), Opacity(0.0));
     }
 }
