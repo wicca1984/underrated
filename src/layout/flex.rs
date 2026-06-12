@@ -135,7 +135,20 @@ pub fn layout_flex_container(
                 }
             }
             CssValue::Multiple(vals) if vals.len() > 1 => {
-                // TODO(spec): two-value gap shorthand
+                if let Some(CssValue::Length(px, LengthUnit::Px)) = vals.first() {
+                    if row_gap.is_none() {
+                        row_gap = Some(*px);
+                    }
+                } else {
+                    // TODO(spec): non-px gap units
+                }
+                if let Some(CssValue::Length(px, LengthUnit::Px)) = vals.get(1) {
+                    if col_gap.is_none() {
+                        col_gap = Some(*px);
+                    }
+                } else {
+                    // TODO(spec): non-px gap units
+                }
             }
             _ => {
                 // TODO(spec): non-px gap units
@@ -2174,5 +2187,178 @@ mod tests {
         assert!(approx_eq(container_box.children[2].rect.origin.y, 0.0));
         assert!(approx_eq(container_box.children[2].rect.size.width, 80.0));
         assert!(approx_eq(container_box.children[2].rect.size.height, 40.0));
+    }
+
+    #[test]
+    fn test_flex_two_value_gap() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+                gap: 10px 20px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // gap: 10px 20px -> row-gap = 10px, column-gap = 20px.
+        // flex-direction: row -> main_gap is column-gap = 20px.
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 120.0)); // child1 width (100) + col_gap (20)
+    }
+
+    #[test]
+    fn test_flex_two_value_gap_wrap() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+        dom.append_child(container, child3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                flex-wrap: wrap;
+                width: 250px;
+                gap: 15px 30px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+            #child3 {
+                width: 100px;
+                height: 40px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // gap: 15px 30px -> row-gap (cross-gap in row layout) = 15px, column-gap (main-gap in row layout) = 30px.
+        // Line 1: Child 1 (100px) + Gap (30px) + Child 2 (100px) = 230px <= 250px.
+        // If Child 3 tried to fit: 230px + Gap (30px) + Child 3 (100px) = 360px > 250px. So Child 3 wraps to Line 2.
+        // Line 1 height = 50px.
+        // Line 2 y-offset = Line 1 cross offset (0.0) + Line 1 height (50.0) + row-gap (15.0) = 65.0.
+        assert_eq!(container_box.children.len(), 3);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
+
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 130.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 0.0));
+
+        assert!(approx_eq(container_box.children[2].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[2].rect.origin.y, 65.0));
+    }
+
+    #[test]
+    fn test_flex_gap_precedence() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+                column-gap: 5px;
+                gap: 10px 20px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // column-gap: 5px has precedence over gap column-gap (20px).
+        // So main_gap should be 5px.
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 105.0)); // child1 width (100) + col_gap (5)
     }
 }

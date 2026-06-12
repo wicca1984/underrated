@@ -679,6 +679,110 @@ fn get_background_position_offsets(
     }
 }
 
+/// Resolve the background-size value to specific painted (width, height) dimensions.
+/// spec: <https://drafts.csswg.org/css-backgrounds-3/#the-background-size>
+pub fn resolve_bg_size(area: (f32, f32), intrinsic: (f32, f32), value: &CssValue) -> (f32, f32) {
+    let (area_w, area_h) = area;
+    let (img_w, img_h) = intrinsic;
+
+    // Guard against zero or negative intrinsic dimensions to avoid division by zero or negative sizing.
+    if img_w <= 0.0 || img_h <= 0.0 {
+        return (0.0, 0.0);
+    }
+
+    match value {
+        CssValue::Keyword(kw) => {
+            let kw_trimmed = kw.trim().to_ascii_lowercase();
+            match kw_trimmed.as_str() {
+                "contain" => {
+                    let scale_w = area_w / img_w;
+                    let scale_h = area_h / img_h;
+                    let scale = scale_w.min(scale_h);
+                    (img_w * scale, img_h * scale)
+                }
+                "cover" => {
+                    let scale_w = area_w / img_w;
+                    let scale_h = area_h / img_h;
+                    let scale = scale_w.max(scale_h);
+                    (img_w * scale, img_h * scale)
+                }
+                "auto" => (img_w, img_h),
+                _ => (img_w, img_h), // Fallback to intrinsic size
+            }
+        }
+        CssValue::Length(v, u) => {
+            // Single value: width is set, height is auto (preserving aspect ratio)
+            let w = if *u == crate::css::values::LengthUnit::Px {
+                *v
+            } else if *u == crate::css::values::LengthUnit::Percent {
+                area_w * (*v / 100.0)
+            } else {
+                img_w
+            };
+            let w_clamped = w.max(0.0);
+            let h = w_clamped * (img_h / img_w);
+            (w_clamped, h)
+        }
+        CssValue::Multiple(list) => {
+            if list.is_empty() {
+                (img_w, img_h)
+            } else if list.len() == 1 {
+                resolve_bg_size(area, intrinsic, &list[0])
+            } else {
+                let w = match &list[0] {
+                    CssValue::Length(v1, u1) => {
+                        let val = if *u1 == crate::css::values::LengthUnit::Px {
+                            *v1
+                        } else if *u1 == crate::css::values::LengthUnit::Percent {
+                            area_w * (*v1 / 100.0)
+                        } else {
+                            img_w
+                        };
+                        val.max(0.0)
+                    }
+                    CssValue::Keyword(kw) if kw.trim().eq_ignore_ascii_case("auto") => {
+                        -1.0 // Sentinel for auto
+                    }
+                    _ => img_w,
+                };
+
+                let h = match &list[1] {
+                    CssValue::Length(v2, u2) => {
+                        let val = if *u2 == crate::css::values::LengthUnit::Px {
+                            *v2
+                        } else if *u2 == crate::css::values::LengthUnit::Percent {
+                            area_h * (*v2 / 100.0)
+                        } else {
+                            img_h
+                        };
+                        val.max(0.0)
+                    }
+                    CssValue::Keyword(kw) if kw.trim().eq_ignore_ascii_case("auto") => {
+                        -1.0 // Sentinel for auto
+                    }
+                    _ => img_h,
+                };
+
+                match (w < 0.0, h < 0.0) {
+                    (true, true) => (img_w, img_h),
+                    (true, false) => {
+                        // width is auto, height is explicit
+                        let resolved_w = h * (img_w / img_h);
+                        (resolved_w.max(0.0), h)
+                    }
+                    (false, true) => {
+                        // width is explicit, height is auto
+                        let resolved_h = w * (img_h / img_w);
+                        (w, resolved_h.max(0.0))
+                    }
+                    (false, false) => (w, h),
+                }
+            }
+        }
+        _ => (img_w, img_h),
+    }
+}
+
 /// Scale a color's alpha channel by an effective opacity factor.
 /// spec: <https://www.w3.org/TR/css-color-3/#transparency>
 fn scale_color_alpha(color: &Color, factor: f32) -> Color {
@@ -1056,37 +1160,13 @@ pub fn build_display_list_with_caret(
                         let mut img_h = decoded.height as f32;
 
                         if let Some(size_val) = style.get("background-size") {
-                            // Simple background-size support (trivial explicit px or percentages)
-                            match size_val {
-                                CssValue::Multiple(list) if list.len() >= 2 => {
-                                    if let CssValue::Length(v1, u1) = &list[0] {
-                                        if *u1 == crate::css::values::LengthUnit::Px {
-                                            img_w = *v1;
-                                        } else if *u1 == crate::css::values::LengthUnit::Percent {
-                                            img_w = box_rect.size.width * (*v1 / 100.0);
-                                        }
-                                    }
-                                    if let CssValue::Length(v2, u2) = &list[1] {
-                                        if *u2 == crate::css::values::LengthUnit::Px {
-                                            img_h = *v2;
-                                        } else if *u2 == crate::css::values::LengthUnit::Percent {
-                                            img_h = box_rect.size.height * (*v2 / 100.0);
-                                        }
-                                    }
-                                }
-                                CssValue::Length(v, u) => {
-                                    if *u == crate::css::values::LengthUnit::Px {
-                                        img_w = *v;
-                                        img_h = *v;
-                                    } else if *u == crate::css::values::LengthUnit::Percent {
-                                        img_w = box_rect.size.width * (*v / 100.0);
-                                        img_h = box_rect.size.height * (*v / 100.0);
-                                    }
-                                }
-                                _ => {
-                                    // TODO(spec): background-size other values (cover/contain/auto)
-                                }
-                            }
+                            let (resolved_w, resolved_h) = resolve_bg_size(
+                                (box_rect.size.width, box_rect.size.height),
+                                (img_w, img_h),
+                                size_val,
+                            );
+                            img_w = resolved_w;
+                            img_h = resolved_h;
                         }
 
                         if img_w > 0.0 && img_h > 0.0 {
@@ -5608,5 +5688,52 @@ mod tests {
                 .find(|item| matches!(item, DisplayItem::Text { text, .. } if text == "ab"));
             assert!(text_item.is_some(), "Value text 'ab' should still render");
         }
+    }
+
+    #[test]
+    fn test_bg_size_contain() {
+        let val = CssValue::Keyword("contain".to_string());
+        let res = resolve_bg_size((200.0, 100.0), (50.0, 50.0), &val);
+        assert_eq!(res, (100.0, 100.0));
+    }
+
+    #[test]
+    fn test_bg_size_cover() {
+        let val = CssValue::Keyword("cover".to_string());
+        let res = resolve_bg_size((200.0, 100.0), (50.0, 50.0), &val);
+        assert_eq!(res, (200.0, 200.0));
+    }
+
+    #[test]
+    fn test_bg_size_auto() {
+        let val = CssValue::Keyword("auto".to_string());
+        let res = resolve_bg_size((200.0, 100.0), (50.0, 50.0), &val);
+        assert_eq!(res, (50.0, 50.0));
+    }
+
+    #[test]
+    fn test_bg_size_zero_intrinsic_safe() {
+        let val = CssValue::Keyword("contain".to_string());
+        let res = resolve_bg_size((200.0, 100.0), (0.0, 0.0), &val);
+        assert_eq!(res, (0.0, 0.0));
+    }
+
+    #[test]
+    fn test_bg_size_single_length() {
+        let val = CssValue::Length(100.0, LengthUnit::Px);
+        let res = resolve_bg_size((200.0, 100.0), (50.0, 25.0), &val);
+        // width 100, height auto (preserving ratio: 25/50 = 0.5) -> (100.0, 50.0)
+        assert_eq!(res, (100.0, 50.0));
+    }
+
+    #[test]
+    fn test_bg_size_multiple_length_and_auto() {
+        let val = CssValue::Multiple(vec![
+            CssValue::Keyword("auto".to_string()),
+            CssValue::Length(50.0, LengthUnit::Percent),
+        ]);
+        let res = resolve_bg_size((200.0, 100.0), (50.0, 25.0), &val);
+        // height 50% of 100.0 is 50.0. width is auto (preserving ratio: 50 * (50/25) = 100.0) -> (100.0, 50.0)
+        assert_eq!(res, (100.0, 50.0));
     }
 }
