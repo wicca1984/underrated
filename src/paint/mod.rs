@@ -1,3 +1,5 @@
+pub mod stacking;
+
 use crate::css::values::{Color, CssValue};
 use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
@@ -1380,10 +1382,11 @@ pub fn build_display_list(
             }
         }
 
-        // Pre-order traversal: process current, then children left-to-right.
-        // Since we use a stack (LIFO), we push children in reverse order.
+        // Pre-order traversal: process current, then children in painting order.
+        // Since we use a stack (LIFO), we push children in reverse of their painting order.
         if !skip_children {
-            for child in layout_box.children.iter().rev() {
+            let sorted_children = stacking::sort_siblings(&layout_box.children, styles);
+            for child in sorted_children.into_iter().rev() {
                 stack.push((child, effective_opacity));
             }
         }
