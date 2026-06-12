@@ -361,7 +361,7 @@ pub fn navigate(
         crate::forms::Method::Post => crate::loader::HttpMethod::Post,
     };
 
-    let response = match crate::loader::follow_redirects(&resolved_url, |url| {
+    let (response, final_url) = match crate::loader::follow_redirects(&resolved_url, |url| {
         loader.load_request_hop(
             url,
             method,
@@ -369,7 +369,7 @@ pub fn navigate(
             req.content_type.as_deref(),
         )
     }) {
-        Ok(res) => res,
+        Ok(t) => t,
         Err(_) => return render_page("", base, loader, viewport_width),
     };
 
@@ -387,8 +387,7 @@ pub fn navigate(
     }
     let decoded_html = crate::encoding::decode(&response.bytes[offset..], charset);
 
-    // TODO(spec): after a redirect chain, relative URLs on the result page should resolve against the final hop URL, but follow_redirects does not surface it yet (needs a loader IF extension — future task).
-    render_page(&decoded_html, &resolved_url, loader, viewport_width)
+    render_page(&decoded_html, &final_url, loader, viewport_width)
 }
 
 /// Renders HTML containing inline styles, external stylesheets, and inline scripts to a pixel canvas.
@@ -2631,6 +2630,108 @@ mod tests {
             divs.len(),
             1,
             "Should hide the div with the hidden attribute"
+        );
+    }
+
+    #[test]
+    fn test_navigate_follows_redirects_relative_base() {
+        use crate::raster::Canvas;
+        use std::sync::{Arc, Mutex};
+
+        // Generate a valid PNG
+        let mut source_canvas = Canvas::new(2, 2);
+        source_canvas.pixels[0] = 0xFFFF0000;
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        #[derive(Clone)]
+        struct RedirectRelativeBaseLoader {
+            requested_urls: Arc<Mutex<Vec<String>>>,
+            png_bytes: Vec<u8>,
+        }
+
+        impl crate::loader::ResourceLoader for RedirectRelativeBaseLoader {
+            fn load(&self, url: &Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                self.requested_urls.lock().unwrap().push(url.serialize());
+                if url.serialize() == "https://final-host.com/image.png" {
+                    Ok(self.png_bytes.clone())
+                } else {
+                    Err(crate::loader::LoadError::NotFound)
+                }
+            }
+
+            fn load_request_hop(
+                &self,
+                url: &Url,
+                _method: crate::loader::HttpMethod,
+                _body: &[u8],
+                _content_type: Option<&str>,
+            ) -> Result<
+                (crate::loader::RedirectMeta, crate::loader::LoaderResponse),
+                crate::loader::LoadError,
+            > {
+                if url.serialize() == "https://start-host.com/start" {
+                    Ok((
+                        crate::loader::RedirectMeta {
+                            status: 302,
+                            location: Some("https://final-host.com/final".to_string()),
+                        },
+                        crate::loader::LoaderResponse {
+                            bytes: b"Redirecting...".to_vec(),
+                            content_type: "text/html".to_string(),
+                            charset: Some("utf-8".to_string()),
+                        },
+                    ))
+                } else if url.serialize() == "https://final-host.com/final" {
+                    Ok((
+                        crate::loader::RedirectMeta {
+                            status: 200,
+                            location: None,
+                        },
+                        crate::loader::LoaderResponse {
+                            bytes: b"<html><body><img src=\"./image.png\"></body></html>".to_vec(),
+                            content_type: "text/html".to_string(),
+                            charset: Some("utf-8".to_string()),
+                        },
+                    ))
+                } else {
+                    Err(crate::loader::LoadError::NotFound)
+                }
+            }
+        }
+
+        let requested_urls = Arc::new(Mutex::new(Vec::new()));
+        let loader = RedirectRelativeBaseLoader {
+            requested_urls: requested_urls.clone(),
+            png_bytes,
+        };
+
+        let start_base = Url::parse("https://start-host.com/").unwrap();
+        let get_request = crate::forms::NavigationRequest {
+            url: "/start".to_string(),
+            method: crate::forms::Method::Get,
+            body: String::new(),
+            content_type: None,
+        };
+
+        let page = navigate(&get_request, &start_base, &loader, 800.0);
+
+        // Check that the image was requested with the final host base URL
+        let urls = requested_urls.lock().unwrap().clone();
+        assert!(
+            urls.contains(&"https://final-host.com/image.png".to_string()),
+            "Loader should have requested the image resolved against the final host base, but got: {:?}",
+            urls
+        );
+        assert!(
+            !urls.contains(&"https://start-host.com/image.png".to_string()),
+            "Loader should NOT have requested the image resolved against the start host"
+        );
+
+        // Check that the image was successfully resolved and cached
+        let img_opt = page.dom.get_image("./image.png");
+        assert!(
+            img_opt.is_some(),
+            "Image './image.png' should be loaded and cached under its src attribute"
         );
     }
 }
