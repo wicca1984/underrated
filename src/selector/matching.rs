@@ -295,6 +295,9 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "root" => is_root(dom, node),
                     "link" => is_link(dom, node),
                     "any-link" => is_link(dom, node),
+                    "checked" => is_checked(dom, node),
+                    "disabled" => is_disabled(dom, node),
+                    "enabled" => is_enabled(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -576,6 +579,54 @@ fn is_link(dom: &Dom, node: NodeId) -> bool {
                 && attrs
                     .iter()
                     .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "href"))
+        }
+        _ => false,
+    }
+}
+
+fn is_checked(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = ascii::eq_ignore_ascii_case(name, "input")
+                || ascii::eq_ignore_ascii_case(name, "option");
+            is_applicable
+                && attrs
+                    .iter()
+                    .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "checked"))
+        }
+        _ => false,
+    }
+}
+
+fn is_form_associated(name: &str) -> bool {
+    ascii::eq_ignore_ascii_case(name, "button")
+        || ascii::eq_ignore_ascii_case(name, "input")
+        || ascii::eq_ignore_ascii_case(name, "select")
+        || ascii::eq_ignore_ascii_case(name, "textarea")
+        || ascii::eq_ignore_ascii_case(name, "optgroup")
+        || ascii::eq_ignore_ascii_case(name, "option")
+        || ascii::eq_ignore_ascii_case(name, "fieldset")
+}
+
+fn is_disabled(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            is_form_associated(name)
+                && attrs
+                    .iter()
+                    .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "disabled"))
+        }
+        _ => false,
+    }
+}
+
+fn is_enabled(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            is_form_associated(name)
+                && !attrs
+                    .iter()
+                    .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "disabled"))
         }
         _ => false,
     }
@@ -1396,6 +1447,175 @@ mod tests {
             &parse_selector_list("button:active").unwrap(),
             &dom,
             el
+        ));
+    }
+
+    #[test]
+    fn test_form_state_pseudo_classes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <input checked>
+        let input_checked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("checked".into(), "".into())],
+        });
+        dom.append_child(doc, input_checked);
+
+        // <input>
+        let input_unchecked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_unchecked);
+
+        // <option checked>
+        let option_checked = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![("checked".into(), "".into())],
+        });
+        dom.append_child(doc, option_checked);
+
+        // <option>
+        let option_unchecked = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, option_unchecked);
+
+        // <div checked> (div is not input/option-like, so should not match :checked)
+        let div_checked = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("checked".into(), "".into())],
+        });
+        dom.append_child(doc, div_checked);
+
+        // <button disabled>
+        let button_disabled = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![("disabled".into(), "".into())],
+        });
+        dom.append_child(doc, button_disabled);
+
+        // <button>
+        let button_enabled = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, button_enabled);
+
+        // <div disabled> (div is not form-associated, so should match neither :disabled nor :enabled)
+        let div_disabled = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("disabled".into(), "".into())],
+        });
+        dom.append_child(doc, div_disabled);
+
+        // <div>
+        let div_normal = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_normal);
+
+        // Test :checked
+        assert!(matches(
+            &parse_selector_list(":checked").unwrap(),
+            &dom,
+            input_checked
+        ));
+        assert!(!matches(
+            &parse_selector_list(":checked").unwrap(),
+            &dom,
+            input_unchecked
+        ));
+        assert!(matches(
+            &parse_selector_list(":checked").unwrap(),
+            &dom,
+            option_checked
+        ));
+        assert!(!matches(
+            &parse_selector_list(":checked").unwrap(),
+            &dom,
+            option_unchecked
+        ));
+        assert!(!matches(
+            &parse_selector_list(":checked").unwrap(),
+            &dom,
+            div_checked
+        ));
+
+        // Test :disabled
+        assert!(matches(
+            &parse_selector_list(":disabled").unwrap(),
+            &dom,
+            button_disabled
+        ));
+        assert!(!matches(
+            &parse_selector_list(":disabled").unwrap(),
+            &dom,
+            button_enabled
+        ));
+        assert!(!matches(
+            &parse_selector_list(":disabled").unwrap(),
+            &dom,
+            div_disabled
+        ));
+        assert!(!matches(
+            &parse_selector_list(":disabled").unwrap(),
+            &dom,
+            div_normal
+        ));
+
+        // Test :enabled
+        assert!(!matches(
+            &parse_selector_list(":enabled").unwrap(),
+            &dom,
+            button_disabled
+        ));
+        assert!(matches(
+            &parse_selector_list(":enabled").unwrap(),
+            &dom,
+            button_enabled
+        ));
+        assert!(!matches(
+            &parse_selector_list(":enabled").unwrap(),
+            &dom,
+            div_disabled
+        ));
+        assert!(!matches(
+            &parse_selector_list(":enabled").unwrap(),
+            &dom,
+            div_normal
+        ));
+
+        // Test form-associated elements are matched properly with mixed case tags and mixed case attributes
+        let input_mixed_checked = dom.create_node(NodeData::Element {
+            name: "InPuT".into(),
+            attrs: vec![("ChEcKeD".into(), "true".into())],
+        });
+        dom.append_child(doc, input_mixed_checked);
+
+        let select_mixed_disabled = dom.create_node(NodeData::Element {
+            name: "SeLeCt".into(),
+            attrs: vec![("DiSaBlEd".into(), "true".into())],
+        });
+        dom.append_child(doc, select_mixed_disabled);
+
+        assert!(matches(
+            &parse_selector_list(":checked").unwrap(),
+            &dom,
+            input_mixed_checked
+        ));
+        assert!(matches(
+            &parse_selector_list(":disabled").unwrap(),
+            &dom,
+            select_mixed_disabled
+        ));
+        assert!(!matches(
+            &parse_selector_list(":enabled").unwrap(),
+            &dom,
+            select_mixed_disabled
         ));
     }
 
