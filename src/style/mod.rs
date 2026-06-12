@@ -1676,8 +1676,8 @@ fn is_outline_color_value(value: &CssValue) -> bool {
 }
 
 fn is_inherited_property(property: &str) -> bool {
-    // spec: basic inherited properties
-    matches!(
+    // spec: basic inherited properties (hardcoded fast-path, retained for no-regression)
+    let hardcoded = matches!(
         property,
         "color"
             | "font-family"
@@ -1700,7 +1700,9 @@ fn is_inherited_property(property: &str) -> bool {
             | "word-break"
             | "word-spacing"
             | "empty-cells"
-    )
+    );
+    // Generic: also honor the static property-metadata table (MS-CSS-Generic).
+    hardcoded || crate::css::property::is_inherited(property)
 }
 
 fn serialize_component_values(values: &[crate::css::parser::ComponentValue]) -> String {
@@ -1947,6 +1949,24 @@ mod tests {
         let styles = compute_styles(&dom, &stylesheet);
         let p_style = styles.get(&p).unwrap();
         assert!(p_style.get("margin").is_none());
+    }
+
+    #[test]
+    fn test_is_inherited_property_generalized() {
+        // A property in the hardcoded list still returns true
+        assert!(is_inherited_property("color"));
+        assert!(is_inherited_property("font-family"));
+        assert!(is_inherited_property("empty-cells"));
+
+        // A clearly NON-inherited property still returns false
+        assert!(!is_inherited_property("width"));
+        assert!(!is_inherited_property("background-color"));
+        assert!(!is_inherited_property("margin"));
+
+        // A property that is inherited per the metadata table but NOT in the hardcoded list now returns true
+        assert!(is_inherited_property("cursor"));
+        assert!(is_inherited_property("direction"));
+        assert!(is_inherited_property("border-collapse"));
     }
 
     #[test]
