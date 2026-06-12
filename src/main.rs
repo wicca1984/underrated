@@ -77,6 +77,16 @@ fn resolve_target(args: &[String]) -> Target {
     }
 }
 
+/// Returns the appropriate URL string for the given execution target.
+fn url_for_target(target: &Target) -> String {
+    match target {
+        Target::Url(direct_url) => direct_url.clone(),
+        Target::Search(query) => search_url("https://www.google.co.jp/", query)
+            .unwrap_or_else(|| "https://www.google.co.jp/".to_string()),
+        Target::Default => "https://www.google.co.jp/".to_string(),
+    }
+}
+
 fn main() {
     let width: u32 = 800;
     let height: u32 = 600;
@@ -84,32 +94,23 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let target = resolve_target(&args);
 
-    let url = match target {
+    let url = url_for_target(&target);
+    match &target {
         Target::Url(direct_url) => {
             println!("direct URL: {direct_url}");
-            direct_url
         }
-        Target::Search(query) => {
-            let url = search_url("https://example.com/", &query)
-                .unwrap_or_else(|| "https://example.com/".to_string());
+        Target::Search(_) => {
             println!("search URL: {url}");
-            url
         }
         Target::Default => {
-            let url = search_url("https://example.com/", "hello underrated")
-                .unwrap_or_else(|| "https://example.com/".to_string());
-            println!("search URL: {url}");
-            url
+            println!("default URL: {url}");
         }
-    };
+    }
 
     // 2. Fetch it; fall back to the built-in sample when offline.
     let html = match fetch(&url) {
         Some(body) => {
             println!("fetched {} bytes from {url}", body.len());
-            // The fetched page carries its own <style>; we don't extract it yet,
-            // so render the structure with no author CSS. // TODO(spec): hoist
-            // <style> from the DOM into the stylesheet.
             body
         }
         None => {
@@ -184,5 +185,24 @@ mod tests {
             resolve_target(&args),
             Target::Search("ftp://example.com/".to_string())
         );
+    }
+
+    #[test]
+    fn test_url_for_target_default() {
+        let target = Target::Default;
+        assert_eq!(url_for_target(&target), "https://www.google.co.jp/");
+    }
+
+    #[test]
+    fn test_url_for_target_search() {
+        let target = Target::Search("query text".to_string());
+        let expected = search_url("https://www.google.co.jp/", "query text").unwrap();
+        assert_eq!(url_for_target(&target), expected);
+    }
+
+    #[test]
+    fn test_url_for_target_url() {
+        let target = Target::Url("https://example.com/some/path".to_string());
+        assert_eq!(url_for_target(&target), "https://example.com/some/path");
     }
 }
