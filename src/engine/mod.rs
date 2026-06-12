@@ -133,7 +133,7 @@ impl BrowsingContext {
 pub const UA_DEFAULT_CSS: &str = "\
 html, body { background: #fff; background-color: #fff; color: #000; }\n\
 body { margin: 8px; }\n\
-div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article, figure, figcaption, blockquote, dl, dt, dd { display: block; }\n\
+div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article, figure, figcaption, blockquote, dl, dt, dd, form, fieldset, main, aside, pre, hr { display: block; }\n\
 a, b, strong, i, em, span, code, small, big, sub, sup, abbr, cite, q, s, strike, del, u, ins, mark, label, tt, kbd, samp, var, dfn, time, bdi, bdo, wbr, font { display: inline; }\n\
 p { margin-top: 1em; margin-bottom: 1em; }\n\
 h1 { margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }\n\
