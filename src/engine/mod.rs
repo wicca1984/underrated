@@ -64,6 +64,12 @@ input[type=\"text\"], input[type=\"search\"], input[type=\"email\"], input[type=
   border-color: #767676;\n\
   background-color: #fff;\n\
 }\n\
+input[type=\"hidden\"] {\n\
+  display: none;\n\
+}\n\
+[hidden] {\n\
+  display: none;\n\
+}\n\
 ";
 
 fn load_image_safely_with_loader(
@@ -2565,6 +2571,64 @@ mod tests {
         assert!(
             result.is_none(),
             "Should return None when input is not associated with any form"
+        );
+    }
+
+    fn find_tags(node: &serde_json::Value, tag_name: &str, results: &mut Vec<serde_json::Value>) {
+        if node["type"] == "element" && node["tag"] == tag_name {
+            let rect = &node["rect"];
+            let w = rect["width"].as_f64().unwrap_or(0.0);
+            let h = rect["height"].as_f64().unwrap_or(0.0);
+            if w > 0.0 || h > 0.0 {
+                results.push(node.clone());
+            }
+        }
+        if let Some(children) = node["children"].as_array() {
+            for child in children {
+                find_tags(child, tag_name, results);
+            }
+        }
+    }
+
+    #[test]
+    fn test_hidden_input_not_rendered() {
+        let html = r#"<html><body><input type="hidden" name="x"><p>visible</p></body></html>"#;
+        let snapshot = crate::oracle::export_snapshot(html, "", 800, 600);
+
+        let mut inputs = Vec::new();
+        find_tags(&snapshot, "input", &mut inputs);
+        assert!(
+            inputs.is_empty(),
+            "Should not contain any hidden input element in the rendered tree, but found: {:?}",
+            inputs
+        );
+
+        let mut paragraphs = Vec::new();
+        find_tags(&snapshot, "p", &mut paragraphs);
+        assert_eq!(paragraphs.len(), 1, "Should contain the visible paragraph");
+    }
+
+    #[test]
+    fn test_text_input_still_rendered() {
+        let html = r#"<html><body><input type="text"></body></html>"#;
+        let snapshot = crate::oracle::export_snapshot(html, "", 800, 600);
+
+        let mut inputs = Vec::new();
+        find_tags(&snapshot, "input", &mut inputs);
+        assert_eq!(inputs.len(), 1, "Should render a text input element");
+    }
+
+    #[test]
+    fn test_hidden_attribute_div() {
+        let html = r#"<html><body><div hidden>gone</div><div>here</div></body></html>"#;
+        let snapshot = crate::oracle::export_snapshot(html, "", 800, 600);
+
+        let mut divs = Vec::new();
+        find_tags(&snapshot, "div", &mut divs);
+        assert_eq!(
+            divs.len(),
+            1,
+            "Should hide the div with the hidden attribute"
         );
     }
 }
