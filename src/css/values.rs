@@ -307,6 +307,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "clear"
             | "table-layout"
             | "visibility"
+            | "direction"
             | "cursor"
     )
 }
@@ -436,6 +437,10 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                     "visible" | "hidden" | "collapse"
                 )
             }
+            _ => false,
+        },
+        "direction" => match value {
+            CssValue::Keyword(kw) => matches!(kw.to_ascii_lowercase().as_str(), "ltr" | "rtl"),
             _ => false,
         },
         // TODO(spec): Custom cursor images using `url(...)` and comma-separated fallback lists are currently out of scope.
@@ -654,6 +659,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "visible" | "hidden" | "collapse" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "direction" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "ltr" | "rtl" => Some(val),
                     _ => None,
                 }
             } else {
@@ -2115,6 +2130,43 @@ mod tests {
         );
         assert_eq!(
             parse_property_value("visibility", &[token(CssToken::Ident("gone".to_string()))]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_direction_property() {
+        // Test known properties
+        assert!(is_known_layout_property("direction"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "direction",
+            &CssValue::Keyword("ltr".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "direction",
+            &CssValue::Keyword("rtl".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "direction",
+            &CssValue::Keyword("sideways".to_string())
+        ));
+
+        // Test parse_property_value for direction
+        assert_eq!(
+            parse_property_value("direction", &[token(CssToken::Ident("ltr".to_string()))]),
+            Some(CssValue::Keyword("ltr".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("direction", &[token(CssToken::Ident("rtl".to_string()))]),
+            Some(CssValue::Keyword("rtl".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "direction",
+                &[token(CssToken::Ident("sideways".to_string()))]
+            ),
             None
         );
     }
