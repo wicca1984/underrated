@@ -244,19 +244,32 @@ fn compute_node_style(
                         }
                     }
                     if is_outset_or_inset {
+                        // Intentional: leave the per-edge colors unset for the 3D
+                        // `outset`/`inset` bevel. Paint synthesizes lighter
+                        // top/left highlights and darker bottom/right shadows from
+                        // the resolved `border-color`, and that synthesis is gated
+                        // on the per-edge `border-*-color` longhands being absent
+                        // (see `build_display_list` button bevel handling). Setting
+                        // them here would flatten the bevel to a single color.
                         properties.remove("border-top-color");
                         properties.remove("border-right-color");
                         properties.remove("border-bottom-color");
                         properties.remove("border-left-color");
-                    } else {
-                        if let Some(color) = find_outline_color(&value) {
+                    } else if let Some(color) = find_outline_color(&value) {
+                        // `invert` is valid for `outline-color` but not for
+                        // `border-color`, so skip it here.
+                        let is_invert = matches!(&color, CssValue::Keyword(k) if k.eq_ignore_ascii_case("invert"));
+                        if !is_invert {
                             properties.insert("border-top-color".to_string(), color.clone());
                             properties.insert("border-right-color".to_string(), color.clone());
                             properties.insert("border-bottom-color".to_string(), color.clone());
                             properties.insert("border-left-color".to_string(), color.clone());
                         }
                     }
-                    // TODO(spec): per-edge differing values, border-image. Paint honoring border-style: none to suppress drawing.
+                    // TODO(spec): per-edge differing values, border-image, and
+                    // honoring `border-color` after an `outset`/`inset` border
+                    // shorthand (needs paint to synthesize the bevel from explicit
+                    // per-edge colors rather than gating on their absence).
                 }
                 "outline" => {
                     // spec: https://drafts.csswg.org/css-ui/#outline-shorthand
