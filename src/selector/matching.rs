@@ -302,6 +302,8 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "only-of-type" => is_only_of_type(dom, node),
                     "empty" => is_empty(dom, node),
                     "root" => is_root(dom, node),
+                    "link" => is_link(dom, node),
+                    "any-link" => is_link(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -525,6 +527,21 @@ fn is_root(dom: &Dom, node: NodeId) -> bool {
         }
     }
     false
+}
+
+fn is_link(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_target_tag = ascii::eq_ignore_ascii_case(name, "a")
+                || ascii::eq_ignore_ascii_case(name, "area")
+                || ascii::eq_ignore_ascii_case(name, "link");
+            is_target_tag
+                && attrs
+                    .iter()
+                    .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "href"))
+        }
+        _ => false,
+    }
 }
 
 fn get_previous_element_sibling(dom: &Dom, node: NodeId) -> Option<NodeId> {
@@ -1588,5 +1605,68 @@ mod tests {
         assert!(matches(&sel_not_is, &dom, a2));
         assert!(!matches(&sel_not_is, &dom, h1));
         assert!(!matches(&sel_not_is, &dom, h2));
+    }
+
+    #[test]
+    fn test_matches_link() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <a href="x">t</a>
+        let a_with_href = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("href".into(), "x".into())],
+        });
+        dom.append_child(doc, a_with_href);
+
+        // <area href="x">
+        let area_with_href = dom.create_node(NodeData::Element {
+            name: "area".into(),
+            attrs: vec![("href".into(), "x".into())],
+        });
+        dom.append_child(doc, area_with_href);
+
+        // <link href="x">
+        let link_with_href = dom.create_node(NodeData::Element {
+            name: "link".into(),
+            attrs: vec![("href".into(), "x".into())],
+        });
+        dom.append_child(doc, link_with_href);
+
+        // <a>t</a> (no href)
+        let a_no_href = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, a_no_href);
+
+        // <div href="x">t</div>
+        let div_with_href = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("href".into(), "x".into())],
+        });
+        dom.append_child(doc, div_with_href);
+
+        // Matches :link
+        let sel_link = parse_selector_list(":link").unwrap();
+        assert!(matches(&sel_link, &dom, a_with_href));
+        assert!(matches(&sel_link, &dom, area_with_href));
+        assert!(matches(&sel_link, &dom, link_with_href));
+        assert!(!matches(&sel_link, &dom, a_no_href));
+        assert!(!matches(&sel_link, &dom, div_with_href));
+
+        // Matches :any-link
+        let sel_any_link = parse_selector_list(":any-link").unwrap();
+        assert!(matches(&sel_any_link, &dom, a_with_href));
+        assert!(matches(&sel_any_link, &dom, area_with_href));
+        assert!(matches(&sel_any_link, &dom, link_with_href));
+        assert!(!matches(&sel_any_link, &dom, a_no_href));
+        assert!(!matches(&sel_any_link, &dom, div_with_href));
+
+        // Compound selector a:link
+        let sel_a_link = parse_selector_list("a:link").unwrap();
+        assert!(matches(&sel_a_link, &dom, a_with_href));
+        assert!(!matches(&sel_a_link, &dom, a_no_href));
+        assert!(!matches(&sel_a_link, &dom, area_with_href));
     }
 }
