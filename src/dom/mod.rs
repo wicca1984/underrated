@@ -4,8 +4,11 @@ mod classlist;
 mod focus;
 mod mutate;
 mod query;
+mod rect;
 mod serialize;
 mod text;
+
+pub use rect::DomRect;
 
 use crate::infra::{Arena, NodeId};
 
