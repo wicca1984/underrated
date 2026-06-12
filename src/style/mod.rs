@@ -474,23 +474,29 @@ fn compute_node_style(
     properties.insert("font-weight".to_string(), resolved_font_weight);
 
     // C. Resolve line-height
+    // Inherit from the parent: a unitless line-height inherits as a *number* (the
+    // child recomputes px against its own font-size); a resolved px value inherits
+    // as a length; otherwise it is `normal`.
+    let inherited_line_height = || -> CssValue {
+        match parent_style {
+            Some(p) => {
+                if let Some(n) = p.inherited_text.line_height_number {
+                    CssValue::Number(n)
+                } else if p.inherited_text.line_height
+                    != crate::style::categorized::LINE_HEIGHT_NORMAL
+                {
+                    CssValue::Length(p.inherited_text.line_height as f32, LengthUnit::Px)
+                } else {
+                    CssValue::Keyword("normal".to_string())
+                }
+            }
+            None => CssValue::Keyword("normal".to_string()),
+        }
+    };
     let resolved_line_height = {
         let raw_lh = properties.get("line-height");
         match raw_lh {
-            Some(CssValue::Keyword(s)) if s == "inherit" => match parent_style {
-                // A unitless line-height inherits as a number; the child recomputes it
-                // against its own font-size.
-                Some(p) if p.inherited_text.line_height_number.is_some() => {
-                    CssValue::Number(p.inherited_text.line_height_number.unwrap())
-                }
-                Some(p)
-                    if p.inherited_text.line_height
-                        != crate::style::categorized::LINE_HEIGHT_NORMAL =>
-                {
-                    CssValue::Length(p.inherited_text.line_height as f32, LengthUnit::Px)
-                }
-                _ => CssValue::Keyword("normal".to_string()),
-            },
+            Some(CssValue::Keyword(s)) if s == "inherit" => inherited_line_height(),
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(CssValue::Length(val, unit)) => match unit {
                 LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),
@@ -511,19 +517,7 @@ fn compute_node_style(
             },
             Some(CssValue::Number(val)) => CssValue::Number(*val),
             Some(val) => val.clone(),
-            None => match parent_style {
-                // Unitless line-height inherits the number, recomputed per element.
-                Some(p) if p.inherited_text.line_height_number.is_some() => {
-                    CssValue::Number(p.inherited_text.line_height_number.unwrap())
-                }
-                Some(p)
-                    if p.inherited_text.line_height
-                        != crate::style::categorized::LINE_HEIGHT_NORMAL =>
-                {
-                    CssValue::Length(p.inherited_text.line_height as f32, LengthUnit::Px)
-                }
-                _ => CssValue::Keyword("normal".to_string()),
-            },
+            None => inherited_line_height(),
         }
     };
     properties.insert("line-height".to_string(), resolved_line_height);

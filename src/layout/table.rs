@@ -562,10 +562,10 @@ fn gather_table_rows(
                 continue;
             }
             let style = styles.get(&child);
-            let is_row = style.map_or(false, |s| {
+            let is_row = style.is_some_and(|s| {
                 s.reset_box.display == "table-row" || s.reset_box.display == "table-row-group"
             }) || is_table_row_element(dom, child);
-            let is_cell = style.map_or(false, |s| s.reset_box.display == "table-cell")
+            let is_cell = style.is_some_and(|s| s.reset_box.display == "table-cell")
                 || is_table_cell_element(dom, child);
 
             if is_row {
@@ -610,7 +610,7 @@ fn gather_row_cells(
     let layoutable_children = get_layoutable_children(dom, styles, row_node);
     for &child in &layoutable_children {
         let style = styles.get(&child);
-        let is_cell = style.map_or(false, |s| s.reset_box.display == "table-cell")
+        let is_cell = style.is_some_and(|s| s.reset_box.display == "table-cell")
             || is_table_cell_element(dom, child);
         if is_cell {
             cells.push(child);
@@ -674,11 +674,10 @@ fn get_cell_preferred_width(
     depth: usize,
 ) -> f32 {
     let mut width = 0.0_f32;
-    if let Some(cs) = styles.get(&cell_node) {
-        if cs.reset_box.width != -1 {
+    if let Some(cs) = styles.get(&cell_node)
+        && cs.reset_box.width != -1 {
             width = cs.reset_box.width as f32;
         }
-    }
     if width == 0.0
         && let Some(cell_box) = layout_node(dom, styles, cell_node, content_width, 0.0, 0.0, depth)
     {
