@@ -56,6 +56,61 @@ fn is_last_row(dom: &Dom, cell_id: NodeId) -> bool {
     true
 }
 
+fn cell_has_rendered_content(dom: &Dom, node_id: NodeId) -> bool {
+    for &child in dom.children(node_id) {
+        if let Some(data) = dom.data(child) {
+            match data {
+                NodeData::Element { .. } => {
+                    return true;
+                }
+                NodeData::Text(s) if !s.trim().is_empty() => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if cell_has_rendered_content(dom, child) {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_empty_cells_from_style_string(style: &str) -> Option<String> {
+    for decl in style.split(';') {
+        let parts: Vec<&str> = decl.split(':').collect();
+        if parts.len() == 2 {
+            let name = parts[0].trim();
+            let val = parts[1].trim();
+            if name.eq_ignore_ascii_case("empty-cells") {
+                if val.eq_ignore_ascii_case("hide") {
+                    return Some("hide".to_string());
+                } else if val.eq_ignore_ascii_case("show") || val.eq_ignore_ascii_case("initial") {
+                    return Some("show".to_string());
+                } else if val.eq_ignore_ascii_case("inherit") {
+                    return Some("inherit".to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_pragmatic_empty_cells(dom: &Dom, node_id: NodeId) -> String {
+    let mut current = Some(node_id);
+    while let Some(curr) = current {
+        if let Some(crate::dom::NodeData::Element { attrs, .. }) = dom.data(curr)
+            && let Some((_, style_val)) = attrs.iter().find(|(name, _)| name == "style")
+            && let Some(val) = parse_empty_cells_from_style_string(style_val)
+            && val != "inherit"
+        {
+            return val;
+        }
+        current = dom.parent(curr);
+    }
+    "show".to_string()
+}
+
 /// Returns the 4 edge SolidRect items for a bordered table cell/table box, or empty.
 pub fn table_border_items(
     dom: &Dom,
@@ -69,6 +124,14 @@ pub fn table_border_items(
         || name.eq_ignore_ascii_case("th");
     if !is_table_or_cell {
         return vec![];
+    }
+
+    if name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th") {
+        let empty_cells_val = get_pragmatic_empty_cells(dom, node_id);
+        // TODO(spec): thread computed empty-cells via style
+        if empty_cells_val == "hide" && !cell_has_rendered_content(dom, node_id) {
+            return vec![];
+        }
     }
 
     // Find nearest ancestor (inclusive) `<table>`
@@ -384,5 +447,202 @@ mod tests {
             col_borders,
             sep_borders
         );
+    }
+
+    #[test]
+    fn test_empty_cells_hide_non_empty() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "1".into())],
+        });
+        dom.append_child(doc, table);
+
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        dom.append_child(table, tr);
+
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("style".into(), "empty-cells: hide;".into())],
+        });
+        dom.append_child(tr, td);
+
+        let text = dom.create_node(NodeData::Text("cell".into()));
+        dom.append_child(td, text);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let gray_borders = items
+            .iter()
+            .filter(|item| match item {
+                DisplayItem::SolidRect { color, .. } => *color == Color::Rgba(128, 128, 128, 255),
+                _ => false,
+            })
+            .count();
+
+        // The non-empty cell should STILL produce its borders, so total borders >= 8
+        assert!(
+            gray_borders >= 8,
+            "Expected at least 8 borders, got {}",
+            gray_borders
+        );
+    }
+
+    #[test]
+    fn test_empty_cells_hide_empty() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "1".into())],
+        });
+        dom.append_child(doc, table);
+
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        dom.append_child(table, tr);
+
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("style".into(), "empty-cells: hide;".into())],
+        });
+        dom.append_child(tr, td);
+
+        // No children or only whitespace text in the td!
+        let text = dom.create_node(NodeData::Text("   ".into()));
+        dom.append_child(td, text);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let gray_borders = items
+            .iter()
+            .filter(|item| match item {
+                DisplayItem::SolidRect { color, .. } => *color == Color::Rgba(128, 128, 128, 255),
+                _ => false,
+            })
+            .count();
+
+        // The empty cell should suppress its borders. Only the table itself might have borders (4 segments).
+        // So the count should be < 8 (specifically, 4 for the table, 0 for the td).
+        assert!(
+            gray_borders < 8,
+            "Expected empty cell to suppress borders, total borders was {}",
+            gray_borders
+        );
+        assert_eq!(gray_borders, 4);
+    }
+
+    #[test]
+    fn test_empty_cells_show_empty() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![("border".into(), "1".into())],
+        });
+        dom.append_child(doc, table);
+
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        dom.append_child(table, tr);
+
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![("style".into(), "empty-cells: show; padding: 10px;".into())],
+        });
+        dom.append_child(tr, td);
+
+        // No children or only whitespace text in the td!
+        let text = dom.create_node(NodeData::Text("   ".into()));
+        dom.append_child(td, text);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let gray_borders = items
+            .iter()
+            .filter(|item| match item {
+                DisplayItem::SolidRect { color, .. } => *color == Color::Rgba(128, 128, 128, 255),
+                _ => false,
+            })
+            .count();
+
+        // The empty cell should STILL produce its borders because of show, so total borders >= 8
+        assert!(
+            gray_borders >= 8,
+            "Expected at least 8 borders, got {}",
+            gray_borders
+        );
+    }
+
+    #[test]
+    fn test_empty_cells_inheritance() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        // table has style="empty-cells: hide;"
+        let table = dom.create_node(NodeData::Element {
+            name: "table".into(),
+            attrs: vec![
+                ("border".into(), "1".into()),
+                ("style".into(), "empty-cells: hide;".into()),
+            ],
+        });
+        dom.append_child(doc, table);
+
+        let tr = dom.create_node(NodeData::Element {
+            name: "tr".into(),
+            attrs: vec![],
+        });
+        dom.append_child(table, tr);
+
+        // td has no style, inherits empty-cells: hide from table
+        let td = dom.create_node(NodeData::Element {
+            name: "td".into(),
+            attrs: vec![],
+        });
+        dom.append_child(tr, td);
+
+        let text = dom.create_node(NodeData::Text("   ".into()));
+        dom.append_child(td, text);
+
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let gray_borders = items
+            .iter()
+            .filter(|item| match item {
+                DisplayItem::SolidRect { color, .. } => *color == Color::Rgba(128, 128, 128, 255),
+                _ => false,
+            })
+            .count();
+
+        // Inherited empty-cells: hide should suppress the empty cell borders (total borders == 4)
+        assert_eq!(gray_borders, 4);
     }
 }
