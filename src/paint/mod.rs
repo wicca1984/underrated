@@ -4381,10 +4381,16 @@ mod tests {
         });
         dom.append_child(div, span);
 
+        // The child is given `display: block` so it has a box to paint. This test
+        // has no UA stylesheet, where `span` would be `display: inline`; an *empty*
+        // inline element has a zero-width box and would paint no visible background
+        // (as in a real browser), which is unrelated to the visibility behavior under
+        // test. (Pre-migration this relied on the initial display defaulting to a
+        // block box; the typed style uses the spec-correct `inline` initial value.)
         let stylesheet = parse_stylesheet(
             "
             div { visibility: hidden; background-color: #ff0000; height: 10px; }
-            span { visibility: visible; background-color: #0000ff; height: 10px; }
+            span { display: block; visibility: visible; background-color: #0000ff; height: 10px; }
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
