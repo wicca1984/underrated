@@ -13,6 +13,26 @@ pub use rect::DomRect;
 
 use crate::infra::{Arena, NodeId};
 
+// TODO(spec): loading=lazy currently behaves as eager (no viewport-proximity deferral); see src/loader
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageLoading {
+    Eager,
+    Lazy,
+}
+
+fn parse_loading(value: Option<&str>) -> ImageLoading {
+    match value {
+        Some(v) => {
+            if v.trim().eq_ignore_ascii_case("lazy") {
+                ImageLoading::Lazy
+            } else {
+                ImageLoading::Eager
+            }
+        }
+        None => ImageLoading::Eager,
+    }
+}
+
 /// Node data for different types of DOM nodes.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum NodeData {
@@ -31,6 +51,18 @@ pub enum NodeData {
 }
 
 impl NodeData {
+    /// Returns the parsed value of the `loading` attribute.
+    pub fn loading(&self) -> ImageLoading {
+        let value = match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "loading")
+                .map(|(_, v)| v.as_str()),
+            _ => None,
+        };
+        parse_loading(value)
+    }
+
     /// Returns the value of the `role` attribute if present.
     pub fn role(&self) -> Option<&str> {
         match self {
@@ -162,6 +194,11 @@ impl Dom {
     /// invalid or stale (mirrors the generational arena's `get`).
     pub fn data(&self, node: NodeId) -> Option<&NodeData> {
         self.arena.get(node).map(|n| &n.data)
+    }
+
+    /// Returns the parsed value of the `loading` attribute on the given node.
+    pub fn loading(&self, node: NodeId) -> ImageLoading {
+        parse_loading(self.get_attribute(node, "loading"))
     }
 
     /// Returns the value of the `role` attribute if present on the given node.
@@ -505,5 +542,97 @@ mod tests {
         let node_data = dom.data(div_id).expect("Should have data");
         assert_eq!(node_data.role(), None);
         assert_eq!(node_data.aria("label"), None);
+    }
+
+    #[test]
+    fn test_loading_lazy_retained() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="lazy">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Lazy);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Lazy);
+
+        // Test with whitespace to verify trim
+        let html_trimmed = r#"<img loading=" lazy ">"#;
+        let stream_trimmed = InputStream::from_utf8(html_trimmed.as_bytes());
+        let dom_trimmed = parse_document(stream_trimmed);
+        let img_id_trimmed = dom_trimmed.query_selector("img").expect("Should find img");
+        assert_eq!(dom_trimmed.loading(img_id_trimmed), ImageLoading::Lazy);
+    }
+
+    #[test]
+    fn test_loading_eager_explicit() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="eager">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Eager);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Eager);
+    }
+
+    #[test]
+    fn test_loading_default_eager() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img>"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Eager);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Eager);
+    }
+
+    #[test]
+    fn test_loading_invalid_is_eager() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="garbage">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Eager);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Eager);
+    }
+
+    #[test]
+    fn test_loading_case_insensitive() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="LAZY">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Lazy);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Lazy);
     }
 }
