@@ -20,6 +20,7 @@ pub const UA_DEFAULT_CSS: &str = "\
 html, body { background: #fff; background-color: #fff; color: #000; }\n\
 body { margin: 8px; }\n\
 div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, nav, article, figure, figcaption, blockquote, dl, dt, dd { display: block; }\n\
+a, b, strong, i, em, span, code, small, big, sub, sup, abbr, cite, q, s, strike, del, u, ins, mark, label, tt, kbd, samp, var, dfn, time, bdi, bdo, wbr, font { display: inline; }\n\
 p { margin-top: 1em; margin-bottom: 1em; }\n\
 h1 { margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }\n\
 h2 { margin-top: 0.83em; margin-bottom: 0.83em; font-weight: bold; }\n\
@@ -1320,6 +1321,52 @@ mod tests {
         assert_eq!(
             th_s.get("text-align"),
             Some(&crate::css::values::CssValue::Keyword("center".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_ua_default_stylesheet_inline() {
+        let html = "<html><body>foo<span>bar</span>baz</body></html>";
+        let page = render_html_for_test(html, 800.0);
+
+        let doc = page.dom.document();
+        let mut span_style = None;
+
+        for id in page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) = page.dom.data(id)
+                && name == "span"
+            {
+                span_style = page.styles.get(&id);
+                break;
+            }
+        }
+
+        let span_s = span_style.expect("span should have styles");
+        assert_eq!(
+            span_s.get("display"),
+            Some(&crate::css::values::CssValue::Keyword("inline".to_string()))
+        );
+
+        let mut body_box = None;
+        let mut stack = vec![&page.layout];
+        while let Some(b) = stack.pop() {
+            if let Some(node_id) = b.node
+                && let Some(NodeData::Element { name, .. }) = page.dom.data(node_id)
+                && name == "body"
+            {
+                body_box = Some(b);
+                break;
+            }
+            for child in &b.children {
+                stack.push(child);
+            }
+        }
+
+        let body = body_box.expect("Body layout box should exist");
+        assert_eq!(
+            body.children.len(),
+            1,
+            "Body should have exactly 1 child line box containing all inline content"
         );
     }
 
