@@ -113,6 +113,22 @@ impl NodeData {
         }
     }
 
+    /// Returns true if the `checked` attribute is present.
+    pub fn checked(&self) -> bool {
+        match self {
+            NodeData::Element { attrs, .. } => attrs.iter().any(|(k, _)| k == "checked"),
+            _ => false,
+        }
+    }
+
+    /// Returns true if the `selected` attribute is present.
+    pub fn selected(&self) -> bool {
+        match self {
+            NodeData::Element { attrs, .. } => attrs.iter().any(|(k, _)| k == "selected"),
+            _ => false,
+        }
+    }
+
     /// Returns the value of the `value` attribute if present.
     pub fn value(&self) -> Option<&str> {
         match self {
@@ -285,6 +301,16 @@ impl Dom {
     /// Returns true if the `disabled` attribute is present on the given node.
     pub fn disabled(&self, node: NodeId) -> bool {
         self.get_attribute(node, "disabled").is_some()
+    }
+
+    /// Returns true if the `checked` attribute is present on the given node.
+    pub fn checked(&self, node: NodeId) -> bool {
+        self.get_attribute(node, "checked").is_some()
+    }
+
+    /// Returns true if the `selected` attribute is present on the given node.
+    pub fn selected(&self, node: NodeId) -> bool {
+        self.get_attribute(node, "selected").is_some()
     }
 
     /// Returns the value of the `value` attribute if present on the given node.
@@ -1022,6 +1048,134 @@ mod tests {
             let text_id = children[0];
             assert!(!dom.disabled(text_id));
             assert!(!dom.data(text_id).is_some_and(|n| n.disabled()));
+        }
+    }
+
+    #[test]
+    fn test_checked_attribute_accessor() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Plain checked attribute
+        {
+            let html = r#"<input checked>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(dom.checked(id));
+            assert!(dom.data(id).is_some_and(|n| n.checked()));
+        }
+
+        // 2. Empty string value
+        {
+            let html = r#"<input checked="">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(dom.checked(id));
+            assert!(dom.data(id).is_some_and(|n| n.checked()));
+        }
+
+        // 3. String value like "false" (still true because attribute is present)
+        {
+            let html = r#"<input checked="false">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(dom.checked(id));
+            assert!(dom.data(id).is_some_and(|n| n.checked()));
+        }
+
+        // 4. No attribute
+        {
+            let html = r#"<input>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(!dom.checked(id));
+            assert!(!dom.data(id).is_some_and(|n| n.checked()));
+        }
+
+        // 5. Non-element node (Document, Text)
+        {
+            let html = r#"<div checked>x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert!(!dom.checked(doc_id));
+            assert!(!dom.data(doc_id).is_some_and(|n| n.checked()));
+
+            // Text node
+            let children = dom.children(dom.query_selector("div").unwrap());
+            let text_id = children[0];
+            assert!(!dom.checked(text_id));
+            assert!(!dom.data(text_id).is_some_and(|n| n.checked()));
+        }
+    }
+
+    #[test]
+    fn test_selected_attribute_accessor() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Plain selected attribute
+        {
+            let html = r#"<option selected>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("option").expect("Should find option");
+            assert!(dom.selected(id));
+            assert!(dom.data(id).is_some_and(|n| n.selected()));
+        }
+
+        // 2. Empty string value
+        {
+            let html = r#"<option selected="">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("option").expect("Should find option");
+            assert!(dom.selected(id));
+            assert!(dom.data(id).is_some_and(|n| n.selected()));
+        }
+
+        // 3. String value like "false" (still true because attribute is present)
+        {
+            let html = r#"<option selected="false">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("option").expect("Should find option");
+            assert!(dom.selected(id));
+            assert!(dom.data(id).is_some_and(|n| n.selected()));
+        }
+
+        // 4. No attribute
+        {
+            let html = r#"<option>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("option").expect("Should find option");
+            assert!(!dom.selected(id));
+            assert!(!dom.data(id).is_some_and(|n| n.selected()));
+        }
+
+        // 5. Non-element node (Document, Text)
+        {
+            let html = r#"<div selected>x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert!(!dom.selected(doc_id));
+            assert!(!dom.data(doc_id).is_some_and(|n| n.selected()));
+
+            // Text node
+            let children = dom.children(dom.query_selector("div").unwrap());
+            let text_id = children[0];
+            assert!(!dom.selected(text_id));
+            assert!(!dom.data(text_id).is_some_and(|n| n.selected()));
         }
     }
 
