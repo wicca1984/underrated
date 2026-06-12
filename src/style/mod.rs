@@ -1748,6 +1748,7 @@ fn is_outline_color_value(value: &CssValue) -> bool {
     }
 }
 
+#[cfg(test)]
 fn is_inherited_property(property: &str) -> bool {
     // spec: basic inherited properties (hardcoded fast-path, retained for no-regression)
     let hardcoded = matches!(
