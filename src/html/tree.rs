@@ -90,7 +90,7 @@ impl TreeBuilder {
             InsertionMode::BeforeHtml => self.handle_before_html(token),
             InsertionMode::BeforeHead => self.handle_before_head(token),
             InsertionMode::InHead => self.handle_in_head(token),
-            InsertionMode::InHeadNoscript => self.handle_in_body(token), // TODO(spec)
+            InsertionMode::InHeadNoscript => self.handle_in_head_noscript(token),
             InsertionMode::AfterHead => self.handle_after_head(token),
             InsertionMode::InBody => self.handle_in_body(token),
             InsertionMode::Text => self.handle_text(token),
@@ -264,12 +264,17 @@ impl TreeBuilder {
                 self.tokenizer.set_last_start_tag(&name);
                 self.insertion_mode = InsertionMode::Text;
             }
-            Token::StartTag { name, attrs, .. } if name == "style" || name == "noscript" => {
+            Token::StartTag { name, attrs, .. } if name == "style" => {
                 let node = self.create_and_insert_element(name.clone(), attrs);
                 self.stack_of_open_elements.push(node);
                 self.tokenizer.set_initial_state("RAWTEXT state");
                 self.tokenizer.set_last_start_tag(&name);
                 self.insertion_mode = InsertionMode::Text;
+            }
+            Token::StartTag { name, attrs, .. } if name == "noscript" => {
+                let node = self.create_and_insert_element(name, attrs);
+                self.stack_of_open_elements.push(node);
+                self.insertion_mode = InsertionMode::InHeadNoscript;
             }
             Token::StartTag { name, attrs, .. } if name == "script" => {
                 let node = self.create_and_insert_element(name.clone(), attrs);
@@ -313,6 +318,80 @@ impl TreeBuilder {
                 self.process_token(token);
             }
         }
+    }
+
+    // spec: §13.2.6.4.5 The "in head noscript" insertion mode
+    fn handle_in_head_noscript(&mut self, token: Token) {
+        match token {
+            Token::Doctype { .. } => {
+                // Parse error. Ignore the token.
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } if name == "html" => {
+                self.handle_in_body(Token::StartTag {
+                    name,
+                    attrs,
+                    self_closing,
+                });
+            }
+            Token::EndTag { ref name, .. } if name == "noscript" => {
+                self.stack_of_open_elements.pop();
+                self.insertion_mode = InsertionMode::InHead;
+            }
+            Token::Character(c) if is_html_whitespace(c) => {
+                self.handle_in_head(Token::Character(c));
+            }
+            Token::Comment(data) => {
+                self.handle_in_head(Token::Comment(data));
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } if name == "basefont"
+                || name == "bgsound"
+                || name == "link"
+                || name == "meta"
+                || name == "noframes"
+                || name == "style" =>
+            {
+                self.handle_in_head(Token::StartTag {
+                    name,
+                    attrs,
+                    self_closing,
+                });
+            }
+            Token::EndTag {
+                name,
+                attrs,
+                self_closing,
+            } if name == "br" => {
+                self.handle_in_head_noscript_anything_else(Token::EndTag {
+                    name,
+                    attrs,
+                    self_closing,
+                });
+            }
+            Token::StartTag { ref name, .. } if name == "head" || name == "noscript" => {
+                // Parse error. Ignore the token.
+            }
+            Token::EndTag { .. } => {
+                // Parse error. Ignore the token.
+            }
+            _ => {
+                self.handle_in_head_noscript_anything_else(token);
+            }
+        }
+    }
+
+    fn handle_in_head_noscript_anything_else(&mut self, token: Token) {
+        // Parse error.
+        self.stack_of_open_elements.pop();
+        self.insertion_mode = InsertionMode::InHead;
+        self.process_token(token);
     }
 
     // spec: §13.2.6.4.6 The "after head" insertion mode
@@ -2025,6 +2104,36 @@ mod tests {
         assert_eq!(
             dom.serialize(dom.document()),
             "<html><head></head><body><select><optgroup><option>a</option></optgroup></select></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_noscript_in_head_with_link() {
+        let html = "<html><head><noscript><link></noscript></head><body></body></html>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head><noscript><link></noscript></head><body></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_noscript_in_head_p_closes_noscript() {
+        let html = "<html><head><noscript><p>x</p></noscript></head><body></body></html>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head><noscript></noscript></head><body><p>x</p></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_noscript_in_head_empty() {
+        let html = "<html><head><noscript></noscript></head><body></body></html>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head><noscript></noscript></head><body></body></html>"
         );
     }
 }
