@@ -105,6 +105,25 @@ impl NodeData {
         }
     }
 
+    /// Returns true if the `disabled` attribute is present.
+    pub fn disabled(&self) -> bool {
+        match self {
+            NodeData::Element { attrs, .. } => attrs.iter().any(|(k, _)| k == "disabled"),
+            _ => false,
+        }
+    }
+
+    /// Returns the value of the `value` attribute if present.
+    pub fn value(&self) -> Option<&str> {
+        match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "value")
+                .map(|(_, v)| v.as_str()),
+            _ => None,
+        }
+    }
+
     /// Returns the parsed value of the `colspan` attribute if present.
     pub fn colspan(&self) -> Option<u32> {
         match self {
@@ -261,6 +280,16 @@ impl Dom {
     /// Returns true if the `hidden` attribute is present on the given node.
     pub fn hidden(&self, node: NodeId) -> bool {
         self.get_attribute(node, "hidden").is_some()
+    }
+
+    /// Returns true if the `disabled` attribute is present on the given node.
+    pub fn disabled(&self, node: NodeId) -> bool {
+        self.get_attribute(node, "disabled").is_some()
+    }
+
+    /// Returns the value of the `value` attribute if present on the given node.
+    pub fn value(&self, node: NodeId) -> Option<&str> {
+        self.get_attribute(node, "value")
     }
 
     /// Returns the parsed value of the `colspan` attribute if present on the given node.
@@ -929,6 +958,124 @@ mod tests {
             assert_eq!(dom.data(text_id).and_then(|n| n.colspan()), None);
             assert_eq!(dom.rowspan(text_id), None);
             assert_eq!(dom.data(text_id).and_then(|n| n.rowspan()), None);
+        }
+    }
+
+    #[test]
+    fn test_disabled_attribute_accessor() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Plain disabled attribute
+        {
+            let html = r#"<input disabled>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(dom.disabled(id));
+            assert!(dom.data(id).is_some_and(|n| n.disabled()));
+        }
+
+        // 2. Empty string value
+        {
+            let html = r#"<input disabled="">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(dom.disabled(id));
+            assert!(dom.data(id).is_some_and(|n| n.disabled()));
+        }
+
+        // 3. String value like "false" (still true because attribute is present)
+        {
+            let html = r#"<input disabled="false">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(dom.disabled(id));
+            assert!(dom.data(id).is_some_and(|n| n.disabled()));
+        }
+
+        // 4. No attribute
+        {
+            let html = r#"<input>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert!(!dom.disabled(id));
+            assert!(!dom.data(id).is_some_and(|n| n.disabled()));
+        }
+
+        // 5. Non-element node (Document, Text)
+        {
+            let html = r#"<div disabled>x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert!(!dom.disabled(doc_id));
+            assert!(!dom.data(doc_id).is_some_and(|n| n.disabled()));
+
+            // Text node
+            let children = dom.children(dom.query_selector("div").unwrap());
+            let text_id = children[0];
+            assert!(!dom.disabled(text_id));
+            assert!(!dom.data(text_id).is_some_and(|n| n.disabled()));
+        }
+    }
+
+    #[test]
+    fn test_value_attribute_accessor() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Plain value attribute
+        {
+            let html = r#"<input value="hi">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert_eq!(dom.value(id), Some("hi"));
+            assert_eq!(dom.data(id).and_then(|n| n.value()), Some("hi"));
+        }
+
+        // 2. Empty string value
+        {
+            let html = r#"<input value="">"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert_eq!(dom.value(id), Some(""));
+            assert_eq!(dom.data(id).and_then(|n| n.value()), Some(""));
+        }
+
+        // 3. No attribute
+        {
+            let html = r#"<input>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("input").expect("Should find input");
+            assert_eq!(dom.value(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.value()), None);
+        }
+
+        // 4. Non-element node (Document, Text)
+        {
+            let html = r#"<div value="hello">x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert_eq!(dom.value(doc_id), None);
+            assert_eq!(dom.data(doc_id).and_then(|n| n.value()), None);
+
+            // Text node
+            let children = dom.children(dom.query_selector("div").unwrap());
+            let text_id = children[0];
+            assert_eq!(dom.value(text_id), None);
+            assert_eq!(dom.data(text_id).and_then(|n| n.value()), None);
         }
     }
 }
