@@ -553,9 +553,27 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
         ComponentValue::Token(CssToken::Number(v)) => Some(CssValue::Number(*v as f32)),
         ComponentValue::Token(CssToken::Hash(s)) => parse_hex_color(s).map(CssValue::Color),
         ComponentValue::Token(CssToken::Delim('/')) => Some(CssValue::Keyword("/".to_string())),
+        ComponentValue::Token(CssToken::Url(s)) => Some(CssValue::Keyword(format!("url({})", s))),
         ComponentValue::Function { name, value } => {
             if name.eq_ignore_ascii_case("rgb") || name.eq_ignore_ascii_case("rgba") {
                 return parse_rgb_function(value).map(CssValue::Color);
+            }
+            if name.eq_ignore_ascii_case("url") {
+                let mut url_str = None;
+                for val in value {
+                    match val {
+                        ComponentValue::Token(CssToken::String(s)) => {
+                            url_str = Some(s.clone());
+                            break;
+                        }
+                        ComponentValue::Token(CssToken::Ident(s)) => {
+                            url_str = Some(s.clone());
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                return url_str.map(|s| CssValue::Keyword(format!("url({})", s)));
             }
             None // TODO(spec): other functions
         }

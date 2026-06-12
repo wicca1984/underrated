@@ -602,6 +602,83 @@ fn paint_decoration_line(
     }
 }
 
+fn resolve_position_coord(val: &CssValue, box_dim: f32, img_dim: f32, _is_vertical: bool) -> f32 {
+    match val {
+        CssValue::Length(v, unit) => match unit {
+            crate::css::values::LengthUnit::Percent => {
+                // Percentage resolves against (box_dim - img_dim) per CSS spec.
+                // spec: https://www.w3.org/TR/css-backgrounds-3/#background-position
+                (box_dim - img_dim) * (*v / 100.0)
+            }
+            _ => *v, // Treat other units as raw px for simplicity
+        },
+        CssValue::Number(v) => *v,
+        CssValue::Keyword(kw) => {
+            let kw_lower = kw.to_ascii_lowercase();
+            match kw_lower.as_str() {
+                "left" => 0.0,
+                "right" => box_dim - img_dim,
+                "top" => 0.0,
+                "bottom" => box_dim - img_dim,
+                "center" => (box_dim - img_dim) / 2.0,
+                _ => 0.0,
+            }
+        }
+        _ => 0.0,
+    }
+}
+
+fn get_background_position_offsets(
+    val: &CssValue,
+    box_w: f32,
+    box_h: f32,
+    img_w: f32,
+    img_h: f32,
+) -> (f32, f32) {
+    match val {
+        CssValue::Multiple(list) if list.len() >= 2 => {
+            let first = &list[0];
+            let second = &list[1];
+            // Check if the first keyword is top/bottom or second keyword is left/right to handle order swap if needed.
+            let mut x_val = first;
+            let mut y_val = second;
+            if let CssValue::Keyword(k1) = first
+                && (k1.eq_ignore_ascii_case("top") || k1.eq_ignore_ascii_case("bottom"))
+                && let CssValue::Keyword(k2) = second
+                && {
+                    let k2_l = k2.to_ascii_lowercase();
+                    k2_l == "left" || k2_l == "right" || k2_l == "center"
+                }
+            {
+                x_val = second;
+                y_val = first;
+            }
+            let x = resolve_position_coord(x_val, box_w, img_w, false);
+            let y = resolve_position_coord(y_val, box_h, img_h, true);
+            (x, y)
+        }
+        _ => {
+            // Single value
+            let is_vert = if let CssValue::Keyword(kw) = val {
+                let kw_l = kw.to_ascii_lowercase();
+                kw_l == "top" || kw_l == "bottom"
+            } else {
+                false
+            };
+
+            if is_vert {
+                let x = (box_w - img_w) / 2.0;
+                let y = resolve_position_coord(val, box_h, img_h, true);
+                (x, y)
+            } else {
+                let x = resolve_position_coord(val, box_w, img_w, false);
+                let y = (box_h - img_h) / 2.0;
+                (x, y)
+            }
+        }
+    }
+}
+
 /// Scale a color's alpha channel by an effective opacity factor.
 /// spec: <https://www.w3.org/TR/css-color-3/#transparency>
 fn scale_color_alpha(color: &Color, factor: f32) -> Color {
@@ -935,6 +1012,205 @@ pub fn build_display_list_with_caret(
                             rect: layout_box.rect,
                             color: scale_color_alpha(color, effective_opacity),
                         });
+                    }
+                }
+
+                // Paint background-image (t0382)
+                let mut bg_img_src = None;
+                if let Some(CssValue::Keyword(kw)) = style.get("background-image") {
+                    if kw.starts_with("url(") && kw.ends_with(')') {
+                        let inner = &kw[4..kw.len() - 1];
+                        bg_img_src =
+                            Some(inner.trim_matches(|c| c == '"' || c == '\'').to_string());
+                    } else if !kw.is_empty() && kw != "none" {
+                        bg_img_src = Some(kw.clone());
+                    }
+                }
+
+                if let Some(src) = bg_img_src
+                    && let Some(decoded) = dom.get_image(&src)
+                {
+                    let box_rect = layout_box.rect;
+                    if box_rect.size.width > 0.0 && box_rect.size.height > 0.0 {
+                        // Extract repeat
+                        let repeat_val = style
+                            .get("background-repeat")
+                            .and_then(|v| {
+                                if let CssValue::Keyword(kw) = v {
+                                    Some(kw.to_ascii_lowercase())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "repeat".to_string());
+
+                        let (repeat_x, repeat_y) = match repeat_val.as_str() {
+                            "no-repeat" => (false, false),
+                            "repeat-x" => (true, false),
+                            "repeat-y" => (false, true),
+                            _ => (true, true),
+                        };
+
+                        // Determine image dimensions.
+                        let mut img_w = decoded.width as f32;
+                        let mut img_h = decoded.height as f32;
+
+                        if let Some(size_val) = style.get("background-size") {
+                            // Simple background-size support (trivial explicit px or percentages)
+                            match size_val {
+                                CssValue::Multiple(list) if list.len() >= 2 => {
+                                    if let CssValue::Length(v1, u1) = &list[0] {
+                                        if *u1 == crate::css::values::LengthUnit::Px {
+                                            img_w = *v1;
+                                        } else if *u1 == crate::css::values::LengthUnit::Percent {
+                                            img_w = box_rect.size.width * (*v1 / 100.0);
+                                        }
+                                    }
+                                    if let CssValue::Length(v2, u2) = &list[1] {
+                                        if *u2 == crate::css::values::LengthUnit::Px {
+                                            img_h = *v2;
+                                        } else if *u2 == crate::css::values::LengthUnit::Percent {
+                                            img_h = box_rect.size.height * (*v2 / 100.0);
+                                        }
+                                    }
+                                }
+                                CssValue::Length(v, u) => {
+                                    if *u == crate::css::values::LengthUnit::Px {
+                                        img_w = *v;
+                                        img_h = *v;
+                                    } else if *u == crate::css::values::LengthUnit::Percent {
+                                        img_w = box_rect.size.width * (*v / 100.0);
+                                        img_h = box_rect.size.height * (*v / 100.0);
+                                    }
+                                }
+                                _ => {
+                                    // TODO(spec): background-size other values (cover/contain/auto)
+                                }
+                            }
+                        }
+
+                        if img_w > 0.0 && img_h > 0.0 {
+                            // Extract position
+                            let pos_val = style.get("background-position");
+                            let (x_offset, y_offset) = if let Some(p_val) = pos_val {
+                                get_background_position_offsets(
+                                    p_val,
+                                    box_rect.size.width,
+                                    box_rect.size.height,
+                                    img_w,
+                                    img_h,
+                                )
+                            } else {
+                                (0.0, 0.0)
+                            };
+
+                            // Calculate repeat indices
+                            let min_i = if repeat_x {
+                                ((-x_offset - img_w) / img_w).floor() as i32
+                            } else {
+                                0
+                            };
+                            let max_i = if repeat_x {
+                                ((box_rect.size.width - x_offset) / img_w).ceil() as i32
+                            } else {
+                                0
+                            };
+
+                            let min_j = if repeat_y {
+                                ((-y_offset - img_h) / img_h).floor() as i32
+                            } else {
+                                0
+                            };
+                            let max_j = if repeat_y {
+                                ((box_rect.size.height - y_offset) / img_h).ceil() as i32
+                            } else {
+                                0
+                            };
+
+                            // Emit tiles
+                            for i in min_i..=max_i {
+                                for j in min_j..=max_j {
+                                    let tile_x = x_offset + i as f32 * img_w;
+                                    let tile_y = y_offset + j as f32 * img_h;
+                                    let tile_rect = Rect::new(
+                                        box_rect.origin.x + tile_x,
+                                        box_rect.origin.y + tile_y,
+                                        img_w,
+                                        img_h,
+                                    );
+
+                                    if let Some(clipped_rect) = tile_rect.intersection(box_rect)
+                                        && clipped_rect.size.width > 0.0
+                                        && clipped_rect.size.height > 0.0
+                                    {
+                                        // Crop the decoded image to match the clipped_rect
+                                        let dx = clipped_rect.origin.x - tile_rect.origin.x;
+                                        let dy = clipped_rect.origin.y - tile_rect.origin.y;
+
+                                        // Map destination px to source image pixels.
+                                        let scale_x = decoded.width as f32 / img_w;
+                                        let scale_y = decoded.height as f32 / img_h;
+
+                                        let start_x = (dx * scale_x).round() as u32;
+                                        let start_y = (dy * scale_y).round() as u32;
+                                        let clipped_w =
+                                            (clipped_rect.size.width * scale_x).round() as u32;
+                                        let clipped_h =
+                                            (clipped_rect.size.height * scale_y).round() as u32;
+
+                                        let start_x = start_x.min(decoded.width);
+                                        let start_y = start_y.min(decoded.height);
+                                        let clipped_w = clipped_w.min(decoded.width - start_x);
+                                        let clipped_h = clipped_h.min(decoded.height - start_y);
+
+                                        if clipped_w > 0 && clipped_h > 0 {
+                                            let mut cropped_rgba = Vec::with_capacity(
+                                                (clipped_w * clipped_h * 4) as usize,
+                                            );
+                                            for sy in start_y..(start_y + clipped_h) {
+                                                let src_row_start =
+                                                    ((sy * decoded.width + start_x) * 4) as usize;
+                                                let src_row_end = (src_row_start
+                                                    + (clipped_w * 4) as usize)
+                                                    .min(decoded.rgba.len());
+                                                cropped_rgba.extend_from_slice(
+                                                    &decoded.rgba[src_row_start..src_row_end],
+                                                );
+                                            }
+
+                                            let cropped_img = crate::image::DecodedImage {
+                                                width: clipped_w,
+                                                height: clipped_h,
+                                                rgba: cropped_rgba,
+                                            };
+
+                                            // Retrieve base URL if any
+                                            let mut base_url = None;
+                                            for n_id in dom.descendants(dom.document()) {
+                                                if let Some(NodeData::Element {
+                                                    name: el_name, ..
+                                                }) = dom.data(n_id)
+                                                    && el_name.eq_ignore_ascii_case("base")
+                                                    && let Some(href) =
+                                                        dom.get_attribute(n_id, "href")
+                                                {
+                                                    base_url = Some(href.to_string());
+                                                    break;
+                                                }
+                                            }
+
+                                            items.push(DisplayItem::Image {
+                                                rect: clipped_rect,
+                                                src: src.clone(),
+                                                base_url,
+                                                decoded: Some(cropped_img),
+                                                object_fit: ObjectFit::Fill,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2777,6 +3053,163 @@ mod tests {
         assert!(found_green, "Green pixel not found or incorrect");
         assert!(found_blue, "Blue pixel not found or incorrect");
         assert!(found_yellow, "Yellow pixel not found or incorrect");
+    }
+
+    #[test]
+    fn test_background_no_repeat_single_blit() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // Inject 10x10 decoded image to DOM
+        let img = crate::image::DecodedImage {
+            width: 10,
+            height: 10,
+            rgba: vec![255; 400], // 10 * 10 * 4
+        };
+        dom.add_image("bg.png".to_string(), img);
+
+        let stylesheet = parse_stylesheet(
+            "div {
+                width: 40px;
+                height: 40px;
+                background-image: url('bg.png');
+                background-repeat: no-repeat;
+            }",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let image_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        assert_eq!(
+            image_items.len(),
+            1,
+            "Expected exactly one background image tile with no-repeat"
+        );
+
+        if let DisplayItem::Image { rect, src, .. } = image_items[0] {
+            assert_eq!(src, "bg.png");
+            // The tile should be positioned at the box origin (0, 0)
+            assert_eq!(rect.origin.x, 0.0);
+            assert_eq!(rect.origin.y, 0.0);
+            // The size should be the image's intrinsic size (10, 10)
+            assert_eq!(rect.size.width, 10.0);
+            assert_eq!(rect.size.height, 10.0);
+        } else {
+            panic!("Expected DisplayItem::Image");
+        }
+    }
+
+    #[test]
+    fn test_background_repeat_tiles() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // Inject 10x10 decoded image to DOM
+        let img = crate::image::DecodedImage {
+            width: 10,
+            height: 10,
+            rgba: vec![255; 400],
+        };
+        dom.add_image("bg.png".to_string(), img);
+
+        let stylesheet = parse_stylesheet(
+            "div {
+                width: 40px;
+                height: 40px;
+                background-image: url('bg.png');
+                background-repeat: repeat;
+            }",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let image_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        // 40x40 box with 10x10 repeating tiles should yield 4x4 = 16 tiles
+        assert_eq!(
+            image_items.len(),
+            16,
+            "Expected 16 background image tiles with repeat"
+        );
+    }
+
+    #[test]
+    fn test_background_position_offset() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // Inject 10x10 decoded image to DOM
+        let img = crate::image::DecodedImage {
+            width: 10,
+            height: 10,
+            rgba: vec![255; 400],
+        };
+        dom.add_image("bg.png".to_string(), img);
+
+        let stylesheet = parse_stylesheet(
+            "div {
+                width: 40px;
+                height: 40px;
+                background-image: url('bg.png');
+                background-repeat: no-repeat;
+                background-position: 10px 20px;
+            }",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let image_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        assert_eq!(
+            image_items.len(),
+            1,
+            "Expected exactly one background image tile"
+        );
+
+        if let DisplayItem::Image { rect, src, .. } = image_items[0] {
+            assert_eq!(src, "bg.png");
+            // Positioned at (10, 20) relative to the box origin (which is (0,0))
+            assert_eq!(rect.origin.x, 10.0);
+            assert_eq!(rect.origin.y, 20.0);
+            assert_eq!(rect.size.width, 10.0);
+            assert_eq!(rect.size.height, 10.0);
+        } else {
+            panic!("Expected DisplayItem::Image");
+        }
     }
 
     #[test]
