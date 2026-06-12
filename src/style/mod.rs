@@ -232,7 +232,31 @@ fn compute_node_style(
                         properties.insert("border-bottom-width".to_string(), medium.clone());
                         properties.insert("border-left-width".to_string(), medium.clone());
                     }
-                    // TODO(spec): border-style, border-color, etc.
+                    let mut is_outset_or_inset = false;
+                    if let Some(style) = find_outline_style(&value) {
+                        properties.insert("border-top-style".to_string(), style.clone());
+                        properties.insert("border-right-style".to_string(), style.clone());
+                        properties.insert("border-bottom-style".to_string(), style.clone());
+                        properties.insert("border-left-style".to_string(), style.clone());
+                        if let CssValue::Keyword(s) = style {
+                            is_outset_or_inset =
+                                s.eq_ignore_ascii_case("outset") || s.eq_ignore_ascii_case("inset");
+                        }
+                    }
+                    if is_outset_or_inset {
+                        properties.remove("border-top-color");
+                        properties.remove("border-right-color");
+                        properties.remove("border-bottom-color");
+                        properties.remove("border-left-color");
+                    } else {
+                        if let Some(color) = find_outline_color(&value) {
+                            properties.insert("border-top-color".to_string(), color.clone());
+                            properties.insert("border-right-color".to_string(), color.clone());
+                            properties.insert("border-bottom-color".to_string(), color.clone());
+                            properties.insert("border-left-color".to_string(), color.clone());
+                        }
+                    }
+                    // TODO(spec): per-edge differing values, border-image. Paint honoring border-style: none to suppress drawing.
                 }
                 "outline" => {
                     // spec: https://drafts.csswg.org/css-ui/#outline-shorthand
@@ -1741,6 +1765,64 @@ mod tests {
             Some(&CssValue::Keyword("solid".to_string()))
         );
         assert_eq!(style_longhand.get("outline-color"), None);
+    }
+
+    #[test]
+    fn test_border_shorthand_expands_color_and_style() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // 1. Test border shorthand with width, style, and color
+        let stylesheet_border = parse_stylesheet("div { border: 1px solid red; }");
+        let styles_border = compute_styles(&dom, &stylesheet_border);
+        let style_border = styles_border.get(&div).unwrap();
+
+        // assert border-top-width is the 1px length
+        assert_eq!(
+            style_border.get("border-top-width"),
+            Some(&CssValue::Length(1.0, crate::css::values::LengthUnit::Px))
+        );
+
+        // Get references for expected color and style
+        let stylesheet_ref = parse_stylesheet("div { border-top-color: red; }");
+        let styles_ref = compute_styles(&dom, &stylesheet_ref);
+        let style_ref = styles_ref.get(&div).unwrap();
+        let red_color = style_ref.get("border-top-color").unwrap();
+
+        let stylesheet_ref_style = parse_stylesheet("div { border-top-style: solid; }");
+        let styles_ref_style = compute_styles(&dom, &stylesheet_ref_style);
+        let style_ref_style = styles_ref_style.get(&div).unwrap();
+        let solid_style = style_ref_style.get("border-top-style").unwrap();
+
+        // assert border-top-style is solid
+        assert_eq!(style_border.get("border-top-style"), Some(solid_style));
+
+        // check all four edges for at least color
+        assert_eq!(style_border.get("border-top-color"), Some(red_color));
+        assert_eq!(style_border.get("border-right-color"), Some(red_color));
+        assert_eq!(style_border.get("border-bottom-color"), Some(red_color));
+        assert_eq!(style_border.get("border-left-color"), Some(red_color));
+
+        // 2. Second case: border: 2px dashed #ccc;
+        let stylesheet_border2 = parse_stylesheet("div { border: 2px dashed #ccc; }");
+        let styles_border2 = compute_styles(&dom, &stylesheet_border2);
+        let style_border2 = styles_border2.get(&div).unwrap();
+
+        assert_eq!(
+            style_border2.get("border-left-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                204, 204, 204, 255
+            )))
+        );
+        assert_eq!(
+            style_border2.get("border-bottom-style"),
+            Some(&CssValue::Keyword("dashed".to_string()))
+        );
     }
 
     #[test]
