@@ -69,17 +69,21 @@ pub enum ImageLoadOutcome {
     Failed,
 }
 
-/// Plans an image load honoring the HTML `loading` hint. For `LoadingMode::Lazy` the fetch is
-/// DEFERRED (returns `ImageLoadOutcome::Deferred` and performs NO I/O). For `LoadingMode::Eager`
-/// it delegates to `load_image_safely`, mapping `Some(bytes)` -> `Loaded(bytes)` and `None` -> `Failed`.
+/// Plans an image load honoring the HTML `loading` hint.
+///
+/// Under the current headless rendering pipeline, there is no scroll viewport, so images
+/// marked with `loading="lazy"` (represented by `LoadingMode::Lazy`) are fetched immediately,
+/// identical to `LoadingMode::Eager`. The `mode` parameter is retained as a hint for future
+/// viewport-aware deferral.
+///
+/// // TODO(spec): true viewport-proximity deferral (returning `ImageLoadOutcome::Deferred`)
+/// should be reinstated once scroll and viewport support exists.
 pub fn plan_image_load(src: &str, base_url: Option<&Url>, mode: LoadingMode) -> ImageLoadOutcome {
-    if mode.is_deferred() {
-        ImageLoadOutcome::Deferred
-    } else {
-        match load_image_safely(src, base_url) {
-            Some(bytes) => ImageLoadOutcome::Loaded(bytes),
-            None => ImageLoadOutcome::Failed,
-        }
+    // Keep mode parameter for future viewport-aware deferral.
+    let _ = mode;
+    match load_image_safely(src, base_url) {
+        Some(bytes) => ImageLoadOutcome::Loaded(bytes),
+        None => ImageLoadOutcome::Failed,
     }
 }
 
@@ -1203,13 +1207,13 @@ mod tests {
 
     #[test]
     fn test_plan_image_load() {
-        // 1. Lazy is deferred WITHOUT I/O: bogus src returns Deferred
-        let result_lazy = plan_image_load(
+        // 1. Under eager-now policy, Lazy fetches immediately. For a bogus src, it returns Failed.
+        let result_lazy_fail = plan_image_load(
             "http://non-existent-domain-12345.com/test.png",
             None,
             LoadingMode::Lazy,
         );
-        assert_eq!(result_lazy, ImageLoadOutcome::Deferred);
+        assert_eq!(result_lazy_fail, ImageLoadOutcome::Failed);
 
         // 2. Eager success: valid data: URI returns Loaded
         let data_uri = "data:text/plain;base64,SGVsbG8=";
@@ -1219,7 +1223,16 @@ mod tests {
             ImageLoadOutcome::Loaded(b"Hello".to_vec())
         );
 
-        // 3. Eager failure: rejected scheme or garbage path returns Failed
+        // 3. Lazy success: valid data: URI returns Loaded (mirroring eager)
+        let result_lazy_success = plan_image_load(data_uri, None, LoadingMode::Lazy);
+        assert_eq!(
+            result_lazy_success,
+            ImageLoadOutcome::Loaded(b"Hello".to_vec())
+        );
+        // Show that lazy and eager now produce the SAME outcome for the same source
+        assert_eq!(result_lazy_success, result_eager_success);
+
+        // 4. Eager failure: rejected scheme or garbage path returns Failed
         let result_eager_fail =
             plan_image_load("invalid-scheme://something", None, LoadingMode::Eager);
         assert_eq!(result_eager_fail, ImageLoadOutcome::Failed);
