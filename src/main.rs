@@ -12,6 +12,7 @@
 use std::sync::{Arc, Mutex};
 use underrated::dom::{Dom, NodeData};
 use underrated::forms::{self, FormState};
+use underrated::infra::NodeId;
 use underrated::loader::{HttpLoader, ResourceLoader};
 use underrated::shell::WinitWindow;
 use underrated::url::Url;
@@ -85,6 +86,26 @@ fn url_for_target(target: &Target) -> String {
             .unwrap_or_else(|| "https://www.google.co.jp/".to_string()),
         Target::Default => "https://www.google.co.jp/".to_string(),
     }
+}
+
+/// Walks up from the given node to find the nearest <a> ancestor with a non-empty href attribute.
+fn find_link_href(dom: &Dom, node: NodeId) -> Option<String> {
+    let mut current = node;
+    loop {
+        if let Some(NodeData::Element { name, .. }) = dom.data(current)
+            && name.eq_ignore_ascii_case("a")
+            && let Some(href) = dom.get_attribute(current, "href")
+            && !href.is_empty()
+        {
+            return Some(href.to_string());
+        }
+        if let Some(parent) = dom.parent(current) {
+            current = parent;
+        } else {
+            break;
+        }
+    }
+    None
 }
 
 fn main() {
@@ -184,6 +205,25 @@ fn main() {
                     if let Some(focused_node) = session.browsing_context.focus_node {
                         let caret_pos = session.input_manager.caret_position(focused_node);
                         session.browsing_context.caret_index = caret_pos;
+                    }
+
+                    if let Some(node) = clicked_node
+                        && let Some(href) = find_link_href(&session.browsing_context.page.dom, node)
+                    {
+                        let req = underrated::forms::NavigationRequest {
+                            url: href,
+                            method: underrated::forms::Method::Get,
+                            body: String::new(),
+                            content_type: None,
+                        };
+                        let new_page = underrated::engine::navigate(
+                            &req,
+                            &base_url_clone,
+                            &underrated::loader::HttpLoader,
+                            width as f32,
+                        );
+                        session.browsing_context.navigate(new_page);
+                        session.input_manager.blur();
                     }
                 }
                 underrated::shell::InputEvent::Key { key } => {
@@ -293,5 +333,58 @@ mod tests {
     fn test_url_for_target_url() {
         let target = Target::Url("https://example.com/some/path".to_string());
         assert_eq!(url_for_target(&target), "https://example.com/some/path");
+    }
+
+    #[test]
+    fn test_find_link_href_basic() {
+        let mut dom = Dom::new();
+        // Create an <a> node with href="/result"
+        let a_node = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("href".into(), "/result".into())],
+        });
+        // Create a <span> node
+        let span_node = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        // Append span_node under a_node
+        dom.append_child(a_node, span_node);
+
+        // find_link_href starting from span should find "/result"
+        assert_eq!(find_link_href(&dom, span_node), Some("/result".to_string()));
+        // find_link_href starting from a_node itself should find "/result"
+        assert_eq!(find_link_href(&dom, a_node), Some("/result".to_string()));
+
+        // Node with no <a> ancestor should return None
+        let div_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        assert_eq!(find_link_href(&dom, div_node), None);
+
+        // <a> with empty href should return None
+        let a_empty = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("href".into(), "".into())],
+        });
+        assert_eq!(find_link_href(&dom, a_empty), None);
+
+        // <a> with missing href should return None
+        let a_missing = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![],
+        });
+        assert_eq!(find_link_href(&dom, a_missing), None);
+
+        // <a> in uppercase "A" should be matched case-insensitively
+        let a_upper = dom.create_node(NodeData::Element {
+            name: "A".into(),
+            attrs: vec![("href".into(), "/uppercase".into())],
+        });
+        assert_eq!(
+            find_link_href(&dom, a_upper),
+            Some("/uppercase".to_string())
+        );
     }
 }
