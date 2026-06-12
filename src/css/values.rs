@@ -267,6 +267,20 @@ pub fn parse_value(components: &[ComponentValue]) -> Option<CssValue> {
                 }
                 values.push(CssValue::Keyword("/".to_string()));
             }
+            // A comma (`,`) separates values in multi-value declarations (e.g. box-shadow,
+            // transition, font-family, gradients). Flush the current group and emit the
+            // comma as its own keyword so downstream consumers can split on it.
+            ComponentValue::Token(CssToken::Comma) => {
+                if !current_group.is_empty() {
+                    if let Some(val) = parse_single_value(&current_group) {
+                        values.push(val);
+                        current_group.clear();
+                    } else {
+                        return None;
+                    }
+                }
+                values.push(CssValue::Keyword(",".to_string()));
+            }
             _ => {
                 current_group.push(component);
             }
@@ -1327,6 +1341,70 @@ mod tests {
                 CssValue::Number(16.0),
                 CssValue::Keyword("/".to_string()),
                 CssValue::Number(9.0),
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_with_comma_shadows() {
+        // 5px 5px red , 10px 10px blue
+        let components = [
+            token(CssToken::Dimension {
+                value: 5.0,
+                unit: "px".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Dimension {
+                value: 5.0,
+                unit: "px".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Ident("red".to_string())),
+            token(CssToken::Whitespace),
+            token(CssToken::Comma),
+            token(CssToken::Whitespace),
+            token(CssToken::Dimension {
+                value: 10.0,
+                unit: "px".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Dimension {
+                value: 10.0,
+                unit: "px".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Ident("blue".to_string())),
+        ];
+        assert_eq!(
+            parse_value(&components),
+            Some(CssValue::Multiple(vec![
+                CssValue::Length(5.0, LengthUnit::Px),
+                CssValue::Length(5.0, LengthUnit::Px),
+                CssValue::Color(Color::Rgba(255, 0, 0, 255)),
+                CssValue::Keyword(",".to_string()),
+                CssValue::Length(10.0, LengthUnit::Px),
+                CssValue::Length(10.0, LengthUnit::Px),
+                CssValue::Color(Color::Rgba(0, 0, 255, 255)),
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_with_comma_simple() {
+        // red , blue
+        let components = [
+            token(CssToken::Ident("red".to_string())),
+            token(CssToken::Whitespace),
+            token(CssToken::Comma),
+            token(CssToken::Whitespace),
+            token(CssToken::Ident("blue".to_string())),
+        ];
+        assert_eq!(
+            parse_value(&components),
+            Some(CssValue::Multiple(vec![
+                CssValue::Color(Color::Rgba(255, 0, 0, 255)),
+                CssValue::Keyword(",".to_string()),
+                CssValue::Color(Color::Rgba(0, 0, 255, 255)),
             ]))
         );
     }
