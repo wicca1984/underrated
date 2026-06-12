@@ -756,8 +756,8 @@ impl CategorizedComputedStyle {
 
             // ResetBox
             "display" => self.set_display(css_value_to_string(value)),
-            "width" => self.set_width(value_to_px(value, fs)),
-            "height" => self.set_height(value_to_px(value, fs)),
+            "width" => self.set_width(value_to_px_or_auto(value, fs)),
+            "height" => self.set_height(value_to_px_or_auto(value, fs)),
             "position" => Arc::make_mut(&mut self.reset_box).position = css_value_to_string(value),
             "float" => Arc::make_mut(&mut self.reset_box).float = css_value_to_string(value),
             "clear" => Arc::make_mut(&mut self.reset_box).clear = css_value_to_string(value),
@@ -1714,6 +1714,17 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         },
         CssValue::Opacity(val) => val.to_string(),
     }
+}
+
+/// Like `value_to_px`, but for `<length> | auto` box dimensions (width/height): a
+/// unitless non-zero number is an invalid length per CSS and resolves to `auto` (-1),
+/// while a unitless `0` is valid and resolves to `0`. The legacy HashMap preserved this
+/// by storing the raw `CssValue`; the typed i32 field needs the distinction made here.
+fn value_to_px_or_auto(val: &crate::css::values::CssValue, font_size: u32) -> i32 {
+    if let crate::css::values::CssValue::Number(v) = val {
+        return if *v == 0.0 { 0 } else { -1 };
+    }
+    value_to_px(val, font_size)
 }
 
 fn value_to_px(val: &crate::css::values::CssValue, font_size: u32) -> i32 {
