@@ -434,6 +434,8 @@ fn get_text_decorations(style: &CategorizedComputedStyle) -> TextDecorations {
     if line_str.eq_ignore_ascii_case("none") {
         return dec;
     }
+    // `text_decoration_line` may carry both line keywords and (when authored via the
+    // `text-decoration` shorthand) a style keyword, e.g. "underline dashed".
     for part in line_str.split_whitespace() {
         if part.eq_ignore_ascii_case("underline") {
             dec.underline = true;
@@ -441,6 +443,8 @@ fn get_text_decorations(style: &CategorizedComputedStyle) -> TextDecorations {
             dec.overline = true;
         } else if part.eq_ignore_ascii_case("line-through") {
             dec.line_through = true;
+        } else if let Some(s) = parse_text_decoration_style(part) {
+            dec.style = Some(s);
         }
     }
 
@@ -449,18 +453,30 @@ fn get_text_decorations(style: &CategorizedComputedStyle) -> TextDecorations {
         dec.color = parse_css_color(color_str);
     }
 
+    // The longhand `text-decoration-style` (empty = unspecified) wins over a style
+    // keyword embedded in the shorthand line above.
     let style_str = &style.reset_effects.text_decoration_style;
-    if style_str.eq_ignore_ascii_case("solid") {
-        dec.style = Some(TextDecorationStyle::Solid);
-    } else if style_str.eq_ignore_ascii_case("double") {
-        dec.style = Some(TextDecorationStyle::Double);
-    } else if style_str.eq_ignore_ascii_case("dotted") {
-        dec.style = Some(TextDecorationStyle::Dotted);
-    } else if style_str.eq_ignore_ascii_case("dashed") {
-        dec.style = Some(TextDecorationStyle::Dashed);
+    if let Some(s) = parse_text_decoration_style(style_str) {
+        dec.style = Some(s);
     }
 
     dec
+}
+
+/// Map a CSS `text-decoration-style` keyword to its enum, or `None` if it is not a
+/// recognized style keyword (including the empty "unspecified" sentinel).
+fn parse_text_decoration_style(s: &str) -> Option<TextDecorationStyle> {
+    if s.eq_ignore_ascii_case("solid") {
+        Some(TextDecorationStyle::Solid)
+    } else if s.eq_ignore_ascii_case("double") {
+        Some(TextDecorationStyle::Double)
+    } else if s.eq_ignore_ascii_case("dotted") {
+        Some(TextDecorationStyle::Dotted)
+    } else if s.eq_ignore_ascii_case("dashed") {
+        Some(TextDecorationStyle::Dashed)
+    } else {
+        None
+    }
 }
 
 /// Helper to recursively check if a node or any of its DOM ancestors is an anchor `<a>` element.

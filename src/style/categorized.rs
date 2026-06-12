@@ -349,9 +349,16 @@ impl Default for ResetEffects {
             outline_offset: 0,
             transition_duration: 0,
             transition_property: "all".to_string(),
-            text_decoration_line: "none".to_string(),
+            // Empty string = "unspecified" (CSS-initial). Kept distinct from an
+            // explicitly-authored `none` so that decoration-propagation consumers
+            // (paint::resolve_text_decorations) can tell a default node from one that
+            // explicitly cancels ancestor decorations. `get()` maps it back to "none".
+            text_decoration_line: String::new(),
             text_decoration_color: "currentcolor".to_string(),
-            text_decoration_style: "solid".to_string(),
+            // Empty = unspecified (CSS-initial `solid`). Kept distinct from an explicit
+            // `solid` so a default leaf node does not shadow an ancestor's authored style
+            // during decoration propagation. `get()` maps it back to "solid".
+            text_decoration_style: String::new(),
             text_overflow: "clip".to_string(),
             box_shadow: None,
         }
@@ -1462,9 +1469,19 @@ impl CategorizedComputedStyle {
             "outline-offset" => Some(format!("{}px", self.reset_effects.outline_offset)),
             "transition-duration" => Some(format!("{}s", self.reset_effects.transition_duration)),
             "transition-property" => Some(self.reset_effects.transition_property.clone()),
-            "text-decoration-line" => Some(self.reset_effects.text_decoration_line.clone()),
+            "text-decoration-line" => Some(if self.reset_effects.text_decoration_line.is_empty() {
+                "none".to_string()
+            } else {
+                self.reset_effects.text_decoration_line.clone()
+            }),
             "text-decoration-color" => Some(self.reset_effects.text_decoration_color.clone()),
-            "text-decoration-style" => Some(self.reset_effects.text_decoration_style.clone()),
+            "text-decoration-style" => {
+                Some(if self.reset_effects.text_decoration_style.is_empty() {
+                    "solid".to_string()
+                } else {
+                    self.reset_effects.text_decoration_style.clone()
+                })
+            }
             "text-overflow" => Some(self.reset_effects.text_overflow.clone()),
             "box-shadow" => self
                 .reset_effects
