@@ -12,14 +12,22 @@ impl Dom {
     /// No-op for non-element nodes or invalid ids.
     // spec: https://dom.spec.whatwg.org/#dom-element-setattribute
     pub fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
+        let mut changed = false;
         if let Some(n) = self.arena.get_mut(node)
             && let NodeData::Element { attrs, .. } = &mut n.data
         {
             if let Some(pair) = attrs.iter_mut().find(|(k, _)| k == name) {
-                pair.1 = value.to_string();
+                if pair.1 != value {
+                    pair.1 = value.to_string();
+                    changed = true;
+                }
             } else {
                 attrs.push((name.to_string(), value.to_string()));
+                changed = true;
             }
+        }
+        if changed {
+            self.mark_dirty(node);
         }
     }
 
@@ -27,10 +35,18 @@ impl Dom {
     /// No-op for non-element nodes or invalid ids.
     // spec: https://dom.spec.whatwg.org/#dom-element-removeattribute
     pub fn remove_attribute(&mut self, node: NodeId, name: &str) {
+        let mut changed = false;
         if let Some(n) = self.arena.get_mut(node)
             && let NodeData::Element { attrs, .. } = &mut n.data
         {
+            let before = attrs.len();
             attrs.retain(|(k, _)| k != name);
+            if attrs.len() != before {
+                changed = true;
+            }
+        }
+        if changed {
+            self.mark_dirty(node);
         }
     }
 
@@ -59,6 +75,9 @@ impl Dom {
         };
         if removed && let Some(c) = self.arena.get_mut(child) {
             c.parent = None;
+        }
+        if removed {
+            self.mark_dirty(parent);
         }
     }
 
@@ -90,14 +109,23 @@ impl Dom {
         if inserted && let Some(c) = self.arena.get_mut(child) {
             c.parent = Some(parent);
         }
+        if inserted {
+            self.mark_dirty(parent);
+        }
     }
 
     /// Replaces the text of a `Text` node. No-op for other node kinds.
     pub fn set_text(&mut self, node: NodeId, text: &str) {
+        let mut changed = false;
         if let Some(n) = self.arena.get_mut(node)
             && let NodeData::Text(t) = &mut n.data
+            && t != text
         {
             *t = text.to_string();
+            changed = true;
+        }
+        if changed {
+            self.mark_dirty(node);
         }
     }
 
@@ -180,12 +208,17 @@ impl Dom {
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
+        let mut changed = false;
         if let Some(n) = self.arena.get_mut(node)
             && let NodeData::Element { name, .. } = &n.data
             && name.eq_ignore_ascii_case("input")
         {
             n.input_value = Some(value.to_string());
             n.input_value_dirty = true;
+            changed = true;
+        }
+        if changed {
+            self.mark_dirty(node);
         }
     }
 
@@ -513,5 +546,127 @@ mod tests {
             attrs: vec![("src".to_string(), "button.png".to_string())],
         });
         assert_eq!(dom.get_src(input_id), Some("button.png"));
+    }
+
+    #[test]
+    fn test_set_attribute_marks_dirty_only_on_success() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+        assert!(!dom.is_dirty(el));
+        assert!(!dom.has_dirty());
+
+        // 1. set_attribute on a valid element marks it dirty (is_dirty true).
+        dom.set_attribute(el, "class", "active");
+        assert!(dom.is_dirty(el));
+        assert!(dom.has_dirty());
+
+        dom.clear_dirty();
+        assert!(!dom.has_dirty());
+
+        // 2. set_attribute on an INVALID node id does NOT mark anything dirty (has_dirty() false).
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "div");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "div");
+        }
+        dom.set_attribute(foreign_node, "class", "inactive");
+        assert!(!dom.has_dirty());
+    }
+
+    #[test]
+    fn test_remove_attribute_marks_dirty_only_on_actual_removal() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+        dom.set_attribute(el, "class", "active");
+        dom.clear_dirty();
+
+        // Removing a non-existent attribute does NOT mark dirty.
+        dom.remove_attribute(el, "id");
+        assert!(!dom.has_dirty());
+
+        // Removing an existing attribute marks the element dirty.
+        dom.remove_attribute(el, "class");
+        assert!(dom.is_dirty(el));
+        assert!(dom.has_dirty());
+    }
+
+    #[test]
+    fn test_remove_child_marks_parent_dirty() {
+        let mut dom = Dom::new();
+        let p = elem(&mut dom, "div");
+        let c = elem(&mut dom, "span");
+        dom.append_child(p, c);
+        dom.clear_dirty();
+
+        // removing a non-child is a no-op (no dirty).
+        let non_child = elem(&mut dom, "p");
+        dom.clear_dirty();
+        dom.remove_child(p, non_child);
+        assert!(!dom.has_dirty());
+
+        // removing an actual child marks the PARENT dirty.
+        dom.remove_child(p, c);
+        assert!(dom.is_dirty(p));
+        assert!(!dom.is_dirty(c));
+    }
+
+    #[test]
+    fn test_insert_before_marks_parent_dirty() {
+        let mut dom = Dom::new();
+        let p = elem(&mut dom, "div");
+        let c1 = elem(&mut dom, "span");
+        let c2 = elem(&mut dom, "p");
+        dom.clear_dirty();
+
+        // insert_before of a child marks the PARENT dirty.
+        dom.insert_before(p, c1, None);
+        assert!(dom.is_dirty(p));
+        assert!(!dom.is_dirty(c1));
+
+        dom.clear_dirty();
+        dom.insert_before(p, c2, Some(c1));
+        assert!(dom.is_dirty(p));
+        assert!(!dom.is_dirty(c2));
+    }
+
+    #[test]
+    fn test_set_text_marks_dirty_only_on_success() {
+        let mut dom = Dom::new();
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        dom.clear_dirty();
+
+        // set_text on text node marks it dirty.
+        dom.set_text(text_id, "world");
+        assert!(dom.is_dirty(text_id));
+
+        dom.clear_dirty();
+
+        // set_text on element node is a no-op (no dirty).
+        let el = elem(&mut dom, "div");
+        dom.clear_dirty();
+        dom.set_text(el, "world");
+        assert!(!dom.has_dirty());
+    }
+
+    #[test]
+    fn test_set_input_value_marks_dirty_only_on_success() {
+        let mut dom = Dom::new();
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        dom.clear_dirty();
+
+        // set_input_value on input element marks it dirty.
+        dom.set_input_value(input_id, "new-val");
+        assert!(dom.is_dirty(input_id));
+
+        dom.clear_dirty();
+
+        // set_input_value on non-input element is a no-op (no dirty).
+        let div_id = elem(&mut dom, "div");
+        dom.clear_dirty();
+        dom.set_input_value(div_id, "new-val");
+        assert!(!dom.has_dirty());
     }
 }
