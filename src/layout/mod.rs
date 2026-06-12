@@ -1186,10 +1186,14 @@ pub(crate) fn get_px(
         "border-spacing" => style.inherited_table.border_spacing as i32,
         "font-size" => style.inherited_text.font_size as i32,
         "line-height" => {
-            if style.inherited_text.line_height == crate::style::categorized::LINE_HEIGHT_NORMAL {
-                crate::font::BitmapFont::builtin().line_height() as i32
-            } else {
+            if let Some(n) = style.inherited_text.line_height_number {
+                (n * get_font_size(style)).round() as i32
+            } else if style.inherited_text.line_height
+                != crate::style::categorized::LINE_HEIGHT_NORMAL
+            {
                 style.inherited_text.line_height as i32
+            } else {
+                crate::font::BitmapFont::builtin().line_height() as i32
             }
         }
         "letter-spacing" => style.inherited_text.letter_spacing,

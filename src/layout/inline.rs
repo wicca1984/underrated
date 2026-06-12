@@ -221,11 +221,14 @@ pub fn layout_inline_run(
             match data {
                 NodeData::Text(text) => {
                     let mut node_line_height = line_height;
-                    if let Some(style) = styles.get(&node)
-                        && style.inherited_text.line_height
+                    if let Some(style) = styles.get(&node) {
+                        if let Some(n) = style.inherited_text.line_height_number {
+                            node_line_height = n * get_font_size(style);
+                        } else if style.inherited_text.line_height
                             != crate::style::categorized::LINE_HEIGHT_NORMAL
-                    {
-                        node_line_height = style.inherited_text.line_height as f32;
+                        {
+                            node_line_height = style.inherited_text.line_height as f32;
+                        }
                     }
                     current_line_height = current_line_height.max(node_line_height);
 
@@ -2189,6 +2192,42 @@ mod tests {
         dom.append_child(div, t1);
 
         let stylesheet = parse_stylesheet("div { font-size: 20px; line-height: 2; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, total_height) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.rect.size.height, 40.0);
+        assert_eq!(total_height, 40.0);
+    }
+
+    #[test]
+    fn test_line_height_number_multiplier_nested_inheritance() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, span);
+
+        let t1 = dom.create_node(NodeData::Text("child text".into()));
+        dom.append_child(span, t1);
+
+        let stylesheet = parse_stylesheet(
+            "div { font-size: 10px; line-height: 2; } \
+             span { display: inline; font-size: 20px; }",
+        );
         let styles = compute_styles(&dom, &stylesheet);
 
         let children = dom.children(div);
