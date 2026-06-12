@@ -66,7 +66,7 @@ pub fn is_limits_enabled() -> bool {
 }
 
 /// Sets the maximum character length for inline scripts when limits are enabled.
-/// Scripts exceeding this limit will be truncated or aborted safely.
+/// Scripts exceeding this limit will be skipped entirely.
 pub fn set_max_script_length(len: usize) {
     MAX_SCRIPT_LENGTH.with(|cell| *cell.borrow_mut() = len);
 }
@@ -2178,17 +2178,20 @@ impl BoaHost {
 
         // 3. Evaluate the source code.
         let is_limit = is_limits_enabled();
-        let final_src = if is_limit {
+        if is_limit {
             let max_len = MAX_SCRIPT_LENGTH.with(|cell| *cell.borrow());
             if src.chars().count() > max_len {
-                // Safely truncate to the maximum number of characters
-                src.chars().take(max_len).collect::<String>()
-            } else {
-                src.to_string()
+                // Skip oversized script entirely. Restore DOM and return cleanly.
+                let restored_dom = CURRENT_DOM.with(|cell| cell.borrow_mut().take());
+                if let Some(final_dom) = restored_dom {
+                    *dom = final_dom;
+                }
+                KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
+                return Ok(String::new());
             }
-        } else {
-            src.to_string()
-        };
+        }
+
+        let final_src = src.to_string();
 
         let res_val = if is_limit {
             let source = Source::from_bytes(final_src.as_bytes());
@@ -7209,8 +7212,7 @@ mod tests {
         dom.append_child(element_id, text_id);
         dom.append_child(document, element_id);
 
-        // This script is 54 characters. With limit of 20, it is truncated to:
-        // "document.getElementB" which has a syntax error.
+        // This script is 54 characters. With limit of 20, it is skipped entirely.
         // It must NOT panic!
         let script_id = dom.create_node(NodeData::Element {
             name: "script".to_string(),
@@ -7246,7 +7248,7 @@ mod tests {
         dom.append_child(element_id, text_id);
         dom.append_child(document, element_id);
 
-        // A long script that would have been truncated if limits were on
+        // A long script that would have been skipped if limits were on
         set_max_script_length(20);
 
         let script_id = dom.create_node(NodeData::Element {
@@ -7264,6 +7266,52 @@ mod tests {
 
         // Restore defaults
         set_limits_enabled(true);
+        set_max_script_length(5000);
+    }
+
+    #[test]
+    fn test_oversized_script_skipped_entirely() {
+        set_limits_enabled(true);
+        set_max_script_length(20);
+
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let title_before = host.eval_with_dom("document.title", &mut dom).unwrap();
+        assert_eq!(title_before, "Underrated");
+
+        // Now run an oversized script (length = 33, which is > max of 20)
+        let res = host.eval_with_dom("document.title = 'MutatedTitle';", &mut dom);
+
+        // It must succeed (return Ok) and the title must remain "Underrated"
+        assert!(res.is_ok());
+        let title_after = host.eval_with_dom("document.title", &mut dom).unwrap();
+        assert_eq!(title_after, "Underrated");
+
+        // Restore defaults
+        set_max_script_length(5000);
+    }
+
+    #[test]
+    fn test_under_limit_script_executed_normally() {
+        set_limits_enabled(true);
+        set_max_script_length(50); // Greater than script size
+
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let title_before = host.eval_with_dom("document.title", &mut dom).unwrap();
+        assert_eq!(title_before, "Underrated");
+
+        // Run an under-limit script (length = 33, which is <= max of 50)
+        let res = host.eval_with_dom("document.title = 'MutatedTitle';", &mut dom);
+
+        // It must succeed and the title must be mutated
+        assert!(res.is_ok());
+        let title_after = host.eval_with_dom("document.title", &mut dom).unwrap();
+        assert_eq!(title_after, "MutatedTitle");
+
+        // Restore defaults
         set_max_script_length(5000);
     }
 
