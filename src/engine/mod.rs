@@ -266,12 +266,53 @@ fn fetch_and_decode_images(
                 }
             }
 
-            if let Some(bytes) =
-                load_image_safely_with_loader(loader, &chosen_url, Some(&effective_base))
-                && let Some(decoded) = crate::image::decode_image(&bytes)
-            {
-                dom.add_image(src.to_string(), decoded);
+            match load_image_safely_with_loader(loader, &chosen_url, Some(&effective_base)) {
+                Some(bytes) => {
+                    let n = bytes.len();
+                    match crate::image::decode_image(&bytes) {
+                        Some(decoded) => {
+                            eprintln!("[img] decoded url={chosen_url} bytes={n}");
+                            dom.add_image(src.to_string(), decoded);
+                        }
+                        None => {
+                            let fmt = sniff_image_format(&bytes);
+                            eprintln!("[img] decode failed url={chosen_url} bytes={n} sniff={fmt}");
+                            // TODO(spec): track unsupported image formats (webp/svg) for a decode-support decision
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("[img] fetch failed url={chosen_url}");
+                }
             }
+        }
+    }
+}
+
+fn sniff_image_format(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        "png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "gif"
+    } else if bytes.starts_with(b"BM") {
+        "bmp"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else {
+        let check_len = std::cmp::min(bytes.len(), 256);
+        if check_len > 0 {
+            let prefix_bytes = &bytes[..check_len];
+            let ascii_str = String::from_utf8_lossy(prefix_bytes).to_ascii_lowercase();
+            let trimmed = ascii_str.trim_start_matches('\u{feff}').trim_start();
+            if ascii_str.contains("<svg") || trimmed.starts_with("<?xml") {
+                "svg"
+            } else {
+                "unknown"
+            }
+        } else {
+            "unknown"
         }
     }
 }
@@ -559,6 +600,35 @@ mod tests {
     ) -> crate::raster::Canvas {
         let base_url = crate::url::Url::parse("http://localhost/").unwrap();
         render_page_to_canvas(html, &base_url, &DummyLoader, width, height)
+    }
+
+    #[test]
+    fn test_sniff_image_format() {
+        assert_eq!(sniff_image_format(&[0x89, 0x50, 0x4E, 0x47]), "png");
+        assert_eq!(sniff_image_format(&[0xFF, 0xD8, 0xFF]), "jpeg");
+        assert_eq!(sniff_image_format(b"GIF8a"), "gif");
+        assert_eq!(sniff_image_format(b"BM6"), "bmp");
+        assert_eq!(
+            sniff_image_format(&[b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P']),
+            "webp"
+        );
+        assert_eq!(
+            sniff_image_format(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+            "svg"
+        );
+        assert_eq!(
+            sniff_image_format(b"   <svg xmlns='http://www.w3.org/2000/svg'></svg>"),
+            "svg"
+        );
+        assert_eq!(
+            sniff_image_format(b"<?xml version='1.0'?><svg></svg>"),
+            "svg"
+        );
+        assert_eq!(
+            sniff_image_format(b"\xEF\xBB\xBF<?xml version='1.0'?><svg></svg>"),
+            "svg"
+        );
+        assert_eq!(sniff_image_format(&[1, 2, 3, 4]), "unknown");
     }
 
     #[test]
