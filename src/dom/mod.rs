@@ -85,6 +85,17 @@ impl NodeData {
             _ => None,
         }
     }
+
+    /// Returns the parsed value of the `tabindex` attribute if present.
+    pub fn tabindex(&self) -> Option<i32> {
+        match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "tabindex")
+                .and_then(|(_, v)| v.trim().parse::<i32>().ok()),
+            _ => None,
+        }
+    }
 }
 
 /// Internal node structure to be stored in the arena.
@@ -209,6 +220,12 @@ impl Dom {
     /// Returns the value of the `aria-{name}` attribute if present on the given node.
     pub fn aria(&self, node: NodeId, name: &str) -> Option<&str> {
         self.get_attribute(node, &format!("aria-{name}"))
+    }
+
+    /// Returns the parsed value of the `tabindex` attribute if present on the given node.
+    pub fn tabindex(&self, node: NodeId) -> Option<i32> {
+        self.get_attribute(node, "tabindex")
+            .and_then(|v| v.trim().parse::<i32>().ok())
     }
 
     /// Returns an iterator over all descendants of the given node in pre-order.
@@ -634,5 +651,79 @@ mod tests {
 
         let node_data = dom.data(img_id).expect("Should have data");
         assert_eq!(node_data.loading(), ImageLoading::Lazy);
+    }
+
+    #[test]
+    fn test_tabindex_attribute_accessor() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Positive value
+        {
+            let html = r#"<a tabindex="3">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), Some(3));
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), Some(3));
+        }
+
+        // 2. Negative value
+        {
+            let html = r#"<a tabindex="-1">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), Some(-1));
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), Some(-1));
+        }
+
+        // 3. Surrounding whitespace
+        {
+            let html = r#"<a tabindex="  5 ">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), Some(5));
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), Some(5));
+        }
+
+        // 4. Invalid integer
+        {
+            let html = r#"<a tabindex="abc">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), None);
+        }
+
+        // 5. No attribute
+        {
+            let html = r#"<a>x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), None);
+        }
+
+        // 6. Non-element node (Document, Text)
+        {
+            let html = r#"<a tabindex="3">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert_eq!(dom.tabindex(doc_id), None);
+            assert_eq!(dom.data(doc_id).and_then(|n| n.tabindex()), None);
+
+            // Text node
+            let children = dom.children(dom.query_selector("a").unwrap());
+            let text_id = children[0];
+            assert_eq!(dom.tabindex(text_id), None);
+            assert_eq!(dom.data(text_id).and_then(|n| n.tabindex()), None);
+        }
     }
 }
