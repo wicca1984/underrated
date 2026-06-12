@@ -16,6 +16,63 @@ pub struct Page {
     pub layout: LayoutBox,
 }
 
+/// A mutable browsing session that owns the current page plus interactive UI state.
+/// spec: S-101
+pub struct BrowsingContext {
+    pub page: Page,
+    /// Currently focused element (e.g. a text <input>), if any.
+    pub focus_node: Option<NodeId>,
+    /// Caret offset (in chars) within the focused input's value.
+    pub caret_index: usize,
+    /// Vertical scroll offset in CSS px.
+    pub scroll_y: f32,
+    /// Total laid-out content height in CSS px (for clamping scroll).
+    pub content_height: f32,
+}
+
+impl BrowsingContext {
+    /// Creates a new browsing session.
+    pub fn new(page: Page) -> Self {
+        let content_height = page.layout.rect.size.height;
+        Self {
+            page,
+            focus_node: None,
+            caret_index: 0,
+            scroll_y: 0.0,
+            content_height,
+        }
+    }
+
+    /// Replaces the current page with a new page on navigation and resets session state.
+    pub fn navigate(&mut self, page: Page) {
+        self.page = page;
+        self.focus_node = None;
+        self.caret_index = 0;
+        self.scroll_y = 0.0;
+        self.content_height = self.page.layout.rect.size.height;
+        // TODO(spec): clear FormState on navigate once FormState is owned here
+    }
+
+    /// Sets the focused node, resetting caret index to 0 if the focus node changed.
+    pub fn set_focus(&mut self, node: Option<NodeId>) {
+        if self.focus_node != node {
+            self.caret_index = 0;
+        }
+        self.focus_node = node;
+    }
+
+    /// Calculates the maximum scrollable vertical offset.
+    pub fn max_scroll(&self, viewport_height: f32) -> f32 {
+        (self.content_height - viewport_height).max(0.0)
+    }
+
+    /// Adjusts scroll_y by dy, clamping to valid scroll range.
+    pub fn scroll_by(&mut self, dy: f32, viewport_height: f32) {
+        let max = self.max_scroll(viewport_height);
+        self.scroll_y = (self.scroll_y + dy).clamp(0.0, max);
+    }
+}
+
 // spec: S-79
 // The default User-Agent stylesheet used by the browser.
 pub const UA_DEFAULT_CSS: &str = "\
@@ -2733,5 +2790,75 @@ mod tests {
             img_opt.is_some(),
             "Image './image.png' should be loaded and cached under its src attribute"
         );
+    }
+
+    #[test]
+    fn test_browsing_context_lifecycle() {
+        let page = render_html_for_test(
+            "<html><body><input id='a'><input id='b'></body></html>",
+            800.0,
+        );
+        let doc = page.dom.document();
+        let descendants: Vec<NodeId> = page.dom.descendants(doc);
+        assert!(
+            descendants.len() >= 2,
+            "Should have enough nodes for testing"
+        );
+        let id1 = descendants[0];
+        let id2 = descendants[1];
+
+        // 1. BrowsingContext::new(page) starts with focus_node == None, caret_index == 0, scroll_y == 0.0
+        let mut context = BrowsingContext::new(page);
+        assert_eq!(context.focus_node, None);
+        assert_eq!(context.caret_index, 0);
+        assert_eq!(context.scroll_y, 0.0);
+
+        // 2. After set_focus(Some(id)) then set_focus(Some(other_id)), caret_index is reset to 0 on focus change.
+        context.set_focus(Some(id1));
+        assert_eq!(context.focus_node, Some(id1));
+        context.caret_index = 5;
+
+        // Setting focus to same node should NOT reset caret
+        context.set_focus(Some(id1));
+        assert_eq!(context.caret_index, 5);
+
+        // Setting focus to different node SHOULD reset caret
+        context.set_focus(Some(id2));
+        assert_eq!(context.focus_node, Some(id2));
+        assert_eq!(context.caret_index, 0);
+
+        context.caret_index = 3;
+        // Setting focus to None SHOULD reset caret
+        context.set_focus(None);
+        assert_eq!(context.focus_node, None);
+        assert_eq!(context.caret_index, 0);
+
+        // 3. scroll_by clamps: scrolling past max_scroll saturates at max_scroll, and negative scroll clamps at 0.0.
+        // Let's set content_height explicitly to test clamping logic perfectly.
+        context.content_height = 200.0;
+        let viewport_height = 100.0;
+        assert_eq!(context.max_scroll(viewport_height), 100.0);
+
+        // Scroll positive - clamps to max_scroll (100.0)
+        context.scroll_by(50.0, viewport_height);
+        assert_eq!(context.scroll_y, 50.0);
+        context.scroll_by(80.0, viewport_height);
+        assert_eq!(context.scroll_y, 100.0);
+
+        // Scroll negative - clamps to 0.0
+        context.scroll_by(-120.0, viewport_height);
+        assert_eq!(context.scroll_y, 0.0);
+
+        // 4. navigate(new_page) resets focus_node to None, caret_index to 0, and scroll_y to 0.0.
+        context.set_focus(Some(id1));
+        context.caret_index = 4;
+        context.scroll_y = 25.0;
+
+        let new_page = render_html_for_test("<html><body>New Page</body></html>", 800.0);
+        context.navigate(new_page);
+
+        assert_eq!(context.focus_node, None);
+        assert_eq!(context.caret_index, 0);
+        assert_eq!(context.scroll_y, 0.0);
     }
 }
