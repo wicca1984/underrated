@@ -116,6 +116,51 @@ fn find_element_by_class<'a>(node: &'a Value, class_name: &str) -> Option<&'a Va
     None
 }
 
+fn find_elements_by_class<'a>(node: &'a Value, class_name: &str, results: &mut Vec<&'a Value>) {
+    if node["type"] == "element" {
+        let has_class = node["attrs"]
+            .as_object()
+            .and_then(|attrs| attrs.get("class"))
+            .and_then(|v| v.as_str())
+            .map(|class| class.split_whitespace().any(|c| c == class_name))
+            .unwrap_or(false);
+        if has_class {
+            results.push(node);
+        }
+    }
+    if let Some(children) = node["children"].as_array() {
+        for child in children {
+            find_elements_by_class(child, class_name, results);
+        }
+    }
+}
+
+fn find_element_by_attr<'a>(
+    node: &'a Value,
+    attr_name: &str,
+    attr_value: &str,
+) -> Option<&'a Value> {
+    if node["type"] == "element" {
+        let has_attr = node["attrs"]
+            .as_object()
+            .and_then(|attrs| attrs.get(attr_name))
+            .and_then(|v| v.as_str())
+            .map(|val| val == attr_value)
+            .unwrap_or(false);
+        if has_attr {
+            return Some(node);
+        }
+    }
+    if let Some(children) = node["children"].as_array() {
+        for child in children {
+            if let Some(found) = find_element_by_attr(child, attr_name, attr_value) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 fn assert_centered(node: &Value, viewport_width: f64, tolerance_px: f64) {
     let tag = node["tag"]
         .as_str()
@@ -512,6 +557,109 @@ fn test_fixture_07_google_mock() {
         has_drawn_pixels,
         "Canvas should have drawn some non-white pixels"
     );
+}
+
+/// This test acts as a C-1 regression floor for the real Google homepage layout.
+/// It verifies that the search input is centered in the viewport, and that the two
+/// inline-block buttons (btnG, btnI) flow side by side and are centered *as a pair*
+/// (their combined bounding box is centered — individually centering each would force
+/// them to overlap at the center), each shrinking-to-fit under 40% of the viewport.
+#[test]
+fn test_fixture_08_google_real() {
+    let snapshot = load_fixture_snapshot("08_google_real.html");
+    assert_eq!(snapshot["tag"], "html");
+
+    // Find the search input by name="q" (or class "lst")
+    let q_input = find_element_by_attr(&snapshot, "name", "q")
+        .or_else(|| find_element_by_class(&snapshot, "lst"))
+        .unwrap_or_else(|| panic!("search input 'q' must exist"));
+
+    let q_x = q_input["rect"]["x"].as_f64().unwrap();
+    let q_w = q_input["rect"]["width"].as_f64().unwrap();
+    println!(
+        "DIAGNOSTIC: search input q rect x={}, width={}, center={}",
+        q_x,
+        q_w,
+        q_x + q_w / 2.0
+    );
+    assert_centered(q_input, 800.0, 4.0);
+
+    // Find BOTH <input class="lsb"> buttons (btnG, btnI)
+    let mut lsb_buttons = Vec::new();
+    find_elements_by_class(&snapshot, "lsb", &mut lsb_buttons);
+    assert_eq!(
+        lsb_buttons.len(),
+        2,
+        "Should find exactly two 'lsb' buttons"
+    );
+
+    let mut min_left = f64::INFINITY;
+    let mut max_right = f64::NEG_INFINITY;
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for (i, button) in lsb_buttons.iter().enumerate() {
+        let b_x = button["rect"]["x"].as_f64().unwrap();
+        let b_w = button["rect"]["width"].as_f64().unwrap();
+        let name = button["attrs"]["name"].as_str().unwrap_or("unknown");
+        println!(
+            "DIAGNOSTIC: lsb button {} '{}' rect x={}, width={}, center={}",
+            i + 1,
+            name,
+            b_x,
+            b_w,
+            b_x + b_w / 2.0
+        );
+        // Each button is shrink-to-fit (well under 40% of the viewport).
+        assert_max_width(button, 800.0, 0.4);
+        min_left = min_left.min(b_x);
+        max_right = max_right.max(b_x + b_w);
+        spans.push((b_x, b_x + b_w));
+    }
+
+    // The two inline-block buttons flow side by side; as a centered pair their combined
+    // bounding box is centered in the viewport. Asserting each button individually centered
+    // would be wrong: it could only hold if the buttons overlapped at the center.
+    let group_center = (min_left + max_right) / 2.0;
+    assert!(
+        (group_center - 400.0).abs() <= 4.0,
+        "Button pair must be centered as a group: combined center is {}, expected 400, tolerance 4",
+        group_center
+    );
+
+    // The buttons must not overlap horizontally (inline-block side-by-side flow).
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("button x must be comparable"));
+    for w in spans.windows(2) {
+        assert!(
+            w[0].1 <= w[1].0 + 0.5,
+            "Adjacent buttons must not overlap: left ends at {}, right starts at {}",
+            w[0].1,
+            w[1].0
+        );
+    }
+
+    // Assert every <input type="hidden"> has rect width == 0.0 (regression guard for t0336 display:none)
+    let mut inputs = Vec::new();
+    find_elements_by_tag(&snapshot, "input", &mut inputs);
+    let mut hidden_count = 0;
+    for input in inputs {
+        let is_hidden = input["attrs"]["type"].as_str() == Some("hidden");
+        if is_hidden {
+            let width = input["rect"]["width"]
+                .as_f64()
+                .expect("rect width must be a number");
+            assert_eq!(
+                width, 0.0,
+                "Hidden input (name: {:?}) must have a width of 0.0, got {}",
+                input["attrs"]["name"], width
+            );
+            hidden_count += 1;
+        }
+    }
+    assert!(
+        hidden_count > 0,
+        "Should have found at least one hidden input"
+    );
+
+    // TODO(spec): td percent-width cell collapse (real-google residual B) not yet asserted
 }
 
 // TODO(spec): B-3 verification — proves relative-URL <img> resolves against page base, fetches via loader,
