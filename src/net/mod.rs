@@ -35,6 +35,10 @@ pub struct Cookie {
 // Global thread-safe cookie jar for this module.
 static COOKIE_JAR: Mutex<Vec<Cookie>> = Mutex::new(Vec::new());
 
+/// User-Agent sent on all outgoing HTTP requests so servers return the standard
+/// (no-JS-required) HTML variant. spec: RFC 9110 §10.1.5
+const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 /// Clears all stored cookies. Useful for testing.
 #[allow(dead_code)]
 pub fn clear_cookies() {
@@ -181,6 +185,7 @@ pub fn send_request(
     let response = match method {
         HttpMethod::Get => {
             let mut req = ureq::get(&url_str);
+            req = req.header("User-Agent", USER_AGENT);
             if let Some(cookie_hdr) =
                 get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path)
             {
@@ -193,6 +198,7 @@ pub fn send_request(
         }
         HttpMethod::Post => {
             let mut req = ureq::post(&url_str);
+            req = req.header("User-Agent", USER_AGENT);
             if let Some(cookie_hdr) =
                 get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path)
             {
@@ -539,5 +545,12 @@ mod tests {
     fn test_fetch_all_concurrent_empty() {
         let results = fetch_all_concurrent(&[], 4);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_user_agent_well_formed() {
+        assert!(!USER_AGENT.is_empty());
+        assert!(USER_AGENT.starts_with("Mozilla/5.0"));
+        assert!(USER_AGENT.contains("Safari"));
     }
 }
