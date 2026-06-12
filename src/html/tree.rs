@@ -2547,4 +2547,72 @@ mod tests {
             parse_document_with_quirks(InputStream::from_utf8(html_with_doctype.as_bytes()));
         assert_eq!(quirks_with_doctype, QuirksMode::NoQuirks);
     }
+
+    #[test]
+    fn test_in_select_nested_select_edge_case() {
+        // "in select" insertion mode: a nested `<select>` start tag acts as a `</select>`
+        // (closes the current select rather than nesting another).
+        //
+        // TODO(spec): Per the HTML5 spec, the "select" start tag in "in select" mode acts as an
+        // end tag for "select" and then the "select" start tag is reprocessed. This means a new
+        // select element should be opened.
+        // However, this engine pops the first select from the stack and transitions to InBody,
+        // but does not reprocess the token, so the second "select" element is not created.
+        // The subsequent "<option>b" is thus parsed in body mode.
+        let html = "<select><option>a</option><select><option>b";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><option>a</option></select><option>b</option></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_select_input_edge_case() {
+        // "in select" insertion mode: an `<input>` start tag inside `<select>` acts to close the select.
+        //
+        // TODO(spec): Per the HTML5 spec, an "input" (or "textarea", "keygen") start tag in
+        // "in select" mode should act as an end tag for "select", and then the "input" token is reprocessed.
+        // This should close the select and then insert an <input> element into the body.
+        // However, this engine ignores the "input" start tag inside a select, so the select is only
+        // closed implicitly at EOF, and the <input> element is completely ignored/omitted.
+        let html = "<select><option>a</option><input>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><option>a</option></select></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_table_foster_parenting_stray_text() {
+        // "in table" insertion mode: foster-parenting of stray character/text content.
+        // Any character/text token directly inside `<table>` (like "hello" in `<table>hello...`)
+        // is foster-parented out.
+        //
+        // TODO(spec): Per the HTML5 spec, foster-parented nodes must be inserted immediately BEFORE
+        // the table.
+        // However, this engine only supports `append_child` in foster parenting, meaning the foster-parented
+        // text node is appended as the last child of the table's parent (e.g., body), placing it AFTER
+        // the table rather than BEFORE it.
+        let html = "<p>pre</p><table>hello<tr><td>x</td></tr></table>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><p>pre</p><table><tbody><tr><td>x</td></tr></tbody></table>hello</body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_table_caption_colgroup_placement() {
+        // "in table" insertion mode: check that `<caption>` and `<colgroup>` are placed correctly
+        // relative to other table sections and row groups.
+        let html =
+            "<table><caption>cap</caption><colgroup><col></colgroup><tr><td>x</td></tr></table>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><table><caption>cap</caption><colgroup><col></colgroup><tbody><tr><td>x</td></tr></tbody></table></body></html>"
+        );
+    }
 }
