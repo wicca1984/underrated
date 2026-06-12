@@ -414,13 +414,32 @@ pub(crate) fn layout_node(
 
     if let Some(w) = calculate_shrink_to_fit_width(
         dom,
+        styles,
         node,
         style,
         &children,
         border_box_x + border_left + padding_left,
         auto_width,
+        has_block,
+        depth,
     ) {
         content_width = w;
+    }
+
+    if !has_inline && has_block && content_width != inline_pass_width {
+        child_cursor_y = relayout_block_children(
+            dom,
+            styles,
+            node,
+            &mut children,
+            0,
+            content_width,
+            border_box_x,
+            border_left,
+            padding_left,
+            border_box_y + border_top + padding_top,
+            depth,
+        );
     }
 
     if has_inline && !has_block && content_width != inline_pass_width {
@@ -663,13 +682,17 @@ fn get_form_control_button_label(dom: &Dom, node: NodeId) -> Option<String> {
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn calculate_shrink_to_fit_width(
     dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
     node: NodeId,
     style: &ComputedStyle,
     children: &[LayoutBox],
     content_start_x: f32,
     auto_width: f32,
+    has_block_children: bool,
+    depth: usize,
 ) -> Option<f32> {
     let is_inline_blk = matches!(style.get("display"), Some(CssValue::Keyword(kw)) if kw == "inline-block")
         || matches!(
@@ -679,20 +702,147 @@ fn calculate_shrink_to_fit_width(
     let has_width = matches!(style.get("width"), Some(CssValue::Length(_, _)))
         || matches!(style.get("width"), Some(CssValue::Number(n)) if *n == 0.0);
     if is_inline_blk && !has_width {
-        let mut max_child_right = 0.0_f32;
-        if let Some(label) = get_form_control_button_label(dom, node) {
-            max_child_right = crate::font::BitmapFont::builtin().measure(&label) as f32;
-        }
-        for child in children {
-            let child_right = child.rect.max_x() - content_start_x;
-            if child_right > max_child_right {
-                max_child_right = child_right;
+        if has_block_children {
+            let candidate = max_content_width(dom, styles, node, depth);
+            Some(candidate.min(auto_width.max(0.0)))
+        } else {
+            let mut max_child_right = 0.0_f32;
+            if let Some(label) = get_form_control_button_label(dom, node) {
+                max_child_right = crate::font::BitmapFont::builtin().measure(&label) as f32;
             }
+            for child in children {
+                let child_right = child.rect.max_x() - content_start_x;
+                if child_right > max_child_right {
+                    max_child_right = child_right;
+                }
+            }
+            Some(max_child_right.min(auto_width.max(0.0)))
         }
-        Some(max_child_right.min(auto_width.max(0.0)))
     } else {
         None
     }
+}
+
+#[inline(never)]
+fn max_content_width(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    node: NodeId,
+    depth: usize,
+) -> f32 {
+    if depth > MAX_DEPTH {
+        return 0.0;
+    }
+
+    if let Some(style) = styles.get(&node)
+        && let Some(width_val) = style.get("width")
+    {
+        match width_val {
+            CssValue::Length(v, LengthUnit::Px) => return *v,
+            CssValue::Number(n) if *n == 0.0 => return 0.0,
+            _ => {}
+        }
+    }
+
+    if let Some(label) = get_form_control_button_label(dom, node) {
+        return crate::font::BitmapFont::builtin().measure(&label) as f32;
+    }
+
+    if let Some(NodeData::Text(text)) = dom.data(node) {
+        return crate::font::BitmapFont::builtin().measure(text) as f32;
+    }
+
+    let children = get_layoutable_children(dom, styles, node);
+    if children.is_empty() {
+        return 0.0;
+    }
+
+    let mut has_block_child = false;
+    let mut children_contributions = Vec::with_capacity(children.len());
+
+    for &child in &children {
+        let child_content_width = max_content_width(dom, styles, child, depth + 1);
+        let mut child_h_padding_border = 0.0;
+        if let Some(child_style) = styles.get(&child) {
+            child_h_padding_border += get_px(child_style, "padding-left", 0.0);
+            child_h_padding_border += get_px(child_style, "padding-right", 0.0);
+            child_h_padding_border += get_px(child_style, "border-left-width", 0.0);
+            child_h_padding_border += get_px(child_style, "border-right-width", 0.0);
+            if !is_inline_level(styles, dom, child) {
+                has_block_child = true;
+            }
+        }
+        children_contributions.push(child_content_width + child_h_padding_border);
+    }
+
+    if has_block_child {
+        children_contributions
+            .into_iter()
+            .fold(0.0_f32, |acc, w| acc.max(w))
+    } else {
+        children_contributions.into_iter().sum()
+    }
+}
+
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn relayout_block_children(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    node: NodeId,
+    children: &mut Vec<LayoutBox>,
+    prev_len: usize,
+    content_width: f32,
+    border_box_x: f32,
+    border_left: f32,
+    padding_left: f32,
+    mut child_cursor_y: f32,
+    depth: usize,
+) -> f32 {
+    children.truncate(prev_len);
+    let mut prev_margin_bottom: Option<f32> = None;
+    let mut last_child_box_max_y: Option<f32> = None;
+
+    for &child in dom.children(node) {
+        if is_absolute_or_fixed(styles, child) {
+            continue;
+        }
+
+        let offset_y =
+            if let (Some(prev_mb), Some(last_max_y)) = (prev_margin_bottom, last_child_box_max_y) {
+                let child_style = styles.get(&child);
+                let margin_top = child_style
+                    .map(|s| get_px(s, "margin-top", 0.0))
+                    .unwrap_or(0.0);
+                let collapsed = collapse_margins(prev_mb, margin_top);
+                last_max_y + collapsed - margin_top
+            } else {
+                child_cursor_y
+            };
+
+        if let Some(child_box) = layout_node(
+            dom,
+            styles,
+            child,
+            content_width,
+            border_box_x + border_left + padding_left,
+            offset_y,
+            depth + 1,
+        ) {
+            let margin_bottom = styles
+                .get(&child)
+                .map(|s| get_px(s, "margin-bottom", 0.0))
+                .unwrap_or(0.0);
+
+            last_child_box_max_y = Some(child_box.rect.max_y());
+            prev_margin_bottom = Some(margin_bottom);
+
+            child_cursor_y = child_box.rect.max_y() + margin_bottom;
+            children.push(child_box);
+        }
+    }
+
+    child_cursor_y
 }
 
 fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: NodeId) -> bool {
@@ -3576,6 +3726,84 @@ mod tests {
 
         // box_submit is <input> -> children.is_empty() -> content height is at least line_height.
         assert!(approx_eq(box_submit.rect.size.height, line_height));
+    }
+
+    #[test]
+    fn test_inline_block_with_block_child_shrinks_to_content() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let c = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "c".into())],
+        });
+        dom.append_child(body, c);
+
+        let ds = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "ds".into())],
+        });
+        dom.append_child(c, ds);
+
+        let lsbb = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "lsbb".into())],
+        });
+        dom.append_child(ds, lsbb);
+
+        let input = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "submit".into()),
+                ("value".into(), "Go".into()),
+            ],
+        });
+        dom.append_child(lsbb, input);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 1000px; }
+            .c { display: block; }
+            .ds { display: inline-block; }
+            .lsbb { display: block; }
+            ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 1000.0);
+
+        // Find ds and lsbb boxes
+        let mut ds_box = None;
+        let mut lsbb_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(b) = stack.pop() {
+            if let Some(node_id) = b.node {
+                if node_id == ds {
+                    ds_box = Some(b);
+                } else if node_id == lsbb {
+                    lsbb_box = Some(b);
+                }
+            }
+            for child in &b.children {
+                stack.push(child);
+            }
+        }
+
+        let ds_b = ds_box.expect(".ds box should exist in layout tree");
+        let lsbb_b = lsbb_box.expect(".lsbb box should exist in layout tree");
+
+        let font = crate::font::BitmapFont::builtin();
+        let measure_go = font.measure("Go") as f32;
+
+        // Both should shrink to approximately the measure of "Go" (e.g. 16px) and be way less than containing width (1000.0)
+        assert!(ds_b.rect.size.width < 300.0);
+        assert!(lsbb_b.rect.size.width < 300.0);
+        assert!(approx_eq(ds_b.rect.size.width, measure_go));
+        assert!(approx_eq(lsbb_b.rect.size.width, measure_go));
     }
 
     #[test]
