@@ -769,6 +769,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("rgb") || name.eq_ignore_ascii_case("rgba") {
                 return parse_rgb_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("hsl") || name.eq_ignore_ascii_case("hsla") {
+                return parse_hsl_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -859,6 +862,78 @@ fn parse_rgb_function(components: &[ComponentValue]) -> Option<Color> {
     } else {
         None
     }
+}
+
+fn parse_hsl_function(components: &[ComponentValue]) -> Option<Color> {
+    enum HslArg {
+        Number(f64),
+        Percentage(f64),
+    }
+
+    let mut args = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(HslArg::Number(*v)),
+            ComponentValue::Token(CssToken::Percentage(v)) => args.push(HslArg::Percentage(*v)),
+            _ => return None,
+        }
+    }
+
+    if args.len() != 3 && args.len() != 4 {
+        return None;
+    }
+
+    // Parse Hue
+    let h_val = match args[0] {
+        HslArg::Number(v) => v,
+        _ => return None,
+    };
+    let h = ((h_val % 360.0) + 360.0) % 360.0;
+
+    // Parse Saturation
+    let s_val = match args[1] {
+        HslArg::Percentage(v) => v,
+        _ => return None,
+    };
+    let s = (s_val / 100.0).clamp(0.0, 1.0);
+
+    // Parse Lightness
+    let l_val = match args[2] {
+        HslArg::Percentage(v) => v,
+        _ => return None,
+    };
+    let l = (l_val / 100.0).clamp(0.0, 1.0);
+
+    // Parse Alpha
+    let alpha = if args.len() == 4 {
+        let a_val = match args[3] {
+            HslArg::Number(v) => v,
+            HslArg::Percentage(v) => v / 100.0,
+        };
+        (a_val.clamp(0.0, 1.0) * 255.0) as u8
+    } else {
+        255
+    };
+
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x), // covers hp in [5,6)
+    };
+    let m = l - c / 2.0;
+    let r = ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let g = ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let b = ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+
+    Some(Color::Rgba(r, g, b, alpha))
 }
 
 fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
@@ -1281,6 +1356,92 @@ mod tests {
             parse_value(&components),
             Some(CssValue::Color(Color::Rgba(0, 0, 255, 127)))
         );
+    }
+
+    #[test]
+    fn test_parse_color_hsl() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // hsl(0, 100%, 50%) -> pure red
+        assert_eq!(
+            parse("hsl(0, 100%, 50%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // HSL(0, 100%, 50%) -> case-insensitivity
+        assert_eq!(
+            parse("HSL(0, 100%, 50%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // hsl(120, 100%, 50%) -> green
+        assert_eq!(
+            parse("hsl(120, 100%, 50%)"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+
+        // hsl(240, 100%, 50%) -> blue
+        assert_eq!(
+            parse("hsl(240, 100%, 50%)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 255, 255)))
+        );
+
+        // hsl(0, 0%, 100%) -> white
+        assert_eq!(
+            parse("hsl(0, 0%, 100%)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // hsl(0, 0%, 0%) -> black
+        assert_eq!(
+            parse("hsl(0, 0%, 0%)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // hsla(0, 100%, 50%, 0.5) -> alpha within 1 of 127
+        let alpha_color = parse("hsla(0, 100%, 50%, 0.5)");
+        match alpha_color {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 0);
+                assert_eq!(b, 0);
+                assert!((alpha as i32 - 127).abs() <= 1);
+            }
+            _ => panic!("Expected hsla(0, 100%, 50%, 0.5) to parse as a color"),
+        }
+
+        // Percentage alpha: hsla(0, 100%, 50%, 50%) -> alpha within 1 of 127
+        let alpha_pct = parse("hsla(0, 100%, 50%, 50%)");
+        match alpha_pct {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 0);
+                assert_eq!(b, 0);
+                assert!((alpha as i32 - 127).abs() <= 1);
+            }
+            _ => panic!("Expected hsla(0, 100%, 50%, 50%) to parse as a color"),
+        }
+
+        // Negative hues wrapping: hsl(-240, 100%, 50%) wraps to 120 (green)
+        assert_eq!(
+            parse("hsl(-240, 100%, 50%)"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+
+        // Saturation/Lightness clamping: hsl(0, 150%, 50%) -> red
+        assert_eq!(
+            parse("hsl(0, 150%, 50%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // Rejecting bare numbers for S/L: hsl(0, 100, 50) -> None
+        assert_eq!(parse("hsl(0, 100, 50)"), None);
+
+        // Rejecting invalid arguments count: hsl(0, 100%) -> None
+        assert_eq!(parse("hsl(0, 100%)"), None);
     }
 
     #[test]
