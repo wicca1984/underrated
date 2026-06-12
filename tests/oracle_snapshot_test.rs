@@ -1566,3 +1566,70 @@ fn test_fixture_10_news_header_and_link_layout() {
         );
     }
 }
+
+// Guard that inline scripts execute successfully at page load,
+// mutating the DOM and producing a correct post-JS layout tree.
+#[test]
+fn test_fixture_11_dynamic_dom() {
+    let snapshot = load_fixture_snapshot("11_dynamic_dom.html");
+    assert_eq!(snapshot["tag"], "html");
+
+    // Find the #app div container
+    let _app = find_element_by_attr(&snapshot, "id", "app")
+        .unwrap_or_else(|| panic!("div with id='app' must exist"));
+
+    // Find all card divs inside the #app container
+    let mut cards = Vec::new();
+    find_elements_by_class(&snapshot, "card", &mut cards);
+    assert_eq!(
+        cards.len(),
+        3,
+        "Should have exactly 3 card divs created by script"
+    );
+
+    // Let's assert that each card contains the expected text and has correct layout
+    let mut last_y = -1.0;
+    for (i, card) in cards.iter().enumerate() {
+        assert_eq!(card["tag"], "div");
+
+        // Verify card attributes
+        let card_class = card["attrs"]["class"]
+            .as_str()
+            .unwrap_or_else(|| panic!("card must have a class attribute"));
+        assert_eq!(card_class, "card");
+
+        // Verify card content
+        let mut text_nodes = Vec::new();
+        collect_text_nodes(card, &mut text_nodes);
+        let expected_text = format!("Card {}", i + 1);
+        assert_eq!(text_nodes, vec![expected_text.as_str()]);
+
+        // Verify layout rects
+        let rect = &card["rect"];
+        let x = rect["x"].as_f64().unwrap();
+        let y = rect["y"].as_f64().unwrap();
+        let width = rect["width"].as_f64().unwrap();
+        let height = rect["height"].as_f64().unwrap();
+
+        assert!(x >= 0.0, "card.rect.x must be non-negative");
+        assert!(y >= 0.0, "card.rect.y must be non-negative");
+        assert!(
+            (width - 300.0).abs() < 1.0,
+            "card width must be approximately 300"
+        );
+        assert!(
+            (height - 80.0).abs() < 1.0,
+            "card height must be approximately 80"
+        );
+
+        // Stacking order: y must be strictly increasing since they stack vertically
+        assert!(
+            y > last_y,
+            "Cards must stack vertically in increasing y: card {} y is {}, last y was {}",
+            i + 1,
+            y,
+            last_y
+        );
+        last_y = y;
+    }
+}
