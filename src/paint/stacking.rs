@@ -1,7 +1,7 @@
-use crate::css::values::{CssValue, ZIndex};
+use crate::css::values::ZIndex;
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
-use crate::style::ComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
 /// Sibling paint entry carrying a reference to the LayoutBox, its computed z-index, and its original document-order index.
@@ -21,14 +21,17 @@ fn z_index_to_int(z: ZIndex) -> i32 {
 
 /// Helper to get the computed `z-index` for a LayoutBox.
 /// If the box has no node or style, defaults to `ZIndex::Auto`.
-pub fn get_z_index(layout_box: &LayoutBox, styles: &HashMap<NodeId, ComputedStyle>) -> ZIndex {
+pub fn get_z_index(layout_box: &LayoutBox, styles: &HashMap<NodeId, CategorizedComputedStyle>) -> ZIndex {
     layout_box
         .node
         .and_then(|node_id| styles.get(&node_id))
-        .and_then(|style| style.get("z-index"))
-        .and_then(|val| match val {
-            CssValue::ZIndex(z) => Some(*z),
-            _ => None,
+        .map(|style| {
+            let z = style.reset_box.z_index;
+            if z == i32::MIN {
+                ZIndex::Auto
+            } else {
+                ZIndex::Index(z)
+            }
         })
         .unwrap_or(ZIndex::Auto)
 }
@@ -40,7 +43,7 @@ pub fn get_z_index(layout_box: &LayoutBox, styles: &HashMap<NodeId, ComputedStyl
 /// this function returns references to the siblings in their original document order without performing any sorting.
 pub fn sort_siblings<'a>(
     children: &'a [LayoutBox],
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
 ) -> Vec<&'a LayoutBox> {
     // If empty, return empty
     if children.is_empty() {
@@ -101,11 +104,15 @@ mod tests {
     }
 
     // Helper to construct mock style map with z-index values
-    fn make_mock_styles(data: &[(NodeId, ZIndex)]) -> HashMap<NodeId, ComputedStyle> {
+    fn make_mock_styles(data: &[(NodeId, ZIndex)]) -> HashMap<NodeId, CategorizedComputedStyle> {
         let mut map = HashMap::new();
         for &(id, z) in data {
-            let mut style = ComputedStyle::default();
-            style.insert("z-index".to_string(), CssValue::ZIndex(z));
+            let mut style = CategorizedComputedStyle::initial();
+            let val = match z {
+                ZIndex::Auto => i32::MIN,
+                ZIndex::Index(v) => v,
+            };
+            style.set_z_index(val);
             map.insert(id, style);
         }
         map

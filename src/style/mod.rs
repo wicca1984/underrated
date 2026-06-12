@@ -6,33 +6,7 @@ use crate::selector::{ComplexSelector, Component, matches_complex};
 use std::collections::HashMap;
 
 pub mod categorized;
-
-/// A map of property names to their computed values.
-#[derive(Debug, Default, Clone)]
-pub struct ComputedStyle {
-    properties: HashMap<String, CssValue>,
-    opacity_compat: std::cell::OnceCell<CssValue>,
-}
-
-impl ComputedStyle {
-    /// Returns the computed value for a given property, if it exists.
-    pub fn get(&self, property: &str) -> Option<&CssValue> {
-        if property == "opacity"
-            && let Some(CssValue::Opacity(val)) = self.properties.get("opacity")
-        {
-            return Some(self.opacity_compat.get_or_init(|| CssValue::Number(*val)));
-        }
-        self.properties.get(property)
-    }
-
-    /// Sets/inserts a computed value for a given property.
-    pub fn insert(&mut self, property: String, value: CssValue) {
-        if property == "opacity" {
-            self.opacity_compat.take();
-        }
-        self.properties.insert(property, value);
-    }
-}
+pub use categorized::CategorizedComputedStyle;
 
 /// Computes the specificity of a complex selector.
 /// Returns a tuple of (inline, id, class, type) counts.
@@ -89,7 +63,7 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
 }
 
 /// Computes the styles for all nodes in the DOM based on the given stylesheet.
-pub fn compute_styles(dom: &Dom, stylesheet: &Stylesheet) -> HashMap<NodeId, ComputedStyle> {
+pub fn compute_styles(dom: &Dom, stylesheet: &Stylesheet) -> HashMap<NodeId, CategorizedComputedStyle> {
     compute_styles_with_viewport(dom, stylesheet, 1024.0)
 }
 
@@ -132,7 +106,7 @@ pub fn compute_styles_with_viewport(
     dom: &Dom,
     stylesheet: &Stylesheet,
     viewport_width: f32,
-) -> HashMap<NodeId, ComputedStyle> {
+) -> HashMap<NodeId, CategorizedComputedStyle> {
     let mut styles = HashMap::new();
     let root = dom.document();
 
@@ -172,9 +146,9 @@ fn compute_node_style(
     dom: &Dom,
     node: NodeId,
     preparsed_rules: &[PreparsedRule],
-    computed_styles: &HashMap<NodeId, ComputedStyle>,
+    computed_styles: &HashMap<NodeId, CategorizedComputedStyle>,
     ua_rules_count: usize,
-) -> ComputedStyle {
+) -> CategorizedComputedStyle {
     let mut properties = HashMap::new();
 
     // 1. Collect all matching rules and their declarations.
@@ -405,20 +379,7 @@ fn compute_node_style(
         properties.remove("border-left-color");
     }
 
-    // 5. Inheritance.
-    // spec: https://www.w3.org/TR/css-cascade-4/#inheritance
-    if let Some(parent_style) = dom
-        .parent(node)
-        .and_then(|parent| computed_styles.get(&parent))
-    {
-        for (prop, val) in &parent_style.properties {
-            if is_inherited_property(prop) && !properties.contains_key(prop) {
-                properties.insert(prop.clone(), val.clone());
-            }
-        }
-    }
-
-    // --- 6. Resolution of text/font properties (S-43) ---
+    // --- 6. Resolution of text/font properties ---
     let parent_style = dom
         .parent(node)
         .and_then(|parent| computed_styles.get(&parent));
@@ -428,8 +389,8 @@ fn compute_node_style(
         let raw_fs = properties.get("font-size");
         match raw_fs {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_fs = parent_style.and_then(|s| s.get("font-size")).cloned();
-                parent_fs.unwrap_or(CssValue::Length(16.0, LengthUnit::Px))
+                let px = parent_style.map(|p| p.inherited_text.font_size as f32).unwrap_or(16.0);
+                CssValue::Length(px, LengthUnit::Px)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Length(16.0, LengthUnit::Px),
             Some(CssValue::Keyword(s)) => {
@@ -449,13 +410,7 @@ fn compute_node_style(
                 LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),
                 LengthUnit::Pt => CssValue::Length(*val * 96.0 / 72.0, LengthUnit::Px),
                 LengthUnit::Em | LengthUnit::Percent => {
-                    let parent_px = parent_style
-                        .and_then(|s| s.get("font-size"))
-                        .and_then(|v| match v {
-                            CssValue::Length(px, LengthUnit::Px) => Some(*px),
-                            _ => None,
-                        })
-                        .unwrap_or(16.0);
+                    let parent_px = parent_style.map(|p| p.inherited_text.font_size as f32).unwrap_or(16.0);
                     let factor = if *unit == LengthUnit::Percent {
                         *val / 100.0
                     } else {
@@ -467,8 +422,6 @@ fn compute_node_style(
                     let root_px = get_root_font_size(dom, computed_styles);
                     CssValue::Length(*val * root_px, LengthUnit::Px)
                 }
-                // spec: viewport units depend on the viewport, which style does not
-                // know here; pass them through for layout to resolve.
                 LengthUnit::Vw | LengthUnit::Vh => CssValue::Length(*val, unit.clone()),
             },
             Some(_) => CssValue::Length(16.0, LengthUnit::Px),
@@ -486,8 +439,8 @@ fn compute_node_style(
         let raw_fw = properties.get("font-weight");
         match raw_fw {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_fw = parent_style.and_then(|s| s.get("font-weight")).cloned();
-                parent_fw.unwrap_or(CssValue::Keyword("normal".to_string()))
+                let fw = parent_style.map(|p| p.inherited_text.font_weight.clone()).unwrap_or_else(|| "normal".to_string());
+                CssValue::Keyword(fw)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(val) => val.clone(),
@@ -501,8 +454,8 @@ fn compute_node_style(
         let raw_lh = properties.get("line-height");
         match raw_lh {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_lh = parent_style.and_then(|s| s.get("line-height")).cloned();
-                parent_lh.unwrap_or(CssValue::Keyword("normal".to_string()))
+                let lh = parent_style.map(|p| p.inherited_text.line_height as f32).unwrap_or(20.0);
+                CssValue::Length(lh, LengthUnit::Px)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(CssValue::Length(val, unit)) => match unit {
@@ -520,7 +473,6 @@ fn compute_node_style(
                     let root_px = get_root_font_size(dom, computed_styles);
                     CssValue::Length(*val * root_px, LengthUnit::Px)
                 }
-                // spec: viewport units resolved later at layout time.
                 LengthUnit::Vw | LengthUnit::Vh => CssValue::Length(*val, unit.clone()),
             },
             Some(CssValue::Number(val)) => CssValue::Number(*val),
@@ -535,8 +487,8 @@ fn compute_node_style(
         let raw_ta = properties.get("text-align");
         match raw_ta {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_ta = parent_style.and_then(|s| s.get("text-align")).cloned();
-                parent_ta.unwrap_or(CssValue::Keyword("left".to_string()))
+                let ta = parent_style.map(|p| p.inherited_text.text_align.clone()).unwrap_or_else(|| "left".to_string());
+                CssValue::Keyword(ta)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("left".to_string()),
             Some(val) => val.clone(),
@@ -550,8 +502,8 @@ fn compute_node_style(
         let raw_ws = properties.get("white-space");
         match raw_ws {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_ws = parent_style.and_then(|s| s.get("white-space")).cloned();
-                parent_ws.unwrap_or(CssValue::Keyword("normal".to_string()))
+                let ws = parent_style.map(|p| p.inherited_text.white_space.clone()).unwrap_or_else(|| "normal".to_string());
+                CssValue::Keyword(ws)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(val) => val.clone(),
@@ -565,8 +517,12 @@ fn compute_node_style(
         let raw_ls = properties.get("letter-spacing");
         match raw_ls {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_ls = parent_style.and_then(|s| s.get("letter-spacing")).cloned();
-                parent_ls.unwrap_or(CssValue::Keyword("normal".to_string()))
+                let ls = parent_style.map(|p| p.inherited_text.letter_spacing).unwrap_or(-1);
+                if ls == -1 {
+                    CssValue::Keyword("normal".to_string())
+                } else {
+                    CssValue::Length(ls as f32, LengthUnit::Px)
+                }
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(CssValue::Length(val, unit)) => match unit {
@@ -597,8 +553,12 @@ fn compute_node_style(
         let raw_ws = properties.get("word-spacing");
         match raw_ws {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_ws = parent_style.and_then(|s| s.get("word-spacing")).cloned();
-                parent_ws.unwrap_or(CssValue::Keyword("normal".to_string()))
+                let ws = parent_style.map(|p| p.inherited_text.word_spacing).unwrap_or(-1);
+                if ws == -1 {
+                    CssValue::Keyword("normal".to_string())
+                } else {
+                    CssValue::Length(ws as f32, LengthUnit::Px)
+                }
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(CssValue::Length(val, unit)) => match unit {
@@ -629,8 +589,8 @@ fn compute_node_style(
         let raw_vis = properties.get("visibility");
         match raw_vis {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_vis = parent_style.and_then(|s| s.get("visibility")).cloned();
-                parent_vis.unwrap_or(CssValue::Keyword("visible".to_string()))
+                let vis = parent_style.map(|p| p.inherited_effects.visibility.clone()).unwrap_or_else(|| "visible".to_string());
+                CssValue::Keyword(vis)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => {
                 CssValue::Keyword("visible".to_string())
@@ -646,8 +606,8 @@ fn compute_node_style(
         let raw_ec = properties.get("empty-cells");
         match raw_ec {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let parent_ec = parent_style.and_then(|s| s.get("empty-cells")).cloned();
-                parent_ec.unwrap_or(CssValue::Keyword("show".to_string()))
+                let ec = parent_style.map(|p| p.inherited_effects.empty_cells.clone()).unwrap_or_else(|| "show".to_string());
+                CssValue::Keyword(ec)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("show".to_string()),
             Some(val) => val.clone(),
@@ -656,13 +616,20 @@ fn compute_node_style(
     };
     properties.insert("empty-cells".to_string(), resolved_empty_cells);
 
-    ComputedStyle {
-        properties,
-        opacity_compat: std::cell::OnceCell::new(),
+    let mut style = if let Some(parent) = parent_style {
+        CategorizedComputedStyle::inherit_from(parent)
+    } else {
+        CategorizedComputedStyle::initial()
+    };
+
+    for (name, value) in properties {
+        style.set_property(&name, &value);
     }
+
+    style
 }
 
-fn get_root_font_size(dom: &Dom, computed_styles: &HashMap<NodeId, ComputedStyle>) -> f32 {
+fn get_root_font_size(dom: &Dom, computed_styles: &HashMap<NodeId, CategorizedComputedStyle>) -> f32 {
     let document_node = dom.document();
     let root_element = dom
         .children(document_node)
@@ -670,9 +637,8 @@ fn get_root_font_size(dom: &Dom, computed_styles: &HashMap<NodeId, ComputedStyle
         .find(|&&child| matches!(dom.data(child), Some(crate::dom::NodeData::Element { .. })));
     if let Some(&root_id) = root_element
         && let Some(root_style) = computed_styles.get(&root_id)
-        && let Some(CssValue::Length(px, LengthUnit::Px)) = root_style.get("font-size")
     {
-        return *px;
+        return root_style.inherited_text.font_size as f32;
     }
     16.0
 }

@@ -4,7 +4,7 @@ use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
 use crate::loader::ResourceLoader;
-use crate::style::ComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use crate::url::Url;
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 /// spec: S-13
 pub struct Page {
     pub dom: Dom,
-    pub styles: HashMap<NodeId, ComputedStyle>,
+    pub styles: HashMap<NodeId, CategorizedComputedStyle>,
     pub layout: LayoutBox,
 }
 

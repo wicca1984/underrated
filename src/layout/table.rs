@@ -5,7 +5,7 @@ use crate::infra::NodeId;
 use crate::layout::{
     LayoutBox, get_layoutable_children, get_px, layout_node, resolve_margins_and_width,
 };
-use crate::style::ComputedStyle;
+use crate::style::CategorizedCategorizedComputedStyle;
 use std::collections::HashMap;
 
 struct TableRowInfo {
@@ -30,7 +30,7 @@ fn translate_y(layout_box: &mut LayoutBox, dy: f32) {
 
 pub fn layout_table_container(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     containing_width: f32,
     offset_x: f32,
@@ -545,14 +545,14 @@ pub fn layout_table_container(
     })
 }
 
-pub(crate) fn is_border_collapse(style: &ComputedStyle) -> bool {
+pub(crate) fn is_border_collapse(style: &CategorizedComputedStyle) -> bool {
     match style.get("border-collapse") {
         Some(CssValue::Keyword(kw)) => kw == "collapse",
         _ => false,
     }
 }
 
-fn get_border_spacing(style: &ComputedStyle) -> (f32, f32) {
+fn get_border_spacing(style: &CategorizedComputedStyle) -> (f32, f32) {
     match style.get("border-spacing") {
         Some(CssValue::Length(v, _)) => (*v, *v),
         Some(CssValue::Multiple(values)) if values.len() >= 2 => {
@@ -572,7 +572,7 @@ fn get_border_spacing(style: &ComputedStyle) -> (f32, f32) {
 
 fn gather_table_rows(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
 ) -> Vec<TableRowInfo> {
     let mut rows = Vec::new();
@@ -580,7 +580,7 @@ fn gather_table_rows(
 
     fn traverse(
         dom: &Dom,
-        styles: &HashMap<NodeId, ComputedStyle>,
+        styles: &HashMap<NodeId, CategorizedComputedStyle>,
         node: NodeId,
         rows: &mut Vec<TableRowInfo>,
         implicit_row_cells: &mut Vec<NodeId>,
@@ -635,7 +635,7 @@ fn gather_table_rows(
 
 fn gather_row_cells(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     row_node: NodeId,
     cells: &mut Vec<NodeId>,
 ) {
@@ -699,7 +699,7 @@ fn parse_span_attribute(dom: &Dom, node: NodeId, name: &str) -> usize {
 
 fn get_cell_preferred_width(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     cell_node: NodeId,
     content_width: f32,
     depth: usize,
@@ -723,11 +723,11 @@ mod tests {
     use super::*;
     use crate::css::values::{CssValue, DisplayValue, LengthUnit};
     use crate::dom::{Dom, NodeData};
-    use crate::style::ComputedStyle;
+    use crate::style::CategorizedCategorizedComputedStyle;
     use std::collections::HashMap;
 
-    fn style_with_display(display: &str) -> ComputedStyle {
-        let mut s = ComputedStyle::default();
+    fn style_with_display(display: &str) -> CategorizedComputedStyle {
+        let mut s = CategorizedComputedStyle::default();
         let val = match display {
             "table" => CssValue::Display(DisplayValue::Table),
             "table-row" => CssValue::Display(DisplayValue::TableRow),

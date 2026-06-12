@@ -3,10 +3,10 @@ use crate::dom::{Dom, NodeData};
 use crate::geom::{Point, Rect, Size};
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
-use crate::style::ComputedStyle;
+use crate::style::CategorizedCategorizedComputedStyle;
 use std::collections::HashMap;
 
-fn is_inline_block(styles: &HashMap<NodeId, ComputedStyle>, node: NodeId) -> bool {
+fn is_inline_block(styles: &HashMap<NodeId, CategorizedComputedStyle>, node: NodeId) -> bool {
     if let Some(style) = styles.get(&node) {
         matches!(
             style.get("display"),
@@ -33,7 +33,7 @@ fn shift_x(layout_box: &mut LayoutBox, delta: f32) {
     }
 }
 
-fn get_font_size(style: &ComputedStyle) -> f32 {
+fn get_font_size(style: &CategorizedComputedStyle) -> f32 {
     match style.get("font-size") {
         Some(crate::css::values::CssValue::Length(px, _)) => *px,
         _ => 16.0,
@@ -45,7 +45,7 @@ fn get_vertical_align_shift(
     node: NodeId,
     block_container: Option<NodeId>,
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     line_height: f32,
     border_box_height: f32,
 ) -> f32 {
@@ -114,7 +114,7 @@ fn create_line_box_adjusted(
     offset_y: f32,
     width: f32,
     line_height: f32,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     text_align: &str,
     containing_width: f32,
     is_last_line: bool,
@@ -207,7 +207,7 @@ fn create_line_box_adjusted(
 #[allow(clippy::too_many_arguments)]
 pub fn layout_inline_run(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     children: &[NodeId],
     containing_width: f32,
     offset_x: f32,
@@ -700,7 +700,7 @@ pub fn layout_inline_run(
 #[allow(clippy::too_many_arguments)]
 pub fn layout_inline(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     containing_width: f32,
     offset_x: f32,

@@ -26,6 +26,7 @@ pub struct InheritedText {
     pub text_align_last: String,
     pub tab_size: u32,
     pub hyphens: String,
+    pub text_shadow: Option<crate::css::values::CssValue>,
 }
 
 impl Default for InheritedText {
@@ -51,6 +52,7 @@ impl Default for InheritedText {
             text_align_last: "auto".to_string(),
             tab_size: 8,
             hyphens: "manual".to_string(),
+            text_shadow: None,
         }
     }
 }
@@ -279,6 +281,9 @@ pub struct ResetFlex {
     pub align_items: String,
     pub align_self: String,
     pub order: i32,
+    pub align_content: String,
+    pub row_gap: i32,
+    pub column_gap: i32,
 }
 
 impl Default for ResetFlex {
@@ -293,6 +298,9 @@ impl Default for ResetFlex {
             align_items: "normal".to_string(),
             align_self: "auto".to_string(),
             order: 0,
+            align_content: "normal".to_string(),
+            row_gap: -1,
+            column_gap: -1,
         }
     }
 }
@@ -324,6 +332,7 @@ pub struct ResetEffects {
     pub text_decoration_color: String,
     pub text_decoration_style: String,
     pub text_overflow: String,
+    pub box_shadow: Option<crate::css::values::CssValue>,
 }
 
 impl Default for ResetEffects {
@@ -339,6 +348,7 @@ impl Default for ResetEffects {
             text_decoration_color: "currentcolor".to_string(),
             text_decoration_style: "solid".to_string(),
             text_overflow: "clip".to_string(),
+            box_shadow: None,
         }
     }
 }
@@ -484,7 +494,545 @@ impl CategorizedComputedStyle {
         Arc::make_mut(&mut self.reset_box).width = width;
     }
 
-    // TODO(spec): generated/typed setters for the full property set arrive with the cascade-migration task (item 2).
+    /// Set height.
+    pub fn set_height(&mut self, height: i32) {
+        Arc::make_mut(&mut self.reset_box).height = height;
+    }
+
+    /// Set z-index.
+    pub fn set_z_index(&mut self, z_index: i32) {
+        Arc::make_mut(&mut self.reset_box).z_index = z_index;
+    }
+
+    /// Set box shadow.
+    pub fn set_box_shadow(&mut self, box_shadow: crate::css::values::CssValue) {
+        Arc::make_mut(&mut self.reset_effects).box_shadow = Some(box_shadow);
+    }
+
+    /// Set text shadow.
+    pub fn set_text_shadow(&mut self, text_shadow: crate::css::values::CssValue) {
+        Arc::make_mut(&mut self.inherited_text).text_shadow = Some(text_shadow);
+    }
+
+    /// Set property.
+    pub fn set_property(&mut self, name: &str, value: &crate::css::values::CssValue) {
+        use crate::css::values::{CssValue, ZIndex};
+        match name {
+            // InheritedText
+            "color" => self.set_color(css_value_to_string(value)),
+            "font-family" => Arc::make_mut(&mut self.inherited_text).font_family = css_value_to_string(value),
+            "font-size" => {
+                let px = match value {
+                    CssValue::Length(v, _) => v.round().max(1.0) as u32,
+                    _ => 16,
+                };
+                self.set_font_size(px);
+            }
+            "font-style" => Arc::make_mut(&mut self.inherited_text).font_style = css_value_to_string(value),
+            "font-weight" => Arc::make_mut(&mut self.inherited_text).font_weight = css_value_to_string(value),
+            "line-height" => {
+                let fs = self.inherited_text.font_size;
+                let px = match value {
+                    CssValue::Length(v, _) => v.round().max(0.0) as u32,
+                    CssValue::Number(v) => (v * fs as f32).round().max(0.0) as u32,
+                    _ => (1.2 * fs as f32).round().max(0.0) as u32,
+                };
+                Arc::make_mut(&mut self.inherited_text).line_height = px;
+            }
+            "text-align" => Arc::make_mut(&mut self.inherited_text).text_align = css_value_to_string(value),
+            "letter-spacing" => Arc::make_mut(&mut self.inherited_text).letter_spacing = value_to_px(value),
+            "word-spacing" => Arc::make_mut(&mut self.inherited_text).word_spacing = value_to_px(value),
+            "white-space" => Arc::make_mut(&mut self.inherited_text).white_space = css_value_to_string(value),
+            "direction" => Arc::make_mut(&mut self.inherited_text).direction = css_value_to_string(value),
+            "text-transform" => Arc::make_mut(&mut self.inherited_text).text_transform = css_value_to_string(value),
+            "font-variant" => Arc::make_mut(&mut self.inherited_text).font_variant = css_value_to_string(value),
+            "font-stretch" => Arc::make_mut(&mut self.inherited_text).font_stretch = css_value_to_string(value),
+            "text-indent" => Arc::make_mut(&mut self.inherited_text).text_indent = value_to_px(value),
+            "word-break" => Arc::make_mut(&mut self.inherited_text).word_break = css_value_to_string(value),
+            "overflow-wrap" => Arc::make_mut(&mut self.inherited_text).overflow_wrap = css_value_to_string(value),
+            "text-align-last" => Arc::make_mut(&mut self.inherited_text).text_align_last = css_value_to_string(value),
+            "tab-size" => Arc::make_mut(&mut self.inherited_text).tab_size = value_to_u32(value),
+            "hyphens" => Arc::make_mut(&mut self.inherited_text).hyphens = css_value_to_string(value),
+            "text-shadow" => Arc::make_mut(&mut self.inherited_text).text_shadow = Some(value.clone()),
+
+            // InheritedList
+            "list-style-type" => Arc::make_mut(&mut self.inherited_list).list_style_type = css_value_to_string(value),
+            "list-style-position" => Arc::make_mut(&mut self.inherited_list).list_style_position = css_value_to_string(value),
+            "list-style-image" => Arc::make_mut(&mut self.inherited_list).list_style_image = css_value_to_string(value),
+
+            // InheritedTable
+            "caption-side" => Arc::make_mut(&mut self.inherited_table).caption_side = css_value_to_string(value),
+            "border-collapse" => Arc::make_mut(&mut self.inherited_table).border_collapse = css_value_to_string(value),
+            "border-spacing" => Arc::make_mut(&mut self.inherited_table).border_spacing = value_to_u32(value),
+
+            // InheritedUI
+            "cursor" => Arc::make_mut(&mut self.inherited_ui).cursor = css_value_to_string(value),
+            "quotes" => Arc::make_mut(&mut self.inherited_ui).quotes = css_value_to_string(value),
+
+            // InheritedEffects
+            "visibility" => Arc::make_mut(&mut self.inherited_effects).visibility = css_value_to_string(value),
+            "empty-cells" => Arc::make_mut(&mut self.inherited_effects).empty_cells = css_value_to_string(value),
+
+            // ResetBox
+            "display" => self.set_display(css_value_to_string(value)),
+            "width" => self.set_width(value_to_px(value)),
+            "height" => self.set_height(value_to_px(value)),
+            "position" => Arc::make_mut(&mut self.reset_box).position = css_value_to_string(value),
+            "float" => Arc::make_mut(&mut self.reset_box).float = css_value_to_string(value),
+            "clear" => Arc::make_mut(&mut self.reset_box).clear = css_value_to_string(value),
+            "overflow" => Arc::make_mut(&mut self.reset_box).overflow = css_value_to_string(value),
+            "z-index" => {
+                let z = match value {
+                    CssValue::ZIndex(ZIndex::Auto) => i32::MIN,
+                    CssValue::ZIndex(ZIndex::Index(v)) => *v,
+                    CssValue::Keyword(s) if s.eq_ignore_ascii_case("auto") => i32::MIN,
+                    CssValue::Number(v) => v.round() as i32,
+                    _ => i32::MIN,
+                };
+                self.set_z_index(z);
+            }
+            "box-sizing" => Arc::make_mut(&mut self.reset_box).box_sizing = css_value_to_string(value),
+            "min-width" => Arc::make_mut(&mut self.reset_box).min_width = value_to_px(value),
+            "min-height" => Arc::make_mut(&mut self.reset_box).min_height = value_to_px(value),
+            "max-width" => Arc::make_mut(&mut self.reset_box).max_width = value_to_px(value),
+            "max-height" => Arc::make_mut(&mut self.reset_box).max_height = value_to_px(value),
+            "vertical-align" => {
+                let v = match value {
+                    CssValue::Keyword(kw) => match kw.as_str() {
+                        "baseline" => -1,
+                        "sub" => -2,
+                        "super" => -3,
+                        "text-top" | "top" => -4,
+                        "text-bottom" | "bottom" => -5,
+                        "middle" => -6,
+                        _ => -1,
+                    },
+                    _ => value_to_px(value) + 100000,
+                };
+                Arc::make_mut(&mut self.reset_box).vertical_align = v;
+            }
+            "object-fit" => Arc::make_mut(&mut self.reset_box).object_fit = css_value_to_string(value),
+            "pointer-events" => Arc::make_mut(&mut self.reset_box).pointer_events = css_value_to_string(value),
+
+            // ResetSurround
+            "margin-top" => Arc::make_mut(&mut self.reset_surround).margin_top = value_to_px(value),
+            "margin-right" => Arc::make_mut(&mut self.reset_surround).margin_right = value_to_px(value),
+            "margin-bottom" => Arc::make_mut(&mut self.reset_surround).margin_bottom = value_to_px(value),
+            "margin-left" => Arc::make_mut(&mut self.reset_surround).margin_left = value_to_px(value),
+            "margin-block-start" => Arc::make_mut(&mut self.reset_surround).margin_block_start = value_to_px(value),
+            "margin-block-end" => Arc::make_mut(&mut self.reset_surround).margin_block_end = value_to_px(value),
+            "padding-top" => Arc::make_mut(&mut self.reset_surround).padding_top = value_to_px(value),
+            "padding-right" => Arc::make_mut(&mut self.reset_surround).padding_right = value_to_px(value),
+            "padding-bottom" => Arc::make_mut(&mut self.reset_surround).padding_bottom = value_to_px(value),
+            "padding-left" => Arc::make_mut(&mut self.reset_surround).padding_left = value_to_px(value),
+            "padding-block-start" => Arc::make_mut(&mut self.reset_surround).padding_block_start = value_to_px(value),
+            "padding-block-end" => Arc::make_mut(&mut self.reset_surround).padding_block_end = value_to_px(value),
+            "border-top-width" => Arc::make_mut(&mut self.reset_surround).border_top_width = value_to_px(value),
+            "border-right-width" => Arc::make_mut(&mut self.reset_surround).border_right_width = value_to_px(value),
+            "border-bottom-width" => Arc::make_mut(&mut self.reset_surround).border_bottom_width = value_to_px(value),
+            "border-left-width" => Arc::make_mut(&mut self.reset_surround).border_left_width = value_to_px(value),
+            "border-top-style" => Arc::make_mut(&mut self.reset_surround).border_top_style = css_value_to_string(value),
+            "border-right-style" => Arc::make_mut(&mut self.reset_surround).border_right_style = css_value_to_string(value),
+            "border-bottom-style" => Arc::make_mut(&mut self.reset_surround).border_bottom_style = css_value_to_string(value),
+            "border-left-style" => Arc::make_mut(&mut self.reset_surround).border_left_style = css_value_to_string(value),
+            "border-top-color" => Arc::make_mut(&mut self.reset_surround).border_top_color = css_value_to_string(value),
+            "border-right-color" => Arc::make_mut(&mut self.reset_surround).border_right_color = css_value_to_string(value),
+            "border-bottom-color" => Arc::make_mut(&mut self.reset_surround).border_bottom_color = css_value_to_string(value),
+            "border-left-color" => Arc::make_mut(&mut self.reset_surround).border_left_color = css_value_to_string(value),
+            "border-top-left-radius" => Arc::make_mut(&mut self.reset_surround).border_top_left_radius = value_to_px(value),
+            "border-top-right-radius" => Arc::make_mut(&mut self.reset_surround).border_top_right_radius = value_to_px(value),
+            "border-bottom-right-radius" => Arc::make_mut(&mut self.reset_surround).border_bottom_right_radius = value_to_px(value),
+            "border-bottom-left-radius" => Arc::make_mut(&mut self.reset_surround).border_bottom_left_radius = value_to_px(value),
+            "top" => Arc::make_mut(&mut self.reset_surround).top = value_to_px(value),
+            "right" => Arc::make_mut(&mut self.reset_surround).right = value_to_px(value),
+            "bottom" => Arc::make_mut(&mut self.reset_surround).bottom = value_to_px(value),
+            "left" => Arc::make_mut(&mut self.reset_surround).left = value_to_px(value),
+
+            // ResetBackground
+            "background-color" => Arc::make_mut(&mut self.reset_background).background_color = css_value_to_string(value),
+            "background-image" => Arc::make_mut(&mut self.reset_background).background_image = css_value_to_string(value),
+            "background-repeat" => Arc::make_mut(&mut self.reset_background).background_repeat = css_value_to_string(value),
+            "background-position" => Arc::make_mut(&mut self.reset_background).background_position = css_value_to_string(value),
+            "background-size" => Arc::make_mut(&mut self.reset_background).background_size = css_value_to_string(value),
+            "background-attachment" => Arc::make_mut(&mut self.reset_background).background_attachment = css_value_to_string(value),
+
+            // ResetFlex
+            "flex-grow" => Arc::make_mut(&mut self.reset_flex).flex_grow = value_to_f32(value),
+            "flex-shrink" => Arc::make_mut(&mut self.reset_flex).flex_shrink = value_to_f32(value),
+            "flex-basis" => Arc::make_mut(&mut self.reset_flex).flex_basis = value_to_px(value),
+            "flex-direction" => Arc::make_mut(&mut self.reset_flex).flex_direction = css_value_to_string(value),
+            "flex-wrap" => Arc::make_mut(&mut self.reset_flex).flex_wrap = css_value_to_string(value),
+            "justify-content" => Arc::make_mut(&mut self.reset_flex).justify_content = css_value_to_string(value),
+            "align-items" => Arc::make_mut(&mut self.reset_flex).align_items = css_value_to_string(value),
+            "align-self" => Arc::make_mut(&mut self.reset_flex).align_self = css_value_to_string(value),
+            "order" => Arc::make_mut(&mut self.reset_flex).order = value_to_px(value),
+            "align-content" => Arc::make_mut(&mut self.reset_flex).align_content = css_value_to_string(value),
+            "row-gap" => Arc::make_mut(&mut self.reset_flex).row_gap = value_to_px(value),
+            "column-gap" => Arc::make_mut(&mut self.reset_flex).column_gap = value_to_px(value),
+            "gap" => {
+                let val_px = value_to_px(value);
+                let flex = Arc::make_mut(&mut self.reset_flex);
+                if flex.row_gap == -1 {
+                    flex.row_gap = val_px;
+                }
+                if flex.column_gap == -1 {
+                    flex.column_gap = val_px;
+                }
+            },
+
+            // ResetTable
+            "table-layout" => Arc::make_mut(&mut self.reset_table).table_layout = css_value_to_string(value),
+
+            // ResetEffects
+            "opacity" => Arc::make_mut(&mut self.reset_effects).opacity = value_to_f32(value),
+            "outline-width" => Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(value),
+            "outline-style" => Arc::make_mut(&mut self.reset_effects).outline_style = css_value_to_string(value),
+            "outline-color" => Arc::make_mut(&mut self.reset_effects).outline_color = css_value_to_string(value),
+            "transition-duration" => Arc::make_mut(&mut self.reset_effects).transition_duration = value_to_u32(value),
+            "transition-property" => Arc::make_mut(&mut self.reset_effects).transition_property = css_value_to_string(value),
+            "text-decoration-line" => Arc::make_mut(&mut self.reset_effects).text_decoration_line = css_value_to_string(value),
+            "text-decoration-color" => Arc::make_mut(&mut self.reset_effects).text_decoration_color = css_value_to_string(value),
+            "text-decoration-style" => Arc::make_mut(&mut self.reset_effects).text_decoration_style = css_value_to_string(value),
+            "text-overflow" => Arc::make_mut(&mut self.reset_effects).text_overflow = css_value_to_string(value),
+            "box-shadow" => Arc::make_mut(&mut self.reset_effects).box_shadow = Some(value.clone()),
+
+            _ => {}
+        }
+    }
+
+    /// Remove property.
+    pub fn remove_property(&mut self, name: &str) {
+        match name {
+            "border-top-color" => Arc::make_mut(&mut self.reset_surround).border_top_color = "currentcolor".to_string(),
+            "border-right-color" => Arc::make_mut(&mut self.reset_surround).border_right_color = "currentcolor".to_string(),
+            "border-bottom-color" => Arc::make_mut(&mut self.reset_surround).border_bottom_color = "currentcolor".to_string(),
+            "border-left-color" => Arc::make_mut(&mut self.reset_surround).border_left_color = "currentcolor".to_string(),
+            _ => {}
+        }
+    }
+
+    /// Get property as string.
+    pub fn get_property_as_string(&self, name: &str) -> Option<String> {
+        match name {
+            // InheritedText
+            "color" => Some(self.inherited_text.color.clone()),
+            "font-family" => Some(self.inherited_text.font_family.clone()),
+            "font-size" => Some(format!("{}px", self.inherited_text.font_size)),
+            "font-style" => Some(self.inherited_text.font_style.clone()),
+            "font-weight" => Some(self.inherited_text.font_weight.clone()),
+            "line-height" => Some(format!("{}px", self.inherited_text.line_height)),
+            "text-align" => Some(self.inherited_text.text_align.clone()),
+            "letter-spacing" => Some(if self.inherited_text.letter_spacing == -1 { "normal".to_string() } else { format!("{}px", self.inherited_text.letter_spacing) }),
+            "word-spacing" => Some(if self.inherited_text.word_spacing == -1 { "normal".to_string() } else { format!("{}px", self.inherited_text.word_spacing) }),
+            "white-space" => Some(self.inherited_text.white_space.clone()),
+            "direction" => Some(self.inherited_text.direction.clone()),
+            "text-transform" => Some(self.inherited_text.text_transform.clone()),
+            "font-variant" => Some(self.inherited_text.font_variant.clone()),
+            "font-stretch" => Some(self.inherited_text.font_stretch.clone()),
+            "text-indent" => Some(if self.inherited_text.text_indent == -1 { "0px".to_string() } else { format!("{}px", self.inherited_text.text_indent) }),
+            "word-break" => Some(self.inherited_text.word_break.clone()),
+            "overflow-wrap" => Some(self.inherited_text.overflow_wrap.clone()),
+            "text-align-last" => Some(self.inherited_text.text_align_last.clone()),
+            "tab-size" => Some(self.inherited_text.tab_size.to_string()),
+            "hyphens" => Some(self.inherited_text.hyphens.clone()),
+            "text-shadow" => self.inherited_text.text_shadow.as_ref().map(css_value_to_string),
+
+            // InheritedList
+            "list-style-type" => Some(self.inherited_list.list_style_type.clone()),
+            "list-style-position" => Some(self.inherited_list.list_style_position.clone()),
+            "list-style-image" => Some(self.inherited_list.list_style_image.clone()),
+
+            // InheritedTable
+            "caption-side" => Some(self.inherited_table.caption_side.clone()),
+            "border-collapse" => Some(self.inherited_table.border_collapse.clone()),
+            "border-spacing" => Some(self.inherited_table.border_spacing.to_string()),
+
+            // InheritedUI
+            "cursor" => Some(self.inherited_ui.cursor.clone()),
+            "quotes" => Some(self.inherited_ui.quotes.clone()),
+
+            // InheritedEffects
+            "visibility" => Some(self.inherited_effects.visibility.clone()),
+            "empty-cells" => Some(self.inherited_effects.empty_cells.clone()),
+
+            // ResetBox
+            "display" => Some(self.reset_box.display.clone()),
+            "width" => Some(if self.reset_box.width == -1 { "auto".to_string() } else { format!("{}px", self.reset_box.width) }),
+            "height" => Some(if self.reset_box.height == -1 { "auto".to_string() } else { format!("{}px", self.reset_box.height) }),
+            "position" => Some(self.reset_box.position.clone()),
+            "float" => Some(self.reset_box.float.clone()),
+            "clear" => Some(self.reset_box.clear.clone()),
+            "overflow" => Some(self.reset_box.overflow.clone()),
+            "z-index" => Some(if self.reset_box.z_index == i32::MIN { "auto".to_string() } else { self.reset_box.z_index.to_string() }),
+            "box-sizing" => Some(self.reset_box.box_sizing.clone()),
+            "min-width" => Some(if self.reset_box.min_width == -1 { "0px".to_string() } else { format!("{}px", self.reset_box.min_width) }),
+            "min-height" => Some(if self.reset_box.min_height == -1 { "0px".to_string() } else { format!("{}px", self.reset_box.min_height) }),
+            "max-width" => Some(if self.reset_box.max_width == -1 { "none".to_string() } else { format!("{}px", self.reset_box.max_width) }),
+            "max-height" => Some(if self.reset_box.max_height == -1 { "none".to_string() } else { format!("{}px", self.reset_box.max_height) }),
+            "vertical-align" => Some(match self.reset_box.vertical_align {
+                -1 => "baseline".to_string(),
+                -2 => "sub".to_string(),
+                -3 => "super".to_string(),
+                -4 => "top".to_string(),
+                -5 => "bottom".to_string(),
+                -6 => "middle".to_string(),
+                v if v >= 50000 => format!("{}px", v - 100000),
+                v => format!("{}px", v),
+            }),
+            "object-fit" => Some(self.reset_box.object_fit.clone()),
+            "pointer-events" => Some(self.reset_box.pointer_events.clone()),
+
+            // ResetSurround
+            "margin-top" => Some(if self.reset_surround.margin_top == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.margin_top) }),
+            "margin-right" => Some(if self.reset_surround.margin_right == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.margin_right) }),
+            "margin-bottom" => Some(if self.reset_surround.margin_bottom == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.margin_bottom) }),
+            "margin-left" => Some(if self.reset_surround.margin_left == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.margin_left) }),
+            "margin-block-start" => Some(if self.reset_surround.margin_block_start == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.margin_block_start) }),
+            "margin-block-end" => Some(if self.reset_surround.margin_block_end == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.margin_block_end) }),
+            "padding-top" => Some(if self.reset_surround.padding_top == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.padding_top) }),
+            "padding-right" => Some(if self.reset_surround.padding_right == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.padding_right) }),
+            "padding-bottom" => Some(if self.reset_surround.padding_bottom == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.padding_bottom) }),
+            "padding-left" => Some(if self.reset_surround.padding_left == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.padding_left) }),
+            "padding-block-start" => Some(if self.reset_surround.padding_block_start == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.padding_block_start) }),
+            "padding-block-end" => Some(if self.reset_surround.padding_block_end == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.padding_block_end) }),
+            "border-top-width" => Some(if self.reset_surround.border_top_width == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_top_width) }),
+            "border-right-width" => Some(if self.reset_surround.border_right_width == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_right_width) }),
+            "border-bottom-width" => Some(if self.reset_surround.border_bottom_width == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_bottom_width) }),
+            "border-left-width" => Some(if self.reset_surround.border_left_width == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_left_width) }),
+            "border-top-style" => Some(self.reset_surround.border_top_style.clone()),
+            "border-right-style" => Some(self.reset_surround.border_right_style.clone()),
+            "border-bottom-style" => Some(self.reset_surround.border_bottom_style.clone()),
+            "border-left-style" => Some(self.reset_surround.border_left_style.clone()),
+            "border-top-color" => Some(self.reset_surround.border_top_color.clone()),
+            "border-right-color" => Some(self.reset_surround.border_right_color.clone()),
+            "border-bottom-color" => Some(self.reset_surround.border_bottom_color.clone()),
+            "border-left-color" => Some(self.reset_surround.border_left_color.clone()),
+            "border-top-left-radius" => Some(if self.reset_surround.border_top_left_radius == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_top_left_radius) }),
+            "border-top-right-radius" => Some(if self.reset_surround.border_top_right_radius == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_top_right_radius) }),
+            "border-bottom-right-radius" => Some(if self.reset_surround.border_bottom_right_radius == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_bottom_right_radius) }),
+            "border-bottom-left-radius" => Some(if self.reset_surround.border_bottom_left_radius == -1 { "0px".to_string() } else { format!("{}px", self.reset_surround.border_bottom_left_radius) }),
+            "top" => Some(if self.reset_surround.top == -1 { "auto".to_string() } else { format!("{}px", self.reset_surround.top) }),
+            "right" => Some(if self.reset_surround.right == -1 { "auto".to_string() } else { format!("{}px", self.reset_surround.right) }),
+            "bottom" => Some(if self.reset_surround.bottom == -1 { "auto".to_string() } else { format!("{}px", self.reset_surround.bottom) }),
+            "left" => Some(if self.reset_surround.left == -1 { "auto".to_string() } else { format!("{}px", self.reset_surround.left) }),
+
+            // ResetBackground
+            "background-color" => Some(self.reset_background.background_color.clone()),
+            "background-image" => Some(self.reset_background.background_image.clone()),
+            "background-repeat" => Some(self.reset_background.background_repeat.clone()),
+            "background-position" => Some(self.reset_background.background_position.clone()),
+            "background-size" => Some(self.reset_background.background_size.clone()),
+            "background-attachment" => Some(self.reset_background.background_attachment.clone()),
+
+            // ResetFlex
+            "flex-grow" => Some(self.reset_flex.flex_grow.to_string()),
+            "flex-shrink" => Some(self.reset_flex.flex_shrink.to_string()),
+            "flex-basis" => Some(if self.reset_flex.flex_basis == -1 { "auto".to_string() } else { format!("{}px", self.reset_flex.flex_basis) }),
+            "flex-direction" => Some(self.reset_flex.flex_direction.clone()),
+            "flex-wrap" => Some(self.reset_flex.flex_wrap.clone()),
+            "justify-content" => Some(self.reset_flex.justify_content.clone()),
+            "align-items" => Some(self.reset_flex.align_items.clone()),
+            "align-self" => Some(self.reset_flex.align_self.clone()),
+            "order" => Some(self.reset_flex.order.to_string()),
+            "align-content" => Some(self.reset_flex.align_content.clone()),
+            "row-gap" => Some(if self.reset_flex.row_gap == -1 { "normal".to_string() } else { format!("{}px", self.reset_flex.row_gap) }),
+            "column-gap" => Some(if self.reset_flex.column_gap == -1 { "normal".to_string() } else { format!("{}px", self.reset_flex.column_gap) }),
+
+            // ResetTable
+            "table-layout" => Some(self.reset_table.table_layout.clone()),
+
+            // ResetEffects
+            "opacity" => Some(self.reset_effects.opacity.to_string()),
+            "outline-width" => Some(if self.reset_effects.outline_width == -1 { "medium".to_string() } else { format!("{}px", self.reset_effects.outline_width) }),
+            "outline-style" => Some(self.reset_effects.outline_style.clone()),
+            "outline-color" => Some(self.reset_effects.outline_color.clone()),
+            "transition-duration" => Some(format!("{}s", self.reset_effects.transition_duration)),
+            "transition-property" => Some(self.reset_effects.transition_property.clone()),
+            "text-decoration-line" => Some(self.reset_effects.text_decoration_line.clone()),
+            "text-decoration-color" => Some(self.reset_effects.text_decoration_color.clone()),
+            "text-decoration-style" => Some(self.reset_effects.text_decoration_style.clone()),
+            "text-overflow" => Some(self.reset_effects.text_overflow.clone()),
+            "box-shadow" => self.reset_effects.box_shadow.as_ref().map(css_value_to_string),
+
+            _ => None,
+        }
+    }
+}
+
+// Private value conversion helpers for CategorizedComputedStyle
+fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
+    use crate::css::values::{
+        AlignItemsValue, BoxSizingValue, Color, CssValue, DisplayValue, FlexDirectionValue,
+        JustifyContentValue, LengthUnit, OverflowValue, PositionValue, ZIndex,
+    };
+    match val {
+        CssValue::Keyword(s) => s.clone(),
+        CssValue::Length(v, unit) => {
+            let unit_str = match unit {
+                LengthUnit::Px => "px",
+                LengthUnit::Em => "em",
+                LengthUnit::Rem => "rem",
+                LengthUnit::Pt => "pt",
+                LengthUnit::Percent => "%",
+                LengthUnit::Vw => "vw",
+                LengthUnit::Vh => "vh",
+            };
+            format!("{}{}", v, unit_str)
+        }
+        CssValue::Number(v) => format!("{}", v),
+        CssValue::Color(Color::Rgba(r, g, b, a)) => {
+            if *a == 255 {
+                format!("rgb({}, {}, {})", r, g, b)
+            } else {
+                format!("rgba({}, {}, {}, {})", r, g, b, *a as f32 / 255.0)
+            }
+        }
+        CssValue::Multiple(vec) => vec
+            .iter()
+            .map(css_value_to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
+        CssValue::Position(pv) => match pv {
+            PositionValue::Static => "static".to_string(),
+            PositionValue::Relative => "relative".to_string(),
+            PositionValue::Absolute => "absolute".to_string(),
+            PositionValue::Fixed => "fixed".to_string(),
+        },
+        CssValue::Overflow(ov) => match ov {
+            OverflowValue::Visible => "visible".to_string(),
+            OverflowValue::Hidden => "hidden".to_string(),
+            OverflowValue::Scroll => "scroll".to_string(),
+            OverflowValue::Auto => "auto".to_string(),
+        },
+        CssValue::BoxSizing(bs) => match bs {
+            BoxSizingValue::ContentBox => "content-box".to_string(),
+            BoxSizingValue::BorderBox => "border-box".to_string(),
+        },
+        CssValue::Display(dv) => match dv {
+            DisplayValue::Block => "block".to_string(),
+            DisplayValue::Inline => "inline".to_string(),
+            DisplayValue::InlineBlock => "inline-block".to_string(),
+            DisplayValue::None => "none".to_string(),
+            DisplayValue::Flex => "flex".to_string(),
+            DisplayValue::Table => "table".to_string(),
+            DisplayValue::TableRow => "table-row".to_string(),
+            DisplayValue::TableCell => "table-cell".to_string(),
+        },
+        CssValue::FlexDirection(fd) => match fd {
+            FlexDirectionValue::Row => "row".to_string(),
+            FlexDirectionValue::RowReverse => "row-reverse".to_string(),
+            FlexDirectionValue::Column => "column".to_string(),
+            FlexDirectionValue::ColumnReverse => "column-reverse".to_string(),
+        },
+        CssValue::JustifyContent(jc) => match jc {
+            JustifyContentValue::FlexStart => "flex-start".to_string(),
+            JustifyContentValue::FlexEnd => "flex-end".to_string(),
+            JustifyContentValue::Center => "center".to_string(),
+            JustifyContentValue::SpaceBetween => "space-between".to_string(),
+            JustifyContentValue::SpaceAround => "space-around".to_string(),
+            JustifyContentValue::SpaceEvenly => "space-evenly".to_string(),
+        },
+        CssValue::AlignItems(ai) => match ai {
+            AlignItemsValue::Stretch => "stretch".to_string(),
+            AlignItemsValue::FlexStart => "flex-start".to_string(),
+            AlignItemsValue::FlexEnd => "flex-end".to_string(),
+            AlignItemsValue::Center => "center".to_string(),
+            AlignItemsValue::Baseline => "baseline".to_string(),
+        },
+        CssValue::Transform(vec) => vec
+            .iter()
+            .map(|tf| match tf {
+                crate::css::values::TransformFn::Translate { x, y } => {
+                    let fmt_lp = |lp: &crate::css::values::LengthOrPercent| {
+                        let u_str = match lp.unit {
+                            LengthUnit::Px => "px",
+                            LengthUnit::Em => "em",
+                            LengthUnit::Rem => "rem",
+                            LengthUnit::Pt => "pt",
+                            LengthUnit::Percent => "%",
+                            LengthUnit::Vw => "vw",
+                            LengthUnit::Vh => "vh",
+                        };
+                        format!("{}{}", lp.value, u_str)
+                    };
+                    format!("translate({}, {})", fmt_lp(x), fmt_lp(y))
+                }
+                crate::css::values::TransformFn::TranslateX(x) => {
+                    let fmt_lp = |lp: &crate::css::values::LengthOrPercent| {
+                        let u_str = match lp.unit {
+                            LengthUnit::Px => "px",
+                            LengthUnit::Em => "em",
+                            LengthUnit::Rem => "rem",
+                            LengthUnit::Pt => "pt",
+                            LengthUnit::Percent => "%",
+                            LengthUnit::Vw => "vw",
+                            LengthUnit::Vh => "vh",
+                        };
+                        format!("{}{}", lp.value, u_str)
+                    };
+                    format!("translatex({})", fmt_lp(x))
+                }
+                crate::css::values::TransformFn::TranslateY(y) => {
+                    let fmt_lp = |lp: &crate::css::values::LengthOrPercent| {
+                        let u_str = match lp.unit {
+                            LengthUnit::Px => "px",
+                            LengthUnit::Em => "em",
+                            LengthUnit::Rem => "rem",
+                            LengthUnit::Pt => "pt",
+                            LengthUnit::Percent => "%",
+                            LengthUnit::Vw => "vw",
+                            LengthUnit::Vh => "vh",
+                        };
+                        format!("{}{}", lp.value, u_str)
+                    };
+                    format!("translatey({})", fmt_lp(y))
+                }
+                crate::css::values::TransformFn::Scale { x, y } => {
+                    if x == y {
+                        format!("scale({})", x)
+                    } else {
+                        format!("scale({}, {})", x, y)
+                    }
+                }
+                crate::css::values::TransformFn::ScaleX(x) => format!("scalex({})", x),
+                crate::css::values::TransformFn::ScaleY(y) => format!("scaley({})", y),
+                crate::css::values::TransformFn::Rotate(crate::css::values::AngleDeg(deg)) => {
+                    format!("rotate({}deg)", deg)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        CssValue::ZIndex(zi) => match zi {
+            ZIndex::Auto => "auto".to_string(),
+            ZIndex::Index(n) => n.to_string(),
+        },
+        CssValue::Opacity(val) => val.to_string(),
+    }
+}
+
+fn value_to_px(val: &crate::css::values::CssValue) -> i32 {
+    match val {
+        crate::css::values::CssValue::Length(v, _) => v.round() as i32,
+        crate::css::values::CssValue::Number(v) => v.round() as i32,
+        _ => -1,
+    }
+}
+
+fn value_to_u32(val: &crate::css::values::CssValue) -> u32 {
+    match val {
+        crate::css::values::CssValue::Length(v, _) => v.round().max(0.0) as u32,
+        crate::css::values::CssValue::Number(v) => v.round().max(0.0) as u32,
+        _ => 0,
+    }
+}
+
+fn value_to_f32(val: &crate::css::values::CssValue) -> f32 {
+    match val {
+        crate::css::values::CssValue::Number(v) => *v,
+        crate::css::values::CssValue::Opacity(v) => *v,
+        crate::css::values::CssValue::Length(v, _) => *v,
+        _ => 0.0,
+    }
 }
 
 #[cfg(test)]

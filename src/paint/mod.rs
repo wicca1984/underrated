@@ -7,7 +7,7 @@ use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
-use crate::style::ComputedStyle;
+use crate::style::CategorizedCategorizedComputedStyle;
 use std::collections::HashMap;
 
 /// spec: object-fit keyword values
@@ -49,7 +49,7 @@ pub struct DisplayList(pub Vec<DisplayItem>);
 
 /// Helper to extract border width from computed styles in px.
 /// spec: S-39
-fn get_border_width(style: &ComputedStyle, prop: &str) -> f32 {
+fn get_border_width(style: &CategorizedComputedStyle, prop: &str) -> f32 {
     match style.get(prop) {
         Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
         _ => 0.0,
@@ -57,7 +57,7 @@ fn get_border_width(style: &ComputedStyle, prop: &str) -> f32 {
 }
 
 /// Helper to extract outline width from computed styles in px, defaulting to medium (3.0px).
-fn get_outline_width(style: &ComputedStyle) -> f32 {
+fn get_outline_width(style: &CategorizedComputedStyle) -> f32 {
     match style.get("outline-width") {
         Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
         Some(CssValue::Number(v)) => *v,
@@ -72,7 +72,7 @@ fn get_outline_width(style: &ComputedStyle) -> f32 {
 }
 
 /// Helper to extract outline offset from computed styles in px, defaulting to 0.0px.
-fn get_outline_offset(style: &ComputedStyle) -> f32 {
+fn get_outline_offset(style: &CategorizedComputedStyle) -> f32 {
     match style.get("outline-offset") {
         Some(CssValue::Length(v, crate::css::values::LengthUnit::Px)) => *v,
         Some(CssValue::Number(v)) => *v,
@@ -229,7 +229,7 @@ fn flatten_value<'a>(value: &'a CssValue, leaves: &mut Vec<&'a CssValue>) {
 /// Helper to resolve the general border color of an element style,
 /// with fallbacks to shorthand `border`, computed text `color`, and finally black.
 /// spec: S-39
-fn get_border_color(style: &ComputedStyle) -> Color {
+fn get_border_color(style: &CategorizedComputedStyle) -> Color {
     // 1. Try "border-color" property
     if let Some(val) = style.get("border-color")
         && let Some(c) = find_color(val)
@@ -254,7 +254,7 @@ fn get_border_color(style: &ComputedStyle) -> Color {
 
 /// Helper to resolve a specific edge border color, falling back to the resolved border color.
 /// spec: S-39
-fn get_edge_color(style: &ComputedStyle, edge_prop: &str, border_color: &Color) -> Color {
+fn get_edge_color(style: &CategorizedComputedStyle, edge_prop: &str, border_color: &Color) -> Color {
     if let Some(val) = style.get(edge_prop)
         && let Some(c) = find_color(val)
     {
@@ -280,9 +280,9 @@ struct TextDecorations {
     style: Option<TextDecorationStyle>,
 }
 
-/// Helper to get the set of text decorations from a ComputedStyle.
+/// Helper to get the set of text decorations from a CategorizedComputedStyle.
 /// spec: S-55
-fn get_text_decorations(style: &ComputedStyle) -> TextDecorations {
+fn get_text_decorations(style: &CategorizedComputedStyle) -> TextDecorations {
     let mut dec = TextDecorations::default();
 
     // spec: the `text-decoration` shorthand set to `none` clears the line,
@@ -406,7 +406,7 @@ fn is_inside_link(dom: &Dom, node_id: NodeId) -> bool {
 fn resolve_text_color(
     dom: &Dom,
     node_id: NodeId,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
 ) -> Color {
     let mut current = Some(node_id);
     let mut depth = 0;
@@ -434,7 +434,7 @@ fn resolve_text_color(
 fn resolve_text_shadow(
     dom: &Dom,
     node_id: NodeId,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
 ) -> Option<CssValue> {
     let mut current = Some(node_id);
     let mut depth = 0;
@@ -457,7 +457,7 @@ fn resolve_text_shadow(
 fn resolve_text_decorations(
     dom: &Dom,
     node_id: NodeId,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
 ) -> TextDecorations {
     let mut resolved = TextDecorations::default();
     let is_link = is_inside_link(dom, node_id);
@@ -513,7 +513,7 @@ fn resolve_text_decorations(
 /// Resolve element opacity from style.
 /// spec: <https://www.w3.org/TR/css-color-3/#transparency>
 /// TODO(spec): True group/stacking-context opacity (compositing the element subtree as a single group, so overlapping descendants do not double-blend) is NOT implemented — this uses a multiplicative per-element alpha approximation.
-fn get_opacity(style: &ComputedStyle) -> f32 {
+fn get_opacity(style: &CategorizedComputedStyle) -> f32 {
     match style.get("opacity") {
         Some(CssValue::Number(v)) => v.clamp(0.0, 1.0),
         Some(CssValue::Length(p, crate::css::values::LengthUnit::Percent)) => {
@@ -524,7 +524,7 @@ fn get_opacity(style: &ComputedStyle) -> f32 {
 }
 
 /// Resolve object-fit from style.
-fn get_object_fit(style: &ComputedStyle) -> ObjectFit {
+fn get_object_fit(style: &CategorizedComputedStyle) -> ObjectFit {
     if let Some(CssValue::Keyword(kw)) = style.get("object-fit") {
         match kw.to_ascii_lowercase().as_str() {
             "contain" => ObjectFit::Contain,
@@ -800,7 +800,7 @@ fn scale_color_alpha(color: &Color, factor: f32) -> Color {
 pub fn build_display_list(
     layout: &LayoutBox,
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
 ) -> DisplayList {
     build_display_list_with_caret(layout, dom, styles, None)
 }
@@ -810,7 +810,7 @@ pub fn build_display_list(
 pub fn build_display_list_with_caret(
     layout: &LayoutBox,
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     caret: Option<(NodeId, usize)>,
 ) -> DisplayList {
     let mut items = Vec::new();

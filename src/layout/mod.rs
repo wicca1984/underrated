@@ -13,7 +13,7 @@ use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
 use crate::layout::inline::{layout_inline, layout_inline_run};
-use crate::style::ComputedStyle;
+use crate::style::CategorizedCategorizedComputedStyle;
 use std::collections::HashMap;
 
 /// A box in the layout tree.
@@ -98,7 +98,7 @@ fn collapse_margins(m1: f32, m2: f32) -> f32 {
 /// spec: S-11
 pub fn layout_document(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     viewport_width: f32,
 ) -> LayoutBox {
     let mut root_box = LayoutBox {
@@ -166,7 +166,7 @@ pub fn layout_document(
 #[allow(clippy::too_many_arguments)]
 fn recenter_inline_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     children: &mut Vec<LayoutBox>,
     width: f32,
@@ -196,7 +196,7 @@ fn recenter_inline_children(
 
 pub(crate) fn layout_node(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     containing_width: f32,
     offset_x: f32,
@@ -648,7 +648,7 @@ pub(crate) fn layout_node(
 
 pub(crate) fn get_layoutable_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
 ) -> Vec<NodeId> {
     if matches!(dom.data(node), Some(NodeData::Element { name, .. }) if name == "template") {
@@ -714,7 +714,7 @@ fn get_form_control_button_label(dom: &Dom, node: NodeId) -> Option<String> {
 #[allow(clippy::too_many_arguments)]
 fn layout_mixed_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     layoutable_children: &[NodeId],
     content_width: f32,
     content_x: f32,
@@ -872,9 +872,9 @@ fn layout_mixed_children(
 #[allow(clippy::too_many_arguments)]
 fn apply_block_shrink_to_fit(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
-    style: &ComputedStyle,
+    style: &CategorizedComputedStyle,
     children: &mut Vec<LayoutBox>,
     content_width: &mut f32,
     child_cursor_y: &mut f32,
@@ -925,9 +925,9 @@ fn apply_block_shrink_to_fit(
 #[allow(clippy::too_many_arguments)]
 fn calculate_shrink_to_fit_width(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
-    style: &ComputedStyle,
+    style: &CategorizedComputedStyle,
     children: &[LayoutBox],
     content_start_x: f32,
     auto_width: f32,
@@ -967,7 +967,7 @@ fn calculate_shrink_to_fit_width(
 #[inline(never)]
 fn max_content_width(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     depth: usize,
 ) -> f32 {
@@ -1029,7 +1029,7 @@ fn max_content_width(
 #[allow(clippy::too_many_arguments)]
 fn relayout_block_children(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     children: &mut Vec<LayoutBox>,
     prev_len: usize,
@@ -1133,7 +1133,7 @@ fn relayout_block_children(
     child_cursor_y
 }
 
-fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: NodeId) -> bool {
+fn is_inline_level(styles: &HashMap<NodeId, CategorizedComputedStyle>, dom: &Dom, child: NodeId) -> bool {
     if let Some(style) = styles.get(&child)
         && get_float_value(style).is_some()
     {
@@ -1175,11 +1175,53 @@ fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: No
     }
 }
 
-pub(crate) fn get_px(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
-    match style.get(prop) {
-        Some(CssValue::Length(v, LengthUnit::Px)) => *v,
-        Some(CssValue::Number(n)) if *n == 0.0 => 0.0,
-        _ => default,
+pub(crate) fn get_px(style: &crate::style::CategorizedCategorizedComputedStyle, prop: &str, default: f32) -> f32 {
+    let val = match prop {
+        "width" => style.reset_box.width,
+        "height" => style.reset_box.height,
+        "min-width" => style.reset_box.min_width,
+        "min-height" => style.reset_box.min_height,
+        "max-width" => style.reset_box.max_width,
+        "max-height" => style.reset_box.max_height,
+
+        "margin-top" => style.reset_surround.margin_top,
+        "margin-right" => style.reset_surround.margin_right,
+        "margin-bottom" => style.reset_surround.margin_bottom,
+        "margin-left" => style.reset_surround.margin_left,
+        "margin-block-start" => style.reset_surround.margin_block_start,
+        "margin-block-end" => style.reset_surround.margin_block_end,
+
+        "padding-top" => style.reset_surround.padding_top,
+        "padding-right" => style.reset_surround.padding_right,
+        "padding-bottom" => style.reset_surround.padding_bottom,
+        "padding-left" => style.reset_surround.padding_left,
+        "padding-block-start" => style.reset_surround.padding_block_start,
+        "padding-block-end" => style.reset_surround.padding_block_end,
+
+        "border-top-width" => style.reset_surround.border_top_width,
+        "border-right-width" => style.reset_surround.border_right_width,
+        "border-bottom-width" => style.reset_surround.border_bottom_width,
+        "border-left-width" => style.reset_surround.border_left_width,
+
+        "top" => style.reset_surround.top,
+        "right" => style.reset_surround.right,
+        "bottom" => style.reset_surround.bottom,
+        "left" => style.reset_surround.left,
+
+        "flex-basis" => style.reset_flex.flex_basis,
+        "outline-width" => style.reset_effects.outline_width,
+        "border-spacing" => style.inherited_table.border_spacing as i32,
+        "font-size" => style.inherited_text.font_size as i32,
+        "line-height" => style.inherited_text.line_height as i32,
+        "letter-spacing" => style.inherited_text.letter_spacing,
+        "word-spacing" => style.inherited_text.word_spacing,
+        "text-indent" => style.inherited_text.text_indent,
+        _ => -1,
+    };
+    if val == -1 {
+        default
+    } else {
+        val as f32
     }
 }
 
@@ -1212,7 +1254,7 @@ fn hit_test_impl(box_: &LayoutBox, x: f32, y: f32, depth: usize, best_node: &mut
     }
 }
 
-fn clamp_width(style: &ComputedStyle, mut width: f32, containing_width: f32) -> f32 {
+fn clamp_width(style: &CategorizedComputedStyle, mut width: f32, containing_width: f32) -> f32 {
     if let Some(max_val) = style.get("max-width") {
         match max_val {
             CssValue::Length(v, LengthUnit::Px) => {
@@ -1258,7 +1300,7 @@ fn clamp_width(style: &ComputedStyle, mut width: f32, containing_width: f32) -> 
     width.max(0.0)
 }
 
-fn get_aspect_ratio(style: &ComputedStyle) -> Option<f32> {
+fn get_aspect_ratio(style: &CategorizedComputedStyle) -> Option<f32> {
     if let Some(val) = style.get("aspect-ratio") {
         match val {
             CssValue::Number(r) => {
@@ -1305,7 +1347,7 @@ fn get_aspect_ratio(style: &ComputedStyle) -> Option<f32> {
     None
 }
 
-fn clamp_height(style: &ComputedStyle, mut height: f32) -> f32 {
+fn clamp_height(style: &CategorizedComputedStyle, mut height: f32) -> f32 {
     let has_max_height = matches!(
         style.get("max-height"),
         Some(CssValue::Length(_, LengthUnit::Px))
@@ -1330,7 +1372,7 @@ fn clamp_height(style: &ComputedStyle, mut height: f32) -> f32 {
 }
 
 pub(crate) fn resolve_margins_and_width(
-    style: &ComputedStyle,
+    style: &CategorizedComputedStyle,
     containing_width: f32,
     is_inline: bool,
     border_left: f32,
@@ -1455,7 +1497,7 @@ pub(crate) fn resolve_margins_and_width(
     )
 }
 
-fn get_text_align(dom: &Dom, node: NodeId, style: &ComputedStyle) -> &'static str {
+fn get_text_align(dom: &Dom, node: NodeId, style: &CategorizedComputedStyle) -> &'static str {
     let is_center_element = matches!(
         dom.data(node),
         Some(NodeData::Element { name, .. }) if name == "center"
@@ -1519,7 +1561,7 @@ fn find_first_line_rect_and_height(
     (current.rect.origin.y, current.rect.size.height)
 }
 
-fn get_font_size(style: &ComputedStyle) -> f32 {
+fn get_font_size(style: &CategorizedComputedStyle) -> f32 {
     match style.get("font-size") {
         Some(CssValue::Length(px, LengthUnit::Px)) => *px,
         _ => 16.0,
@@ -3217,7 +3259,7 @@ mod tests {
         let mut styles = std::collections::HashMap::new();
 
         // Style for body
-        let mut body_style = ComputedStyle::default();
+        let mut body_style = CategorizedComputedStyle::default();
         body_style.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3226,7 +3268,7 @@ mod tests {
         styles.insert(body, body_style);
 
         // Style for div1: width 200px, aspect-ratio: 2 / 1 (as Keyword)
-        let mut style1 = ComputedStyle::default();
+        let mut style1 = CategorizedComputedStyle::default();
         style1.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3239,7 +3281,7 @@ mod tests {
         styles.insert(div1, style1);
 
         // Style for div2: width 200px, aspect-ratio: 4 (as Number)
-        let mut style2 = ComputedStyle::default();
+        let mut style2 = CategorizedComputedStyle::default();
         style2.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3249,7 +3291,7 @@ mod tests {
         styles.insert(div2, style2);
 
         // Style for div3: width 200px, height 30px, aspect-ratio: 2 / 1
-        let mut style3 = ComputedStyle::default();
+        let mut style3 = CategorizedComputedStyle::default();
         style3.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),
@@ -3263,7 +3305,7 @@ mod tests {
         styles.insert(div3, style3);
 
         // Style for div4: width 200px, no aspect-ratio
-        let mut style4 = ComputedStyle::default();
+        let mut style4 = CategorizedComputedStyle::default();
         style4.insert(
             "display".to_string(),
             CssValue::Keyword("block".to_string()),

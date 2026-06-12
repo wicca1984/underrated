@@ -96,7 +96,7 @@ pub struct BoaHost {
 thread_local! {
     static CURRENT_DOM: RefCell<Option<Dom>> = const { RefCell::new(None) };
     static KEY_TO_NODE: RefCell<HashMap<String, NodeId>> = RefCell::new(HashMap::new());
-    static CURRENT_STYLES: RefCell<Option<HashMap<NodeId, crate::style::ComputedStyle>>> = const { RefCell::new(None) };
+    static CURRENT_STYLES: RefCell<Option<HashMap<NodeId, crate::style::CategorizedComputedStyle>>> = const { RefCell::new(None) };
     static PENDING_NAVIGATION: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -2265,7 +2265,7 @@ impl BoaHost {
         &mut self,
         src: &str,
         dom: &mut Dom,
-        styles: &HashMap<NodeId, crate::style::ComputedStyle>,
+        styles: &HashMap<NodeId, crate::style::CategorizedComputedStyle>,
     ) -> Result<String, ScriptError> {
         CURRENT_STYLES.with(|cell| {
             *cell.borrow_mut() = Some(styles.clone());
@@ -2371,7 +2371,7 @@ impl BoaHost {
     pub fn dispatch_lifecycle_events(
         &mut self,
         dom: &mut Dom,
-        styles: &HashMap<NodeId, crate::style::ComputedStyle>,
+        styles: &HashMap<NodeId, crate::style::CategorizedComputedStyle>,
     ) -> Result<(), ScriptError> {
         // 1. Swap DOM out of `dom` to place in thread-safe RefCell, set styles
         let temp_dom = std::mem::take(dom);
@@ -4635,8 +4635,8 @@ fn bridge_get_computed_style_value(
                     && let Some(computed_style) = styles.get(&node_id)
                 {
                     let kebab = camel_to_kebab(&property_name);
-                    if let Some(css_val) = computed_style.get(&kebab) {
-                        resolved_value = css_value_to_string(css_val);
+                    if let Some(val_str) = computed_style.get_property_as_string(&kebab) {
+                        resolved_value = val_str;
                     }
                 }
             });
@@ -4715,7 +4715,7 @@ fn map_boa_error(err: JsError) -> ScriptError {
 /// are skipped and marked with a spec TODO.
 pub fn run_inline_scripts(
     mut dom: Dom,
-    styles: &std::collections::HashMap<crate::infra::NodeId, crate::style::ComputedStyle>,
+    styles: &std::collections::HashMap<crate::infra::NodeId, crate::style::CategorizedComputedStyle>,
 ) -> Dom {
     // Collect inline script node IDs in document order (pre-order traversal)
     let mut script_ids = Vec::new();

@@ -3,12 +3,12 @@ use crate::dom::Dom;
 use crate::geom::{Point, Rect};
 use crate::infra::NodeId;
 use crate::layout::{LayoutBox, get_px, is_absolute_or_fixed, layout_node};
-use crate::style::ComputedStyle;
+use crate::style::CategorizedCategorizedComputedStyle;
 use std::collections::HashMap;
 
 pub fn layout_flex_container(
     dom: &Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     node: NodeId,
     containing_width: f32,
     offset_x: f32,
@@ -590,14 +590,14 @@ enum FlexWrap {
     Wrap,
 }
 
-fn get_number(style: &ComputedStyle, prop: &str, default: f32) -> f32 {
+fn get_number(style: &CategorizedComputedStyle, prop: &str, default: f32) -> f32 {
     match style.get(prop) {
         Some(CssValue::Number(v)) => *v,
         _ => default,
     }
 }
 
-fn has_explicit_size(style: Option<&ComputedStyle>, prop: &str) -> bool {
+fn has_explicit_size(style: Option<&CategorizedComputedStyle>, prop: &str) -> bool {
     let Some(style) = style else {
         return false;
     };
@@ -608,7 +608,7 @@ fn has_explicit_size(style: Option<&ComputedStyle>, prop: &str) -> bool {
     }
 }
 
-fn get_align_self(style: Option<&ComputedStyle>, default: AlignItems) -> AlignItems {
+fn get_align_self(style: Option<&CategorizedComputedStyle>, default: AlignItems) -> AlignItems {
     let Some(style) = style else {
         return default;
     };
