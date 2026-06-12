@@ -96,6 +96,14 @@ impl NodeData {
             _ => None,
         }
     }
+
+    /// Returns true if the `hidden` attribute is present.
+    pub fn hidden(&self) -> bool {
+        match self {
+            NodeData::Element { attrs, .. } => attrs.iter().any(|(k, _)| k == "hidden"),
+            _ => false,
+        }
+    }
 }
 
 /// Internal node structure to be stored in the arena.
@@ -226,6 +234,11 @@ impl Dom {
     pub fn tabindex(&self, node: NodeId) -> Option<i32> {
         self.get_attribute(node, "tabindex")
             .and_then(|v| v.trim().parse::<i32>().ok())
+    }
+
+    /// Returns true if the `hidden` attribute is present on the given node.
+    pub fn hidden(&self, node: NodeId) -> bool {
+        self.get_attribute(node, "hidden").is_some()
     }
 
     /// Returns an iterator over all descendants of the given node in pre-order.
@@ -724,6 +737,70 @@ mod tests {
             let text_id = children[0];
             assert_eq!(dom.tabindex(text_id), None);
             assert_eq!(dom.data(text_id).and_then(|n| n.tabindex()), None);
+        }
+    }
+
+    #[test]
+    fn test_hidden_attribute_accessor() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Plain hidden attribute
+        {
+            let html = r#"<div hidden>x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("div").expect("Should find div");
+            assert!(dom.hidden(id));
+            assert!(dom.data(id).is_some_and(|n| n.hidden()));
+        }
+
+        // 2. Empty string value
+        {
+            let html = r#"<div hidden="">x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("div").expect("Should find div");
+            assert!(dom.hidden(id));
+            assert!(dom.data(id).is_some_and(|n| n.hidden()));
+        }
+
+        // 3. String value like "false" (still true because attribute is present)
+        {
+            let html = r#"<div hidden="false">x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("div").expect("Should find div");
+            assert!(dom.hidden(id));
+            assert!(dom.data(id).is_some_and(|n| n.hidden()));
+        }
+
+        // 4. No attribute
+        {
+            let html = r#"<div>x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("div").expect("Should find div");
+            assert!(!dom.hidden(id));
+            assert!(!dom.data(id).is_some_and(|n| n.hidden()));
+        }
+
+        // 5. Non-element node (Document, Text)
+        {
+            let html = r#"<div hidden>x</div>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert!(!dom.hidden(doc_id));
+            assert!(!dom.data(doc_id).is_some_and(|n| n.hidden()));
+
+            // Text node
+            let children = dom.children(dom.query_selector("div").unwrap());
+            let text_id = children[0];
+            assert!(!dom.hidden(text_id));
+            assert!(!dom.data(text_id).is_some_and(|n| n.hidden()));
         }
     }
 }
