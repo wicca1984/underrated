@@ -403,6 +403,11 @@ impl BoaHost {
                 JsString::from("getComputedStyleValue"),
                 2,
             )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_get_bounding_client_rect),
+                JsString::from("getBoundingClientRect"),
+                1,
+            )
             .build();
 
         let _ = context.register_global_property(
@@ -1391,6 +1396,11 @@ impl BoaHost {
 
                     node.normalize = function() {
                         normalizeHelper(this);
+                    };
+
+                    node.getBoundingClientRect = function() {
+                        if (this.nodeType !== 1) return null;
+                        return bridge.getBoundingClientRect(this.__key__);
                     };
 
                     Object.defineProperty(node, 'childNodes', {
@@ -4634,6 +4644,43 @@ fn bridge_get_computed_style_value(
     })?;
 
     Ok(JsValue::from(JsString::from(resolved_value)))
+}
+
+fn bridge_get_bounding_client_rect(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let element_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let mut rect_opt = None;
+    with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&element_key) {
+            rect_opt = Some(dom.get_bounding_client_rect(node_id));
+        }
+    })?;
+
+    let rect = rect_opt.unwrap_or_else(|| crate::dom::DomRect::new(0.0, 0.0, 0.0, 0.0));
+
+    // DOMRectReadOnly properties are enumerable + configurable but NOT writable
+    // (getBoundingClientRect returns a DOMRectReadOnly per the CSSOM View spec).
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let js_rect = ObjectInitializer::new(context)
+        .property(JsString::from("x"), JsValue::from(rect.x()), ro)
+        .property(JsString::from("y"), JsValue::from(rect.y()), ro)
+        .property(JsString::from("width"), JsValue::from(rect.width()), ro)
+        .property(JsString::from("height"), JsValue::from(rect.height()), ro)
+        .property(JsString::from("top"), JsValue::from(rect.top()), ro)
+        .property(JsString::from("right"), JsValue::from(rect.right()), ro)
+        .property(JsString::from("bottom"), JsValue::from(rect.bottom()), ro)
+        .property(JsString::from("left"), JsValue::from(rect.left()), ro)
+        .build();
+
+    Ok(JsValue::from(js_rect))
 }
 
 impl Default for BoaHost {
@@ -8121,5 +8168,55 @@ mod tests {
 
         let res = host.eval_with_dom(setup_script, &mut dom).unwrap();
         assert_eq!(res, "2|1|hello world|1|0|1|foo bar|true|true");
+    }
+
+    // Guards Element.getBoundingClientRect() DOM-to-JS script layer bindings wiring.
+    #[test]
+    fn test_element_get_bounding_client_rect() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "rect-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.getElementById('rect-div');
+            const rect = el.getBoundingClientRect();
+            
+            const isObject = typeof rect === 'object' && rect !== null;
+            const x = rect.x;
+            const y = rect.y;
+            const width = rect.width;
+            const height = rect.height;
+            const top = rect.top;
+            const right = rect.right;
+            const bottom = rect.bottom;
+            const left = rect.left;
+
+            // Non-elements should return null
+            const textNode = document.createTextNode('hello');
+            const textRect = textNode.getBoundingClientRect();
+
+            [
+                isObject,
+                x === 0,
+                y === 0,
+                width === 0,
+                height === 0,
+                top === 0,
+                right === 0,
+                bottom === 0,
+                left === 0,
+                textRect === null
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "true|true|true|true|true|true|true|true|true|true");
     }
 }
