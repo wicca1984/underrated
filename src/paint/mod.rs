@@ -1057,19 +1057,57 @@ pub fn build_display_list(
                         None => text.clone(),
                     };
 
-                    let is_marker = layout_box.text.as_deref() == Some("\u{2022}");
+                    let is_disc = layout_box.text.as_deref() == Some("\u{2022}");
+                    let is_circle = layout_box.text.as_deref() == Some("\u{25E6}");
+                    let is_square = layout_box.text.as_deref() == Some("\u{25AA}");
 
-                    if is_marker {
-                        // TODO(spec): a true circular `disc` would need a filled-ellipse paint primitive; this uses a filled square as a pragmatic, ASCII-font-safe stand-in (visually matches `list-style-type: square`), and `circle`/`square`/image markers and `list-style-position: inside` remain out of scope.
+                    if is_disc || is_circle || is_square {
+                        // TODO(spec): a true circular `disc` or `circle` would need a filled or stroked-ellipse paint primitive;
+                        // this uses a filled square as a pragmatic, ASCII-font-safe stand-in for `disc` (visually matches `list-style-type: square` which is correct),
+                        // and a hollow square outline as a stand-in for `circle`. Image markers and `list-style-position: inside` remain out of scope.
                         let s = (corrected_rect.size.width.min(corrected_rect.size.height) * 0.5)
                             .clamp(2.0, 10.0);
                         let x = corrected_rect.origin.x + (corrected_rect.size.width - s) / 2.0;
                         let y = corrected_rect.origin.y + (corrected_rect.size.height - s) / 2.0;
                         let marker_rect = Rect::new(x, y, s, s);
-                        items.push(DisplayItem::SolidRect {
-                            rect: marker_rect,
-                            color: scale_color_alpha(&color, effective_opacity),
-                        });
+                        let color = scale_color_alpha(&color, effective_opacity);
+
+                        if is_circle {
+                            let t = (s * 0.25).clamp(1.0, 2.0);
+                            if s <= 2.0 * t {
+                                items.push(DisplayItem::SolidRect {
+                                    rect: marker_rect,
+                                    color,
+                                });
+                            } else {
+                                // Push four thin SolidRect edges
+                                // Top
+                                items.push(DisplayItem::SolidRect {
+                                    rect: Rect::new(x, y, s, t),
+                                    color: color.clone(),
+                                });
+                                // Bottom
+                                items.push(DisplayItem::SolidRect {
+                                    rect: Rect::new(x, y + s - t, s, t),
+                                    color: color.clone(),
+                                });
+                                // Left
+                                items.push(DisplayItem::SolidRect {
+                                    rect: Rect::new(x, y + t, t, s - 2.0 * t),
+                                    color: color.clone(),
+                                });
+                                // Right
+                                items.push(DisplayItem::SolidRect {
+                                    rect: Rect::new(x + s - t, y + t, t, s - 2.0 * t),
+                                    color,
+                                });
+                            }
+                        } else {
+                            items.push(DisplayItem::SolidRect {
+                                rect: marker_rect,
+                                color,
+                            });
+                        }
                     } else {
                         // Paint text-shadow if present
                         if let Some(text_shadow_val) = resolve_text_shadow(dom, node_id, styles) {
@@ -4459,5 +4497,123 @@ mod tests {
                 items
             );
         }
+    }
+
+    #[test]
+    fn test_ul_circle_and_square_markers_paint_solid_rect_not_tofu() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // Circle List
+        let ul_circle = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![("class".into(), "circle-list".into())],
+        });
+        dom.append_child(body, ul_circle);
+
+        let li_circle = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul_circle, li_circle);
+
+        let text_circle = dom.create_node(NodeData::Text("circle-item".into()));
+        dom.append_child(li_circle, text_circle);
+
+        // Square List
+        let ul_square = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![("class".into(), "square-list".into())],
+        });
+        dom.append_child(body, ul_square);
+
+        let li_square = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(ul_square, li_square);
+
+        let text_square = dom.create_node(NodeData::Text("square-item".into()));
+        dom.append_child(li_square, text_square);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            ul.circle-list { display: block; padding-left: 40px; margin-top: 16px; margin-bottom: 16px; list-style-type: circle; }
+            ul.square-list { display: block; padding-left: 40px; margin-top: 16px; margin-bottom: 16px; list-style-type: square; }
+            li { display: block; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 500.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut found_circle_glyph = false;
+        let mut found_square_glyph = false;
+        let mut circle_item_text_x = None;
+        let mut square_item_text_x = None;
+        let mut marker_rects = Vec::new();
+
+        for item in &items {
+            match item {
+                DisplayItem::Text { text, rect, .. } => {
+                    if text == "\u{25E6}" {
+                        found_circle_glyph = true;
+                    } else if text == "\u{25AA}" {
+                        found_square_glyph = true;
+                    } else if text == "circle-item" {
+                        circle_item_text_x = Some(rect.origin.x);
+                    } else if text == "square-item" {
+                        square_item_text_x = Some(rect.origin.x);
+                    }
+                }
+                DisplayItem::SolidRect { rect, .. }
+                    if rect.size.width <= 10.0 && rect.size.height <= 10.0 =>
+                {
+                    marker_rects.push(*rect);
+                }
+                _ => {}
+            }
+        }
+
+        // 1. Assert NO DisplayItem::Text item has text equal to \u{25E6} or \u{25AA}
+        assert!(
+            !found_circle_glyph,
+            "Circle bullet glyph should not be drawn as text (tofu)"
+        );
+        assert!(
+            !found_square_glyph,
+            "Square bullet glyph should not be drawn as text (tofu)"
+        );
+
+        // 2. Assert that markers are positioned to the LEFT of the corresponding text items
+        let circle_text_x = circle_item_text_x.expect("Did not find 'circle-item' text");
+        let square_text_x = square_item_text_x.expect("Did not find 'square-item' text");
+
+        // There should be at least some SolidRects representing the markers (square marker is 1, circle marker outline has 4)
+        assert!(
+            !marker_rects.is_empty(),
+            "Should have emitted marker SolidRects"
+        );
+
+        // Check if we have at least one SolidRect positioned to the left of each item's text
+        let has_circle_marker = marker_rects.iter().any(|r| r.origin.x < circle_text_x);
+        let has_square_marker = marker_rects.iter().any(|r| r.origin.x < square_text_x);
+
+        assert!(
+            has_circle_marker,
+            "Should have a marker to the left of 'circle-item'"
+        );
+        assert!(
+            has_square_marker,
+            "Should have a marker to the left of 'square-item'"
+        );
     }
 }
