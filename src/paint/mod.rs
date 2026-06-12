@@ -1024,7 +1024,6 @@ pub fn build_display_list_with_caret(
 
                     let mut has_inset = false;
                     let mut has_none = false;
-                    let mut has_comma = false;
                     for leaf in &leaves {
                         if let CssValue::Keyword(kw) = leaf {
                             let kw_lower = kw.to_ascii_lowercase();
@@ -1032,77 +1031,102 @@ pub fn build_display_list_with_caret(
                                 has_inset = true;
                             } else if kw_lower == "none" {
                                 has_none = true;
-                            } else if kw_lower == "," {
-                                has_comma = true;
                             }
                         }
                     }
 
-                    if leaves.is_empty() || has_none || has_inset || has_comma {
-                        // TODO(spec): box-shadow v2 — single outer shadow with spread (blur is still unimplemented; inset & multiple shadows out of scope).
+                    if leaves.is_empty() || has_none || has_inset {
+                        // TODO(spec): box-shadow v2 — outer shadows with spread (blur is still unimplemented; inset remains out of scope).
                     } else {
-                        // Parse lengths and colors
-                        let mut length_values = Vec::new();
-                        let mut color_value = None;
+                        // Helper closure to parse a single shadow segment and push its DisplayItem if valid.
+                        let parse_and_paint_shadow =
+                            |segment_leaves: &[&CssValue], items: &mut Vec<DisplayItem>| {
+                                // Parse lengths and colors
+                                let mut length_values = Vec::new();
+                                let mut color_value = None;
 
-                        for leaf in &leaves {
-                            match leaf {
-                                CssValue::Length(v, _) => {
-                                    length_values.push(*v);
-                                }
-                                CssValue::Number(v) => {
-                                    length_values.push(*v);
-                                }
-                                CssValue::Color(c) => {
-                                    color_value = Some(c.clone());
-                                }
-                                _ => {
-                                    if let Some(c) = find_color(leaf) {
-                                        color_value = Some(c);
+                                for leaf in segment_leaves {
+                                    match *leaf {
+                                        CssValue::Length(v, _) => {
+                                            length_values.push(*v);
+                                        }
+                                        CssValue::Number(v) => {
+                                            length_values.push(*v);
+                                        }
+                                        CssValue::Color(c) => {
+                                            color_value = Some(c.clone());
+                                        }
+                                        _ => {
+                                            if let Some(c) = find_color(leaf) {
+                                                color_value = Some(c);
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        }
 
-                        if length_values.len() >= 2 {
-                            let offset_x = length_values[0];
-                            let offset_y = length_values[1];
-                            let spread = if length_values.len() >= 4 {
-                                length_values[3]
-                            } else {
-                                0.0
-                            };
+                                if length_values.len() >= 2 {
+                                    let offset_x = length_values[0];
+                                    let offset_y = length_values[1];
+                                    let spread = if length_values.len() >= 4 {
+                                        length_values[3]
+                                    } else {
+                                        0.0
+                                    };
 
-                            // Determine shadow color: default to text color, falling back to black
-                            let shadow_color = if let Some(c) = color_value {
-                                c
-                            } else if let Some(val) = style.get("color")
-                                && let Some(c) = find_color(val)
-                            {
-                                c
-                            } else {
-                                Color::Rgba(0, 0, 0, 255)
-                            };
+                                    // Determine shadow color: default to text color, falling back to black
+                                    let shadow_color = if let Some(c) = color_value {
+                                        c
+                                    } else if let Some(val) = style.get("color")
+                                        && let Some(c) = find_color(val)
+                                    {
+                                        c
+                                    } else {
+                                        Color::Rgba(0, 0, 0, 255)
+                                    };
 
-                            // Only paint shadow if the border box is valid (has positive dimensions)
-                            if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0
-                            {
-                                // Translate and inflate/deflate by spread
-                                let mut shadow_rect = layout_box.rect;
-                                shadow_rect.origin.x += offset_x - spread;
-                                shadow_rect.origin.y += offset_y - spread;
-                                shadow_rect.size.width += 2.0 * spread;
-                                shadow_rect.size.height += 2.0 * spread;
+                                    // Only paint shadow if the border box is valid (has positive dimensions)
+                                    if layout_box.rect.size.width > 0.0
+                                        && layout_box.rect.size.height > 0.0
+                                    {
+                                        // Translate and inflate/deflate by spread
+                                        let mut shadow_rect = layout_box.rect;
+                                        shadow_rect.origin.x += offset_x - spread;
+                                        shadow_rect.origin.y += offset_y - spread;
+                                        shadow_rect.size.width += 2.0 * spread;
+                                        shadow_rect.size.height += 2.0 * spread;
 
-                                // Only paint if resulting dimensions are positive (fully shrunk shadow is invisible)
-                                if shadow_rect.size.width > 0.0 && shadow_rect.size.height > 0.0 {
-                                    items.push(DisplayItem::SolidRect {
-                                        rect: shadow_rect,
-                                        color: scale_color_alpha(&shadow_color, effective_opacity),
-                                    });
+                                        // Only paint if resulting dimensions are positive (fully shrunk shadow is invisible)
+                                        if shadow_rect.size.width > 0.0
+                                            && shadow_rect.size.height > 0.0
+                                        {
+                                            items.push(DisplayItem::SolidRect {
+                                                rect: shadow_rect,
+                                                color: scale_color_alpha(
+                                                    &shadow_color,
+                                                    effective_opacity,
+                                                ),
+                                            });
+                                        }
+                                    }
                                 }
-                            }
-                            // TODO(spec): box-shadow v2 — single outer shadow with spread (blur is still unimplemented; inset & multiple shadows out of scope).
+                            };
+
+                        // Split leaves into segments delimited by CssValue::Keyword(",")
+                        let segments: Vec<&[&CssValue]> = leaves
+                            .split(|leaf| {
+                                if let CssValue::Keyword(kw) = leaf {
+                                    kw == ","
+                                } else {
+                                    false
+                                }
+                            })
+                            .collect();
+
+                        // Paint order: per CSS spec, the first listed shadow is on top,
+                        // so later shadows should be painted first (pushed before) so earlier ones overlay them.
+                        // We iterate and parse/paint segments in reverse order.
+                        for segment in segments.iter().rev() {
+                            parse_and_paint_shadow(segment, &mut items);
                         }
                     }
                 }
@@ -4839,6 +4863,132 @@ mod tests {
             b_rect.size.height + 20.0,
             "Shadow height should be inflated by 20px"
         );
+    }
+
+    // Guards comma-separated multiple box-shadows parsing and rendering order.
+    #[test]
+    fn test_box_shadow_multiple_comma_shadows() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div_shadow = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "shadowed".into())],
+        });
+        dom.append_child(body, div_shadow);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .shadowed {
+                width: 100px;
+                height: 50px;
+                background-color: rgb(0, 255, 0);
+            }
+        ",
+        );
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        // Manually insert multiple box-shadows since the CSS parser's parse_value does not support parsing commas yet
+        if let Some(style) = styles.get_mut(&div_shadow) {
+            let shadow_val = CssValue::Multiple(vec![
+                CssValue::Length(5.0, LengthUnit::Px),
+                CssValue::Length(5.0, LengthUnit::Px),
+                CssValue::Color(Color::Rgba(255, 0, 0, 255)),
+                CssValue::Keyword(",".to_string()),
+                CssValue::Length(10.0, LengthUnit::Px),
+                CssValue::Length(10.0, LengthUnit::Px),
+                CssValue::Color(Color::Rgba(0, 0, 255, 255)),
+            ]);
+            style.insert("box-shadow".to_string(), shadow_val);
+        }
+
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Verify shadow rects are emitted.
+        // The first listed shadow (5px 5px #ff0000) must overlay the second listed shadow (10px 10px #0000ff).
+        // Therefore, the second listed shadow (blue) must be painted (pushed) BEFORE the first listed shadow (red).
+        // And both must be painted before the background rect (green).
+        let mut blue_idx = None;
+        let mut red_idx = None;
+        let mut bg_idx = None;
+
+        let mut blue_rect = None;
+        let mut red_rect = None;
+        let mut bg_rect = None;
+
+        for (idx, item) in items.iter().enumerate() {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                if *color == Color::Rgba(0, 0, 255, 255) {
+                    blue_idx = Some(idx);
+                    blue_rect = Some(*rect);
+                } else if *color == Color::Rgba(255, 0, 0, 255) {
+                    red_idx = Some(idx);
+                    red_rect = Some(*rect);
+                } else if *color == Color::Rgba(0, 255, 0, 255) {
+                    bg_idx = Some(idx);
+                    bg_rect = Some(*rect);
+                }
+            }
+        }
+
+        let b_idx = blue_idx.expect("Should find blue shadow SolidRect");
+        let r_idx = red_idx.expect("Should find red shadow SolidRect");
+        let bg_idx = bg_idx.expect("Should find green background SolidRect");
+
+        let b_rect = blue_rect.expect("Should find blue shadow rect");
+        let r_rect = red_rect.expect("Should find red shadow rect");
+        let bg_rect = bg_rect.expect("Should find green background rect");
+
+        // Stacking order check:
+        // Later listed shadows are painted first (drawn underneath), so blue must be before red.
+        // Both shadows must be before the background.
+        assert!(
+            b_idx < r_idx,
+            "Blue shadow (second listed) must be painted before red shadow (first listed)"
+        );
+        assert!(
+            r_idx < bg_idx,
+            "Red shadow (first listed) must be painted before green background"
+        );
+
+        // Check offset calculations
+        // Blue shadow offset is 10px, 10px
+        assert_eq!(
+            b_rect.origin.x,
+            bg_rect.origin.x + 10.0,
+            "Blue shadow X origin should be offset by 10px"
+        );
+        assert_eq!(
+            b_rect.origin.y,
+            bg_rect.origin.y + 10.0,
+            "Blue shadow Y origin should be offset by 10px"
+        );
+
+        // Red shadow offset is 5px, 5px
+        assert_eq!(
+            r_rect.origin.x,
+            bg_rect.origin.x + 5.0,
+            "Red shadow X origin should be offset by 5px"
+        );
+        assert_eq!(
+            r_rect.origin.y,
+            bg_rect.origin.y + 5.0,
+            "Red shadow Y origin should be offset by 5px"
+        );
+
+        // Both shadows size must match background size
+        assert_eq!(b_rect.size.width, bg_rect.size.width);
+        assert_eq!(b_rect.size.height, bg_rect.size.height);
+        assert_eq!(r_rect.size.width, bg_rect.size.width);
+        assert_eq!(r_rect.size.height, bg_rect.size.height);
     }
 
     #[test]
