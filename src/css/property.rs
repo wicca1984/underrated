@@ -98,6 +98,81 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "font-variant",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-stretch",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "text-indent",
+        inherited: true,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "word-break",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "overflow-wrap",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "text-align-last",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "caption-side",
+        inherited: true,
+        initial: "top",
+    },
+    PropertyMetadata {
+        name: "empty-cells",
+        inherited: true,
+        initial: "show",
+    },
+    PropertyMetadata {
+        name: "border-collapse",
+        inherited: true,
+        initial: "separate",
+    },
+    PropertyMetadata {
+        name: "border-spacing",
+        inherited: true,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "list-style-position",
+        inherited: true,
+        initial: "outside",
+    },
+    PropertyMetadata {
+        name: "list-style-image",
+        inherited: true,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "quotes",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "tab-size",
+        inherited: true,
+        initial: "8",
+    },
+    PropertyMetadata {
+        name: "hyphens",
+        inherited: true,
+        initial: "manual",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "display",
@@ -229,6 +304,246 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "1",
     },
+    PropertyMetadata {
+        name: "margin-block-start",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "margin-block-end",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "padding-block-start",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "padding-block-end",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-right-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "border-bottom-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "border-left-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "border-right-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "border-bottom-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "border-left-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "border-right-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "border-bottom-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "border-left-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "background-image",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "background-repeat",
+        inherited: false,
+        initial: "repeat",
+    },
+    PropertyMetadata {
+        name: "background-position",
+        inherited: false,
+        initial: "0% 0%",
+    },
+    PropertyMetadata {
+        name: "background-size",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "background-attachment",
+        inherited: false,
+        initial: "scroll",
+    },
+    PropertyMetadata {
+        name: "border-top-left-radius",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-top-right-radius",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-bottom-right-radius",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-bottom-left-radius",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "outline-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "outline-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "outline-color",
+        inherited: false,
+        initial: "invert",
+    },
+    PropertyMetadata {
+        name: "min-width",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "min-height",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "max-width",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "max-height",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "flex-grow",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "flex-shrink",
+        inherited: false,
+        initial: "1",
+    },
+    PropertyMetadata {
+        name: "flex-basis",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "flex-direction",
+        inherited: false,
+        initial: "row",
+    },
+    PropertyMetadata {
+        name: "flex-wrap",
+        inherited: false,
+        initial: "nowrap",
+    },
+    PropertyMetadata {
+        name: "justify-content",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "align-items",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "align-self",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "order",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "table-layout",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "vertical-align",
+        inherited: false,
+        initial: "baseline",
+    },
+    PropertyMetadata {
+        name: "text-decoration-line",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "text-decoration-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "text-decoration-style",
+        inherited: false,
+        initial: "solid",
+    },
+    PropertyMetadata {
+        name: "text-overflow",
+        inherited: false,
+        initial: "clip",
+    },
+    PropertyMetadata {
+        name: "object-fit",
+        inherited: false,
+        initial: "fill",
+    },
+    PropertyMetadata {
+        name: "pointer-events",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "transition-duration",
+        inherited: false,
+        initial: "0s",
+    },
+    PropertyMetadata {
+        name: "transition-property",
+        inherited: false,
+        initial: "all",
+    },
 ];
 
 /// Looks up the metadata for a CSS property by name.
@@ -266,6 +581,8 @@ mod tests {
         assert!(is_inherited("FONT-SIZE"));
         assert!(!is_inherited("margin-top"));
         assert!(!is_inherited("not-a-real-prop"));
+        assert!(is_inherited("text-indent"));
+        assert!(!is_inherited("max-width"));
     }
 
     #[test]
@@ -274,6 +591,9 @@ mod tests {
         assert_eq!(initial_value("width"), Some("auto"));
         assert_eq!(initial_value("border-top-color"), Some("currentcolor"));
         assert_eq!(initial_value("not-a-real-prop"), None);
+        assert_eq!(initial_value("flex-shrink"), Some("1"));
+        assert_eq!(initial_value("border-collapse"), Some("separate"));
+        assert_eq!(initial_value("background-repeat"), Some("repeat"));
     }
 
     #[test]
@@ -284,6 +604,12 @@ mod tests {
         assert_eq!(meta.name, "font-size");
         assert!(meta.inherited);
         assert_eq!(meta.initial, "medium");
+
+        let bbc = lookup("BORDER-BOTTOM-COLOR");
+        assert!(bbc.is_some());
+        let bbc = bbc.unwrap();
+        assert_eq!(bbc.name, "border-bottom-color");
+        assert!(!bbc.inherited);
     }
 
     #[test]
