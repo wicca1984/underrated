@@ -302,6 +302,8 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "justify-content"
             | "align-items"
             | "white-space"
+            | "flex-wrap"
+            | "float"
     )
 }
 
@@ -390,6 +392,21 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                     kw.to_ascii_lowercase().as_str(),
                     "normal" | "nowrap" | "pre" | "pre-wrap" | "pre-line" | "initial" | "inherit"
                 )
+            }
+            _ => false,
+        },
+        "flex-wrap" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "nowrap" | "wrap" | "wrap-reverse"
+                )
+            }
+            _ => false,
+        },
+        "float" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "none" | "left" | "right")
             }
             _ => false,
         },
@@ -514,6 +531,26 @@ pub fn parse_property_value(
                 match kw.to_ascii_lowercase().as_str() {
                     "normal" | "nowrap" | "pre" | "pre-wrap" | "pre-line" | "initial"
                     | "inherit" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "flex-wrap" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "nowrap" | "wrap" | "wrap-reverse" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "float" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "none" | "left" | "right" => Some(val),
                     _ => None,
                 }
             } else {
@@ -1731,5 +1768,86 @@ mod tests {
         // FromStr for Opacity (also covers whitespace trimming + clamping)
         assert_eq!(Opacity::from_str("0.25").unwrap(), Opacity(0.25));
         assert_eq!(Opacity::parse(" -10.0 "), Opacity(0.0));
+    }
+
+    #[test]
+    fn test_flex_wrap_and_float() {
+        // Test known properties
+        assert!(is_known_layout_property("flex-wrap"));
+        assert!(is_known_layout_property("float"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "flex-wrap",
+            &CssValue::Keyword("wrap".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "flex-wrap",
+            &CssValue::Keyword("nowrap".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "flex-wrap",
+            &CssValue::Keyword("wrap-reverse".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "flex-wrap",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        assert!(is_valid_property_value(
+            "float",
+            &CssValue::Keyword("left".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "float",
+            &CssValue::Keyword("right".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "float",
+            &CssValue::Keyword("none".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "float",
+            &CssValue::Keyword("up".to_string())
+        ));
+
+        // Test parse_property_value for flex-wrap
+        assert_eq!(
+            parse_property_value("flex-wrap", &[token(CssToken::Ident("wrap".to_string()))]),
+            Some(CssValue::Keyword("wrap".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("flex-wrap", &[token(CssToken::Ident("nowrap".to_string()))]),
+            Some(CssValue::Keyword("nowrap".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "flex-wrap",
+                &[token(CssToken::Ident("wrap-reverse".to_string()))]
+            ),
+            Some(CssValue::Keyword("wrap-reverse".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("flex-wrap", &[token(CssToken::Ident("banana".to_string()))]),
+            None
+        );
+
+        // Test parse_property_value for float
+        assert_eq!(
+            parse_property_value("float", &[token(CssToken::Ident("left".to_string()))]),
+            Some(CssValue::Keyword("left".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("float", &[token(CssToken::Ident("right".to_string()))]),
+            Some(CssValue::Keyword("right".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("float", &[token(CssToken::Ident("none".to_string()))]),
+            Some(CssValue::Keyword("none".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("float", &[token(CssToken::Ident("up".to_string()))]),
+            None
+        );
     }
 }
