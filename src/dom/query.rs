@@ -53,6 +53,35 @@ impl Dom {
             .filter(|&node_id| selector::matches(&selector_list, self, node_id))
             .collect()
     }
+
+    /// Returns the first following sibling of the given `node` that is an element.
+    // spec: https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-nextelementsibling
+    pub fn next_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent(node)?;
+        let children = self.children(parent);
+        let pos = children.iter().position(|&id| id == node)?;
+
+        children
+            .get(pos + 1..)?
+            .iter()
+            .copied()
+            .find(|&sibling_id| matches!(self.data(sibling_id), Some(NodeData::Element { .. })))
+    }
+
+    /// Returns the nearest preceding sibling of the given `node` that is an element.
+    // spec: https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-previouselementsibling
+    pub fn previous_element_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent(node)?;
+        let children = self.children(parent);
+        let pos = children.iter().position(|&id| id == node)?;
+
+        children
+            .get(..pos)?
+            .iter()
+            .copied()
+            .rev()
+            .find(|&sibling_id| matches!(self.data(sibling_id), Some(NodeData::Element { .. })))
+    }
 }
 
 #[cfg(test)]
@@ -177,5 +206,51 @@ mod tests {
         // Invalid selector returns empty Vec
         assert!(dom.query_selector_all("div > > p").is_empty());
         assert!(dom.query_selector_all("").is_empty());
+    }
+
+    #[test]
+    fn test_element_sibling_navigation() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        let child_a = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![],
+        });
+        let child_text = dom.create_node(NodeData::Text("some text".into()));
+        let child_b = dom.create_node(NodeData::Element {
+            name: "b".into(),
+            attrs: vec![],
+        });
+        let child_c = dom.create_node(NodeData::Element {
+            name: "c".into(),
+            attrs: vec![],
+        });
+
+        dom.append_child(parent, child_a);
+        dom.append_child(parent, child_text);
+        dom.append_child(parent, child_b);
+        dom.append_child(parent, child_c);
+
+        // Next element sibling
+        assert_eq!(dom.next_element_sibling(child_a), Some(child_b));
+        assert_eq!(dom.next_element_sibling(child_b), Some(child_c));
+        assert_eq!(dom.next_element_sibling(child_c), None);
+
+        // Previous element sibling
+        assert_eq!(dom.previous_element_sibling(child_c), Some(child_b));
+        assert_eq!(dom.previous_element_sibling(child_b), Some(child_a));
+        assert_eq!(dom.previous_element_sibling(child_a), None);
+
+        // Unattached/no parent node
+        let unattached = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.next_element_sibling(unattached), None);
+        assert_eq!(dom.previous_element_sibling(unattached), None);
     }
 }
