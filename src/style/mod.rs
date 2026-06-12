@@ -608,6 +608,21 @@ fn compute_node_style(
     };
     properties.insert("visibility".to_string(), resolved_visibility);
 
+    // I. Resolve empty-cells
+    let resolved_empty_cells = {
+        let raw_ec = properties.get("empty-cells");
+        match raw_ec {
+            Some(CssValue::Keyword(s)) if s == "inherit" => {
+                let parent_ec = parent_style.and_then(|s| s.get("empty-cells")).cloned();
+                parent_ec.unwrap_or(CssValue::Keyword("show".to_string()))
+            }
+            Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("show".to_string()),
+            Some(val) => val.clone(),
+            None => CssValue::Keyword("show".to_string()),
+        }
+    };
+    properties.insert("empty-cells".to_string(), resolved_empty_cells);
+
     ComputedStyle {
         properties,
         opacity_compat: std::cell::OnceCell::new(),
@@ -1678,6 +1693,7 @@ fn is_inherited_property(property: &str) -> bool {
             | "white-space"
             | "word-break"
             | "word-spacing"
+            | "empty-cells"
     )
 }
 
