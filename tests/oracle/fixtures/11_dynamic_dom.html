@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dynamic DOM Layout</title>
+  <style>
+    body { margin: 0; padding: 0; }
+    #app { width: 400px; }
+    .card { width: 300px; height: 80px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    const app = document.getElementById('app');
+    for (let i = 0; i < 3; i++) {
+      const card = document.createElement('div');
+      card.setAttribute('class', 'card');
+      card.textContent = 'Card ' + (i + 1);
+      app.appendChild(card);
+    }
+  </script>
+</body>
+</html>
