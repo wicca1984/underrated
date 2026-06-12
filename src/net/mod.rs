@@ -10,6 +10,8 @@ use crate::url::Url;
 use std::io::Read;
 use std::sync::Mutex;
 
+pub mod pool;
+
 /// HTTP Method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
