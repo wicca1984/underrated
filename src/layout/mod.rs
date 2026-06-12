@@ -682,6 +682,7 @@ fn get_form_control_button_label(dom: &Dom, node: NodeId) -> Option<String> {
     None
 }
 
+#[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn calculate_shrink_to_fit_width(
     dom: &Dom,
