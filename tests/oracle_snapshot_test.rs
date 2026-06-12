@@ -836,3 +836,66 @@ fn test_fixture_09_wiki_article() {
         "Main content width should match specified 480.0"
     );
 }
+
+#[test]
+fn test_fixture_10_news_article() {
+    let snapshot = load_fixture_snapshot("10_news_article.html");
+    assert_eq!(snapshot["tag"], "html");
+
+    // Headings verification
+    let h1 = find_element_by_tag(&snapshot, "h1")
+        .unwrap_or_else(|| panic!("h1 element must exist in 10_news_article"));
+    let h1_w = h1["rect"]["width"].as_f64().unwrap();
+    let h1_h = h1["rect"]["height"].as_f64().unwrap();
+    assert!(h1_w > 0.0, "h1 width must be positive, got {}", h1_w);
+    assert!(h1_h > 0.0, "h1 height must be positive, got {}", h1_h);
+
+    let h2 = find_element_by_tag(&snapshot, "h2")
+        .unwrap_or_else(|| panic!("h2 element must exist in 10_news_article"));
+    let h2_w = h2["rect"]["width"].as_f64().unwrap();
+    let h2_h = h2["rect"]["height"].as_f64().unwrap();
+    assert!(h2_w > 0.0, "h2 width must be positive, got {}", h2_w);
+    assert!(h2_h > 0.0, "h2 height must be positive, got {}", h2_h);
+
+    // Paragraphs verification
+    let mut ps = Vec::new();
+    find_elements_by_tag(&snapshot, "p", &mut ps);
+    assert_eq!(ps.len(), 4, "Should find exactly 4 paragraphs");
+
+    // Assert that consecutive paragraphs are in top-to-bottom document order
+    for i in 0..ps.len() - 1 {
+        let p_curr_y = ps[i]["rect"]["y"].as_f64().unwrap();
+        let p_curr_h = ps[i]["rect"]["height"].as_f64().unwrap();
+        let p_next_y = ps[i + 1]["rect"]["y"].as_f64().unwrap();
+        assert!(
+            p_next_y >= p_curr_y + p_curr_h - 0.1,
+            "Paragraph {} (y={}) should be below Paragraph {} bottom (y={})",
+            i + 1,
+            p_next_y,
+            i,
+            p_curr_y + p_curr_h
+        );
+    }
+
+    // Lists and list items verification
+    let ul =
+        find_element_by_tag(&snapshot, "ul").unwrap_or_else(|| panic!("ul element must exist"));
+    let mut lis = Vec::new();
+    find_elements_by_tag(ul, "li", &mut lis);
+    assert_eq!(lis.len(), 3, "Should find exactly 3 list items");
+    for li in &lis {
+        let li_w = li["rect"]["width"].as_f64().unwrap();
+        let li_h = li["rect"]["height"].as_f64().unwrap();
+        assert!(li_w > 0.0, "list item width must be positive");
+        assert!(li_h > 0.0, "list item height must be positive");
+    }
+
+    // Container width verification
+    let container = find_element_by_class(&snapshot, "container")
+        .unwrap_or_else(|| panic!("container element must exist"));
+    let container_w = container["rect"]["width"].as_f64().unwrap();
+    assert_eq!(
+        container_w, 600.0,
+        "Container width should match specified 600.0"
+    );
+}
