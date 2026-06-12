@@ -294,6 +294,8 @@ pub fn is_known_layout_property(name: &str) -> bool {
         name.to_ascii_lowercase().as_str(),
         "position"
             | "overflow"
+            | "overflow-x"
+            | "overflow-y"
             | "box-sizing"
             | "display"
             | "flex-direction"
@@ -317,7 +319,7 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             CssValue::Position(_) => true,
             _ => false,
         },
-        "overflow" => match value {
+        "overflow" | "overflow-x" | "overflow-y" => match value {
             CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
@@ -417,7 +419,8 @@ pub fn parse_property_value(
                 None
             }
         }
-        "overflow" => {
+        // TODO(spec): expand two-value overflow shorthand into overflow-x/overflow-y in style::expand
+        "overflow" | "overflow-x" | "overflow-y" => {
             if let CssValue::Keyword(kw) = &val {
                 let typed = match kw.to_ascii_lowercase().as_str() {
                     "visible" => OverflowValue::Visible,
@@ -1198,6 +1201,56 @@ mod tests {
             parse_property_value(
                 "overflow",
                 &[token(CssToken::Ident("invalid-overflow".to_string()))]
+            ),
+            None
+        );
+
+        // Test overflow-x and overflow-y
+        assert!(is_known_layout_property("overflow-x"));
+        assert!(is_known_layout_property("overflow-y"));
+
+        assert!(is_valid_property_value(
+            "overflow-x",
+            &CssValue::Overflow(OverflowValue::Hidden)
+        ));
+        assert!(is_valid_property_value(
+            "overflow-y",
+            &CssValue::Overflow(OverflowValue::Scroll)
+        ));
+        assert!(!is_valid_property_value(
+            "overflow-x",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        assert_eq!(
+            parse_property_value(
+                "overflow-x",
+                &[token(CssToken::Ident("hidden".to_string()))]
+            ),
+            Some(CssValue::Overflow(OverflowValue::Hidden))
+        );
+        assert_eq!(
+            parse_property_value(
+                "overflow-y",
+                &[token(CssToken::Ident("scroll".to_string()))]
+            ),
+            Some(CssValue::Overflow(OverflowValue::Scroll))
+        );
+        assert_eq!(
+            parse_property_value("overflow-x", &[token(CssToken::Ident("auto".to_string()))]),
+            Some(CssValue::Overflow(OverflowValue::Auto))
+        );
+        assert_eq!(
+            parse_property_value(
+                "overflow-y",
+                &[token(CssToken::Ident("visible".to_string()))]
+            ),
+            Some(CssValue::Overflow(OverflowValue::Visible))
+        );
+        assert_eq!(
+            parse_property_value(
+                "overflow-x",
+                &[token(CssToken::Ident("banana".to_string()))]
             ),
             None
         );
