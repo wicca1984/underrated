@@ -621,7 +621,7 @@ fn resolve_text_decorations(
 /// spec: <https://www.w3.org/TR/css-color-3/#transparency>
 /// TODO(spec): True group/stacking-context opacity (compositing the element subtree as a single group, so overlapping descendants do not double-blend) is NOT implemented — this uses a multiplicative per-element alpha approximation.
 fn get_opacity(style: &CategorizedComputedStyle) -> f32 {
-    style.reset_effects.opacity
+    style.reset_effects.opacity.clamp(0.0, 1.0)
 }
 
 /// Resolve object-fit from style.
@@ -4465,6 +4465,42 @@ mod tests {
 
         assert!(found_rect, "Should paint background for visible div");
         assert_eq!(text_fragments.concat(), "visible text");
+    }
+
+    #[test]
+    fn test_get_opacity_clamping() {
+        use crate::style::categorized::ResetEffects;
+        use std::sync::Arc;
+
+        // Assert clamping on the upper bound (1.5 -> 1.0)
+        let style_upper = CategorizedComputedStyle {
+            reset_effects: Arc::new(ResetEffects {
+                opacity: 1.5,
+                ..ResetEffects::default()
+            }),
+            ..CategorizedComputedStyle::default()
+        };
+        assert_eq!(get_opacity(&style_upper), 1.0);
+
+        // Assert clamping on the lower bound (-0.2 -> 0.0)
+        let style_lower = CategorizedComputedStyle {
+            reset_effects: Arc::new(ResetEffects {
+                opacity: -0.2,
+                ..ResetEffects::default()
+            }),
+            ..CategorizedComputedStyle::default()
+        };
+        assert_eq!(get_opacity(&style_lower), 0.0);
+
+        // Assert within normal range (0.5 -> 0.5)
+        let style_normal = CategorizedComputedStyle {
+            reset_effects: Arc::new(ResetEffects {
+                opacity: 0.5,
+                ..ResetEffects::default()
+            }),
+            ..CategorizedComputedStyle::default()
+        };
+        assert_eq!(get_opacity(&style_normal), 0.5);
     }
 
     #[test]

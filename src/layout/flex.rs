@@ -87,12 +87,12 @@ pub fn layout_flex_container(
     let row_gap = if style.reset_flex.row_gap == -1 {
         0.0
     } else {
-        style.reset_flex.row_gap as f32
+        (style.reset_flex.row_gap as f32).max(0.0)
     };
     let col_gap = if style.reset_flex.column_gap == -1 {
         0.0
     } else {
-        style.reset_flex.column_gap as f32
+        (style.reset_flex.column_gap as f32).max(0.0)
     };
 
     let (main_gap, cross_gap) = match flex_direction {
@@ -2289,5 +2289,65 @@ mod tests {
         assert_eq!(container_box.children.len(), 2);
         assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
         assert!(approx_eq(container_box.children[1].rect.origin.x, 105.0)); // child1 width (100) + col_gap (5)
+    }
+
+    #[test]
+    fn test_flex_negative_gap_clamping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        // Manually inject negative row-gap and column-gap values to bypass any parser/validator clamps
+        // and test the layout's defensive clamping directly.
+        if let Some(container_style) = styles.get_mut(&container) {
+            let mut flex = (*container_style.reset_flex).clone();
+            flex.row_gap = -15;
+            flex.column_gap = -25;
+            container_style.reset_flex = std::sync::Arc::new(flex);
+        }
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        // Check positions:
+        // With defensive clamping, col_gap should be floored to 0.0, meaning:
+        // child2 x should be child1 x + child1 width + 0.0 = 100.0 (not 75.0!)
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 100.0));
     }
 }
