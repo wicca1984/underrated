@@ -328,7 +328,7 @@ pub(crate) fn layout_node(
         let mut prev_margin_bottom: Option<f32> = None;
         let mut last_child_box_max_y: Option<f32> = None;
 
-        for &child in dom.children(node) {
+        for &child in &layoutable_children {
             if is_absolute_or_fixed(styles, child) {
                 continue;
             }
@@ -651,6 +651,11 @@ pub(crate) fn get_layoutable_children(
     styles: &HashMap<NodeId, ComputedStyle>,
     node: NodeId,
 ) -> Vec<NodeId> {
+    if matches!(dom.data(node), Some(NodeData::Element { name, .. }) if name == "template") {
+        // Per HTML spec, template contents are an inert DocumentFragment, which must not be rendered.
+        return Vec::new();
+    }
+
     let mut result = Vec::new();
     for &child in dom.children(node) {
         if is_absolute_or_fixed(styles, child) {
@@ -1039,7 +1044,7 @@ fn relayout_block_children(
     let mut prev_margin_bottom: Option<f32> = None;
     let mut last_child_box_max_y: Option<f32> = None;
 
-    for &child in dom.children(node) {
+    for &child in &get_layoutable_children(dom, styles, node) {
         if is_absolute_or_fixed(styles, child) {
             continue;
         }
@@ -4464,5 +4469,85 @@ mod tests {
 
         let line_height = 8.0;
         assert!(y_of_b >= y_of_a + 2.0 * line_height - EPSILON);
+    }
+
+    #[test]
+    fn test_template_children_excluded_from_layout() {
+        // Guard that `<template>` element children (inert DocumentFragment contents) are excluded from the layout tree.
+        use crate::encoding::input_stream::InputStream;
+        use crate::html::parse_document;
+
+        let html = "<div><template><p>HIDDEN</p></template><h2>SHOWN</h2></div>";
+        let input_stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(input_stream);
+
+        let stylesheet = parse_stylesheet(crate::engine::UA_DEFAULT_CSS);
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+
+        fn print_tree(layout_box: &LayoutBox, dom: &Dom, depth: usize) {
+            let indent = "  ".repeat(depth);
+            let node_info = if let Some(node_id) = layout_box.node {
+                match dom.data(node_id) {
+                    Some(NodeData::Element { name, .. }) => format!("Element({})", name),
+                    Some(NodeData::Text(t)) => format!("Text({:?})", t),
+                    _ => "Other".to_string(),
+                }
+            } else {
+                "Anonymous".to_string()
+            };
+            println!("{}{:?} -> {}", indent, layout_box.rect, node_info);
+            for child in &layout_box.children {
+                print_tree(child, dom, depth + 1);
+            }
+        }
+
+        print_tree(&layout_tree, &dom, 0);
+
+        fn has_text(layout_box: &LayoutBox, target: &str) -> bool {
+            if layout_box
+                .text
+                .as_deref()
+                .is_some_and(|t| t.contains(target))
+            {
+                return true;
+            }
+            for child in &layout_box.children {
+                if has_text(child, target) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        fn has_node_with_name(layout_box: &LayoutBox, dom: &Dom, name_to_find: &str) -> bool {
+            if layout_box.node.is_some_and(|node_id| matches!(dom.data(node_id), Some(NodeData::Element { name, .. }) if name == name_to_find)) {
+                return true;
+            }
+            for child in &layout_box.children {
+                if has_node_with_name(child, dom, name_to_find) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        assert!(
+            has_text(&layout_tree, "SHOWN"),
+            "SHOWN should be present in layout"
+        );
+        assert!(
+            !has_text(&layout_tree, "HIDDEN"),
+            "HIDDEN should NOT be present in layout"
+        );
+
+        assert!(
+            has_node_with_name(&layout_tree, &dom, "h2"),
+            "h2 should be in layout tree"
+        );
+        assert!(
+            !has_node_with_name(&layout_tree, &dom, "p"),
+            "p under template should NOT be in layout tree"
+        );
     }
 }
