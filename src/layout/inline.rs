@@ -517,7 +517,31 @@ pub fn layout_inline_run(
                         }
                     }
                 }
-                NodeData::Element { .. } => {
+                NodeData::Element { name, .. } => {
+                    if name.eq_ignore_ascii_case("br") {
+                        if styles.get(&node).is_some_and(|style| matches!(style.get("display"), Some(crate::css::values::CssValue::Keyword(kw)) if kw == "none")) {
+                            continue;
+                        }
+                        // Force a line break!
+                        line_boxes.push(create_line_box_adjusted(
+                            dom,
+                            block_container,
+                            std::mem::take(&mut current_line_children),
+                            offset_x,
+                            offset_y + cursor_y,
+                            cursor_x,
+                            current_line_height,
+                            styles,
+                            text_align,
+                            containing_width,
+                            true,
+                        ));
+                        cursor_x = 0.0;
+                        cursor_y += current_line_height;
+                        current_line_height = line_height;
+                        continue;
+                    }
+
                     if let Some(style) = styles.get(&node) {
                         // Skip out-of-flow nodes
                         if crate::layout::is_absolute_or_fixed(styles, node) {
@@ -1821,5 +1845,118 @@ mod tests {
         // So target y is 44.0 - 4.0 = 40.0.
         // We can assert target y is 40.0, which is smaller than base (42.0) and larger than top (0.0)
         assert_eq!(box_mid.rect.origin.y, 40.0);
+    }
+
+    #[test]
+    fn test_br_element_forced_line_break() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let t1 = dom.create_node(NodeData::Text("a".into()));
+        dom.append_child(body, t1);
+
+        let br = dom.create_node(NodeData::Element {
+            name: "br".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, br);
+
+        let t2 = dom.create_node(NodeData::Text("b".into()));
+        dom.append_child(body, t2);
+
+        let stylesheet = parse_stylesheet("br { display: inline; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(body);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        // Prove that "a" and "b" are on separate line boxes.
+        assert_eq!(line_boxes.len(), 2);
+
+        // Let's assert the second line's origin y is greater than the first's
+        assert!(line_boxes[1].rect.origin.y > line_boxes[0].rect.origin.y);
+
+        // Verify that without <br>, "a b" stays on 1 line.
+        let mut dom_nobr = Dom::new();
+        let doc_nobr = dom_nobr.document();
+        let body_nobr = dom_nobr.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom_nobr.append_child(doc_nobr, body_nobr);
+
+        let t_nobr = dom_nobr.create_node(NodeData::Text("a b".into()));
+        dom_nobr.append_child(body_nobr, t_nobr);
+
+        let styles_nobr = compute_styles(&dom_nobr, &stylesheet);
+        let children_nobr = dom_nobr.children(body_nobr);
+        let (line_boxes_nobr, _) = layout_inline_run(
+            &dom_nobr,
+            &styles_nobr,
+            children_nobr,
+            800.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        assert_eq!(line_boxes_nobr.len(), 1);
+
+        // Verify multiple consecutive `<br><br>`
+        let mut dom_multi = Dom::new();
+        let doc_multi = dom_multi.document();
+        let body_multi = dom_multi.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom_multi.append_child(doc_multi, body_multi);
+
+        let t_m1 = dom_multi.create_node(NodeData::Text("a".into()));
+        dom_multi.append_child(body_multi, t_m1);
+
+        let br_m1 = dom_multi.create_node(NodeData::Element {
+            name: "br".into(),
+            attrs: vec![],
+        });
+        dom_multi.append_child(body_multi, br_m1);
+
+        let br_m2 = dom_multi.create_node(NodeData::Element {
+            name: "br".into(),
+            attrs: vec![],
+        });
+        dom_multi.append_child(body_multi, br_m2);
+
+        let t_m2 = dom_multi.create_node(NodeData::Text("b".into()));
+        dom_multi.append_child(body_multi, t_m2);
+
+        let styles_multi = compute_styles(&dom_multi, &stylesheet);
+        let children_multi = dom_multi.children(body_multi);
+        let (line_boxes_multi, _) = layout_inline_run(
+            &dom_multi,
+            &styles_multi,
+            children_multi,
+            800.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        // "a" then break, then break (producing an empty line box), then "b"
+        assert_eq!(line_boxes_multi.len(), 3);
+        assert!(line_boxes_multi[1].children.is_empty()); // second line is empty due to consecutive <br>
+        assert!(line_boxes_multi[2].rect.origin.y > line_boxes_multi[1].rect.origin.y);
+        assert!(line_boxes_multi[1].rect.origin.y > line_boxes_multi[0].rect.origin.y);
     }
 }
