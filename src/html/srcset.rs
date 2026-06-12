@@ -119,6 +119,43 @@ pub fn select_candidate(
     Some(&candidates[chosen_idx])
 }
 
+fn parse_px(tok: &str) -> Option<u32> {
+    let trimmed = tok.trim().to_lowercase();
+    if trimmed.ends_with("px") {
+        let numeric_part = trimmed.get(..trimmed.len() - 2)?;
+        if let Ok(val) = numeric_part.parse::<f32>()
+            && val.is_finite()
+            && val >= 0.0
+        {
+            return Some(val.round() as u32);
+        }
+    }
+    None
+}
+
+fn condition_matches(cond: &str, vw: u32) -> bool {
+    let Some(inner) = cond.strip_prefix('(') else {
+        return false;
+    };
+    let Some(inner) = inner.strip_suffix(')') else {
+        return false;
+    };
+    let inner = inner.trim();
+
+    if let Some((feature, value_str)) = inner.split_once(':') {
+        let feature = feature.trim().to_lowercase();
+        let value_str = value_str.trim();
+        if let Some(n) = parse_px(value_str) {
+            if feature == "max-width" {
+                return vw <= n;
+            } else if feature == "min-width" {
+                return vw >= n;
+            }
+        }
+    }
+    false
+}
+
 /// Resolves the effective display width in pixels from the `sizes` attribute.
 /// If `sizes` is None, or invalid, falls back to `viewport_width`.
 pub fn resolve_sizes(sizes: Option<&str>, viewport_width: u32) -> u32 {
@@ -127,17 +164,43 @@ pub fn resolve_sizes(sizes: Option<&str>, viewport_width: u32) -> u32 {
         None => return viewport_width,
     };
 
-    // TODO(spec): Complete evaluation of media-conditioned sizes is left for the future.
-    if let Some(first_part) = sizes_str.split(',').next() {
-        let tokens: Vec<&str> = first_part.split_whitespace().collect();
-        if let Some(last_token) = tokens.last() {
-            let trimmed = last_token.to_lowercase();
-            if trimmed.ends_with("px")
-                && let Ok(val) = trimmed[..trimmed.len() - 2].parse::<f32>()
-                && val >= 0.0
-            {
-                return val.round() as u32;
+    for entry in sizes_str.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+
+        let (cond, rest) = if entry.starts_with('(') {
+            if let Some(rparen_idx) = entry.find(')') {
+                let cond_str = entry.get(0..=rparen_idx);
+                let rest_str = entry.get(rparen_idx + 1..);
+                match (cond_str, rest_str) {
+                    (Some(c), Some(r)) => (Some(c), r.trim()),
+                    _ => (Some(""), ""), // Unparseable, treat condition as non-matching.
+                }
+            } else {
+                (Some(""), "") // Unparseable, treat condition as non-matching.
             }
+        } else {
+            (None, entry)
+        };
+
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        let Some(last_token) = tokens.last() else {
+            continue;
+        };
+
+        let Some(size_val) = parse_px(last_token) else {
+            continue;
+        };
+
+        let matches = match cond {
+            Some(c) => condition_matches(c, viewport_width),
+            None => true,
+        };
+
+        if matches {
+            return size_val;
         }
     }
 
@@ -234,7 +297,46 @@ mod tests {
         // Media conditional sizes fallback parsing
         assert_eq!(
             resolve_sizes(Some(" (max-width: 600px) 200px, 100px"), 1280),
+            100
+        );
+    }
+
+    #[test]
+    fn test_resolve_sizes_media_conditioned() {
+        // (max-width: 600px) 200px, 100px at vw=500 -> 200 (condition matches).
+        assert_eq!(
+            resolve_sizes(Some("(max-width: 600px) 200px, 100px"), 500),
             200
+        );
+
+        // (max-width: 600px) 200px, 100px at vw=1280 -> 100 (falls through to default).
+        assert_eq!(
+            resolve_sizes(Some("(max-width: 600px) 200px, 100px"), 1280),
+            100
+        );
+
+        // (min-width: 900px) 400px, 50px at vw=1000 -> 400.
+        assert_eq!(
+            resolve_sizes(Some("(min-width: 900px) 400px, 50px"), 1000),
+            400
+        );
+
+        // (min-width: 900px) 400px, 50px at vw=300 -> 50 (default).
+        assert_eq!(
+            resolve_sizes(Some("(min-width: 900px) 400px, 50px"), 300),
+            50
+        );
+
+        // (max-width: 600px) 200px at vw=1280 (no default entry, no match) -> 1280 (viewport fallback).
+        assert_eq!(resolve_sizes(Some("(max-width: 600px) 200px"), 1280), 1280);
+
+        // multiple conditions: (max-width:400px) 100px, (max-width:800px) 300px, 600px at vw=700 -> 300 (first matching is the second entry).
+        assert_eq!(
+            resolve_sizes(
+                Some("(max-width:400px) 100px, (max-width:800px) 300px, 600px"),
+                700
+            ),
+            300
         );
     }
 
