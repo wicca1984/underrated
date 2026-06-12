@@ -200,7 +200,120 @@ pub fn decode_gif(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, or GIF) into a DecodedImage by sniffing the format.
+/// Decodes a BMP byte stream into a DecodedImage.
+/// Supports uncompressed 24-bit (BGR) and 32-bit (BGRA) BITMAPINFOHEADER cases.
+pub fn decode_bmp(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 54 {
+        return None;
+    }
+    if !bytes.starts_with(b"BM") {
+        return None;
+    }
+
+    let pixel_offset = u32::from_le_bytes(bytes.get(10..14)?.try_into().ok()?) as usize;
+    let dib_size = u32::from_le_bytes(bytes.get(14..18)?.try_into().ok()?) as usize;
+
+    if dib_size < 40 {
+        return None;
+    }
+
+    let min_file_size = 14_usize.checked_add(dib_size)?;
+    if bytes.len() < min_file_size {
+        return None;
+    }
+    if pixel_offset < min_file_size {
+        return None;
+    }
+
+    let width = i32::from_le_bytes(bytes.get(18..22)?.try_into().ok()?);
+    let height = i32::from_le_bytes(bytes.get(22..26)?.try_into().ok()?);
+
+    if width <= 0 || height == 0 {
+        return None;
+    }
+
+    let planes = u16::from_le_bytes(bytes.get(26..28)?.try_into().ok()?);
+    if planes != 1 {
+        return None;
+    }
+
+    let bpp = u16::from_le_bytes(bytes.get(28..30)?.try_into().ok()?);
+    if bpp != 24 && bpp != 32 {
+        return None;
+    }
+
+    let compression = u32::from_le_bytes(bytes.get(30..34)?.try_into().ok()?);
+    if compression != 0 {
+        return None;
+    }
+
+    let width_u32 = width as u32;
+    let height_abs: u32 = height.checked_abs()?.try_into().ok()?;
+
+    let row_bytes = width_u32.checked_mul(bpp as u32 / 8)?;
+    let stride = row_bytes.checked_add(3)? / 4 * 4;
+
+    let total_pixel_bytes = stride.checked_mul(height_abs)? as usize;
+    let end_offset = pixel_offset.checked_add(total_pixel_bytes)?;
+    if end_offset > bytes.len() {
+        return None;
+    }
+
+    let mut rgba = vec![0u8; (width_u32 as usize) * (height_abs as usize) * 4];
+
+    for file_row_idx in 0..height_abs {
+        let target_row_idx = if height > 0 {
+            height_abs - 1 - file_row_idx
+        } else {
+            file_row_idx
+        };
+
+        let file_row_start =
+            pixel_offset.checked_add((file_row_idx as usize).checked_mul(stride as usize)?)?;
+        let target_row_start = (target_row_idx as usize)
+            .checked_mul(width_u32 as usize)?
+            .checked_mul(4)?;
+
+        if bpp == 24 {
+            for col in 0..width_u32 as usize {
+                let src_pixel_offset = file_row_start.checked_add(col.checked_mul(3)?)?;
+                let b = *bytes.get(src_pixel_offset)?;
+                let g = *bytes.get(src_pixel_offset.checked_add(1)?)?;
+                let r = *bytes.get(src_pixel_offset.checked_add(2)?)?;
+
+                let dst_pixel_offset = target_row_start.checked_add(col.checked_mul(4)?)?;
+                let dst_slice = rgba.get_mut(dst_pixel_offset..dst_pixel_offset + 4)?;
+                dst_slice[0] = r;
+                dst_slice[1] = g;
+                dst_slice[2] = b;
+                dst_slice[3] = 255;
+            }
+        } else if bpp == 32 {
+            for col in 0..width_u32 as usize {
+                let src_pixel_offset = file_row_start.checked_add(col.checked_mul(4)?)?;
+                let b = *bytes.get(src_pixel_offset)?;
+                let g = *bytes.get(src_pixel_offset.checked_add(1)?)?;
+                let r = *bytes.get(src_pixel_offset.checked_add(2)?)?;
+                let a = *bytes.get(src_pixel_offset.checked_add(3)?)?;
+
+                let dst_pixel_offset = target_row_start.checked_add(col.checked_mul(4)?)?;
+                let dst_slice = rgba.get_mut(dst_pixel_offset..dst_pixel_offset + 4)?;
+                dst_slice[0] = r;
+                dst_slice[1] = g;
+                dst_slice[2] = b;
+                dst_slice[3] = a;
+            }
+        }
+    }
+
+    Some(DecodedImage {
+        width: width_u32,
+        height: height_abs,
+        rgba,
+    })
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, or BMP) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -208,6 +321,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_jpeg(bytes)
     } else if bytes.starts_with(b"GIF8") {
         decode_gif(bytes)
+    } else if bytes.starts_with(b"BM") {
+        decode_bmp(bytes)
     } else {
         None
     }
@@ -322,6 +437,197 @@ mod tests {
         assert_eq!(decoded_gif.rgba.len(), 4);
 
         // Test garbage rejected by decode_image
-        assert!(decode_image(b"neither png nor jpeg nor gif").is_none());
+        assert!(decode_image(b"neither png nor jpeg nor gif nor bmp").is_none());
+    }
+
+    #[test]
+    fn test_decode_bmp_24_bottom_up() {
+        let mut bmp = vec![
+            // --- FILE HEADER (14 bytes) ---
+            0x42, 0x4D, // Signature "BM"
+            70, 0, 0, 0, // File size (70 bytes)
+            0, 0, 0, 0, // Reserved
+            54, 0, 0, 0, // Pixel data offset (54)
+            // --- DIB HEADER (40 bytes) ---
+            40, 0, 0, 0, // Header size (40)
+            2, 0, 0, 0, // Width (2)
+            2, 0, 0, 0, // Height (2)
+            1, 0, // Planes (1)
+            24, 0, // BPP (24)
+            0, 0, 0, 0, // Compression (0 = BI_RGB)
+            16, 0, 0, 0, // Image size (16 bytes of pixel data)
+            0, 0, 0, 0, // X pixels per meter (0)
+            0, 0, 0, 0, // Y pixels per meter (0)
+            0, 0, 0, 0, // Total colors (0)
+            0, 0, 0, 0, // Important colors (0)
+        ];
+
+        bmp.extend_from_slice(&[
+            // Row 1 (bottom row)
+            255, 0, 0, // col 0 (Blue): B=255, G=0, R=0
+            255, 255, 255, // col 1 (White): B=255, G=255, R=255
+            0, 0, // Padding to 8 bytes
+            // Row 0 (top row)
+            0, 0, 255, // col 0 (Red): B=0, G=0, R=255
+            0, 255, 0, // col 1 (Green): B=0, G=255, R=0
+            0, 0, // Padding to 8 bytes
+        ]);
+
+        let decoded = decode_bmp(&bmp).expect("Should decode BMP successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 2 * 2 * 4);
+
+        // Top-left pixel (row 0, col 0): Red
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        // Top-right pixel (row 0, col 1): Green
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        // Bottom-left pixel (row 1, col 0): Blue
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        // Bottom-right pixel (row 1, col 1): White
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+
+        // Test sniff and decode via decode_image
+        let decoded_sniffed = decode_image(&bmp).expect("Should sniff and decode BMP");
+        assert_eq!(decoded_sniffed.width, 2);
+        assert_eq!(decoded_sniffed.height, 2);
+        assert_eq!(decoded_sniffed.rgba, decoded.rgba);
+    }
+
+    #[test]
+    fn test_decode_bmp_24_top_down() {
+        let mut bmp = vec![
+            // --- FILE HEADER (14 bytes) ---
+            0x42, 0x4D, // Signature "BM"
+            70, 0, 0, 0, // File size (70 bytes)
+            0, 0, 0, 0, // Reserved
+            54, 0, 0, 0, // Pixel data offset (54)
+            // --- DIB HEADER (40 bytes) ---
+            40, 0, 0, 0, // Header size (40)
+            2, 0, 0, 0, // Width (2)
+            254, 255, 255, 255, // Height (-2) -> top-down
+            1, 0, // Planes (1)
+            24, 0, // BPP (24)
+            0, 0, 0, 0, // Compression (0 = BI_RGB)
+            16, 0, 0, 0, // Image size (16 bytes of pixel data)
+            0, 0, 0, 0, // X pixels per meter (0)
+            0, 0, 0, 0, // Y pixels per meter (0)
+            0, 0, 0, 0, // Total colors (0)
+            0, 0, 0, 0, // Important colors (0)
+        ];
+
+        bmp.extend_from_slice(&[
+            // Row 0 (top row)
+            0, 0, 255, // col 0 (Red): B=0, G=0, R=255
+            0, 255, 0, // col 1 (Green): B=0, G=255, R=0
+            0, 0, // Padding to 8 bytes
+            // Row 1 (bottom row)
+            255, 0, 0, // col 0 (Blue): B=255, G=0, R=0
+            255, 255, 255, // col 1 (White): B=255, G=255, R=255
+            0, 0, // Padding to 8 bytes
+        ]);
+
+        let decoded = decode_bmp(&bmp).expect("Should decode BMP successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 2 * 2 * 4);
+
+        // Top-left pixel (row 0, col 0): Red
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        // Top-right pixel (row 0, col 1): Green
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        // Bottom-left pixel (row 1, col 0): Blue
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        // Bottom-right pixel (row 1, col 1): White
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_decode_bmp_32_bottom_up() {
+        let mut bmp32 = vec![
+            // --- FILE HEADER (14 bytes) ---
+            0x42, 0x4D, // Signature "BM"
+            70, 0, 0, 0, // File size (70)
+            0, 0, 0, 0, // Reserved
+            54, 0, 0, 0, // Pixel data offset (54)
+            // --- DIB HEADER (40 bytes) ---
+            40, 0, 0, 0, // Header size (40)
+            2, 0, 0, 0, // Width (2)
+            2, 0, 0, 0, // Height (2)
+            1, 0, // Planes (1)
+            32, 0, // BPP (32)
+            0, 0, 0, 0, // Compression (0 = BI_RGB)
+            16, 0, 0, 0, // Image size (16)
+            0, 0, 0, 0, // X pixels per meter
+            0, 0, 0, 0, // Y pixels per meter
+            0, 0, 0, 0, // Total colors
+            0, 0, 0, 0, // Important colors
+        ];
+
+        bmp32.extend_from_slice(&[
+            // Row 1 (bottom row)
+            255, 0, 0, 128, // col 0: B=255, G=0, R=0, A=128
+            255, 255, 255, 255, // col 1: B=255, G=255, R=255, A=255
+            // Row 0 (top row)
+            0, 0, 255, 64, // col 0: B=0, G=0, R=255, A=64
+            0, 255, 0, 192, // col 1: B=0, G=255, R=0, A=192
+        ]);
+
+        let decoded = decode_bmp(&bmp32).expect("Should decode 32-bit BMP successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 2 * 2 * 4);
+
+        // Top-left (row 0, col 0): Red with Alpha 64
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 64]);
+        // Top-right (row 0, col 1): Green with Alpha 192
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 192]);
+        // Bottom-left (row 1, col 0): Blue with Alpha 128
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 128]);
+        // Bottom-right (row 1, col 1): White with Alpha 255
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_decode_bmp_malformed() {
+        // Truncated bytes
+        assert!(decode_bmp(&[]).is_none());
+        assert!(decode_bmp(b"BM").is_none());
+        assert!(decode_bmp(&[0x42, 0x4D, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).is_none());
+
+        // Incorrect magic
+        let mut bad_magic = vec![0; 70];
+        bad_magic[0] = b'A';
+        bad_magic[1] = b'B';
+        assert!(decode_bmp(&bad_magic).is_none());
+
+        // Header size too small (< 40)
+        let mut small_header = vec![0; 70];
+        small_header[0] = b'B';
+        small_header[1] = b'M';
+        small_header[10] = 54;
+        small_header[14] = 12; // OS2 DIB header size (unsupported)
+        assert!(decode_bmp(&small_header).is_none());
+
+        // Unsupported BPP (e.g. 8-bit)
+        let bad_bpp = vec![
+            0x42, 0x4D, 70, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0,
+            1, 0, 8, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert!(decode_bmp(&bad_bpp).is_none());
+
+        // Compression BI_BITFIELDS without implemented masks (we require compression == 0)
+        let bad_comp = vec![
+            0x42, 0x4D, 70, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0,
+            1, 0, 32, 0, 3, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert!(decode_bmp(&bad_comp).is_none());
+
+        // Invalid dimensions
+        let bad_dim = vec![
+            0x42, 0x4D, 70, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0,
+            1, 0, 24, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert!(decode_bmp(&bad_dim).is_none());
     }
 }
