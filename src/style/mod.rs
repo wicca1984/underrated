@@ -467,17 +467,15 @@ fn compute_node_style(
     let resolved_line_height = {
         let raw_lh = properties.get("line-height");
         match raw_lh {
-            Some(CssValue::Keyword(s)) if s == "inherit" => {
-                match parent_style {
-                    Some(p)
-                        if p.inherited_text.line_height
-                            != crate::style::categorized::LINE_HEIGHT_NORMAL =>
-                    {
-                        CssValue::Length(p.inherited_text.line_height as f32, LengthUnit::Px)
-                    }
-                    _ => CssValue::Keyword("normal".to_string()),
+            Some(CssValue::Keyword(s)) if s == "inherit" => match parent_style {
+                Some(p)
+                    if p.inherited_text.line_height
+                        != crate::style::categorized::LINE_HEIGHT_NORMAL =>
+                {
+                    CssValue::Length(p.inherited_text.line_height as f32, LengthUnit::Px)
                 }
-            }
+                _ => CssValue::Keyword("normal".to_string()),
+            },
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(CssValue::Length(val, unit)) => match unit {
                 LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),

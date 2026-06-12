@@ -39,7 +39,10 @@ pub struct InheritedText {
 impl Default for InheritedText {
     fn default() -> Self {
         Self {
-            color: "black".to_string(),
+            // Empty = unspecified. Kept distinct from an explicit black so that the
+            // paint-time link-color default (resolve_text_color) can tell an authored
+            // color from the initial value; parse_css_color("") is None -> black fallback.
+            color: String::new(),
             font_family: "sans-serif".to_string(),
             font_size: 16,
             font_style: "normal".to_string(),
@@ -437,7 +440,12 @@ fn parse_css_color_simple(s: &str) -> Option<crate::css::values::Color> {
             let g = parts[1].parse::<u8>().ok()?;
             let b = parts[2].parse::<u8>().ok()?;
             let a_f = parts[3].parse::<f32>().ok()?;
-            return Some(crate::css::values::Color::Rgba(r, g, b, (a_f * 255.0) as u8));
+            return Some(crate::css::values::Color::Rgba(
+                r,
+                g,
+                b,
+                (a_f * 255.0) as u8,
+            ));
         }
     }
     match s.to_ascii_lowercase().as_str() {
@@ -790,7 +798,9 @@ impl CategorizedComputedStyle {
             }
 
             // ResetSurround
-            "margin-top" => Arc::make_mut(&mut self.reset_surround).margin_top = value_to_px(value, fs),
+            "margin-top" => {
+                Arc::make_mut(&mut self.reset_surround).margin_top = value_to_px(value, fs)
+            }
             "margin-right" => {
                 Arc::make_mut(&mut self.reset_surround).margin_right = value_to_px(value, fs)
             }
@@ -869,10 +879,12 @@ impl CategorizedComputedStyle {
                     css_value_to_string(value)
             }
             "border-top-left-radius" => {
-                Arc::make_mut(&mut self.reset_surround).border_top_left_radius = value_to_px(value, fs)
+                Arc::make_mut(&mut self.reset_surround).border_top_left_radius =
+                    value_to_px(value, fs)
             }
             "border-top-right-radius" => {
-                Arc::make_mut(&mut self.reset_surround).border_top_right_radius = value_to_px(value, fs)
+                Arc::make_mut(&mut self.reset_surround).border_top_right_radius =
+                    value_to_px(value, fs)
             }
             "border-bottom-right-radius" => {
                 Arc::make_mut(&mut self.reset_surround).border_bottom_right_radius =
@@ -1020,7 +1032,16 @@ impl CategorizedComputedStyle {
                                 surround.border_right_width = px;
                                 surround.border_bottom_width = px;
                                 surround.border_left_width = px;
-                            } else if kw == "none" || kw == "solid" || kw == "double" || kw == "dotted" || kw == "dashed" || kw == "groove" || kw == "ridge" || kw == "inset" || kw == "outset" {
+                            } else if kw == "none"
+                                || kw == "solid"
+                                || kw == "double"
+                                || kw == "dotted"
+                                || kw == "dashed"
+                                || kw == "groove"
+                                || kw == "ridge"
+                                || kw == "inset"
+                                || kw == "outset"
+                            {
                                 let surround = Arc::make_mut(&mut self.reset_surround);
                                 surround.border_top_style = kw.clone();
                                 surround.border_right_style = kw.clone();
@@ -1045,15 +1066,23 @@ impl CategorizedComputedStyle {
                 for leaf in leaves {
                     match leaf {
                         CssValue::Length(_, _) | CssValue::Number(_) => {
-                            Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(&leaf, fs);
+                            Arc::make_mut(&mut self.reset_effects).outline_width =
+                                value_to_px(&leaf, fs);
                         }
                         CssValue::Color(ref _c) => {
-                            Arc::make_mut(&mut self.reset_effects).outline_color = css_value_to_string(&leaf);
+                            Arc::make_mut(&mut self.reset_effects).outline_color =
+                                css_value_to_string(&leaf);
                         }
                         CssValue::Keyword(ref kw) => {
                             if kw == "thin" || kw == "medium" || kw == "thick" {
-                                Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(&leaf, fs);
-                            } else if kw == "none" || kw == "solid" || kw == "double" || kw == "dotted" || kw == "dashed" {
+                                Arc::make_mut(&mut self.reset_effects).outline_width =
+                                    value_to_px(&leaf, fs);
+                            } else if kw == "none"
+                                || kw == "solid"
+                                || kw == "double"
+                                || kw == "dotted"
+                                || kw == "dashed"
+                            {
                                 Arc::make_mut(&mut self.reset_effects).outline_style = kw.clone();
                             } else {
                                 Arc::make_mut(&mut self.reset_effects).outline_color = kw.clone();
@@ -1137,17 +1166,26 @@ impl CategorizedComputedStyle {
                     }
                     if let Some(num_str) = p.strip_suffix("px") {
                         if let Ok(v) = num_str.parse::<f32>() {
-                            return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Px);
+                            return crate::css::values::CssValue::Length(
+                                v,
+                                crate::css::values::LengthUnit::Px,
+                            );
                         }
                     }
                     if let Some(num_str) = p.strip_suffix("em") {
                         if let Ok(v) = num_str.parse::<f32>() {
-                            return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Em);
+                            return crate::css::values::CssValue::Length(
+                                v,
+                                crate::css::values::LengthUnit::Em,
+                            );
                         }
                     }
                     if let Some(num_str) = p.strip_suffix('%') {
                         if let Ok(v) = num_str.parse::<f32>() {
-                            return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Percent);
+                            return crate::css::values::CssValue::Length(
+                                v,
+                                crate::css::values::LengthUnit::Percent,
+                            );
                         }
                     }
                     if let Ok(v) = p.parse::<f32>() {
@@ -1180,7 +1218,13 @@ impl CategorizedComputedStyle {
     pub fn get_property_as_string(&self, name: &str) -> Option<String> {
         match name {
             // InheritedText
-            "color" => Some(self.inherited_text.color.clone()),
+            "color" => {
+                if self.inherited_text.color.is_empty() {
+                    None
+                } else {
+                    Some(self.inherited_text.color.clone())
+                }
+            }
             "font-family" => Some(self.inherited_text.font_family.clone()),
             "font-size" => Some(format!("{}px", self.inherited_text.font_size)),
             "font-style" => Some(self.inherited_text.font_style.clone()),
@@ -1671,7 +1715,10 @@ fn value_to_px(val: &crate::css::values::CssValue, font_size: u32) -> i32 {
     }
 }
 
-fn flatten_value(val: &crate::css::values::CssValue, leaves: &mut Vec<crate::css::values::CssValue>) {
+fn flatten_value(
+    val: &crate::css::values::CssValue,
+    leaves: &mut Vec<crate::css::values::CssValue>,
+) {
     match val {
         crate::css::values::CssValue::Multiple(list) => {
             for item in list {
@@ -1754,8 +1801,9 @@ mod tests {
         // Mutating cloned text color (inherited)
         cloned.set_color("red".to_string());
 
-        // The mutated category should diverge
-        assert_eq!(original.inherited_text.color, "black");
+        // The mutated category should diverge. The initial color is the empty
+        // "unspecified" sentinel (resolves to black at paint time).
+        assert_eq!(original.inherited_text.color, "");
         assert_eq!(cloned.inherited_text.color, "red");
         assert!(!Arc::ptr_eq(
             &original.inherited_text,
@@ -1777,7 +1825,8 @@ mod tests {
     fn test_initial_defaults() {
         let initial = CategorizedComputedStyle::initial();
 
-        assert_eq!(initial.inherited_text.color, "black");
+        // Empty = unspecified sentinel (resolves to black at paint time).
+        assert_eq!(initial.inherited_text.color, "");
         assert_eq!(initial.inherited_text.font_size, 16);
         assert_eq!(initial.reset_box.display, "inline");
         assert_eq!(initial.reset_box.width, -1);

@@ -1221,16 +1221,15 @@ pub fn build_display_list_with_caret(
                     let Color::Rgba(_, _, _, a) = color;
                     if a > 0 {
                         // B-4: do not paint background for zero/negative-area boxes
-                        if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0
-                        {
-                                // TODO(spec): border/images/gradients/rasterization
-                                items.push(DisplayItem::SolidRect {
-                                    rect: layout_box.rect,
-                                    color: scale_color_alpha(&color, effective_opacity),
-                                });
-                            }
+                        if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
+                            // TODO(spec): border/images/gradients/rasterization
+                            items.push(DisplayItem::SolidRect {
+                                rect: layout_box.rect,
+                                color: scale_color_alpha(&color, effective_opacity),
+                            });
                         }
                     }
+                }
 
                 // Paint background-image (t0382)
                 let mut bg_img_src = None;
