@@ -9,8 +9,8 @@
 //! has no window and may have no network — every step degrades gracefully
 //! (no panics) and falls back to a built-in sample page.
 
+use std::sync::{Arc, Mutex};
 use underrated::dom::{Dom, NodeData};
-use underrated::engine::render_page_to_canvas;
 use underrated::forms::{self, FormState};
 use underrated::loader::{HttpLoader, ResourceLoader};
 use underrated::shell::WinitWindow;
@@ -129,7 +129,96 @@ fn main() {
         }
     };
     let loader = HttpLoader;
-    window.run(move || render_page_to_canvas(&html, &base_url, &loader, width, height));
+
+    let page = underrated::engine::render_page(&html, &base_url, &loader, width as f32);
+    let browsing_context = underrated::engine::BrowsingContext::new(page);
+    let input_manager = underrated::shell::ShellInputManager::new();
+    let mut form_state = underrated::forms::FormState::new();
+    form_state.set_current_url(&url);
+
+    struct Session {
+        browsing_context: underrated::engine::BrowsingContext,
+        input_manager: underrated::shell::ShellInputManager,
+        form_state: underrated::forms::FormState,
+    }
+
+    let session = Arc::new(Mutex::new(Session {
+        browsing_context,
+        input_manager,
+        form_state,
+    }));
+
+    let session_draw = session.clone();
+    let draw_closure = move || {
+        if let Ok(session) = session_draw.lock() {
+            let caret = session
+                .browsing_context
+                .focus_node
+                .map(|node| (node, session.browsing_context.caret_index));
+            let display_list = underrated::paint::build_display_list_with_caret(
+                &session.browsing_context.page.layout,
+                &session.browsing_context.page.dom,
+                &session.browsing_context.page.styles,
+                caret,
+            );
+            underrated::raster::rasterize(&display_list, width, height)
+        } else {
+            underrated::raster::Canvas::new(width, height)
+        }
+    };
+
+    let session_event = session.clone();
+    let base_url_clone = base_url.clone();
+    let event_closure = move |event: underrated::shell::InputEvent| {
+        if let Ok(mut session) = session_event.lock() {
+            match event {
+                underrated::shell::InputEvent::Click { x, y } => {
+                    let clicked_node = underrated::layout::hit_test(
+                        &session.browsing_context.page.layout,
+                        x as f32,
+                        y as f32,
+                    );
+                    session.input_manager.handle_click(x, y, clicked_node);
+                    let focused = session.input_manager.focused_element();
+                    session.browsing_context.set_focus(focused);
+                    if let Some(focused_node) = session.browsing_context.focus_node {
+                        let caret_pos = session.input_manager.caret_position(focused_node);
+                        session.browsing_context.caret_index = caret_pos;
+                    }
+                }
+                underrated::shell::InputEvent::Key { key } => {
+                    if let Some(focused) = session.input_manager.focused_element() {
+                        if key == "Enter" || key == "Return" {
+                            if let Some(new_page) = underrated::engine::navigate_from_enter(
+                                &session.browsing_context.page.dom,
+                                focused,
+                                &session.form_state,
+                                &base_url_clone,
+                                &underrated::loader::HttpLoader,
+                                width as f32,
+                            ) {
+                                session.browsing_context.navigate(new_page);
+                                session.input_manager.blur();
+                            }
+                        } else {
+                            session.input_manager.handle_key(&key);
+                            let text = session.input_manager.text_buffer(focused).to_string();
+                            let caret_pos = session.input_manager.caret_position(focused);
+                            session.form_state.set_value(focused, &text);
+                            session
+                                .browsing_context
+                                .page
+                                .dom
+                                .set_attribute(focused, "value", &text);
+                            session.browsing_context.caret_index = caret_pos;
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    window.run_with_input(draw_closure, event_closure);
 }
 
 #[cfg(test)]
