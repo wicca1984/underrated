@@ -412,35 +412,31 @@ pub(crate) fn layout_node(
         }
     }
 
-    if let Some(w) = calculate_shrink_to_fit_width(
+    // Shrink-to-fit width resolution plus the conditional all-block relayout are
+    // delegated to a single `#[inline(never)]` helper so their argument-marshalling
+    // temporaries do not enlarge `layout_node`'s stack frame on the deep all-block
+    // recursion path (Windows 1 MiB stack regression guard:
+    // test_deep_tree_recursion_cap).
+    apply_block_shrink_to_fit(
         dom,
         styles,
         node,
         style,
-        &children,
-        border_box_x + border_left + padding_left,
-        auto_width,
+        &mut children,
+        &mut content_width,
+        &mut child_cursor_y,
+        has_inline,
         has_block,
+        inline_pass_width,
+        border_box_x,
+        border_left,
+        padding_left,
+        border_box_y,
+        border_top,
+        padding_top,
+        auto_width,
         depth,
-    ) {
-        content_width = w;
-    }
-
-    if !has_inline && has_block && content_width != inline_pass_width {
-        child_cursor_y = relayout_block_children(
-            dom,
-            styles,
-            node,
-            &mut children,
-            0,
-            content_width,
-            border_box_x,
-            border_left,
-            padding_left,
-            border_box_y + border_top + padding_top,
-            depth,
-        );
-    }
+    );
 
     if has_inline && !has_block && content_width != inline_pass_width {
         // shrink-to-fit changed the content width: re-run the inline pass so the
@@ -680,6 +676,63 @@ fn get_form_control_button_label(dom: &Dom, node: NodeId) -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve the shrink-to-fit content width and, for the all-block case, re-run the
+/// block layout against that width. Kept `#[inline(never)]` and out of `layout_node`
+/// so its locals stay off the deep all-block recursion frame (Windows 1 MiB stack
+/// regression guard: test_deep_tree_recursion_cap).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn apply_block_shrink_to_fit(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    node: NodeId,
+    style: &ComputedStyle,
+    children: &mut Vec<LayoutBox>,
+    content_width: &mut f32,
+    child_cursor_y: &mut f32,
+    has_inline: bool,
+    has_block: bool,
+    inline_pass_width: f32,
+    border_box_x: f32,
+    border_left: f32,
+    padding_left: f32,
+    border_box_y: f32,
+    border_top: f32,
+    padding_top: f32,
+    auto_width: f32,
+    depth: usize,
+) {
+    if let Some(w) = calculate_shrink_to_fit_width(
+        dom,
+        styles,
+        node,
+        style,
+        children,
+        border_box_x + border_left + padding_left,
+        auto_width,
+        has_block,
+        depth,
+    ) {
+        *content_width = w;
+    }
+
+    if !has_inline && has_block && *content_width != inline_pass_width {
+        *child_cursor_y = relayout_block_children(
+            dom,
+            styles,
+            node,
+            children,
+            0,
+            *content_width,
+            border_box_x,
+            border_left,
+            padding_left,
+            border_box_y + border_top + padding_top,
+            depth,
+        );
+    }
 }
 
 #[inline(never)]
