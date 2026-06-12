@@ -1,11 +1,13 @@
+use super::LayoutBox;
 use crate::css::values::CssValue;
+use crate::infra::NodeId;
 use crate::style::ComputedStyle;
+use std::collections::HashMap;
 
 /// Helper to get the computed float value of a style.
 /// Returns Some("left"), Some("right"), or None.
 ///
 /// // TODO(spec): DO NOT implement text/line-box shortening or wrapping content around the float.
-/// // TODO(spec): DO NOT implement `clear`.
 /// // TODO(spec): DO NOT implement float stacking of multiple floats side-by-side beyond the basic left/right edge placement.
 pub(crate) fn get_float_value(style: &ComputedStyle) -> Option<&str> {
     match style.get("float") {
@@ -20,6 +22,62 @@ pub(crate) fn get_float_value(style: &ComputedStyle) -> Option<&str> {
         }
         _ => None,
     }
+}
+
+/// Helper to get the computed clear value of a style.
+/// Returns Some("left"), Some("right"), Some("both"), or None.
+pub(crate) fn get_clear_value(style: &ComputedStyle) -> Option<&str> {
+    match style.get("clear") {
+        Some(CssValue::Keyword(kw)) => {
+            let s = kw.as_str();
+            if s == "left" || s == "right" || s == "both" {
+                Some(s)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Computes the maximum bottom edge of the relevant active floats based on `clear_val`.
+pub(crate) fn find_clearance_y(
+    children: &[LayoutBox],
+    styles: &HashMap<NodeId, ComputedStyle>,
+    clear_val: &str,
+) -> Option<f32> {
+    let mut max_float_y = None;
+    let mut stack = Vec::new();
+    for child in children {
+        stack.push(child);
+    }
+
+    while let Some(current) = stack.pop() {
+        if let Some(fv) = current
+            .node
+            .and_then(|node_id| styles.get(&node_id))
+            .and_then(get_float_value)
+        {
+            let matches_side = match clear_val {
+                "left" => fv == "left",
+                "right" => fv == "right",
+                "both" => fv == "left" || fv == "right",
+                _ => false,
+            };
+            if matches_side {
+                let bottom_edge = current.rect.max_y();
+                max_float_y = Some(match max_float_y {
+                    Some(y) => f32::max(y, bottom_edge),
+                    None => bottom_edge,
+                });
+            }
+        }
+        for child in &current.children {
+            stack.push(child);
+        }
+    }
+
+    max_float_y
 }
 
 #[cfg(test)]
@@ -179,5 +237,189 @@ mod tests {
         // The normal_box has margin-top = 10.0, so its border box y should be 10.0.
         assert!(approx_eq(float_layout.rect.origin.y, 0.0));
         assert!(approx_eq(normal_layout.rect.origin.y, 10.0));
+    }
+
+    #[test]
+    fn test_clear_left_positions_below_left_float() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, float_box);
+
+        let normal_box = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, normal_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(normal_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                float: left;
+                width: 100px;
+                height: 50px;
+            }
+            p {
+                display: block;
+                clear: left;
+                margin-top: 10px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        // Children of body: float_box (index 0) and normal_box (index 1)
+        assert_eq!(body_box.children.len(), 2);
+        let float_layout = &body_box.children[0];
+        let normal_layout = &body_box.children[1];
+
+        // The left float is at y = 0, height = 50. So bottom is 50.
+        // The normal_box has clear: left, so its top margin edge (offset_y)
+        // should be pushed to at least 50.
+        // Margin top of normal_box is 10.0, so normal_layout.rect.origin.y is 50.0 + 10.0 = 60.0.
+        assert!(approx_eq(float_layout.rect.origin.y, 0.0));
+        assert!(approx_eq(normal_layout.rect.origin.y, 60.0));
+    }
+
+    #[test]
+    fn test_clear_none_leaves_sibling_at_normal_flow() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, float_box);
+
+        let normal_box = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, normal_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(normal_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                float: left;
+                width: 100px;
+                height: 50px;
+            }
+            p {
+                display: block;
+                clear: none;
+                margin-top: 10px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        // Children of body: float_box (index 0) and normal_box (index 1)
+        assert_eq!(body_box.children.len(), 2);
+        let float_layout = &body_box.children[0];
+        let normal_layout = &body_box.children[1];
+
+        // Sibling p should start at y = 10.0 (margin-top), because clear is none.
+        assert!(approx_eq(float_layout.rect.origin.y, 0.0));
+        assert!(approx_eq(normal_layout.rect.origin.y, 10.0));
+    }
+
+    #[test]
+    fn test_clear_both_clears_left_and_right_floats() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let left_float = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "left".into())],
+        });
+        dom.append_child(body, left_float);
+
+        let right_float = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "right".into())],
+        });
+        dom.append_child(body, right_float);
+
+        let normal_box = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, normal_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(normal_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .left {
+                float: left;
+                width: 100px;
+                height: 50px;
+            }
+            .right {
+                float: right;
+                width: 100px;
+                height: 80px;
+            }
+            p {
+                display: block;
+                clear: both;
+                margin-top: 10px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        // Children of body: left_float (0), right_float (1), p (2)
+        assert_eq!(body_box.children.len(), 3);
+        let p_layout = &body_box.children[2];
+
+        // The right float is at y = 0, height = 80, so max_y is 80.
+        // The left float is at y = 0, height = 50, so max_y is 50.
+        // clearance_y should be max(50, 80) = 80.
+        // p has clear: both, margin-top: 10.
+        // p_layout.rect.origin.y should be 80 + 10 = 90.
+        assert!(approx_eq(p_layout.rect.origin.y, 90.0));
     }
 }
