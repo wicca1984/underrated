@@ -58,21 +58,44 @@ fn get_vertical_align_shift(
         }
 
         if let Some(style) = styles.get(&curr_node) {
-            if let Some(crate::css::values::CssValue::Keyword(kw)) = style.get("vertical-align") {
-                let font_size = get_font_size(style);
-                let shift = match kw.as_str() {
-                    "baseline" => 0.0,
-                    "sub" => 0.2 * font_size,
-                    "super" => -0.2 * font_size,
-                    "text-top" | "top" => -line_height + border_box_height,
-                    "text-bottom" | "bottom" => 0.0,
-                    "middle" => -0.25 * font_size + (border_box_height / 2.0),
-                    _ => {
-                        // TODO(spec): <percentage> and <length> vertical-align values and precise font-metric-based x-height/text-top/text-bottom are out of scope for v1
-                        0.0
+            if let Some(val) = style.get("vertical-align") {
+                match val {
+                    crate::css::values::CssValue::Keyword(kw) => {
+                        let font_size = get_font_size(style);
+                        let shift = match kw.as_str() {
+                            "baseline" => 0.0,
+                            "sub" => 0.2 * font_size,
+                            "super" => -0.2 * font_size,
+                            "text-top" | "top" => -line_height + border_box_height,
+                            "text-bottom" | "bottom" => 0.0,
+                            "middle" => -0.25 * font_size + (border_box_height / 2.0),
+                            _ => {
+                                // TODO(spec): <percentage> and <length> vertical-align values and precise font-metric-based x-height/text-top/text-bottom are out of scope for v1
+                                0.0
+                            }
+                        };
+                        total_shift += shift;
                     }
-                };
-                total_shift += shift;
+                    crate::css::values::CssValue::Length(v, unit) => {
+                        let raise = match unit {
+                            crate::css::values::LengthUnit::Px
+                            | crate::css::values::LengthUnit::Pt => *v,
+                            crate::css::values::LengthUnit::Em => *v * get_font_size(style),
+                            crate::css::values::LengthUnit::Rem => {
+                                // NOTE: Approximate rem to em as the layout engine has no separate root font-size plumbing here
+                                *v * get_font_size(style)
+                            }
+                            crate::css::values::LengthUnit::Percent => (*v / 100.0) * line_height,
+                            crate::css::values::LengthUnit::Vw
+                            | crate::css::values::LengthUnit::Vh => {
+                                // TODO(spec): viewport units vertical-align are out of scope
+                                0.0
+                            }
+                        };
+                        total_shift += -raise;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -1958,5 +1981,189 @@ mod tests {
         assert!(line_boxes_multi[1].children.is_empty()); // second line is empty due to consecutive <br>
         assert!(line_boxes_multi[2].rect.origin.y > line_boxes_multi[1].rect.origin.y);
         assert!(line_boxes_multi[1].rect.origin.y > line_boxes_multi[0].rect.origin.y);
+    }
+
+    #[test]
+    fn test_vertical_align_length_and_percentage_direct() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let s1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "px-class".into())],
+        });
+        dom.append_child(div, s1);
+
+        let s2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "px-neg-class".into())],
+        });
+        dom.append_child(div, s2);
+
+        let s3 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "em-class".into())],
+        });
+        dom.append_child(div, s3);
+
+        let s4 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "percent-class".into())],
+        });
+        dom.append_child(div, s4);
+
+        let s5 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "rem-class".into())],
+        });
+        dom.append_child(div, s5);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .px-class { vertical-align: 4px; }
+            .px-neg-class { vertical-align: -3px; }
+            .em-class { vertical-align: 0.5em; font-size: 20px; }
+            .percent-class { vertical-align: 50%; }
+            .rem-class { vertical-align: 0.25rem; font-size: 16px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // 1. vertical-align: 4px
+        // raise = 4px, shift = -raise = -4px (up)
+        let shift1 = get_vertical_align_shift(s1, Some(div), &dom, &styles, 30.0, 10.0);
+        assert_eq!(shift1, -4.0);
+
+        // 2. vertical-align: -3px
+        // raise = -3px, shift = -raise = 3px (down)
+        let shift2 = get_vertical_align_shift(s2, Some(div), &dom, &styles, 30.0, 10.0);
+        assert_eq!(shift2, 3.0);
+
+        // 3. vertical-align: 0.5em with font-size: 20px
+        // raise = 0.5 * 20 = 10px, shift = -raise = -10px
+        let shift3 = get_vertical_align_shift(s3, Some(div), &dom, &styles, 30.0, 10.0);
+        assert_eq!(shift3, -10.0);
+
+        // 4. vertical-align: 50% with line-height: 30.0
+        // raise = 0.50 * 30 = 15px, shift = -raise = -15px
+        let shift4 = get_vertical_align_shift(s4, Some(div), &dom, &styles, 30.0, 10.0);
+        assert_eq!(shift4, -15.0);
+
+        // 5. vertical-align: 0.25rem (resolved to element's font-size = 16px)
+        // raise = 0.25 * 16 = 4px, shift = -raise = -4px
+        let shift5 = get_vertical_align_shift(s5, Some(div), &dom, &styles, 30.0, 10.0);
+        assert_eq!(shift5, -4.0);
+    }
+
+    #[test]
+    fn test_vertical_align_length_and_percentage_layout() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // s1: baseline reference
+        let s_base = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "base-class".into())],
+        });
+        dom.append_child(div, s_base);
+        let t_base = dom.create_node(NodeData::Text("base".into()));
+        dom.append_child(s_base, t_base);
+
+        // s2: 4px raise
+        let s_px = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "px-class".into())],
+        });
+        dom.append_child(div, s_px);
+        let t_px = dom.create_node(NodeData::Text("4px".into()));
+        dom.append_child(s_px, t_px);
+
+        // s3: -3px lower
+        let s_px_neg = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "px-neg-class".into())],
+        });
+        dom.append_child(div, s_px_neg);
+        let t_px_neg = dom.create_node(NodeData::Text("-3px".into()));
+        dom.append_child(s_px_neg, t_px_neg);
+
+        // s4: 0.5em raise (font-size 20px)
+        let s_em = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "em-class".into())],
+        });
+        dom.append_child(div, s_em);
+        let t_em = dom.create_node(NodeData::Text("em".into()));
+        dom.append_child(s_em, t_em);
+
+        // s5: 50% raise
+        let s_pct = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "pct-class".into())],
+        });
+        dom.append_child(div, s_pct);
+        let t_pct = dom.create_node(NodeData::Text("pct".into()));
+        dom.append_child(s_pct, t_pct);
+
+        // Put an inline-block with height 50px on the line box to force line_height to be large (50px).
+        // That way percentage and em effects have a distinct line-height context.
+        let s_ib = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "ib-class".into())],
+        });
+        dom.append_child(div, s_ib);
+        let t_ib = dom.create_node(NodeData::Text("ib".into()));
+        dom.append_child(s_ib, t_ib);
+
+        let stylesheet = parse_stylesheet(
+            "
+            span { display: inline; }
+            .base-class { vertical-align: baseline; }
+            .px-class { vertical-align: 4px; }
+            .px-neg-class { vertical-align: -3px; }
+            .em-class { vertical-align: 0.5em; font-size: 20px; }
+            .pct-class { vertical-align: 50%; }
+            .ib-class { display: inline-block; height: 50px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 6);
+
+        let box_base = &line.children[0];
+        let box_px = &line.children[1];
+        let box_px_neg = &line.children[2];
+        let box_em = &line.children[3];
+        let box_pct = &line.children[4];
+
+        // 1. vertical-align: 4px raises span (smaller y) by 4px delta
+        assert_eq!(box_px.rect.origin.y, box_base.rect.origin.y - 4.0);
+
+        // 2. vertical-align: -3px lowers span (larger y) by 3px delta
+        assert_eq!(box_px_neg.rect.origin.y, box_base.rect.origin.y + 3.0);
+
+        // 3. vertical-align: 0.5em with font-size: 20px raises span by 10px delta
+        assert_eq!(box_em.rect.origin.y, box_base.rect.origin.y - 10.0);
+
+        // 4. vertical-align: 50% raises span by 50% of line_height
+        // line_height is 50px, so 50% of 50px = 25px delta
+        assert_eq!(box_pct.rect.origin.y, box_base.rect.origin.y - 25.0);
     }
 }
