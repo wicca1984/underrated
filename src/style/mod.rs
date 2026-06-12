@@ -217,6 +217,25 @@ fn compute_node_style(
                     properties.insert("border-bottom-width".to_string(), bottom);
                     properties.insert("border-left-width".to_string(), left);
                 }
+                "border-color" => {
+                    // spec: https://www.w3.org/TR/css-backgrounds-3/#border-color
+                    let (top, right, bottom, left) = expand_1_to_4(&value);
+                    properties.insert("border-top-color".to_string(), top);
+                    properties.insert("border-right-color".to_string(), right);
+                    properties.insert("border-bottom-color".to_string(), bottom);
+                    properties.insert("border-left-color".to_string(), left);
+                    properties.insert("border-color".to_string(), value);
+                }
+                "border-style" => {
+                    // spec: https://www.w3.org/TR/css-backgrounds-3/#border-style
+                    // TODO(spec): paint does not yet honor per-edge border-style
+                    let (top, right, bottom, left) = expand_1_to_4(&value);
+                    properties.insert("border-top-style".to_string(), top);
+                    properties.insert("border-right-style".to_string(), right);
+                    properties.insert("border-bottom-style".to_string(), bottom);
+                    properties.insert("border-left-style".to_string(), left);
+                    properties.insert("border-style".to_string(), value);
+                }
                 "border" => {
                     // spec: https://www.w3.org/TR/css-backgrounds-3/#border-shorthands
                     // At least expand border-*-width longhands.
@@ -298,6 +317,30 @@ fn compute_node_style(
                 }
             }
         }
+    }
+
+    // Post-process borders: If any edge style is outset/inset, remove per-edge border-*-color
+    // properties to preserve the synthesized 3D bevel (since paint's bevel synthesis is gated
+    // on their absence, falling back to the resolved border-color or background).
+    let mut is_outset_or_inset = false;
+    for style_prop in &[
+        "border-top-style",
+        "border-right-style",
+        "border-bottom-style",
+        "border-left-style",
+    ] {
+        if let Some(CssValue::Keyword(s)) = properties.get(*style_prop)
+            && (s.eq_ignore_ascii_case("outset") || s.eq_ignore_ascii_case("inset"))
+        {
+            is_outset_or_inset = true;
+            break;
+        }
+    }
+    if is_outset_or_inset {
+        properties.remove("border-top-color");
+        properties.remove("border-right-color");
+        properties.remove("border-bottom-color");
+        properties.remove("border-left-color");
     }
 
     // 5. Inheritance.
@@ -1836,6 +1879,123 @@ mod tests {
             style_border2.get("border-bottom-style"),
             Some(&CssValue::Keyword("dashed".to_string()))
         );
+    }
+
+    #[test]
+    fn test_border_color_and_style_shorthands_expand_per_edge() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // 1. Test 4-value form expansion for border-color and border-style
+        let stylesheet = parse_stylesheet(
+            "div { border-color: red green blue yellow; border-style: solid dashed dotted double; }",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&div).unwrap();
+
+        // Retrieve references for expected colors
+        let stylesheet_ref = parse_stylesheet("div { border-top-color: red; }");
+        let styles_ref = compute_styles(&dom, &stylesheet_ref);
+        let style_ref = styles_ref.get(&div).unwrap();
+        let red_color = style_ref.get("border-top-color").unwrap();
+
+        assert_eq!(style.get("border-top-color"), Some(red_color));
+        assert_eq!(
+            style.get("border-right-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 128, 0, 255
+            )))
+        );
+        assert_eq!(
+            style.get("border-bottom-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            )))
+        );
+        assert_eq!(
+            style.get("border-left-color"),
+            Some(&CssValue::Keyword("yellow".to_string()))
+        );
+
+        assert_eq!(
+            style.get("border-top-style"),
+            Some(&CssValue::Keyword("solid".to_string()))
+        );
+        assert_eq!(
+            style.get("border-right-style"),
+            Some(&CssValue::Keyword("dashed".to_string()))
+        );
+        assert_eq!(
+            style.get("border-bottom-style"),
+            Some(&CssValue::Keyword("dotted".to_string()))
+        );
+        assert_eq!(
+            style.get("border-left-style"),
+            Some(&CssValue::Keyword("double".to_string()))
+        );
+
+        // 2. Test 2-value form expansion (the 2-value 1-to-4 rule)
+        let stylesheet_2val = parse_stylesheet("div { border-color: red green; }");
+        let styles_2val = compute_styles(&dom, &stylesheet_2val);
+        let style_2val = styles_2val.get(&div).unwrap();
+
+        assert_eq!(style_2val.get("border-top-color"), Some(red_color));
+        assert_eq!(style_2val.get("border-bottom-color"), Some(red_color));
+        assert_eq!(
+            style_2val.get("border-right-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 128, 0, 255
+            )))
+        );
+        assert_eq!(
+            style_2val.get("border-left-color"),
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 128, 0, 255
+            )))
+        );
+    }
+
+    #[test]
+    fn test_border_outset_strips_per_edge_color_for_bevel() {
+        // Guard: when any per-edge border-style resolves to outset/inset, the per-edge
+        // border-*-color longhands must be removed so paint's UA button 3D-bevel synthesis
+        // (gated on per-edge color absence) still fires, even when border-color is explicit.
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet =
+            parse_stylesheet("div { border-style: outset; border-color: red green blue yellow; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&div).unwrap();
+
+        // Per-edge styles are still expanded.
+        assert_eq!(
+            style.get("border-top-style"),
+            Some(&CssValue::Keyword("outset".to_string()))
+        );
+        // ...but per-edge colors are stripped to preserve the synthesized bevel.
+        assert_eq!(style.get("border-top-color"), None);
+        assert_eq!(style.get("border-right-color"), None);
+        assert_eq!(style.get("border-bottom-color"), None);
+        assert_eq!(style.get("border-left-color"), None);
+
+        // A non-bevel style (solid) keeps the per-edge colors.
+        let stylesheet_solid =
+            parse_stylesheet("div { border-style: solid; border-color: red green blue yellow; }");
+        let styles_solid = compute_styles(&dom, &stylesheet_solid);
+        let style_solid = styles_solid.get(&div).unwrap();
+        assert!(style_solid.get("border-top-color").is_some());
+        assert!(style_solid.get("border-left-color").is_some());
     }
 
     #[test]
