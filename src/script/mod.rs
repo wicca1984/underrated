@@ -4450,7 +4450,7 @@ fn camel_to_kebab(s: &str) -> String {
 fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     use crate::css::values::{
         AlignItemsValue, BoxSizingValue, Color, CssValue, DisplayValue, FlexDirectionValue,
-        JustifyContentValue, LengthUnit, OverflowValue, PositionValue,
+        JustifyContentValue, LengthUnit, OverflowValue, PositionValue, ZIndex,
     };
     match val {
         CssValue::Keyword(s) => s.clone(),
@@ -4589,6 +4589,10 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
+        CssValue::ZIndex(zi) => match zi {
+            ZIndex::Auto => "auto".to_string(),
+            ZIndex::Index(n) => n.to_string(),
+        },
     }
 }
 
