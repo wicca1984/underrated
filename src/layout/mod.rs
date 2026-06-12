@@ -102,6 +102,43 @@ pub fn layout_document(
     root_box
 }
 
+/// Re-run the inline layout pass for an inline-only container against its final
+/// shrink-to-fit `width`, replacing the children produced by the first pass and
+/// returning the new bottom cursor. Kept as a separate, non-inlined function so
+/// its locals do not enlarge `layout_node`'s stack frame on the deep all-block
+/// recursion path (Windows 1 MiB stack regression guard).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn recenter_inline_children(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    node: NodeId,
+    children: &mut Vec<LayoutBox>,
+    width: f32,
+    inline_origin_x: f32,
+    cursor_y0: f32,
+    depth: usize,
+    text_align: &str,
+    text_indent: f32,
+    word_spacing: f32,
+) -> f32 {
+    children.clear();
+    let (line_boxes, total_height) = layout_inline(
+        dom,
+        styles,
+        node,
+        width,
+        inline_origin_x,
+        cursor_y0,
+        depth,
+        text_align,
+        text_indent,
+        word_spacing,
+    );
+    children.extend(line_boxes);
+    cursor_y0 + total_height
+}
+
 pub(crate) fn layout_node(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
@@ -209,16 +246,14 @@ pub(crate) fn layout_node(
         .iter()
         .any(|&c| !is_inline_level(styles, dom, c));
 
-    // Layout children
-    let inline_start_y = child_cursor_y;
-    let inline_prev_len = children.len();
-    let mut did_inline_pass = false;
-    let mut inline_pass_width = None;
+    // Width used for the inline pass below; if shrink-to-fit later changes the
+    // content width we re-run the inline pass to re-center against the final
+    // width (see `recenter_inline_children`).
+    let inline_pass_width = content_width;
 
+    // Layout children
     if has_inline && !has_block {
         // If ALL children are inline, keep current behavior (single inline pass)
-        did_inline_pass = true;
-        inline_pass_width = Some(content_width);
         let (line_boxes, total_height) = layout_inline(
             dom,
             styles,
@@ -388,23 +423,25 @@ pub(crate) fn layout_node(
         content_width = w;
     }
 
-    if did_inline_pass && Some(content_width) != inline_pass_width {
-        children.truncate(inline_prev_len);
-        child_cursor_y = inline_start_y;
-        let (line_boxes, total_height) = layout_inline(
+    if has_inline && !has_block && content_width != inline_pass_width {
+        // shrink-to-fit changed the content width: re-run the inline pass so the
+        // content re-centers against the final box width. Delegated to a
+        // non-inlined helper so this branch's locals do not enlarge
+        // `layout_node`'s stack frame on the deep all-block recursion path
+        // (Windows 1 MiB stack regression guard: test_deep_tree_recursion_cap).
+        child_cursor_y = recenter_inline_children(
             dom,
             styles,
             node,
+            &mut children,
             content_width,
             border_box_x + border_left + padding_left,
-            child_cursor_y,
+            border_box_y + border_top + padding_top,
             depth,
             text_align,
             text_indent,
             word_spacing,
         );
-        children.extend(line_boxes);
-        child_cursor_y += total_height;
     }
 
     // Calculate height
