@@ -1,7 +1,6 @@
 use super::LayoutBox;
-use crate::css::values::CssValue;
 use crate::infra::NodeId;
-use crate::style::ComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
 /// Helper to get the computed float value of a style.
@@ -9,41 +8,30 @@ use std::collections::HashMap;
 ///
 /// // TODO(spec): DO NOT implement text/line-box shortening or wrapping content around the float.
 /// // TODO(spec): DO NOT implement float stacking of multiple floats side-by-side beyond the basic left/right edge placement.
-pub(crate) fn get_float_value(style: &ComputedStyle) -> Option<&str> {
-    match style.get("float") {
-        Some(CssValue::Keyword(kw)) => {
-            if kw == "left" {
-                Some("left")
-            } else if kw == "right" {
-                Some("right")
-            } else {
-                None
-            }
-        }
-        _ => None,
+pub(crate) fn get_float_value(style: &CategorizedComputedStyle) -> Option<&str> {
+    let fl = style.reset_box.float.as_str();
+    if fl == "left" || fl == "right" {
+        Some(fl)
+    } else {
+        None
     }
 }
 
 /// Helper to get the computed clear value of a style.
 /// Returns Some("left"), Some("right"), Some("both"), or None.
-pub(crate) fn get_clear_value(style: &ComputedStyle) -> Option<&str> {
-    match style.get("clear") {
-        Some(CssValue::Keyword(kw)) => {
-            let s = kw.as_str();
-            if s == "left" || s == "right" || s == "both" {
-                Some(s)
-            } else {
-                None
-            }
-        }
-        _ => None,
+pub(crate) fn get_clear_value(style: &CategorizedComputedStyle) -> Option<&str> {
+    let cl = style.reset_box.clear.as_str();
+    if cl == "left" || cl == "right" || cl == "both" {
+        Some(cl)
+    } else {
+        None
     }
 }
 
 /// Computes the maximum bottom edge of the relevant active floats based on `clear_val`.
 pub(crate) fn find_clearance_y(
     children: &[LayoutBox],
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     clear_val: &str,
 ) -> Option<f32> {
     let mut max_float_y = None;

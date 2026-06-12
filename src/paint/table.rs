@@ -111,6 +111,42 @@ fn get_pragmatic_empty_cells(dom: &Dom, node_id: NodeId) -> String {
     "show".to_string()
 }
 
+/// True when this element's borders are drawn by the presentational `border`
+/// attribute path (`table_border_items`), i.e. it is a `<table>`/`<td>`/`<th>`
+/// whose nearest ancestor `<table>` carries a non-zero `border` attribute. The
+/// generic CSS border painter must skip these to avoid double-drawing the gray
+/// presentational frame (the t0340 hint also seeds `border-width`/`border-color`,
+/// which would otherwise be painted a second time).
+pub fn has_presentational_table_border(dom: &Dom, node_id: NodeId) -> bool {
+    let is_table_or_cell = match dom.data(node_id) {
+        Some(NodeData::Element { name, .. }) => {
+            name.eq_ignore_ascii_case("table")
+                || name.eq_ignore_ascii_case("td")
+                || name.eq_ignore_ascii_case("th")
+        }
+        _ => false,
+    };
+    if !is_table_or_cell {
+        return false;
+    }
+
+    let mut current = Some(node_id);
+    while let Some(curr) = current {
+        if let Some(NodeData::Element { name, attrs }) = dom.data(curr)
+            && name.eq_ignore_ascii_case("table")
+        {
+            return attrs.iter().any(|(attr_name, val)| {
+                attr_name.eq_ignore_ascii_case("border") && {
+                    let t = val.trim();
+                    !t.is_empty() && t != "0"
+                }
+            });
+        }
+        current = dom.parent(curr);
+    }
+    false
+}
+
 /// Returns the 4 edge SolidRect items for a bordered table cell/table box, or empty.
 pub fn table_border_items(
     dom: &Dom,

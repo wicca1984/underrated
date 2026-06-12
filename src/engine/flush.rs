@@ -2,7 +2,7 @@ use crate::dom::Dom;
 use crate::infra::NodeId;
 use crate::layout::{LayoutBox, find_box_rect, layout_document};
 use crate::paint::invalidate::DirtyRegion;
-use crate::style::ComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
 /// Explicit batched dirty-flush: consumes accumulated layout-dirty nodes, performs ONE
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 /// covering the dirty nodes. Returns `None` when there is no dirty state (no relayout performed).
 pub fn flush_dirty(
     dom: &mut Dom,
-    styles: &HashMap<NodeId, ComputedStyle>,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
     viewport_width: f32,
 ) -> Option<(LayoutBox, DirtyRegion)> {
     if !dom.has_dirty() {
