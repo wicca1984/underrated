@@ -4,6 +4,7 @@
 pub mod colors;
 pub mod media;
 pub mod parser;
+pub mod property;
 pub mod resolve;
 pub mod values;
 
