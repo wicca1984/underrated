@@ -305,13 +305,15 @@ fn parse_background_size(s: &str) -> CssValue {
             return CssValue::Keyword("auto".to_string());
         }
         if let Some(num_str) = p.strip_suffix("px")
-            && let Ok(v) = num_str.parse::<f32>() {
-                return CssValue::Length(v, crate::css::values::LengthUnit::Px);
-            }
+            && let Ok(v) = num_str.parse::<f32>()
+        {
+            return CssValue::Length(v, crate::css::values::LengthUnit::Px);
+        }
         if let Some(num_str) = p.strip_suffix('%')
-            && let Ok(v) = num_str.parse::<f32>() {
-                return CssValue::Length(v, crate::css::values::LengthUnit::Percent);
-            }
+            && let Ok(v) = num_str.parse::<f32>()
+        {
+            return CssValue::Length(v, crate::css::values::LengthUnit::Percent);
+        }
         if let Ok(v) = p.parse::<f32>() {
             return CssValue::Number(v);
         }
@@ -343,13 +345,15 @@ fn parse_background_position(s: &str) -> CssValue {
             return CssValue::Keyword(p.to_string());
         }
         if let Some(num_str) = p.strip_suffix("px")
-            && let Ok(v) = num_str.parse::<f32>() {
-                return CssValue::Length(v, crate::css::values::LengthUnit::Px);
-            }
+            && let Ok(v) = num_str.parse::<f32>()
+        {
+            return CssValue::Length(v, crate::css::values::LengthUnit::Px);
+        }
         if let Some(num_str) = p.strip_suffix('%')
-            && let Ok(v) = num_str.parse::<f32>() {
-                return CssValue::Length(v, crate::css::values::LengthUnit::Percent);
-            }
+            && let Ok(v) = num_str.parse::<f32>()
+        {
+            return CssValue::Length(v, crate::css::values::LengthUnit::Percent);
+        }
         if let Ok(v) = p.parse::<f32>() {
             return CssValue::Number(v);
         }
@@ -370,15 +374,17 @@ fn parse_background_position(s: &str) -> CssValue {
 fn get_border_color(style: &CategorizedComputedStyle) -> Color {
     // Try the individual border colors first (e.g. top color)
     if style.reset_surround.border_top_color != "currentcolor"
-        && let Some(c) = parse_css_color(&style.reset_surround.border_top_color) {
-            return c;
-        }
+        && let Some(c) = parse_css_color(&style.reset_surround.border_top_color)
+    {
+        return c;
+    }
     // Then the base `border-color` shorthand value. This survives the outset/inset
     // per-edge color stripping, letting the UA button bevel recover its silver border.
     if style.reset_surround.border_color != "currentcolor"
-        && let Some(c) = parse_css_color(&style.reset_surround.border_color) {
-            return c;
-        }
+        && let Some(c) = parse_css_color(&style.reset_surround.border_color)
+    {
+        return c;
+    }
     // Fall back to computed text "color"
     if let Some(c) = parse_css_color(&style.inherited_text.color) {
         return c;
@@ -402,9 +408,10 @@ fn get_edge_color(
         _ => "currentcolor",
     };
     if color_str != "currentcolor"
-        && let Some(c) = parse_css_color(color_str) {
-            return c;
-        }
+        && let Some(c) = parse_css_color(color_str)
+    {
+        return c;
+    }
     border_color.clone()
 }
 
@@ -513,9 +520,10 @@ fn resolve_text_color(
         && depth < 1000
     {
         if let Some(style) = styles.get(&curr_id)
-            && let Some(c) = parse_css_color(&style.inherited_text.color) {
-                return c;
-            }
+            && let Some(c) = parse_css_color(&style.inherited_text.color)
+        {
+            return c;
+        }
         if let Some(NodeData::Element { name, .. }) = dom.data(curr_id)
             && name.eq_ignore_ascii_case("a")
         {
@@ -1500,10 +1508,11 @@ pub fn build_display_list_with_caret(
 
                         let color_str = &style.reset_effects.outline_color;
                         if color_str != "invert"
-                            && let Some(c) = parse_css_color(color_str) {
-                                outline_color = c;
-                                resolved = true;
-                            }
+                            && let Some(c) = parse_css_color(color_str)
+                        {
+                            outline_color = c;
+                            resolved = true;
+                        }
 
                         if !resolved {
                             if let Some(c) = parse_css_color(&style.inherited_text.color) {

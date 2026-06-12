@@ -951,9 +951,10 @@ fn max_content_width(
     }
 
     if let Some(style) = styles.get(&node)
-        && style.reset_box.width != -1 {
-            return style.reset_box.width as f32;
-        }
+        && style.reset_box.width != -1
+    {
+        return style.reset_box.width as f32;
+    }
 
     if let Some(label) = get_form_control_button_label(dom, node) {
         return crate::font::BitmapFont::builtin().measure(&label) as f32;

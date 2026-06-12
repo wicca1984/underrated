@@ -428,12 +428,13 @@ impl Default for CategorizedComputedStyle {
 fn parse_css_color_simple(s: &str) -> Option<crate::css::values::Color> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix('#')
-        && hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some(crate::css::values::Color::Rgba(r, g, b, 255));
-        }
+        && hex.len() == 6
+    {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        return Some(crate::css::values::Color::Rgba(r, g, b, 255));
+    }
     if s.starts_with("rgb(") && s.ends_with(')') {
         let inside = &s[4..s.len() - 1];
         let parts: Vec<&str> = inside.split(',').map(|x| x.trim()).collect();
@@ -1171,9 +1172,10 @@ impl CategorizedComputedStyle {
     /// Get property as CssValue for compatibility and style tests.
     pub fn get(&self, name: &str) -> Option<&crate::css::values::CssValue> {
         if let Some(ref map) = self.extra_values
-            && let Some(val) = map.get(name) {
-                return Some(val);
-            }
+            && let Some(val) = map.get(name)
+        {
+            return Some(val);
+        }
         if is_inherited_property_name(name) {
             let s = self.get_property_as_string(name)?;
             let s = s.trim();
@@ -1208,26 +1210,29 @@ impl CategorizedComputedStyle {
                         return crate::css::values::CssValue::Color(color);
                     }
                     if let Some(num_str) = p.strip_suffix("px")
-                        && let Ok(v) = num_str.parse::<f32>() {
-                            return crate::css::values::CssValue::Length(
-                                v,
-                                crate::css::values::LengthUnit::Px,
-                            );
-                        }
+                        && let Ok(v) = num_str.parse::<f32>()
+                    {
+                        return crate::css::values::CssValue::Length(
+                            v,
+                            crate::css::values::LengthUnit::Px,
+                        );
+                    }
                     if let Some(num_str) = p.strip_suffix("em")
-                        && let Ok(v) = num_str.parse::<f32>() {
-                            return crate::css::values::CssValue::Length(
-                                v,
-                                crate::css::values::LengthUnit::Em,
-                            );
-                        }
+                        && let Ok(v) = num_str.parse::<f32>()
+                    {
+                        return crate::css::values::CssValue::Length(
+                            v,
+                            crate::css::values::LengthUnit::Em,
+                        );
+                    }
                     if let Some(num_str) = p.strip_suffix('%')
-                        && let Ok(v) = num_str.parse::<f32>() {
-                            return crate::css::values::CssValue::Length(
-                                v,
-                                crate::css::values::LengthUnit::Percent,
-                            );
-                        }
+                        && let Ok(v) = num_str.parse::<f32>()
+                    {
+                        return crate::css::values::CssValue::Length(
+                            v,
+                            crate::css::values::LengthUnit::Percent,
+                        );
+                    }
                     if let Ok(v) = p.parse::<f32>() {
                         return crate::css::values::CssValue::Number(v);
                     }

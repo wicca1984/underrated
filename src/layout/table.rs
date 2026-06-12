@@ -620,24 +620,6 @@ fn gather_row_cells(
     }
 }
 
-fn matches_display(display: Option<&CssValue>, expected: &str) -> bool {
-    use crate::css::values::DisplayValue;
-    if let Some(disp) = display {
-        match disp {
-            CssValue::Keyword(kw) => kw == expected,
-            CssValue::Display(dv) => matches!(
-                (dv, expected),
-                (DisplayValue::Table, "table")
-                    | (DisplayValue::TableRow, "table-row")
-                    | (DisplayValue::TableCell, "table-cell")
-            ),
-            _ => false,
-        }
-    } else {
-        false
-    }
-}
-
 fn is_table_row_element(dom: &Dom, node: NodeId) -> bool {
     if let Some(NodeData::Element { name, .. }) = dom.data(node) {
         name == "tr"
@@ -675,9 +657,10 @@ fn get_cell_preferred_width(
 ) -> f32 {
     let mut width = 0.0_f32;
     if let Some(cs) = styles.get(&cell_node)
-        && cs.reset_box.width != -1 {
-            width = cs.reset_box.width as f32;
-        }
+        && cs.reset_box.width != -1
+    {
+        width = cs.reset_box.width as f32;
+    }
     if width == 0.0
         && let Some(cell_box) = layout_node(dom, styles, cell_node, content_width, 0.0, 0.0, depth)
     {
