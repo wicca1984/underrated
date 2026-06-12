@@ -11,6 +11,14 @@ pub struct SiblingPaintEntry<'a> {
     pub doc_index: usize,
 }
 
+/// Maps a `ZIndex` to its integer painting value (`auto` resolves to 0).
+fn z_index_to_int(z: ZIndex) -> i32 {
+    match z {
+        ZIndex::Auto => 0,
+        ZIndex::Index(v) => v,
+    }
+}
+
 /// Helper to get the computed `z-index` for a LayoutBox.
 /// If the box has no node or style, defaults to `ZIndex::Auto`.
 pub fn get_z_index(layout_box: &LayoutBox, styles: &HashMap<NodeId, ComputedStyle>) -> ZIndex {
@@ -63,14 +71,8 @@ pub fn sort_siblings<'a>(
 
     // Stable sort by z-index value (Auto / Index(0) are both 0).
     entries.sort_by(|a, b| {
-        let val_a = match a.z_index {
-            ZIndex::Auto => 0,
-            ZIndex::Index(v) => v,
-        };
-        let val_b = match b.z_index {
-            ZIndex::Auto => 0,
-            ZIndex::Index(v) => v,
-        };
+        let val_a = z_index_to_int(a.z_index);
+        let val_b = z_index_to_int(b.z_index);
 
         // Use stable sort: if values are equal, compare original document index.
         match val_a.cmp(&val_b) {
