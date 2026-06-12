@@ -17,11 +17,14 @@ impl Dom {
             && let NodeData::Element { attrs, .. } = &mut n.data
         {
             if let Some(pair) = attrs.iter_mut().find(|(k, _)| k == name) {
-                pair.1 = value.to_string();
+                if pair.1 != value {
+                    pair.1 = value.to_string();
+                    changed = true;
+                }
             } else {
                 attrs.push((name.to_string(), value.to_string()));
+                changed = true;
             }
-            changed = true;
         }
         if changed {
             self.mark_dirty(node);
@@ -116,6 +119,7 @@ impl Dom {
         let mut changed = false;
         if let Some(n) = self.arena.get_mut(node)
             && let NodeData::Text(t) = &mut n.data
+            && t != text
         {
             *t = text.to_string();
             changed = true;
