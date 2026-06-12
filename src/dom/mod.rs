@@ -13,6 +13,26 @@ pub use rect::DomRect;
 
 use crate::infra::{Arena, NodeId};
 
+// TODO(spec): loading=lazy currently behaves as eager (no viewport-proximity deferral); see src/loader
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageLoading {
+    Eager,
+    Lazy,
+}
+
+fn parse_loading(value: Option<&str>) -> ImageLoading {
+    match value {
+        Some(v) => {
+            if v.trim().eq_ignore_ascii_case("lazy") {
+                ImageLoading::Lazy
+            } else {
+                ImageLoading::Eager
+            }
+        }
+        None => ImageLoading::Eager,
+    }
+}
+
 /// Node data for different types of DOM nodes.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum NodeData {
@@ -31,6 +51,18 @@ pub enum NodeData {
 }
 
 impl NodeData {
+    /// Returns the parsed value of the `loading` attribute.
+    pub fn loading(&self) -> ImageLoading {
+        let value = match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "loading")
+                .map(|(_, v)| v.as_str()),
+            _ => None,
+        };
+        parse_loading(value)
+    }
+
     /// Returns the value of the `role` attribute if present.
     pub fn role(&self) -> Option<&str> {
         match self {
@@ -50,6 +82,17 @@ impl NodeData {
                 .iter()
                 .find(|(k, _)| k == &key)
                 .map(|(_, v)| v.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns the parsed value of the `tabindex` attribute if present.
+    pub fn tabindex(&self) -> Option<i32> {
+        match self {
+            NodeData::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == "tabindex")
+                .and_then(|(_, v)| v.trim().parse::<i32>().ok()),
             _ => None,
         }
     }
@@ -164,6 +207,11 @@ impl Dom {
         self.arena.get(node).map(|n| &n.data)
     }
 
+    /// Returns the parsed value of the `loading` attribute on the given node.
+    pub fn loading(&self, node: NodeId) -> ImageLoading {
+        parse_loading(self.get_attribute(node, "loading"))
+    }
+
     /// Returns the value of the `role` attribute if present on the given node.
     pub fn role(&self, node: NodeId) -> Option<&str> {
         self.get_attribute(node, "role")
@@ -172,6 +220,12 @@ impl Dom {
     /// Returns the value of the `aria-{name}` attribute if present on the given node.
     pub fn aria(&self, node: NodeId, name: &str) -> Option<&str> {
         self.get_attribute(node, &format!("aria-{name}"))
+    }
+
+    /// Returns the parsed value of the `tabindex` attribute if present on the given node.
+    pub fn tabindex(&self, node: NodeId) -> Option<i32> {
+        self.get_attribute(node, "tabindex")
+            .and_then(|v| v.trim().parse::<i32>().ok())
     }
 
     /// Returns an iterator over all descendants of the given node in pre-order.
@@ -505,5 +559,171 @@ mod tests {
         let node_data = dom.data(div_id).expect("Should have data");
         assert_eq!(node_data.role(), None);
         assert_eq!(node_data.aria("label"), None);
+    }
+
+    #[test]
+    fn test_loading_lazy_retained() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="lazy">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Lazy);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Lazy);
+
+        // Test with whitespace to verify trim
+        let html_trimmed = r#"<img loading=" lazy ">"#;
+        let stream_trimmed = InputStream::from_utf8(html_trimmed.as_bytes());
+        let dom_trimmed = parse_document(stream_trimmed);
+        let img_id_trimmed = dom_trimmed.query_selector("img").expect("Should find img");
+        assert_eq!(dom_trimmed.loading(img_id_trimmed), ImageLoading::Lazy);
+    }
+
+    #[test]
+    fn test_loading_eager_explicit() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="eager">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Eager);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Eager);
+    }
+
+    #[test]
+    fn test_loading_default_eager() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img>"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Eager);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Eager);
+    }
+
+    #[test]
+    fn test_loading_invalid_is_eager() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="garbage">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Eager);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Eager);
+    }
+
+    #[test]
+    fn test_loading_case_insensitive() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        let html = r#"<img loading="LAZY">"#;
+        let stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(stream);
+
+        let img_id = dom.query_selector("img").expect("Should find img");
+
+        assert_eq!(dom.loading(img_id), ImageLoading::Lazy);
+
+        let node_data = dom.data(img_id).expect("Should have data");
+        assert_eq!(node_data.loading(), ImageLoading::Lazy);
+    }
+
+    #[test]
+    fn test_tabindex_attribute_accessor() {
+        use crate::encoding::InputStream;
+        use crate::html::parse_document;
+
+        // 1. Positive value
+        {
+            let html = r#"<a tabindex="3">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), Some(3));
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), Some(3));
+        }
+
+        // 2. Negative value
+        {
+            let html = r#"<a tabindex="-1">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), Some(-1));
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), Some(-1));
+        }
+
+        // 3. Surrounding whitespace
+        {
+            let html = r#"<a tabindex="  5 ">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), Some(5));
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), Some(5));
+        }
+
+        // 4. Invalid integer
+        {
+            let html = r#"<a tabindex="abc">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), None);
+        }
+
+        // 5. No attribute
+        {
+            let html = r#"<a>x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+            let id = dom.query_selector("a").expect("Should find a");
+            assert_eq!(dom.tabindex(id), None);
+            assert_eq!(dom.data(id).and_then(|n| n.tabindex()), None);
+        }
+
+        // 6. Non-element node (Document, Text)
+        {
+            let html = r#"<a tabindex="3">x</a>"#;
+            let stream = InputStream::from_utf8(html.as_bytes());
+            let dom = parse_document(stream);
+
+            // Document node
+            let doc_id = dom.document();
+            assert_eq!(dom.tabindex(doc_id), None);
+            assert_eq!(dom.data(doc_id).and_then(|n| n.tabindex()), None);
+
+            // Text node
+            let children = dom.children(dom.query_selector("a").unwrap());
+            let text_id = children[0];
+            assert_eq!(dom.tabindex(text_id), None);
+            assert_eq!(dom.data(text_id).and_then(|n| n.tabindex()), None);
+        }
     }
 }
