@@ -4715,7 +4715,10 @@ fn map_boa_error(err: JsError) -> ScriptError {
 /// are skipped and marked with a spec TODO.
 pub fn run_inline_scripts(
     mut dom: Dom,
-    styles: &std::collections::HashMap<crate::infra::NodeId, crate::style::CategorizedComputedStyle>,
+    styles: &std::collections::HashMap<
+        crate::infra::NodeId,
+        crate::style::CategorizedComputedStyle,
+    >,
 ) -> Dom {
     // Collect inline script node IDs in document order (pre-order traversal)
     let mut script_ids = Vec::new();

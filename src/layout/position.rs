@@ -6,9 +6,13 @@ use std::collections::HashMap;
 
 /// Helper to check if a node is absolutely or fixed positioned.
 /// spec: S-31
-pub fn is_absolute_or_fixed(styles: &HashMap<NodeId, CategorizedComputedStyle>, node: NodeId) -> bool {
+pub fn is_absolute_or_fixed(
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    node: NodeId,
+) -> bool {
     if let Some(style) = styles.get(&node) {
-        let is_abs_or_fixed = style.reset_box.position == "absolute" || style.reset_box.position == "fixed";
+        let is_abs_or_fixed =
+            style.reset_box.position == "absolute" || style.reset_box.position == "fixed";
         if is_abs_or_fixed {
             let has_explicit_top = style.reset_surround.top != -1;
             let has_explicit_left = style.reset_surround.left != -1;
@@ -72,8 +76,16 @@ pub fn resolve_relative_positions(
     if let Some(style) = layout_box.node.and_then(|node_id| styles.get(&node_id))
         && style.reset_box.position == "relative"
     {
-        let dx = if style.reset_surround.left == -1 { 0.0 } else { style.reset_surround.left as f32 };
-        let dy = if style.reset_surround.top == -1 { 0.0 } else { style.reset_surround.top as f32 };
+        let dx = if style.reset_surround.left == -1 {
+            0.0
+        } else {
+            style.reset_surround.left as f32
+        };
+        let dy = if style.reset_surround.top == -1 {
+            0.0
+        } else {
+            style.reset_surround.top as f32
+        };
         shift_layout_box(layout_box, styles, dx, dy, depth);
     }
 }
@@ -196,8 +208,16 @@ pub fn layout_absolute_and_fixed_elements(
 
         // absolute/fixed position: top/left basic relative to containing block (viewport/root)
         // spec: S-31
-        let left = if style.reset_surround.left == -1 { 0.0 } else { style.reset_surround.left as f32 };
-        let top = if style.reset_surround.top == -1 { 0.0 } else { style.reset_surround.top as f32 };
+        let left = if style.reset_surround.left == -1 {
+            0.0
+        } else {
+            style.reset_surround.left as f32
+        };
+        let top = if style.reset_surround.top == -1 {
+            0.0
+        } else {
+            style.reset_surround.top as f32
+        };
 
         // Layout the node with viewport width as containing width, and top/left as offsets
         if let Some(child_box) = layout_node(dom, styles, node, viewport_width, left, top, 0) {

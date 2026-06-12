@@ -489,7 +489,10 @@ pub fn layout_inline_run(
                 }
                 NodeData::Element { name, .. } => {
                     if name.eq_ignore_ascii_case("br") {
-                        if styles.get(&node).is_some_and(|style| style.reset_box.display == "none") {
+                        if styles
+                            .get(&node)
+                            .is_some_and(|style| style.reset_box.display == "none")
+                        {
                             continue;
                         }
                         // Force a line break!
@@ -584,8 +587,7 @@ pub fn layout_inline_run(
                             // Add box to current line children
                             current_line_children.push(box_);
                             cursor_x += margin_box_width;
-                        } else if style.reset_box.display == "inline"
-                        {
+                        } else if style.reset_box.display == "inline" {
                             // Descend into grandchildren.
                             // To preserve order, push them to the stack in reverse order.
                             for &grandchild in dom.children(node).iter().rev() {

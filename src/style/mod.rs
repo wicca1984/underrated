@@ -63,7 +63,10 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
 }
 
 /// Computes the styles for all nodes in the DOM based on the given stylesheet.
-pub fn compute_styles(dom: &Dom, stylesheet: &Stylesheet) -> HashMap<NodeId, CategorizedComputedStyle> {
+pub fn compute_styles(
+    dom: &Dom,
+    stylesheet: &Stylesheet,
+) -> HashMap<NodeId, CategorizedComputedStyle> {
     compute_styles_with_viewport(dom, stylesheet, 1024.0)
 }
 
@@ -389,7 +392,9 @@ fn compute_node_style(
         let raw_fs = properties.get("font-size");
         match raw_fs {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let px = parent_style.map(|p| p.inherited_text.font_size as f32).unwrap_or(16.0);
+                let px = parent_style
+                    .map(|p| p.inherited_text.font_size as f32)
+                    .unwrap_or(16.0);
                 CssValue::Length(px, LengthUnit::Px)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Length(16.0, LengthUnit::Px),
@@ -410,7 +415,9 @@ fn compute_node_style(
                 LengthUnit::Px => CssValue::Length(*val, LengthUnit::Px),
                 LengthUnit::Pt => CssValue::Length(*val * 96.0 / 72.0, LengthUnit::Px),
                 LengthUnit::Em | LengthUnit::Percent => {
-                    let parent_px = parent_style.map(|p| p.inherited_text.font_size as f32).unwrap_or(16.0);
+                    let parent_px = parent_style
+                        .map(|p| p.inherited_text.font_size as f32)
+                        .unwrap_or(16.0);
                     let factor = if *unit == LengthUnit::Percent {
                         *val / 100.0
                     } else {
@@ -439,7 +446,9 @@ fn compute_node_style(
         let raw_fw = properties.get("font-weight");
         match raw_fw {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let fw = parent_style.map(|p| p.inherited_text.font_weight.clone()).unwrap_or_else(|| "normal".to_string());
+                let fw = parent_style
+                    .map(|p| p.inherited_text.font_weight.clone())
+                    .unwrap_or_else(|| "normal".to_string());
                 CssValue::Keyword(fw)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
@@ -454,7 +463,9 @@ fn compute_node_style(
         let raw_lh = properties.get("line-height");
         match raw_lh {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let lh = parent_style.map(|p| p.inherited_text.line_height as f32).unwrap_or(20.0);
+                let lh = parent_style
+                    .map(|p| p.inherited_text.line_height as f32)
+                    .unwrap_or(20.0);
                 CssValue::Length(lh, LengthUnit::Px)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
@@ -487,7 +498,9 @@ fn compute_node_style(
         let raw_ta = properties.get("text-align");
         match raw_ta {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let ta = parent_style.map(|p| p.inherited_text.text_align.clone()).unwrap_or_else(|| "left".to_string());
+                let ta = parent_style
+                    .map(|p| p.inherited_text.text_align.clone())
+                    .unwrap_or_else(|| "left".to_string());
                 CssValue::Keyword(ta)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("left".to_string()),
@@ -502,7 +515,9 @@ fn compute_node_style(
         let raw_ws = properties.get("white-space");
         match raw_ws {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let ws = parent_style.map(|p| p.inherited_text.white_space.clone()).unwrap_or_else(|| "normal".to_string());
+                let ws = parent_style
+                    .map(|p| p.inherited_text.white_space.clone())
+                    .unwrap_or_else(|| "normal".to_string());
                 CssValue::Keyword(ws)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
@@ -517,7 +532,9 @@ fn compute_node_style(
         let raw_ls = properties.get("letter-spacing");
         match raw_ls {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let ls = parent_style.map(|p| p.inherited_text.letter_spacing).unwrap_or(-1);
+                let ls = parent_style
+                    .map(|p| p.inherited_text.letter_spacing)
+                    .unwrap_or(-1);
                 if ls == -1 {
                     CssValue::Keyword("normal".to_string())
                 } else {
@@ -553,7 +570,9 @@ fn compute_node_style(
         let raw_ws = properties.get("word-spacing");
         match raw_ws {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let ws = parent_style.map(|p| p.inherited_text.word_spacing).unwrap_or(-1);
+                let ws = parent_style
+                    .map(|p| p.inherited_text.word_spacing)
+                    .unwrap_or(-1);
                 if ws == -1 {
                     CssValue::Keyword("normal".to_string())
                 } else {
@@ -589,7 +608,9 @@ fn compute_node_style(
         let raw_vis = properties.get("visibility");
         match raw_vis {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let vis = parent_style.map(|p| p.inherited_effects.visibility.clone()).unwrap_or_else(|| "visible".to_string());
+                let vis = parent_style
+                    .map(|p| p.inherited_effects.visibility.clone())
+                    .unwrap_or_else(|| "visible".to_string());
                 CssValue::Keyword(vis)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => {
@@ -606,7 +627,9 @@ fn compute_node_style(
         let raw_ec = properties.get("empty-cells");
         match raw_ec {
             Some(CssValue::Keyword(s)) if s == "inherit" => {
-                let ec = parent_style.map(|p| p.inherited_effects.empty_cells.clone()).unwrap_or_else(|| "show".to_string());
+                let ec = parent_style
+                    .map(|p| p.inherited_effects.empty_cells.clone())
+                    .unwrap_or_else(|| "show".to_string());
                 CssValue::Keyword(ec)
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("show".to_string()),
@@ -629,7 +652,10 @@ fn compute_node_style(
     style
 }
 
-fn get_root_font_size(dom: &Dom, computed_styles: &HashMap<NodeId, CategorizedComputedStyle>) -> f32 {
+fn get_root_font_size(
+    dom: &Dom,
+    computed_styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> f32 {
     let document_node = dom.document();
     let root_element = dom
         .children(document_node)

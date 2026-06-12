@@ -230,9 +230,7 @@ pub(crate) fn layout_node(
 
     // display: table
     let is_table_element = matches!(dom.data(node), Some(crate::dom::NodeData::Element { name, .. }) if name == "table");
-    if style.reset_box.display == "table"
-        || is_table_element
-    {
+    if style.reset_box.display == "table" || is_table_element {
         return crate::layout::table::layout_table_container(
             dom,
             styles,
@@ -1107,7 +1105,11 @@ fn relayout_block_children(
     child_cursor_y
 }
 
-fn is_inline_level(styles: &HashMap<NodeId, CategorizedComputedStyle>, dom: &Dom, child: NodeId) -> bool {
+fn is_inline_level(
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    dom: &Dom,
+    child: NodeId,
+) -> bool {
     if let Some(style) = styles.get(&child)
         && get_float_value(style).is_some()
     {
@@ -1143,7 +1145,11 @@ fn is_inline_level(styles: &HashMap<NodeId, CategorizedComputedStyle>, dom: &Dom
     }
 }
 
-pub(crate) fn get_px(style: &crate::style::CategorizedComputedStyle, prop: &str, default: f32) -> f32 {
+pub(crate) fn get_px(
+    style: &crate::style::CategorizedComputedStyle,
+    prop: &str,
+    default: f32,
+) -> f32 {
     let val = match prop {
         "width" => style.reset_box.width,
         "height" => style.reset_box.height,
@@ -1186,11 +1192,7 @@ pub(crate) fn get_px(style: &crate::style::CategorizedComputedStyle, prop: &str,
         "text-indent" => style.inherited_text.text_indent,
         _ => -1,
     };
-    if val == -1 {
-        default
-    } else {
-        val as f32
-    }
+    if val == -1 { default } else { val as f32 }
 }
 
 /// Performs hit-testing on the layout tree.
@@ -1246,8 +1248,7 @@ fn get_aspect_ratio(style: &CategorizedComputedStyle) -> Option<f32> {
     if let Some(pos) = kw.find('/') {
         let w_str = &kw[..pos];
         let h_str = &kw[pos + 1..];
-        if let (Ok(w), Ok(h)) =
-            (w_str.trim().parse::<f32>(), h_str.trim().parse::<f32>())
+        if let (Ok(w), Ok(h)) = (w_str.trim().parse::<f32>(), h_str.trim().parse::<f32>())
             && w > 0.0
             && h > 0.0
         {

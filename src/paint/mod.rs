@@ -260,7 +260,7 @@ fn parse_css_color(s: &str) -> Option<Color> {
         }
     }
     if s.starts_with("rgb(") && s.ends_with(')') {
-        let inside = &s[4..s.len()-1];
+        let inside = &s[4..s.len() - 1];
         let parts: Vec<&str> = inside.split(',').map(|p| p.trim()).collect();
         if parts.len() == 3 {
             let r = parts[0].parse::<u8>().ok()?;
@@ -270,7 +270,7 @@ fn parse_css_color(s: &str) -> Option<Color> {
         }
     }
     if s.starts_with("rgba(") && s.ends_with(')') {
-        let inside = &s[5..s.len()-1];
+        let inside = &s[5..s.len() - 1];
         let parts: Vec<&str> = inside.split(',').map(|p| p.trim()).collect();
         if parts.len() == 4 {
             let r = parts[0].parse::<u8>().ok()?;
@@ -299,7 +299,7 @@ fn parse_background_size(s: &str) -> CssValue {
     if parts.is_empty() {
         return CssValue::Keyword("auto".to_string());
     }
-    
+
     fn parse_single(p: &str) -> CssValue {
         if p.eq_ignore_ascii_case("auto") {
             return CssValue::Keyword("auto".to_string());
@@ -388,7 +388,11 @@ fn get_border_color(style: &CategorizedComputedStyle) -> Color {
 
 /// Helper to resolve a specific edge border color, falling back to the resolved border color.
 /// spec: S-39
-fn get_edge_color(style: &CategorizedComputedStyle, edge_prop: &str, border_color: &Color) -> Color {
+fn get_edge_color(
+    style: &CategorizedComputedStyle,
+    edge_prop: &str,
+    border_color: &Color,
+) -> Color {
     let color_str = match edge_prop {
         "border-top-color" => &style.reset_surround.border_top_color,
         "border-right-color" => &style.reset_surround.border_right_color,
@@ -551,7 +555,11 @@ fn resolve_text_decorations(
         && depth < 1000
     {
         if let Some(style) = styles.get(&curr_id) {
-            if style.reset_effects.text_decoration_line.eq_ignore_ascii_case("none") {
+            if style
+                .reset_effects
+                .text_decoration_line
+                .eq_ignore_ascii_case("none")
+            {
                 underline_blocked = true;
                 overline_blocked = true;
                 line_through_blocked = true;
@@ -1136,7 +1144,9 @@ pub fn build_display_list_with_caret(
                                     // Determine shadow color: default to text color, falling back to black
                                     let shadow_color = if let Some(c) = color_value {
                                         c
-                                    } else if let Some(c) = parse_css_color(&style.inherited_text.color) {
+                                    } else if let Some(c) =
+                                        parse_css_color(&style.inherited_text.color)
+                                    {
                                         c
                                     } else {
                                         Color::Rgba(0, 0, 0, 255)
@@ -1206,8 +1216,7 @@ pub fn build_display_list_with_caret(
                 let kw = &style.reset_background.background_image;
                 if kw.starts_with("url(") && kw.ends_with(')') {
                     let inner = &kw[4..kw.len() - 1];
-                    bg_img_src =
-                        Some(inner.trim_matches(|c| c == '"' || c == '\'').to_string());
+                    bg_img_src = Some(inner.trim_matches(|c| c == '"' || c == '\'').to_string());
                 } else if !kw.is_empty() && kw != "none" {
                     bg_img_src = Some(kw.clone());
                 }
@@ -1218,7 +1227,10 @@ pub fn build_display_list_with_caret(
                     let box_rect = layout_box.rect;
                     if box_rect.size.width > 0.0 && box_rect.size.height > 0.0 {
                         // Extract repeat
-                        let repeat_val = style.reset_background.background_repeat.to_ascii_lowercase();
+                        let repeat_val = style
+                            .reset_background
+                            .background_repeat
+                            .to_ascii_lowercase();
 
                         let (repeat_x, repeat_y) = match repeat_val.as_str() {
                             "no-repeat" => (false, false),
@@ -1231,7 +1243,8 @@ pub fn build_display_list_with_caret(
                         let mut img_w = decoded.width as f32;
                         let mut img_h = decoded.height as f32;
 
-                        let size_val = parse_background_size(&style.reset_background.background_size);
+                        let size_val =
+                            parse_background_size(&style.reset_background.background_size);
                         let (resolved_w, resolved_h) = resolve_bg_size(
                             (box_rect.size.width, box_rect.size.height),
                             (img_w, img_h),
@@ -1242,7 +1255,9 @@ pub fn build_display_list_with_caret(
 
                         if img_w > 0.0 && img_h > 0.0 {
                             // Extract position
-                            let p_val = parse_background_position(&style.reset_background.background_position);
+                            let p_val = parse_background_position(
+                                &style.reset_background.background_position,
+                            );
                             let (x_offset, y_offset) = get_background_position_offsets(
                                 &p_val,
                                 box_rect.size.width,

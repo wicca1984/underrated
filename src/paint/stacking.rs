@@ -21,7 +21,10 @@ fn z_index_to_int(z: ZIndex) -> i32 {
 
 /// Helper to get the computed `z-index` for a LayoutBox.
 /// If the box has no node or style, defaults to `ZIndex::Auto`.
-pub fn get_z_index(layout_box: &LayoutBox, styles: &HashMap<NodeId, CategorizedComputedStyle>) -> ZIndex {
+pub fn get_z_index(
+    layout_box: &LayoutBox,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> ZIndex {
     layout_box
         .node
         .and_then(|node_id| styles.get(&node_id))

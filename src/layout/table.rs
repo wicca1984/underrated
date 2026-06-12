@@ -473,10 +473,12 @@ pub fn layout_table_container(
                         let mut dy = 0.0;
                         if let Some(cs) = styles.get(&cell_node) {
                             match cs.reset_box.vertical_align {
-                                -6 => { // middle
+                                -6 => {
+                                    // middle
                                     dy = (cell_height - natural_height) / 2.0;
                                 }
-                                -5 => { // bottom
+                                -5 => {
+                                    // bottom
                                     dy = cell_height - natural_height;
                                 }
                                 _ => {} // top and others
@@ -560,8 +562,9 @@ fn gather_table_rows(
                 continue;
             }
             let style = styles.get(&child);
-            let is_row = style.map_or(false, |s| s.reset_box.display == "table-row" || s.reset_box.display == "table-row-group")
-                || is_table_row_element(dom, child);
+            let is_row = style.map_or(false, |s| {
+                s.reset_box.display == "table-row" || s.reset_box.display == "table-row-group"
+            }) || is_table_row_element(dom, child);
             let is_cell = style.map_or(false, |s| s.reset_box.display == "table-cell")
                 || is_table_cell_element(dom, child);
 
@@ -607,7 +610,8 @@ fn gather_row_cells(
     let layoutable_children = get_layoutable_children(dom, styles, row_node);
     for &child in &layoutable_children {
         let style = styles.get(&child);
-        let is_cell = style.map_or(false, |s| s.reset_box.display == "table-cell") || is_table_cell_element(dom, child);
+        let is_cell = style.map_or(false, |s| s.reset_box.display == "table-cell")
+            || is_table_cell_element(dom, child);
         if is_cell {
             cells.push(child);
         } else {

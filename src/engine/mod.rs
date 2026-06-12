@@ -1169,7 +1169,10 @@ mod tests {
             .styles
             .get(&target_id)
             .expect("Should have style");
-        assert_eq!(style_narrow.reset_background.background_color, "rgb(255, 0, 0)");
+        assert_eq!(
+            style_narrow.reset_background.background_color,
+            "rgb(255, 0, 0)"
+        );
 
         // Test with viewport > 600px
         let page_wide = render_page(html, &base_url, &loader, 800.0);
@@ -1192,7 +1195,10 @@ mod tests {
             .styles
             .get(&target_id_wide)
             .expect("Should have style");
-        assert_eq!(style_wide.reset_background.background_color, "rgb(0, 0, 255)");
+        assert_eq!(
+            style_wide.reset_background.background_color,
+            "rgb(0, 0, 255)"
+        );
     }
 
     #[test]
@@ -1281,7 +1287,10 @@ mod tests {
         }
         let p_id = p_node_id.expect("Should find p element");
         let style_narrow = page_narrow.styles.get(&p_id).expect("Should have style");
-        assert_eq!(style_narrow.reset_background.background_color, "rgb(255, 0, 255)");
+        assert_eq!(
+            style_narrow.reset_background.background_color,
+            "rgb(255, 0, 255)"
+        );
 
         // Under 800px, responsive.css's max-width: 600px does not apply
         let page_wide = render_page(html, &base_url, &loader, 800.0);
@@ -1361,7 +1370,10 @@ mod tests {
 
         let body_s = body_style.expect("body should have styles");
         assert_eq!(body_s.reset_surround.margin_top, 8);
-        assert_eq!(body_s.reset_background.background_color, "rgb(255, 255, 255)");
+        assert_eq!(
+            body_s.reset_background.background_color,
+            "rgb(255, 255, 255)"
+        );
     }
 
     #[test]

@@ -85,8 +85,16 @@ pub fn layout_flex_container(
     };
 
     // Resolve main_gap and cross_gap from style
-    let row_gap = if style.reset_flex.row_gap == -1 { 0.0 } else { style.reset_flex.row_gap as f32 };
-    let col_gap = if style.reset_flex.column_gap == -1 { 0.0 } else { style.reset_flex.column_gap as f32 };
+    let row_gap = if style.reset_flex.row_gap == -1 {
+        0.0
+    } else {
+        style.reset_flex.row_gap as f32
+    };
+    let col_gap = if style.reset_flex.column_gap == -1 {
+        0.0
+    } else {
+        style.reset_flex.column_gap as f32
+    };
 
     let (main_gap, cross_gap) = match flex_direction {
         FlexDirection::Row => (col_gap, row_gap),
