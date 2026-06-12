@@ -634,6 +634,16 @@ fn is_inline_level(styles: &HashMap<NodeId, ComputedStyle>, dom: &Dom, child: No
                 if name == "center" {
                     return false;
                 }
+                if name.eq_ignore_ascii_case("br") {
+                    if let Some(style) = styles.get(&child) {
+                        let disp = style.get("display");
+                        if matches!(disp, Some(CssValue::Keyword(kw)) if kw == "block" || kw == "flex" || kw == "table" || kw == "none")
+                        {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
                 if let Some(style) = styles.get(&child) {
                     let disp = style.get("display");
                     matches!(disp, Some(CssValue::Keyword(kw)) if kw == "inline" || kw == "inline-block")
@@ -3575,5 +3585,39 @@ mod tests {
         assert!(approx_eq(box_percent_max_width.rect.size.width, 400.0));
         assert!(approx_eq(box_percent_min_width.rect.size.width, 400.0));
         assert!(approx_eq(box_px_max_width.rect.size.width, 200.0));
+    }
+
+    #[test]
+    fn test_consecutive_br_block_advance() {
+        use crate::encoding::input_stream::InputStream;
+        use crate::html::parse_document;
+
+        let html = "<html><body>line one<br>line two<br><br>line four</body></html>";
+        let input_stream = InputStream::from_utf8(html.as_bytes());
+        let dom = parse_document(input_stream);
+
+        let stylesheet = parse_stylesheet(crate::engine::UA_DEFAULT_CSS);
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 1);
+        let real_body_box = &body_box.children[0];
+        assert_eq!(real_body_box.children.len(), 4);
+
+        let y_line_one = real_body_box.children[0].rect.origin.y;
+        let y_line_two = real_body_box.children[1].rect.origin.y;
+        let y_line_three_empty = real_body_box.children[2].rect.origin.y;
+        let y_line_four = real_body_box.children[3].rect.origin.y;
+
+        let line_height = 8.0; // The builtin bitmap font line height is 8.0px
+        assert!(y_line_two >= y_line_one + line_height - EPSILON);
+        assert!(y_line_three_empty >= y_line_two + line_height - EPSILON);
+        assert!(y_line_four >= y_line_two + 2.0 * line_height - EPSILON);
+
+        println!(
+            "test_consecutive_br_block_advance passed with: y_one={}, y_two={}, y_three_empty={}, y_four={}",
+            y_line_one, y_line_two, y_line_three_empty, y_line_four
+        );
     }
 }
