@@ -98,7 +98,7 @@ struct PreparsedRule {
 }
 
 fn preparse_rules(rules: &[Rule], viewport_width: f32, preparsed: &mut Vec<PreparsedRule>) {
-    for (rule_index, rule) in rules.iter().enumerate() {
+    for rule in rules.iter() {
         match rule {
             Rule::Qualified(qualified_rule) => {
                 let selector_str = serialize_component_values(&qualified_rule.prelude);
@@ -106,7 +106,7 @@ fn preparse_rules(rules: &[Rule], viewport_width: f32, preparsed: &mut Vec<Prepa
                     preparsed.push(PreparsedRule {
                         selector_list,
                         declarations: qualified_rule.declarations.clone(),
-                        source_order: rule_index,
+                        source_order: preparsed.len(),
                     });
                 }
             }
@@ -1882,6 +1882,37 @@ mod tests {
         } else {
             panic!("Expected color blue");
         }
+    }
+
+    #[test]
+    fn test_media_rule_source_order_beats_earlier_rule() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div { color: red; }
+            div { color: green; }
+            @media (min-width: 100px) {
+                div { color: blue; }
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let div_style = styles.get(&div).unwrap();
+        let color = div_style.get("color");
+        assert_eq!(
+            color,
+            Some(&CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            )))
+        );
     }
 
     #[test]
