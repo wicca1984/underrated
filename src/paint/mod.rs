@@ -1201,15 +1201,20 @@ pub fn build_display_list_with_caret(
 
                 // spec: if node has background-color -> SolidRect
                 if let Some(color) = parse_css_color(&style.reset_background.background_color) {
-                    // B-4: do not paint background for zero/negative-area boxes
-                    if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
-                        // TODO(spec): border/images/gradients/rasterization
-                        items.push(DisplayItem::SolidRect {
-                            rect: layout_box.rect,
-                            color: scale_color_alpha(&color, effective_opacity),
-                        });
+                    // Do not paint fully transparent background colors
+                    let Color::Rgba(_, _, _, a) = color;
+                    if a > 0 {
+                        // B-4: do not paint background for zero/negative-area boxes
+                        if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0
+                        {
+                                // TODO(spec): border/images/gradients/rasterization
+                                items.push(DisplayItem::SolidRect {
+                                    rect: layout_box.rect,
+                                    color: scale_color_alpha(&color, effective_opacity),
+                                });
+                            }
+                        }
                     }
-                }
 
                 // Paint background-image (t0382)
                 let mut bg_img_src = None;
@@ -1978,10 +1983,13 @@ mod tests {
         ",
         );
         let styles = compute_styles(&dom, &stylesheet);
+        let div_style = styles.get(&div).unwrap();
+        println!("TEST_DIV_STYLE: {:?}", div_style);
         let layout = layout_document(&dom, &styles, 800.0);
 
         let display_list = build_display_list(&layout, &dom, &styles);
         let items = display_list.0;
+        println!("TEST_PAINT_BASIC_ITEMS: {:?}", items);
 
         // items should contain:
         // 1. SolidRect for div

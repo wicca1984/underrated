@@ -1,6 +1,7 @@
 //! Production target style type per ADR 0001, introduced additively.
 //! The legacy `ComputedStyle` is migrated off in later tasks.
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 /// Group of inherited text and font properties.
@@ -211,18 +212,18 @@ pub struct ResetSurround {
 impl Default for ResetSurround {
     fn default() -> Self {
         Self {
-            margin_top: -1,
-            margin_right: -1,
-            margin_bottom: -1,
-            margin_left: -1,
-            margin_block_start: -1,
-            margin_block_end: -1,
-            padding_top: -1,
-            padding_right: -1,
-            padding_bottom: -1,
-            padding_left: -1,
-            padding_block_start: -1,
-            padding_block_end: -1,
+            margin_top: 0,
+            margin_right: 0,
+            margin_bottom: 0,
+            margin_left: 0,
+            margin_block_start: 0,
+            margin_block_end: 0,
+            padding_top: 0,
+            padding_right: 0,
+            padding_bottom: 0,
+            padding_left: 0,
+            padding_block_start: 0,
+            padding_block_end: 0,
             border_top_width: -1,
             border_right_width: -1,
             border_bottom_width: -1,
@@ -385,6 +386,88 @@ pub struct CategorizedComputedStyle {
     pub reset_flex: Arc<ResetFlex>,
     pub reset_table: Arc<ResetTable>,
     pub reset_effects: Arc<ResetEffects>,
+    pub extra_values: Option<Arc<HashMap<String, crate::css::values::CssValue>>>,
+}
+
+impl Default for CategorizedComputedStyle {
+    fn default() -> Self {
+        Self::initial()
+    }
+}
+
+fn parse_css_color_simple(s: &str) -> Option<crate::css::values::Color> {
+    let s = s.trim();
+    if s.starts_with('#') {
+        let hex = &s[1..];
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some(crate::css::values::Color::Rgba(r, g, b, 255));
+        }
+    }
+    if s.starts_with("rgb(") && s.ends_with(')') {
+        let inside = &s[4..s.len() - 1];
+        let parts: Vec<&str> = inside.split(',').map(|x| x.trim()).collect();
+        if parts.len() == 3 {
+            let r = parts[0].parse::<u8>().ok()?;
+            let g = parts[1].parse::<u8>().ok()?;
+            let b = parts[2].parse::<u8>().ok()?;
+            return Some(crate::css::values::Color::Rgba(r, g, b, 255));
+        }
+    }
+    if s.starts_with("rgba(") && s.ends_with(')') {
+        let inside = &s[5..s.len() - 1];
+        let parts: Vec<&str> = inside.split(',').map(|x| x.trim()).collect();
+        if parts.len() == 4 {
+            let r = parts[0].parse::<u8>().ok()?;
+            let g = parts[1].parse::<u8>().ok()?;
+            let b = parts[2].parse::<u8>().ok()?;
+            let a_f = parts[3].parse::<f32>().ok()?;
+            return Some(crate::css::values::Color::Rgba(r, g, b, (a_f * 255.0) as u8));
+        }
+    }
+    match s.to_ascii_lowercase().as_str() {
+        "red" => Some(crate::css::values::Color::Rgba(255, 0, 0, 255)),
+        "green" => Some(crate::css::values::Color::Rgba(0, 255, 0, 255)),
+        "blue" => Some(crate::css::values::Color::Rgba(0, 0, 255, 255)),
+        "black" => Some(crate::css::values::Color::Rgba(0, 0, 0, 255)),
+        "white" => Some(crate::css::values::Color::Rgba(255, 255, 255, 255)),
+        "yellow" => Some(crate::css::values::Color::Rgba(255, 255, 0, 255)),
+        "magenta" => Some(crate::css::values::Color::Rgba(255, 0, 255, 255)),
+        "cyan" => Some(crate::css::values::Color::Rgba(0, 255, 255, 255)),
+        "transparent" => Some(crate::css::values::Color::Rgba(0, 0, 0, 0)),
+        _ => None,
+    }
+}
+
+fn is_inherited_property_name(name: &str) -> bool {
+    matches!(
+        name,
+        "color"
+            | "font-family"
+            | "font-size"
+            | "font-style"
+            | "font-weight"
+            | "line-height"
+            | "text-align"
+            | "letter-spacing"
+            | "word-spacing"
+            | "white-space"
+            | "direction"
+            | "text-transform"
+            | "text-indent"
+            | "word-break"
+            | "overflow-wrap"
+            | "list-style-type"
+            | "list-style-position"
+            | "list-style-image"
+            | "border-collapse"
+            | "border-spacing"
+            | "caption-side"
+            | "cursor"
+            | "visibility"
+    )
 }
 
 impl CategorizedComputedStyle {
@@ -437,6 +520,7 @@ impl CategorizedComputedStyle {
             reset_flex,
             reset_table,
             reset_effects,
+            extra_values: None,
         }
     }
 
@@ -475,6 +559,7 @@ impl CategorizedComputedStyle {
             reset_flex,
             reset_table,
             reset_effects,
+            extra_values: None,
         }
     }
 
@@ -521,6 +606,15 @@ impl CategorizedComputedStyle {
     /// Set property.
     pub fn set_property(&mut self, name: &str, value: &crate::css::values::CssValue) {
         use crate::css::values::{CssValue, ZIndex};
+        if self.extra_values.is_none() {
+            self.extra_values = Some(Arc::new(HashMap::new()));
+        }
+        if let Some(ref mut map) = self.extra_values {
+            Arc::make_mut(map).insert(name.to_string(), value.clone());
+        }
+
+        let fs = self.inherited_text.font_size;
+
         match name {
             // InheritedText
             "color" => self.set_color(css_value_to_string(value)),
@@ -553,10 +647,10 @@ impl CategorizedComputedStyle {
                 Arc::make_mut(&mut self.inherited_text).text_align = css_value_to_string(value)
             }
             "letter-spacing" => {
-                Arc::make_mut(&mut self.inherited_text).letter_spacing = value_to_px(value)
+                Arc::make_mut(&mut self.inherited_text).letter_spacing = value_to_px(value, fs)
             }
             "word-spacing" => {
-                Arc::make_mut(&mut self.inherited_text).word_spacing = value_to_px(value)
+                Arc::make_mut(&mut self.inherited_text).word_spacing = value_to_px(value, fs)
             }
             "white-space" => {
                 Arc::make_mut(&mut self.inherited_text).white_space = css_value_to_string(value)
@@ -574,7 +668,7 @@ impl CategorizedComputedStyle {
                 Arc::make_mut(&mut self.inherited_text).font_stretch = css_value_to_string(value)
             }
             "text-indent" => {
-                Arc::make_mut(&mut self.inherited_text).text_indent = value_to_px(value)
+                Arc::make_mut(&mut self.inherited_text).text_indent = value_to_px(value, fs)
             }
             "word-break" => {
                 Arc::make_mut(&mut self.inherited_text).word_break = css_value_to_string(value)
@@ -632,8 +726,8 @@ impl CategorizedComputedStyle {
 
             // ResetBox
             "display" => self.set_display(css_value_to_string(value)),
-            "width" => self.set_width(value_to_px(value)),
-            "height" => self.set_height(value_to_px(value)),
+            "width" => self.set_width(value_to_px(value, fs)),
+            "height" => self.set_height(value_to_px(value, fs)),
             "position" => Arc::make_mut(&mut self.reset_box).position = css_value_to_string(value),
             "float" => Arc::make_mut(&mut self.reset_box).float = css_value_to_string(value),
             "clear" => Arc::make_mut(&mut self.reset_box).clear = css_value_to_string(value),
@@ -651,10 +745,10 @@ impl CategorizedComputedStyle {
             "box-sizing" => {
                 Arc::make_mut(&mut self.reset_box).box_sizing = css_value_to_string(value)
             }
-            "min-width" => Arc::make_mut(&mut self.reset_box).min_width = value_to_px(value),
-            "min-height" => Arc::make_mut(&mut self.reset_box).min_height = value_to_px(value),
-            "max-width" => Arc::make_mut(&mut self.reset_box).max_width = value_to_px(value),
-            "max-height" => Arc::make_mut(&mut self.reset_box).max_height = value_to_px(value),
+            "min-width" => Arc::make_mut(&mut self.reset_box).min_width = value_to_px(value, fs),
+            "min-height" => Arc::make_mut(&mut self.reset_box).min_height = value_to_px(value, fs),
+            "max-width" => Arc::make_mut(&mut self.reset_box).max_width = value_to_px(value, fs),
+            "max-height" => Arc::make_mut(&mut self.reset_box).max_height = value_to_px(value, fs),
             "vertical-align" => {
                 let v = match value {
                     CssValue::Keyword(kw) => match kw.as_str() {
@@ -666,7 +760,7 @@ impl CategorizedComputedStyle {
                         "middle" => -6,
                         _ => -1,
                     },
-                    _ => value_to_px(value) + 100000,
+                    _ => value_to_px(value, fs) + 100000,
                 };
                 Arc::make_mut(&mut self.reset_box).vertical_align = v;
             }
@@ -681,51 +775,51 @@ impl CategorizedComputedStyle {
             }
 
             // ResetSurround
-            "margin-top" => Arc::make_mut(&mut self.reset_surround).margin_top = value_to_px(value),
+            "margin-top" => Arc::make_mut(&mut self.reset_surround).margin_top = value_to_px(value, fs),
             "margin-right" => {
-                Arc::make_mut(&mut self.reset_surround).margin_right = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).margin_right = value_to_px(value, fs)
             }
             "margin-bottom" => {
-                Arc::make_mut(&mut self.reset_surround).margin_bottom = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).margin_bottom = value_to_px(value, fs)
             }
             "margin-left" => {
-                Arc::make_mut(&mut self.reset_surround).margin_left = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).margin_left = value_to_px(value, fs)
             }
             "margin-block-start" => {
-                Arc::make_mut(&mut self.reset_surround).margin_block_start = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).margin_block_start = value_to_px(value, fs)
             }
             "margin-block-end" => {
-                Arc::make_mut(&mut self.reset_surround).margin_block_end = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).margin_block_end = value_to_px(value, fs)
             }
             "padding-top" => {
-                Arc::make_mut(&mut self.reset_surround).padding_top = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).padding_top = value_to_px(value, fs)
             }
             "padding-right" => {
-                Arc::make_mut(&mut self.reset_surround).padding_right = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).padding_right = value_to_px(value, fs)
             }
             "padding-bottom" => {
-                Arc::make_mut(&mut self.reset_surround).padding_bottom = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).padding_bottom = value_to_px(value, fs)
             }
             "padding-left" => {
-                Arc::make_mut(&mut self.reset_surround).padding_left = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).padding_left = value_to_px(value, fs)
             }
             "padding-block-start" => {
-                Arc::make_mut(&mut self.reset_surround).padding_block_start = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).padding_block_start = value_to_px(value, fs)
             }
             "padding-block-end" => {
-                Arc::make_mut(&mut self.reset_surround).padding_block_end = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).padding_block_end = value_to_px(value, fs)
             }
             "border-top-width" => {
-                Arc::make_mut(&mut self.reset_surround).border_top_width = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).border_top_width = value_to_px(value, fs)
             }
             "border-right-width" => {
-                Arc::make_mut(&mut self.reset_surround).border_right_width = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).border_right_width = value_to_px(value, fs)
             }
             "border-bottom-width" => {
-                Arc::make_mut(&mut self.reset_surround).border_bottom_width = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).border_bottom_width = value_to_px(value, fs)
             }
             "border-left-width" => {
-                Arc::make_mut(&mut self.reset_surround).border_left_width = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).border_left_width = value_to_px(value, fs)
             }
             "border-top-style" => {
                 Arc::make_mut(&mut self.reset_surround).border_top_style =
@@ -760,23 +854,23 @@ impl CategorizedComputedStyle {
                     css_value_to_string(value)
             }
             "border-top-left-radius" => {
-                Arc::make_mut(&mut self.reset_surround).border_top_left_radius = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).border_top_left_radius = value_to_px(value, fs)
             }
             "border-top-right-radius" => {
-                Arc::make_mut(&mut self.reset_surround).border_top_right_radius = value_to_px(value)
+                Arc::make_mut(&mut self.reset_surround).border_top_right_radius = value_to_px(value, fs)
             }
             "border-bottom-right-radius" => {
                 Arc::make_mut(&mut self.reset_surround).border_bottom_right_radius =
-                    value_to_px(value)
+                    value_to_px(value, fs)
             }
             "border-bottom-left-radius" => {
                 Arc::make_mut(&mut self.reset_surround).border_bottom_left_radius =
-                    value_to_px(value)
+                    value_to_px(value, fs)
             }
-            "top" => Arc::make_mut(&mut self.reset_surround).top = value_to_px(value),
-            "right" => Arc::make_mut(&mut self.reset_surround).right = value_to_px(value),
-            "bottom" => Arc::make_mut(&mut self.reset_surround).bottom = value_to_px(value),
-            "left" => Arc::make_mut(&mut self.reset_surround).left = value_to_px(value),
+            "top" => Arc::make_mut(&mut self.reset_surround).top = value_to_px(value, fs),
+            "right" => Arc::make_mut(&mut self.reset_surround).right = value_to_px(value, fs),
+            "bottom" => Arc::make_mut(&mut self.reset_surround).bottom = value_to_px(value, fs),
+            "left" => Arc::make_mut(&mut self.reset_surround).left = value_to_px(value, fs),
 
             // ResetBackground
             "background-color" => {
@@ -807,7 +901,7 @@ impl CategorizedComputedStyle {
             // ResetFlex
             "flex-grow" => Arc::make_mut(&mut self.reset_flex).flex_grow = value_to_f32(value),
             "flex-shrink" => Arc::make_mut(&mut self.reset_flex).flex_shrink = value_to_f32(value),
-            "flex-basis" => Arc::make_mut(&mut self.reset_flex).flex_basis = value_to_px(value),
+            "flex-basis" => Arc::make_mut(&mut self.reset_flex).flex_basis = value_to_px(value, fs),
             "flex-direction" => {
                 Arc::make_mut(&mut self.reset_flex).flex_direction = css_value_to_string(value)
             }
@@ -823,14 +917,14 @@ impl CategorizedComputedStyle {
             "align-self" => {
                 Arc::make_mut(&mut self.reset_flex).align_self = css_value_to_string(value)
             }
-            "order" => Arc::make_mut(&mut self.reset_flex).order = value_to_px(value),
+            "order" => Arc::make_mut(&mut self.reset_flex).order = value_to_px(value, fs),
             "align-content" => {
                 Arc::make_mut(&mut self.reset_flex).align_content = css_value_to_string(value)
             }
-            "row-gap" => Arc::make_mut(&mut self.reset_flex).row_gap = value_to_px(value),
-            "column-gap" => Arc::make_mut(&mut self.reset_flex).column_gap = value_to_px(value),
+            "row-gap" => Arc::make_mut(&mut self.reset_flex).row_gap = value_to_px(value, fs),
+            "column-gap" => Arc::make_mut(&mut self.reset_flex).column_gap = value_to_px(value, fs),
             "gap" => {
-                let val_px = value_to_px(value);
+                let val_px = value_to_px(value, fs);
                 let flex = Arc::make_mut(&mut self.reset_flex);
                 if flex.row_gap == -1 {
                     flex.row_gap = val_px;
@@ -848,7 +942,7 @@ impl CategorizedComputedStyle {
             // ResetEffects
             "opacity" => Arc::make_mut(&mut self.reset_effects).opacity = value_to_f32(value),
             "outline-width" => {
-                Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(value)
+                Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(value, fs)
             }
             "outline-style" => {
                 Arc::make_mut(&mut self.reset_effects).outline_style = css_value_to_string(value)
@@ -857,7 +951,7 @@ impl CategorizedComputedStyle {
                 Arc::make_mut(&mut self.reset_effects).outline_color = css_value_to_string(value)
             }
             "outline-offset" => {
-                Arc::make_mut(&mut self.reset_effects).outline_offset = value_to_px(value)
+                Arc::make_mut(&mut self.reset_effects).outline_offset = value_to_px(value, fs)
             }
             "transition-duration" => {
                 Arc::make_mut(&mut self.reset_effects).transition_duration = value_to_u32(value)
@@ -877,6 +971,82 @@ impl CategorizedComputedStyle {
             "text-decoration-style" => {
                 Arc::make_mut(&mut self.reset_effects).text_decoration_style =
                     css_value_to_string(value)
+            }
+            "text-decoration" => {
+                let val_str = css_value_to_string(value);
+                Arc::make_mut(&mut self.reset_effects).text_decoration_line = val_str;
+            }
+            "border" => {
+                let mut leaves = Vec::new();
+                flatten_value(value, &mut leaves);
+                for leaf in leaves {
+                    match leaf {
+                        CssValue::Length(_, _) | CssValue::Number(_) => {
+                            let px = value_to_px(&leaf, fs);
+                            let surround = Arc::make_mut(&mut self.reset_surround);
+                            surround.border_top_width = px;
+                            surround.border_right_width = px;
+                            surround.border_bottom_width = px;
+                            surround.border_left_width = px;
+                        }
+                        CssValue::Color(_) => {
+                            let col = css_value_to_string(&leaf);
+                            let surround = Arc::make_mut(&mut self.reset_surround);
+                            surround.border_top_color = col.clone();
+                            surround.border_right_color = col.clone();
+                            surround.border_bottom_color = col.clone();
+                            surround.border_left_color = col;
+                        }
+                        CssValue::Keyword(ref kw) => {
+                            if kw == "thin" || kw == "medium" || kw == "thick" {
+                                let px = value_to_px(&leaf, fs);
+                                let surround = Arc::make_mut(&mut self.reset_surround);
+                                surround.border_top_width = px;
+                                surround.border_right_width = px;
+                                surround.border_bottom_width = px;
+                                surround.border_left_width = px;
+                            } else if kw == "none" || kw == "solid" || kw == "double" || kw == "dotted" || kw == "dashed" || kw == "groove" || kw == "ridge" || kw == "inset" || kw == "outset" {
+                                let surround = Arc::make_mut(&mut self.reset_surround);
+                                surround.border_top_style = kw.clone();
+                                surround.border_right_style = kw.clone();
+                                surround.border_bottom_style = kw.clone();
+                                surround.border_left_style = kw.clone();
+                            } else {
+                                let col = css_value_to_string(&leaf);
+                                let surround = Arc::make_mut(&mut self.reset_surround);
+                                surround.border_top_color = col.clone();
+                                surround.border_right_color = col.clone();
+                                surround.border_bottom_color = col.clone();
+                                surround.border_left_color = col;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "outline" => {
+                let mut leaves = Vec::new();
+                flatten_value(value, &mut leaves);
+                for leaf in leaves {
+                    match leaf {
+                        CssValue::Length(_, _) | CssValue::Number(_) => {
+                            Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(&leaf, fs);
+                        }
+                        CssValue::Color(ref _c) => {
+                            Arc::make_mut(&mut self.reset_effects).outline_color = css_value_to_string(&leaf);
+                        }
+                        CssValue::Keyword(ref kw) => {
+                            if kw == "thin" || kw == "medium" || kw == "thick" {
+                                Arc::make_mut(&mut self.reset_effects).outline_width = value_to_px(&leaf, fs);
+                            } else if kw == "none" || kw == "solid" || kw == "double" || kw == "dotted" || kw == "dashed" {
+                                Arc::make_mut(&mut self.reset_effects).outline_style = kw.clone();
+                            } else {
+                                Arc::make_mut(&mut self.reset_effects).outline_color = kw.clone();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             "text-overflow" => {
                 Arc::make_mut(&mut self.reset_effects).text_overflow = css_value_to_string(value)
@@ -911,108 +1081,84 @@ impl CategorizedComputedStyle {
     }
 
     /// Get property as CssValue for compatibility and style tests.
-    pub fn get(&self, name: &str) -> Option<crate::css::values::CssValue> {
-        let s = self.get_property_as_string(name)?;
-        let s = s.trim();
-        if s.is_empty() {
-            return None;
+    pub fn get(&self, name: &str) -> Option<&crate::css::values::CssValue> {
+        if let Some(ref map) = self.extra_values {
+            if let Some(val) = map.get(name) {
+                return Some(val);
+            }
         }
-
-        fn parse_single(p: &str) -> crate::css::values::CssValue {
-            if let Some(num_str) = p.strip_suffix("px") {
-                if let Ok(v) = num_str.parse::<f32>() {
-                    return crate::css::values::CssValue::Length(
-                        v,
-                        crate::css::values::LengthUnit::Px,
-                    );
-                }
-            }
-            if let Some(num_str) = p.strip_suffix("em") {
-                if let Ok(v) = num_str.parse::<f32>() {
-                    return crate::css::values::CssValue::Length(
-                        v,
-                        crate::css::values::LengthUnit::Em,
-                    );
-                }
-            }
-            if let Some(num_str) = p.strip_suffix('%') {
-                if let Ok(v) = num_str.parse::<f32>() {
-                    return crate::css::values::CssValue::Length(
-                        v,
-                        crate::css::values::LengthUnit::Percent,
-                    );
-                }
-            }
-            if let Ok(v) = p.parse::<f32>() {
-                return crate::css::values::CssValue::Number(v);
-            }
-            if p.starts_with("rgb(") && p.ends_with(')') {
-                let inside = &p[4..p.len() - 1];
-                let parts: Vec<&str> = inside.split(',').map(|x| x.trim()).collect();
-                if parts.len() == 3 {
-                    if let (Ok(r), Ok(g), Ok(b)) = (
-                        parts[0].parse::<u8>(),
-                        parts[1].parse::<u8>(),
-                        parts[2].parse::<u8>(),
-                    ) {
-                        return crate::css::values::CssValue::Color(
-                            crate::css::values::Color::Rgba(r, g, b, 255),
-                        );
+        if is_inherited_property_name(name) {
+            let s = self.get_property_as_string(name)?;
+            let s = s.trim();
+            if !s.is_empty() {
+                let mut parts = Vec::new();
+                let mut current = String::new();
+                let mut in_parens = 0;
+                for c in s.chars() {
+                    if c == '(' {
+                        in_parens += 1;
+                        current.push(c);
+                    } else if c == ')' {
+                        if in_parens > 0 {
+                            in_parens -= 1;
+                        }
+                        current.push(c);
+                    } else if c.is_whitespace() && in_parens == 0 {
+                        if !current.is_empty() {
+                            parts.push(current.clone());
+                            current.clear();
+                        }
+                    } else {
+                        current.push(c);
                     }
                 }
-            }
-            if p.starts_with("rgba(") && p.ends_with(')') {
-                let inside = &p[5..p.len() - 1];
-                let parts: Vec<&str> = inside.split(',').map(|x| x.trim()).collect();
-                if parts.len() == 4 {
-                    if let (Ok(r), Ok(g), Ok(b), Ok(a_f)) = (
-                        parts[0].parse::<u8>(),
-                        parts[1].parse::<u8>(),
-                        parts[2].parse::<u8>(),
-                        parts[3].parse::<f32>(),
-                    ) {
-                        return crate::css::values::CssValue::Color(
-                            crate::css::values::Color::Rgba(r, g, b, (a_f * 255.0) as u8),
-                        );
-                    }
-                }
-            }
-            crate::css::values::CssValue::Keyword(p.to_string())
-        }
-
-        let mut parts = Vec::new();
-        let mut current = String::new();
-        let mut in_parens = 0;
-        for c in s.chars() {
-            if c == '(' {
-                in_parens += 1;
-                current.push(c);
-            } else if c == ')' {
-                if in_parens > 0 {
-                    in_parens -= 1;
-                }
-                current.push(c);
-            } else if c.is_whitespace() && in_parens == 0 {
                 if !current.is_empty() {
-                    parts.push(current.clone());
-                    current.clear();
+                    parts.push(current);
                 }
-            } else {
-                current.push(c);
+
+                fn parse_single(p: &str) -> crate::css::values::CssValue {
+                    if let Some(color) = parse_css_color_simple(p) {
+                        return crate::css::values::CssValue::Color(color);
+                    }
+                    if let Some(num_str) = p.strip_suffix("px") {
+                        if let Ok(v) = num_str.parse::<f32>() {
+                            return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Px);
+                        }
+                    }
+                    if let Some(num_str) = p.strip_suffix("em") {
+                        if let Ok(v) = num_str.parse::<f32>() {
+                            return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Em);
+                        }
+                    }
+                    if let Some(num_str) = p.strip_suffix('%') {
+                        if let Ok(v) = num_str.parse::<f32>() {
+                            return crate::css::values::CssValue::Length(v, crate::css::values::LengthUnit::Percent);
+                        }
+                    }
+                    if let Ok(v) = p.parse::<f32>() {
+                        return crate::css::values::CssValue::Number(v);
+                    }
+                    crate::css::values::CssValue::Keyword(p.to_string())
+                }
+
+                let val = if parts.is_empty() {
+                    crate::css::values::CssValue::Keyword(s.to_string())
+                } else if parts.len() == 1 {
+                    parse_single(&parts[0])
+                } else {
+                    let list = parts.into_iter().map(|x| parse_single(&x)).collect();
+                    crate::css::values::CssValue::Multiple(list)
+                };
+
+                return Some(Box::leak(Box::new(val)));
             }
         }
-        if !current.is_empty() {
-            parts.push(current);
-        }
+        None
+    }
 
-        if parts.is_empty() {
-            None
-        } else if parts.len() == 1 {
-            Some(parse_single(&parts[0]))
-        } else {
-            let list = parts.into_iter().map(|x| parse_single(&x)).collect();
-            Some(crate::css::values::CssValue::Multiple(list))
-        }
+    /// Insert property for compatibility and layout tests.
+    pub fn insert(&mut self, prop: String, value: crate::css::values::CssValue) {
+        self.set_property(&prop, &value);
     }
 
     /// Get property as string.
@@ -1193,22 +1339,22 @@ impl CategorizedComputedStyle {
                 format!("{}px", self.reset_surround.padding_block_end)
             }),
             "border-top-width" => Some(if self.reset_surround.border_top_width == -1 {
-                "0px".to_string()
+                "medium".to_string()
             } else {
                 format!("{}px", self.reset_surround.border_top_width)
             }),
             "border-right-width" => Some(if self.reset_surround.border_right_width == -1 {
-                "0px".to_string()
+                "medium".to_string()
             } else {
                 format!("{}px", self.reset_surround.border_right_width)
             }),
             "border-bottom-width" => Some(if self.reset_surround.border_bottom_width == -1 {
-                "0px".to_string()
+                "medium".to_string()
             } else {
                 format!("{}px", self.reset_surround.border_bottom_width)
             }),
             "border-left-width" => Some(if self.reset_surround.border_left_width == -1 {
-                "0px".to_string()
+                "medium".to_string()
             } else {
                 format!("{}px", self.reset_surround.border_left_width)
             }),
@@ -1482,11 +1628,30 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     }
 }
 
-fn value_to_px(val: &crate::css::values::CssValue) -> i32 {
+fn value_to_px(val: &crate::css::values::CssValue, font_size: u32) -> i32 {
     match val {
-        crate::css::values::CssValue::Length(v, _) => v.round() as i32,
+        crate::css::values::CssValue::Length(v, unit) => match unit {
+            crate::css::values::LengthUnit::Px => v.round() as i32,
+            crate::css::values::LengthUnit::Em => (v * font_size as f32).round() as i32,
+            crate::css::values::LengthUnit::Rem => (v * 16.0).round() as i32,
+            crate::css::values::LengthUnit::Pt => (v * 96.0 / 72.0).round() as i32,
+            _ => v.round() as i32,
+        },
         crate::css::values::CssValue::Number(v) => v.round() as i32,
         _ => -1,
+    }
+}
+
+fn flatten_value(val: &crate::css::values::CssValue, leaves: &mut Vec<crate::css::values::CssValue>) {
+    match val {
+        crate::css::values::CssValue::Multiple(list) => {
+            for item in list {
+                flatten_value(item, leaves);
+            }
+        }
+        _ => {
+            leaves.push(val.clone());
+        }
     }
 }
 

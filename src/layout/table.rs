@@ -1,4 +1,4 @@
-use crate::css::values::{CssValue, DisplayValue, LengthUnit};
+use crate::css::values::CssValue;
 use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
@@ -621,6 +621,7 @@ fn gather_row_cells(
 }
 
 fn matches_display(display: Option<&CssValue>, expected: &str) -> bool {
+    use crate::css::values::DisplayValue;
     if let Some(disp) = display {
         match disp {
             CssValue::Keyword(kw) => kw == expected,

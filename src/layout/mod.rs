@@ -8,7 +8,6 @@ pub(crate) use float::{find_clearance_y, get_clear_value, get_float_value};
 pub(crate) use position::is_absolute_or_fixed;
 pub(crate) use table::is_border_collapse;
 
-use crate::css::values::{CssValue, DisplayValue, LengthUnit};
 use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
@@ -1589,6 +1588,7 @@ fn find_first_text_node(dom: &Dom, node: NodeId) -> Option<NodeId> {
 mod tests {
     use super::*;
     use crate::css::parser::parse_stylesheet;
+    use crate::css::values::{CssValue, LengthUnit};
     use crate::dom::NodeData;
     use crate::style::compute_styles;
 

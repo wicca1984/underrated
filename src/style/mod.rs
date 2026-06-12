@@ -453,7 +453,12 @@ fn compute_node_style(
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(val) => val.clone(),
-            None => CssValue::Keyword("normal".to_string()),
+            None => {
+                let fw = parent_style
+                    .map(|p| p.inherited_text.font_weight.clone())
+                    .unwrap_or_else(|| "normal".to_string());
+                CssValue::Keyword(fw)
+            }
         }
     };
     properties.insert("font-weight".to_string(), resolved_font_weight);
@@ -488,7 +493,13 @@ fn compute_node_style(
             },
             Some(CssValue::Number(val)) => CssValue::Number(*val),
             Some(val) => val.clone(),
-            None => CssValue::Keyword("normal".to_string()),
+            None => {
+                if let Some(p) = parent_style {
+                    CssValue::Length(p.inherited_text.line_height as f32, LengthUnit::Px)
+                } else {
+                    CssValue::Keyword("normal".to_string())
+                }
+            }
         }
     };
     properties.insert("line-height".to_string(), resolved_line_height);
@@ -505,7 +516,12 @@ fn compute_node_style(
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("left".to_string()),
             Some(val) => val.clone(),
-            None => CssValue::Keyword("left".to_string()),
+            None => {
+                let ta = parent_style
+                    .map(|p| p.inherited_text.text_align.clone())
+                    .unwrap_or_else(|| "left".to_string());
+                CssValue::Keyword(ta)
+            }
         }
     };
     properties.insert("text-align".to_string(), resolved_text_align);
@@ -522,7 +538,12 @@ fn compute_node_style(
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("normal".to_string()),
             Some(val) => val.clone(),
-            None => CssValue::Keyword("normal".to_string()),
+            None => {
+                let ws = parent_style
+                    .map(|p| p.inherited_text.white_space.clone())
+                    .unwrap_or_else(|| "normal".to_string());
+                CssValue::Keyword(ws)
+            }
         }
     };
     properties.insert("white-space".to_string(), resolved_white_space);
@@ -617,7 +638,12 @@ fn compute_node_style(
                 CssValue::Keyword("visible".to_string())
             }
             Some(val) => val.clone(),
-            None => CssValue::Keyword("visible".to_string()),
+            None => {
+                let vis = parent_style
+                    .map(|p| p.inherited_effects.visibility.clone())
+                    .unwrap_or_else(|| "visible".to_string());
+                CssValue::Keyword(vis)
+            }
         }
     };
     properties.insert("visibility".to_string(), resolved_visibility);
@@ -634,10 +660,35 @@ fn compute_node_style(
             }
             Some(CssValue::Keyword(s)) if s == "initial" => CssValue::Keyword("show".to_string()),
             Some(val) => val.clone(),
-            None => CssValue::Keyword("show".to_string()),
+            None => {
+                let ec = parent_style
+                    .map(|p| p.inherited_effects.empty_cells.clone())
+                    .unwrap_or_else(|| "show".to_string());
+                CssValue::Keyword(ec)
+            }
         }
     };
     properties.insert("empty-cells".to_string(), resolved_empty_cells);
+
+    // J. Resolve display default based on element name
+    if !properties.contains_key("display") {
+        let display_default =
+            if let Some(crate::dom::NodeData::Element { name, .. }) = dom.data(node) {
+                match name.to_ascii_lowercase().as_str() {
+                    "html" | "body" | "div" | "p" | "figure" | "figcaption" | "blockquote"
+                    | "dl" | "dt" | "dd" | "table" | "tr" | "th" | "td" | "h1" | "h2" | "h3"
+                    | "h4" | "h5" | "h6" => "block",
+                    "img" | "input" | "button" | "textarea" | "select" => "inline-block",
+                    _ => "inline",
+                }
+            } else {
+                "inline"
+            };
+        properties.insert(
+            "display".to_string(),
+            CssValue::Keyword(display_default.to_string()),
+        );
+    }
 
     let mut style = if let Some(parent) = parent_style {
         CategorizedComputedStyle::inherit_from(parent)
