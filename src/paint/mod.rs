@@ -1319,10 +1319,12 @@ pub fn build_display_list(
                             object_fit: get_object_fit(style),
                         });
                     } else {
-                        // TODO(spec): object-fit is applied only on the pre-decoded DisplayItem::Image path (see raster); the inline non-pre-decoded blit fallback still stretches (fill).
+                        let obj_fit = get_object_fit(style);
+                        // Non-fill object-fit is delegated to the DisplayItem::Image path (raster).
                         let mut painted_as_pixels = false;
-                        if let Some(bytes) =
-                            crate::loader::load_image_safely(src, base_url_parsed.as_ref())
+                        if obj_fit == ObjectFit::Fill
+                            && let Some(bytes) =
+                                crate::loader::load_image_safely(src, base_url_parsed.as_ref())
                             && let Some(decoded) = crate::image::decode_png(&bytes)
                         {
                             let rect_w = layout_box.rect.size.width;
@@ -4644,6 +4646,134 @@ mod tests {
         assert!(
             has_square_marker,
             "Should have a marker to the left of 'square-item'"
+        );
+    }
+
+    #[test]
+    fn test_paint_image_non_square_object_fit_contain() {
+        use crate::raster::Canvas;
+
+        // Generate 2x1 image: Red on left, Green on right
+        let mut source_canvas = Canvas::new(2, 1);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_paint_test_image_contain.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("src".into(), temp_filename.into())],
+        });
+        dom.append_child(doc, img);
+
+        // Apply object-fit: contain to a non-square container
+        let stylesheet = parse_stylesheet("img { width: 4px; height: 4px; object-fit: contain; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Clean up the temp file
+        let _ = std::fs::remove_file(temp_filename);
+
+        // We expect:
+        // 1. One DisplayItem::Image item with ObjectFit::Contain and decoded: None (which will be processed by raster with correct object-fit logic)
+        // 2. ZERO SolidRect items because it should NOT paint as pixels (blit fallback is gated)
+        let image_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        assert_eq!(
+            image_items.len(),
+            1,
+            "Expected exactly one Image display item"
+        );
+        if let DisplayItem::Image {
+            object_fit,
+            decoded,
+            ..
+        } = image_items[0]
+        {
+            assert_eq!(*object_fit, ObjectFit::Contain);
+            assert!(
+                decoded.is_none(),
+                "Expected decoded to be None (fallback path)"
+            );
+        } else {
+            panic!("Expected DisplayItem::Image");
+        }
+
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert!(
+            solid_rects.is_empty(),
+            "Expected 0 SolidRects since blit path should be bypassed for non-Fill object-fit"
+        );
+    }
+
+    #[test]
+    fn test_paint_image_non_square_object_fit_regression() {
+        use crate::raster::Canvas;
+
+        // Generate 2x1 image: Red on left, Green on right
+        let mut source_canvas = Canvas::new(2, 1);
+        source_canvas.pixels[0] = 0xFFFF0000; // Red
+        source_canvas.pixels[1] = 0xFF00FF00; // Green
+        let png_bytes = crate::image::encode_png(&source_canvas);
+
+        let temp_filename = "temp_paint_test_image_regression_fill.png";
+        std::fs::write(temp_filename, &png_bytes).unwrap();
+
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let img = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("src".into(), temp_filename.into())],
+        });
+        dom.append_child(doc, img);
+
+        // No object-fit specified (defaults to fill)
+        let stylesheet = parse_stylesheet("img { width: 4px; height: 4px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        // Clean up the temp file
+        let _ = std::fs::remove_file(temp_filename);
+
+        // We expect:
+        // 1. Two SolidRects (representing the 2x1 pixels of the image)
+        // 2. ZERO DisplayItem::Image items
+        let solid_rects: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::SolidRect { .. }))
+            .collect();
+
+        assert_eq!(
+            solid_rects.len(),
+            2,
+            "Expected 2 SolidRects representing decoded PNG pixels for Fill default"
+        );
+
+        let image_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Image { .. }))
+            .collect();
+
+        assert!(
+            image_items.is_empty(),
+            "Expected 0 Image items since default Fill stretches using inline blit"
         );
     }
 }
