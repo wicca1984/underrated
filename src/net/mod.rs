@@ -252,7 +252,7 @@ pub fn fetch_all_concurrent(
     }
 
     let concurrency = max_concurrency.max(1).min(urls.len());
-    let urls_cloned = urls.to_vec();
+    let urls_shared = std::sync::Arc::new(urls.to_vec());
     let next_index = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let mut results_vec = Vec::with_capacity(urls.len());
@@ -264,16 +264,16 @@ pub fn fetch_all_concurrent(
     let mut handles = Vec::with_capacity(concurrency);
     for _ in 0..concurrency {
         let next_index = std::sync::Arc::clone(&next_index);
-        let urls_cloned = urls_cloned.clone();
+        let urls_shared = std::sync::Arc::clone(&urls_shared);
         let results = std::sync::Arc::clone(&results);
 
         let handle = std::thread::spawn(move || {
             loop {
-                let idx = next_index.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if idx >= urls_cloned.len() {
+                let idx = next_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if idx >= urls_shared.len() {
                     break;
                 }
-                let url = &urls_cloned[idx];
+                let url = &urls_shared[idx];
                 let res = send_request(url, HttpMethod::Get, &[], None);
 
                 match results.lock() {
