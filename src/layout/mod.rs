@@ -102,6 +102,43 @@ pub fn layout_document(
     root_box
 }
 
+/// Re-run the inline layout pass for an inline-only container against its final
+/// shrink-to-fit `width`, replacing the children produced by the first pass and
+/// returning the new bottom cursor. Kept as a separate, non-inlined function so
+/// its locals do not enlarge `layout_node`'s stack frame on the deep all-block
+/// recursion path (Windows 1 MiB stack regression guard).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn recenter_inline_children(
+    dom: &Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    node: NodeId,
+    children: &mut Vec<LayoutBox>,
+    width: f32,
+    inline_origin_x: f32,
+    cursor_y0: f32,
+    depth: usize,
+    text_align: &str,
+    text_indent: f32,
+    word_spacing: f32,
+) -> f32 {
+    children.clear();
+    let (line_boxes, total_height) = layout_inline(
+        dom,
+        styles,
+        node,
+        width,
+        inline_origin_x,
+        cursor_y0,
+        depth,
+        text_align,
+        text_indent,
+        word_spacing,
+    );
+    children.extend(line_boxes);
+    cursor_y0 + total_height
+}
+
 pub(crate) fn layout_node(
     dom: &Dom,
     styles: &HashMap<NodeId, ComputedStyle>,
@@ -209,6 +246,11 @@ pub(crate) fn layout_node(
         .iter()
         .any(|&c| !is_inline_level(styles, dom, c));
 
+    // Width used for the inline pass below; if shrink-to-fit later changes the
+    // content width we re-run the inline pass to re-center against the final
+    // width (see `recenter_inline_children`).
+    let inline_pass_width = content_width;
+
     // Layout children
     if has_inline && !has_block {
         // If ALL children are inline, keep current behavior (single inline pass)
@@ -273,6 +315,7 @@ pub(crate) fn layout_node(
     } else {
         // MIXED: wrap each maximal run of consecutive inline-level children in an anonymous block box
         // spec: S-anonymous-block-boxes
+        // TODO(spec): same shrink-to-fit re-centering needed for mixed inline runs
         let mut prev_margin_bottom: Option<f32> = None;
         let mut last_child_box_max_y: Option<f32> = None;
 
@@ -378,6 +421,27 @@ pub(crate) fn layout_node(
         auto_width,
     ) {
         content_width = w;
+    }
+
+    if has_inline && !has_block && content_width != inline_pass_width {
+        // shrink-to-fit changed the content width: re-run the inline pass so the
+        // content re-centers against the final box width. Delegated to a
+        // non-inlined helper so this branch's locals do not enlarge
+        // `layout_node`'s stack frame on the deep all-block recursion path
+        // (Windows 1 MiB stack regression guard: test_deep_tree_recursion_cap).
+        child_cursor_y = recenter_inline_children(
+            dom,
+            styles,
+            node,
+            &mut children,
+            content_width,
+            border_box_x + border_left + padding_left,
+            border_box_y + border_top + padding_top,
+            depth,
+            text_align,
+            text_indent,
+            word_spacing,
+        );
     }
 
     // Calculate height
@@ -3216,6 +3280,75 @@ mod tests {
         // "ab" is measured by font as 16px wide (8px per character).
         // Plus padding-left (5px) and padding-right (5px), total border box width should be 26.0px.
         assert!(approx_eq(span_box.rect.size.width, 26.0));
+    }
+
+    #[test]
+    fn test_shrink_to_fit_inline_block_centers_child_at_left_edge() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // This is the container under text-align: center
+        let outer_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "outer".into())],
+        });
+        dom.append_child(body, outer_div);
+
+        // This is the shrink-to-fit inline-block element
+        let stf_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "stf".into())],
+        });
+        dom.append_child(outer_div, stf_div);
+
+        // This is the child inside the shrink-to-fit container
+        let child_span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(stf_div, child_span);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 1000px; }
+            .outer { display: block; text-align: center; }
+            .stf { display: inline-block; text-align: center; }
+            .child { display: inline-block; width: 200px; height: 50px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 1000.0);
+        let body_box = &layout_tree.children[0];
+        let outer_box = &body_box.children[0];
+        // stf_div is inline-block, so it's placed inside a line box under outer_box
+        let outer_line_box = &outer_box.children[0];
+        let stf_box = &outer_line_box.children[0];
+
+        // The stf_box has shrink-to-fit width, which should be exactly 200px because its child has 200px width.
+        assert!(approx_eq(stf_box.rect.size.width, 200.0));
+
+        // The children inside stf_box are inline (the .child inline-block span).
+        // Since stf_box is inline-block and has all inline children, its children are placed in a line box inside stf_box.
+        let stf_line_box = &stf_box.children[0];
+        let child_box = &stf_line_box.children[0];
+
+        // The child's origin x should be exactly equal to the left of stf_box's content area.
+        // Let's assert that the difference is very small (less than 1.0)
+        let container_left = stf_box.rect.origin.x; // no padding/border on .stf
+        let child_left = child_box.rect.origin.x;
+
+        assert!(
+            (child_left - container_left).abs() < 1.0,
+            "child_left: {}, container_left: {}",
+            child_left,
+            container_left
+        );
     }
 
     #[test]
