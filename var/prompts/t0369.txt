@@ -1,0 +1,48 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0369 — loader+engine: resolve result-page relative URLs against the FINAL redirect hop URL (MS-MVP-Live #5)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0369
+Branch: agent/t0369-engine-redirect-final-url-base (already checked out). Language for code/comments/commit = English.
+
+## Background (known bug, see src/engine/mod.rs:~390 TODO)
+`crate::loader::follow_redirects(start, fetch) -> Result<LoaderResponse, LoadError>` follows 3xx hops but
+does NOT surface the FINAL hop URL. So in `engine::navigate` (src/engine/mod.rs:~348), after a redirect chain
+(e.g. google.com -> google.co.jp), the result page is rendered with `resolved_url` (the ORIGINAL pre-redirect
+URL) as its base. Relative URLs (images/links) on the result page then resolve against the wrong origin.
+
+## Spec — surface the final URL and use it as the render base
+Use the TUPLE approach (keeps `LoaderResponse` unchanged, minimal blast radius — do NOT add a field to the
+`LoaderResponse` struct):
+1. In `src/loader/mod.rs`, change `follow_redirects` to return `Result<(LoaderResponse, Url), LoadError>`,
+   where the second element is the URL of the FINAL hop actually fetched (the last `current_url` whose response
+   was returned). Set it correctly on BOTH return paths inside the loop (the normal 200 path AND the
+   `resolve(...) == None` early-return path, which should return the current_url it was on).
+   `use crate::url::Url;` is already available in that module; reuse it.
+2. Update the doc comment of `follow_redirects` to mention it also returns the final resolved URL.
+3. In `src/engine/mod.rs::navigate`, destructure the new tuple: `let (response, final_url) = match ... { Ok(t) => t, Err(_) => ... }`.
+   Then render with `final_url` as the base instead of `resolved_url`:
+   `render_page(&decoded_html, &final_url, loader, viewport_width)`.
+   DELETE the stale `// TODO(spec): after a redirect chain...` comment at ~line 390 since it is now fixed.
+4. Update ALL `follow_redirects(...)` call sites inside `src/loader/mod.rs` tests (around lines 848, 895, 941,
+   969, 995, 1085, 1127) to destructure the tuple (e.g. `let (resp, final_url) = result.unwrap();` — unwrap is
+   fine in #[cfg(test)] code). Keep their existing assertions working.
+
+## Constraints (HARD)
+- Touch ONLY `src/loader/mod.rs` and `src/engine/mod.rs`. Do NOT modify any other module.
+- The ONLY production caller of `follow_redirects` is `engine::navigate` — verify with
+  `grep -rn "follow_redirects(" src` that you have updated every call site (production + tests) so it compiles.
+- No `unwrap()`/`expect()`/`panic!` in non-test (production) code. No `#[allow(...)]` to silence warnings.
+- Do NOT delete or weaken any existing assertion in tests (only adapt the destructuring).
+
+## Tests (MANDATORY)
+1. In `src/loader/mod.rs` tests: add a test that drives `follow_redirects` through a 302 to a DIFFERENT host and
+   asserts the returned final URL equals the redirected-to URL (not the start URL).
+2. In `src/engine/mod.rs` tests (if a test harness for `navigate` with a fake loader exists, reuse it): add/extend
+   a test proving that after a redirect, a relative URL on the result page resolves against the final hop origin.
+   If no `navigate` test harness exists, at minimum keep the loader-level test (#1) and note this in the commit body.
+
+## Definition of done
+`cd /workspaces/wt/t0369 && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test` all green,
+then `git add -A && git commit` with message `fix(engine): resolve result-page URLs against final redirect hop (t0369)`.
+COMMIT IS MANDATORY before you finish.

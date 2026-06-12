@@ -1,0 +1,17 @@
+CI all complete (no pending, no fail)
+=== final checks ===
+cargo-deny (security / license / deps)	pass	37s	https://github.com/wicca1984/underrated/actions/runs/27343858643/job/80787268210	
+cargo-deny (security / license / deps)	pass	40s	https://github.com/wicca1984/underrated/actions/runs/27343867835/job/80787300428	
+coverage (llvm-cov)	pass	42s	https://github.com/wicca1984/underrated/actions/runs/27343858643/job/80787268243	
+coverage (llvm-cov)	pass	56s	https://github.com/wicca1984/underrated/actions/runs/27343867835/job/80787300443	
+fmt / clippy / test / doc	pass	1m3s	https://github.com/wicca1984/underrated/actions/runs/27343858643/job/80787268258	
+fmt / clippy / test / doc	pass	1m19s	https://github.com/wicca1984/underrated/actions/runs/27343867835/job/80787300400	
+windows build + test (stack-overflow regression guard)	pass	1m46s	https://github.com/wicca1984/underrated/actions/runs/27343858643/job/80787268260	
+windows build + test (stack-overflow regression guard)	pass	2m13s	https://github.com/wicca1984/underrated/actions/runs/27343867835/job/80787300359	
+=== merging ===
+=== cleanup worktree+branch ===
+Deleted branch agent/t0264-ol-numbering (was df5cbca).
+To https://github.com/wicca1984/underrated.git
+ - [deleted]         agent/t0264-ol-numbering
+=== DONE; main tip ===
+ad6cc19 feat(layout): honor ol start/reversed and li value in list numbering (t0264) (#236)

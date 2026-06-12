@@ -1,0 +1,66 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0365 — paint: render text <input> value / placeholder (S-94 / MS-MVP-Live #2)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0365
+Branch: agent/t0365-paint-input-value (already checked out). Language for code/comments/commit = English.
+
+## Goal
+In `src/paint/mod.rs`, inside `build_display_list`, the text-input branch currently has only a stub:
+```
+} else if is_text_input {
+    skip_children = true;
+    // TODO(spec): render input value/placeholder/caret
+}
+```
+Implement rendering of the input's text content. Mirror the EXISTING button-label rendering
+(the `if is_btn_or_submit { ... btn_label_item = Some(DisplayItem::Text { ... }) ... }` block
+right above it) for style — reuse `crate::font::BitmapFont::builtin()`, `font.measure`,
+`font.line_height`, `scale_color_alpha`, `DisplayItem::Text`, `Rect::new`, `effective_opacity`.
+
+## Behavior to implement
+1. Read the value: `let value = dom.get_attribute(node_id, "value").map(|v| v.to_string());`
+   and placeholder: `let placeholder = dom.get_attribute(node_id, "placeholder").map(|v| v.to_string());`
+2. Decide the text to draw and its color:
+   - If `value` is `Some(non-empty)` → draw the value using the normal text color
+     (same `match style.get("color")` pattern the button block uses, default black `Color::Rgba(0,0,0,255)`).
+   - Else if `placeholder` is `Some(non-empty)` → draw the placeholder in a muted gray
+     `Color::Rgba(117, 117, 117, 255)` (CSS `#757575`).
+   - Else → draw nothing (no Text item).
+3. Layout of the text within the input box `layout_box.rect`:
+   - Horizontal: LEFT-aligned with a small left padding of `2.0` px (NOT centered like the button):
+     `text_x = rect.origin.x + 2.0`.
+   - Vertical: centered like the button: `text_y = y + ((h - text_h) / 2.0).max(0.0)`.
+   - `text_w = font.measure(&text) as f32; text_h = font.line_height() as f32;`
+   - Clip width so text does not overflow the box: `let avail = (w - 2.0).max(0.0); let draw_w = text_w.min(avail);`
+     Use `Rect::new(text_x, text_y, draw_w, text_h)` for the Text item rect.
+   - Apply opacity via `scale_color_alpha(&color, effective_opacity)`, exactly as the button block does.
+4. Push the resulting `DisplayItem::Text` into the display list the SAME way the button label is pushed
+   (follow exactly how `btn_label_item` is emitted later in this function — find where `btn_label_item`
+   is consumed/pushed and emit the input text item through the same path, OR push directly to `items`
+   consistently with surrounding code; match the existing mechanism, do not invent a new one).
+5. Caret rendering is OUT OF SCOPE for this static one-shot path (no shell caret state is available in
+   `build_display_list`). Leave a `// TODO(spec): caret rendering requires shell caret state` marker.
+
+Keep `skip_children = true;` for the text input.
+
+## Constraints
+- No `unwrap()`/`expect()` in non-test code. No `#[allow]` to silence warnings. No `panic!`.
+- Touch ONLY `src/paint/mod.rs`. Do NOT modify any other file. Do NOT delete or weaken any existing test.
+
+## Tests (MANDATORY)
+Add a `#[cfg(test)]` test (or extend the existing paint test module in this file) that builds a minimal
+DOM with an `<input type="text" value="hello">` (and a second case with only a `placeholder`), runs
+`build_display_list`, and asserts the resulting `DisplayList` contains a `DisplayItem::Text` whose `text`
+equals "hello" (and the placeholder case yields the placeholder text with the gray color). Build the DOM /
+styles / layout the same way the existing tests in this file do — inspect them first for the construction
+pattern (Dom::new, create_node, set attributes, a ComputedStyle map, layout_document).
+
+## Before finishing (MANDATORY) — run from /workspaces/wt/t0365 and ensure all pass:
+  cargo fmt --all
+  cargo clippy --all-targets -- -D warnings
+  cargo test
+Then COMMIT (do not push; the orchestrator merges):
+  git add -A && git commit -m "feat(paint): render text input value/placeholder in display list (t0365)"
+If anything is ambiguous, leave a `// TODO(spec):` marker rather than inventing behavior, but still
+implement value+placeholder rendering above and commit.

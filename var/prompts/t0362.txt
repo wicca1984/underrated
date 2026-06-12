@@ -1,0 +1,45 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt at a sibling task failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0362 (branch agent/t0362-dom-dirty-tracking). Language for all code/comments/commit messages: English.
+
+## Task (t0362, milestone MS-NewTargets, SPEC S-98): layout-dirty NodeId tracking primitive in `src/dom/`
+
+### Product decision (fixed by PdM — do NOT relitigate)
+Dynamic DOM mutation must NOT trigger synchronous full relayout. Instead the engine will, in a later slice, batch-flush a set of dirty nodes. THIS task implements only the `src/dom`-layer primitive that ACCUMULATES dirty NodeIds and lets them be drained. It does NOT drive relayout or paint (that is the engine's job in a future slice, S-100). Keep the surface minimal.
+
+### What to build (scope: NEW FILE `src/dom/dirty.rs` + ONE registration line in `src/dom/mod.rs`)
+1. Create `src/dom/dirty.rs`. Store dirty NodeIds on the `Dom` struct (add a private field, e.g. `dirty_nodes`, of a type that preserves deterministic order and dedups — e.g. an insertion-ordered set, or a `Vec<NodeId>` plus a membership check). Implement these PUBLIC methods on `Dom` (use an `impl Dom` block inside `src/dom/dirty.rs`):
+   - `pub fn mark_dirty(&mut self, node: NodeId)` — add node to the dirty set; IDEMPOTENT (marking the same node twice must NOT produce a duplicate in `take_dirty`).
+   - `pub fn is_dirty(&self, node: NodeId) -> bool`.
+   - `pub fn take_dirty(&mut self) -> Vec<NodeId>` — DRAIN: returns the dirty nodes and leaves the set EMPTY afterwards. The returned order MUST be deterministic (insertion order preferred; if you use a sorted structure, ascending NodeId is acceptable — document whichever you choose).
+   - `pub fn has_dirty(&self) -> bool`.
+   - `pub fn clear_dirty(&mut self)` — empty the set without returning it.
+2. Register the module: add `mod dirty;` (or `pub mod dirty;` if needed for the impl to be visible — prefer `mod dirty;` since methods are on `Dom`) in `src/dom/mod.rs`. If `Dom` is defined in `src/dom/mod.rs`, add the new private field to its definition there and initialize it in `Dom::new()` / `Default`. Keep that edit to the MINIMUM lines needed (field + initializer + `mod dirty;`).
+3. Doc-comment each method. Add a `// TODO(spec):` on `take_dirty` noting that the engine (S-100) will consume this in a batched post-script-eval flush to drive relayout.
+
+### Hard boundaries
+- This is layout-dirtiness, a DIFFERENT concept from the existing `input_value_dirty` in `src/dom/mutate.rs`. Do NOT touch, rename, or reuse `input_value_dirty` or anything in `src/dom/mutate.rs`.
+- No `unwrap`/`expect` in src non-test code (I-6).
+- ADDITIVE only: do not change existing public signatures or refactor unrelated code.
+
+### Tests (unit tests in `src/dom/dirty.rs`, `#[cfg(test)]`)
+- `mark_dirty` is idempotent: mark the same NodeId twice → `take_dirty` returns it exactly once.
+- After `take_dirty`, `has_dirty() == false` and a second `take_dirty` returns empty.
+- `take_dirty` returns nodes in the documented deterministic order (assert the exact order for ≥2 marked nodes).
+- `clear_dirty` empties the set: after marking then `clear_dirty`, `is_dirty(n) == false` for all and `has_dirty() == false`.
+- Use the real `Dom` constructor and real `NodeId`s (create nodes via the existing `Dom` API, mirroring how other `src/dom` tests build a Dom).
+- DO NOT delete, skip, or ignore any existing test anywhere (I-4).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY `src/dom/dirty.rs` and `src/dom/mod.rs`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(dom): layout-dirty NodeId tracking primitive (mark/take/clear) (t0362)"`
+Then STOP. Do not push; the orchestrator will open the PR.

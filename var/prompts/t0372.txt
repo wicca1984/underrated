@@ -1,0 +1,55 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0372 — paint: render text-input caret (paint side of caret plumbing) (MS-MVP-Live #2, paint slice)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0372
+Branch: agent/t0372-paint-caret-render (already checked out). Language for code/comments/commit = English.
+
+## Background
+Text `<input>` value/placeholder already render in the display list (see `src/paint/mod.rs`, the `is_text_input`
+branch ~line 728-774). The branch ends with `// TODO(spec): caret rendering requires shell caret state`.
+The PdM-blessed design (decision A) is: focus/caret state (focus_node + caret_index) is owned by `src/engine`
+and passed INTO `build_display_list` so paint can draw the caret. THIS TASK IMPLEMENTS THE PAINT HALF ONLY —
+do NOT touch engine. You will add an additive, default-None caret parameter so the engine wiring lands later
+WITHOUT churning the 60+ existing call sites.
+
+## Spec (S-: pick the next free S-number in docs/SPEC and record it in the commit body)
+1. Add a new public function in `src/paint/mod.rs`:
+   `pub fn build_display_list_with_caret(layout: &LayoutBox, dom: &Dom, styles: &HashMap<NodeId, ComputedStyle>, caret: Option<(NodeId, usize)>) -> DisplayList`
+   Move the current body of `build_display_list` into it. Then make the existing
+   `build_display_list(layout, dom, styles)` a thin wrapper that calls `build_display_list_with_caret(layout, dom, styles, None)`.
+   This keeps ALL existing callers (engine + ~60 paint tests) compiling UNCHANGED.
+2. In the `is_text_input` branch, replace the `// TODO(spec): caret rendering requires shell caret state` TODO
+   with caret rendering: if `caret` is `Some((focus_id, caret_index))` AND `focus_id == node_id`, emit a thin
+   vertical caret as a `DisplayItem::SolidRect` (or the existing rect/fill display item variant — match what the
+   value text uses for solid fills). Geometry:
+   - Resolve the input's current text the SAME way the value path does (the `value` attribute; empty if none).
+   - `caret_x = text_x + font.measure(<the first caret_index chars of the value>)` where `text_x = x + 2.0` and
+     `font = crate::font::BitmapFont::builtin()` (same as the existing value path). Clamp `caret_index` to the
+     value's char length. For an empty value the caret sits at `text_x`.
+   - caret rect: width `1.0` (or 2.0), height = `font.line_height()`, top = `y + ((h - text_h)/2.0).max(0.0)`
+     (same vertical centering as the value text). Color: black (`Color::Rgba(0,0,0,255)`), scaled by
+     `effective_opacity` via the existing `scale_color_alpha` helper.
+   - Clamp `caret_x` to within the input box (`<= x + w`).
+   The caret must render REGARDLESS of whether the value is empty (so a focused empty box still shows a caret).
+
+## Constraints (HARD)
+- Touch ONLY `src/paint/mod.rs` (and, if a new DisplayItem variant is genuinely required, the display-item enum
+  in the same paint module — but PREFER reusing an existing solid-rect/fill variant; do NOT add cross-module deps).
+  Do NOT modify engine/, shell/, layout/, or any other module.
+- Do NOT change the signature or behavior of the existing `build_display_list` wrapper (callers must be untouched).
+- No `unwrap()`/`expect()`/`panic!` in non-test code. No `#[allow(...)]`. Keep the iterative traversal (no recursion).
+- Do NOT delete or weaken any existing test.
+
+## Tests (MANDATORY)
+Add unit tests in `src/paint/mod.rs` test module:
+1. Focused empty input -> `build_display_list_with_caret(.., Some((input_id, 0)))` yields a caret rect whose x ≈ input_x + 2.0.
+2. Focused input with value "ab" and caret_index 2 -> caret x ≈ input_x + 2.0 + font.measure("ab"); and a caret
+   rect exists in the display list.
+3. Regression: `build_display_list(..)` (the wrapper) yields NO caret rect (None path), and existing value text still renders.
+Use the existing paint test helpers (build layout/dom/styles like the neighboring input tests do).
+
+## Definition of done
+`cd /workspaces/wt/t0372 && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test` all green,
+then `git add -A && git commit` with message `feat(paint): render text-input caret via build_display_list_with_caret (t0372)`.
+COMMIT IS MANDATORY before you finish.

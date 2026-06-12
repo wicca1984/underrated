@@ -1,0 +1,78 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0346 (branch agent/t0346-css-zindex-parse). Language for all code/comments/commit messages: English.
+
+## Task (t0346, milestone MS-NewTargets, parallel menu item 1): parse the CSS `z-index` property into a typed value.
+
+### Background (verified by the orchestrator — trust these facts)
+- CSS values are parsed in `src/css/values.rs`. The typed value enum is
+  `pub enum CssValue { Keyword(String), Length(f32,LengthUnit), Number(f32), Color(Color), Multiple(Vec<CssValue>), Position(..), Overflow(..), BoxSizing(..), Display(..), FlexDirection(..), JustifyContent(..), AlignItems(..), Transform(Vec<TransformFn>) }`.
+- There is currently NO handling for `z-index` anywhere in `src/` (verified by grep). Today `z-index: 5`
+  would fall through the generic `parse_value` and be stored loosely as `CssValue::Number(5.0)`, and
+  `z-index: auto` as `CssValue::Keyword("auto")`. There is no integer validation and no typed representation,
+  so a downstream stacking-context implementation has nothing clean to consume. This is the gap to close.
+- The dispatch pattern for "property-name-aware" parsing already exists and is your template: in
+  `src/style/mod.rs` (~line 194) the code does
+  `let value_opt = if name.eq_ignore_ascii_case("transform") { parse_transform(..) } else { parse_value(..) };`.
+  This is the ONE place where a property name maps to a dedicated parser. You will add a sibling branch for
+  `z-index` there (analogous to the `transform` branch added in t0344).
+- PdM has intentionally scoped this as a PARSE-side task only. Do NOT implement stacking contexts, z-ordering,
+  or any paint/layout consumption of z-index — that is a separate task (parallel menu item 4) and OUT OF SCOPE.
+
+### The fix (keep ALL parsing logic inside `src/css/values.rs`)
+1. Add a typed representation for z-index. Per CSS (https://www.w3.org/TR/CSS21/visuren.html#z-index),
+   the value is `auto | <integer>` (the integer MAY be negative). Suggested shape (adjust naming to match
+   local style):
+   ```rust
+   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+   pub enum ZIndex {
+       Auto,
+       Index(i32),
+   }
+   ```
+2. Add a `ZIndex(ZIndex)` variant to `CssValue`.
+3. Add a dedicated parser, e.g. `pub fn parse_z_index(components: &[ComponentValue]) -> Option<CssValue>`,
+   that (after trimming leading/trailing whitespace component values — mirror how other parsers in this file
+   skip `ComponentValue::Token(CssToken::Whitespace)`) accepts EXACTLY one of:
+     - the keyword `auto` (case-insensitive) → `CssValue::ZIndex(ZIndex::Auto)`
+     - a single `<integer>` → `CssValue::ZIndex(ZIndex::Index(n))`. The integer may be signed.
+   Reject (return `None`, making the declaration invalid per CSS) anything else: a non-integer number such as
+   `1.5`, a dimension such as `5px` or a percentage `50%`, any other keyword, or more than one value token.
+   IMPORTANT — verify the actual tokenizer shapes in THIS crate before coding: inspect `src/css` to confirm
+   how integers/numbers and signs are tokenized (e.g. is `-1` a single `CssToken::Number(-1.0)`, or a
+   `Delim('-')` followed by `Number(1.0)`? is there a dedicated integer token?). Match the real tokens. To
+   classify a number as an integer, confirm it has no fractional part (e.g. `n.fract() == 0.0`) and convert
+   to `i32` safely (do NOT use `unwrap`/`expect` in src non-test code — I-6; use a checked/`as` conversion
+   with a documented rationale, or reject out-of-range values).
+4. Wire it in (this is the only edit permitted outside `src/css/values.rs`): in `src/style/mod.rs`, extend the
+   existing `if name.eq_ignore_ascii_case("transform") { ... }` dispatch with an `else if
+   name.eq_ignore_ascii_case("z-index") { crate::css::values::parse_z_index(&matched.declaration.value) }`
+   branch. Keep it to that single 1-3 line branch and nothing else.
+   - If adding the `CssValue::ZIndex(..)` variant breaks any exhaustive `match` in other modules, add the
+     MINIMAL non-logic arm needed to compile (e.g. `CssValue::ZIndex(_) => { /* not consumed yet (t0346 is
+     parse-only) */ }` or `=> None`) — boilerplate only, never real behavior. Do not implement any z-index
+     consumption anywhere.
+
+### Tests (REQUIRED — real assertions, never skipped/ignored — I-4; tests may use unwrap/expect)
+Add `#[cfg(test)]` unit tests in `src/css/values.rs` (mirror the existing value-parsing / transform tests in
+that file — build the `&[ComponentValue]` input the same way they do). Cover at minimum:
+1. `auto` → `CssValue::ZIndex(ZIndex::Auto)` (case-insensitive: also test `AUTO`).
+2. `0` → `ZIndex::Index(0)`; `5` → `ZIndex::Index(5)`.
+3. A negative integer `-1` → `ZIndex::Index(-1)` (assert the exact value; this proves sign handling works).
+4. Invalid inputs return `None`: `1.5` (non-integer), `5px` (dimension), `50%` (percentage),
+   `foo` (unknown keyword), and a two-value input like `1 2`.
+Do NOT use `unwrap`/`expect` in `src` non-test code (I-6).
+
+### Done criteria (all required before you finish)
+1. `cargo build` is clean (no new warnings for your code).
+2. `cargo test` passes (the whole suite; your new tests included). No tests skipped/ignored.
+3. `cargo clippy --all-targets -- -D warnings` is clean for your changes.
+4. `cargo fmt` applied.
+5. Scope: `git diff --name-only origin/main` shows ONLY `src/css/values.rs` plus AT MOST one other file
+   (`src/style/mod.rs` for the 1-3 line wiring branch, and only boilerplate compile-arms elsewhere if the
+   variant addition demands them). No layout/paint/raster behavior changes. No unrelated files.
+6. COMMIT your work on branch `agent/t0346-css-zindex-parse` with a Conventional Commit message, e.g.
+   `feat(css): parse z-index into typed CssValue (auto/<integer>) (t0346)`.
+   Do NOT open a PR yourself; the orchestrator will gate, review, and merge. Just commit.
+
+When finished, print `git diff --name-only origin/main` and the final `cargo test` summary line.

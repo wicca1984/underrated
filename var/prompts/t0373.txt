@@ -1,0 +1,56 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0373 — engine: introduce BrowsingContext (mutable interactive session) (MS-MVP-Live #3, engine slice)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0373
+Branch: agent/t0373-engine-browsing-context (already checked out). Language for code/comments/commit = English.
+
+## Background
+Today `src/engine/mod.rs` has an immutable, one-shot `Page { dom, styles, layout }` (spec: S-13). The browser renders one page and exits. To move toward interactive browsing (type → Enter → navigate → re-render) we need a mutable session object that owns the current Page plus per-session UI state and can SWAP its Page on navigation.
+
+This task introduces that object PURELY ADDITIVELY. Do NOT change `Page` or any existing function signature. Do NOT touch main.rs (the interactive loop that consumes this lands in a later task). Everything stays inside `src/engine/`.
+
+## Spec (record `spec: S-101` in the commit body; SPEC.md lives in the meta repo, latest is S-100 — use S-101)
+Add a new public struct in `src/engine/mod.rs`:
+
+```rust
+/// A mutable browsing session that owns the current page plus interactive UI state.
+/// spec: S-101
+pub struct BrowsingContext {
+    pub page: Page,
+    /// Currently focused element (e.g. a text <input>), if any.
+    pub focus_node: Option<NodeId>,
+    /// Caret offset (in chars) within the focused input's value.
+    pub caret_index: usize,
+    /// Vertical scroll offset in CSS px.
+    pub scroll_y: f32,
+    /// Total laid-out content height in CSS px (for clamping scroll).
+    pub content_height: f32,
+}
+```
+
+Required methods (all on `impl BrowsingContext`):
+1. `pub fn new(page: Page) -> Self` — wrap a freshly-rendered Page. Initialize `focus_node: None`, `caret_index: 0`, `scroll_y: 0.0`, and `content_height` from the page's layout box height (use the same height accessor the layout box already exposes; if none is obvious, read `page.layout`'s outer/border-box height field the way existing engine code reads layout geometry).
+2. `pub fn navigate(&mut self, page: Page)` — REPLACE the current page with `page` and RESET session state on navigation: `focus_node = None`, `caret_index = 0`, `scroll_y = 0.0`, and recompute `content_height` from the new page's layout (same as `new`). This is the core "swap Page on navigation" primitive.
+3. `pub fn set_focus(&mut self, node: Option<NodeId>)` — set `focus_node`; reset `caret_index` to `0` whenever focus changes to a different node (or to None).
+4. `pub fn max_scroll(&self, viewport_height: f32) -> f32` — `(self.content_height - viewport_height).max(0.0)`.
+5. `pub fn scroll_by(&mut self, dy: f32, viewport_height: f32)` — adjust `scroll_y` by `dy` and clamp into `0.0 ..= self.max_scroll(viewport_height)`.
+
+Keep it minimal and correct. Do NOT add form-state fields beyond the above (FormState clearing can be wired when FormState is threaded in a later task — leave a single `// TODO(spec): clear FormState on navigate once FormState is owned here` line inside `navigate`).
+
+## Constraints (HARD)
+- Touch ONLY `src/engine/mod.rs` (you may add to `src/engine/` only). Do NOT modify main.rs, paint/, layout/, dom/, loader/, or any other module.
+- Do NOT change `Page` or any existing function/struct signature. This is purely additive.
+- Read layout geometry (content/box height) via the SAME accessor existing engine code uses; do NOT invent new layout plumbing. If you cannot find a height field, inspect `crate::layout::LayoutBox` in this worktree and use its existing public height/dimensions field — do NOT add one.
+- No `unwrap()`/`expect()`/`panic!` in non-test code. No `#[allow(...)]`. No new recursion on hot paths.
+- Do NOT delete or weaken any existing test.
+
+## Tests (MANDATORY, in `src/engine/mod.rs` test module)
+Build a minimal `Page` via the existing engine test helpers / the same construction neighboring engine tests use. Assert:
+1. `BrowsingContext::new(page)` starts with `focus_node == None`, `caret_index == 0`, `scroll_y == 0.0`.
+2. After `set_focus(Some(id))` then `set_focus(Some(other_id))`, `caret_index` is reset to 0 on the focus change.
+3. `scroll_by` clamps: scrolling past `max_scroll` saturates at `max_scroll`, and negative scroll clamps at `0.0`.
+4. `navigate(new_page)` resets `focus_node` to None, `caret_index` to 0, and `scroll_y` to 0.0.
+
+## Definition of done
+`cd /workspaces/wt/t0373 && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test` all green, then `git add -A && git commit` with message `feat(engine): introduce BrowsingContext mutable session (t0373)`. Record `spec: S-101` in the commit body. COMMIT IS MANDATORY before you finish.

@@ -1,0 +1,79 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English.
+First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one module, I-6 no unwrap/expect in src).
+
+Work ONLY inside this worktree: /workspaces/wt/t0340 (branch agent/t0340-table-border-attr).
+Language for all code/comments/commit messages: English.
+
+## Task (t0340, milestone MS-NewTargets / Wiki tables): map the legacy `<table border="N">` HTML presentational attribute to CSS borders.
+
+### Background (verified by the orchestrator)
+- CSS borders on tables/cells ALREADY paint correctly (e.g. `<td style="border:1px solid black">` draws gridlines).
+- The gap is ONLY the legacy presentational attribute: `<table border="1">` (used heavily by Wikipedia and
+  classic HTML) currently produces NO borders, because the `border` attribute is not mapped to CSS.
+- Presentational-attribute mapping already exists and is the RIGHT place to do this:
+  `src/style/mod.rs` -> `fn collect_presentational_hints(dom, node, ua_rules_count, matched_declarations)`.
+  It already maps `width`/`height` (via `map_presentational_dimension`) and img `hspace`/`vspace`.
+
+### Target module (touch ONLY this)
+- `src/style/mod.rs` (and its inline `#[cfg(test)] mod tests` for the unit test). Do NOT touch any other module.
+
+### What to implement (in `collect_presentational_hints`, mirroring the existing width/height hint pattern)
+Per the HTML standard's table presentational hints, simplified to our proven paint capability (solid borders):
+
+1. When the element is a `<table>` and has a `border` attribute whose value parses as a u32 `n`:
+   - if `n == 0`: do nothing (border="0" explicitly suppresses borders).
+   - if `n > 0`: push hint declarations on the table itself:
+       * `border-width: <n>px`  (all four sides; you may emit the `border-width` shorthand)
+       * `border-style: solid`
+       * `border-color: gray`   (UA-ish default; gray is fine)
+     Use the same `MatchedDeclaration { specificity:(0,0,0,0), source_order: ua_rules_count, important:false }`
+     pattern already used for width/height so author CSS still wins.
+     NOTE: the real HTML spec uses `border-style: outset` for the table and `inset` for cells, but our
+     paint layer only renders `solid` reliably. Use `solid` and leave:
+       `// TODO(spec): table[border] should use outset/inset bevel per HTML spec; paint renders solid only.`
+
+2. When the element is a `<td>` or `<th>` whose NEAREST ANCESTOR `<table>` has a `border` attribute with
+   value `n > 0`: push on the cell:
+       * `border-width: 1px`
+       * `border-style: solid`
+       * `border-color: gray`
+   Walk ancestors with `dom.parent(node)` until you hit the `<table>` element (stop at the first ancestor
+   table; if none has a positive `border` attr, emit nothing). `dom.parent(node) -> Option<NodeId>` exists.
+   Reuse `dom.data(id)` to read element name/attrs (see how `collect_presentational_hints` already reads them).
+   Add `td`/`th` handling INSIDE the existing `is_presentational_hint_element` gate (td/th already pass it).
+
+Keep it minimal and safe: no `unwrap`/`expect` in src (use `if let`/`match`); parse the attr with
+`trimmed.parse::<u32>()` like `map_presentational_dimension` does. A non-numeric `border` (e.g. `border=""`
+present-but-empty) per HTML means "1px"; to stay simple, treat a PRESENT-but-non-numeric / empty `border`
+attribute as `n = 1` (borders on), and an absent attribute as no hint. Document this with a one-line comment.
+
+### Acceptance (must be green) — add unit tests in `src/style/mod.rs` `#[cfg(test)] mod tests`
+Add `#[test]` cases that build a small DOM + run the cascade (mirror existing style tests in this file that
+call the public style entry / `collect_presentational_hints` path) and assert the computed style:
+1. `<table border="1"><tr><td>x</td></tr></table>`: the table node has `border-style: solid`,
+   `border-width: 1px` (or 4 longhands), `border-color: gray`; the `<td>` node also has solid 1px gray border.
+2. `<table border="3">...`: table `border-width` == `3px`; cell still `1px`.
+3. `<table border="0">...`: NEITHER table NOR td get any border hint.
+4. Author CSS overrides the hint: `<table border="1" style="border-style:none">` -> table border-style is `none`
+   (proves specificity (0,0,0,0)/source-order lets author win).
+Look at the existing tests in the file for the exact helper(s) used to compute a node's style map; reuse them.
+Do NOT weaken or delete any existing test. Do NOT add `#[ignore]`.
+
+### Constraints (hard)
+- Modify ONLY `src/style/mod.rs`. `git diff --name-only origin/main` MUST show exactly that one file.
+- No `unwrap`/`expect`/`panic!` added in non-test src code (I-6).
+- Must pass: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test`, `cargo build`.
+- If anything in the spec is ambiguous or conflicts with real browser behavior, do NOT guess silently —
+  leave a `// TODO(spec):` and note it in your final summary (§8).
+
+### Finish (MANDATORY — commit before you exit; the orchestrator force-removes the worktree)
+From /workspaces/wt/t0340 run:
+  cargo fmt --all
+  cargo clippy --all-targets --all-features -- -D warnings
+  cargo test
+Then:
+  git add -A
+  git commit -m "feat(style): map legacy table[border] presentational attribute to CSS borders (t0340)"
+Print the final `git log --oneline -1` and a one-paragraph summary of what changed (files, behavior, any TODO(spec)).
+Do NOT open a PR (the orchestrator does that).

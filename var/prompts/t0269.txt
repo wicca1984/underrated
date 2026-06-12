@@ -1,0 +1,33 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English.
+First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it, especially I-1..I-7.
+
+Task: t0269 — bind read-only `window.location` / `document.location` accessors from a settable document URL
+
+Read first:
+- /workspaces/underrated-meta/docs/SPEC.md (find the JS/script + navigation sections) and /workspaces/underrated-meta/docs/ARCHITECTURE.md
+- In this worktree: src/script/mod.rs (the BoaHost struct and the big embedded JS prelude that defines window/document bindings), and src/url/mod.rs (the project's own URL parser — REUSE it, do not add a new crate).
+
+Target module: src/script/ — touch ONLY this module (you MAY read/reuse `crate::url` but do NOT edit src/url/ or any other module). Do not touch other worktrees.
+
+Why: Real-world pages (incl. Google's JS) read `window.location` / `document.location` early; today it is undefined, so scripts throw a ReferenceError and abort. This is part of milestone MS-MVP-JS (front the JS wall for Google search results — do NOT dodge it).
+
+Approach: test-first (TDD). Implement:
+1. Give `BoaHost` a way to know the current document URL. Add a field (e.g. `document_url: Option<String>`) plus a public setter `set_document_url(&mut self, url: &str)` (or thread it through an existing constructor). Default = empty/None. Do NOT change the engine call sites in other modules — only expose the API here; engine wiring is a separate follow-up task (t0270).
+2. Bind a `location` object available as BOTH `window.location` and `document.location`. Parse the stored URL with `crate::url` and expose READ-ONLY accessor properties returning strings: `href`, `protocol`, `host`, `hostname`, `port`, `pathname`, `search`, `hash`, `origin`. Provide `location.toString()` returning `href`. If no URL is set, accessors return empty strings (never throw, never panic).
+3. Navigation is OUT OF SCOPE: setting `location.href`, and `location.assign/replace/reload` require the navigation pipeline which is not wired here. Do NOT guess their semantics — leave a `// TODO(spec): wire location assignment to navigation pipeline (follow-up)` and either omit those setters/methods or make them inert no-ops that are clearly marked TODO(spec). Do not invent behavior.
+
+Acceptance (must be green): add unit tests in src/script/ that construct a BoaHost, call `set_document_url("https://example.com:8080/path/to/page?q=foo#frag")` (or via constructor), evaluate JS, and assert each accessor:
+- `window.location.href` === the full URL
+- `window.location.protocol` === "https:"
+- `window.location.hostname` === "example.com"
+- `window.location.port` === "8080"
+- `window.location.pathname` === "/path/to/page"
+- `window.location.search` === "?q=foo"
+- `window.location.hash` === "#frag"
+- `document.location === window.location` (same object)
+Match whatever component semantics `crate::url` actually produces — if `crate::url` does not split a component (e.g. no port/search support), assert the project's real behavior and leave a `// TODO(spec):` noting the gap rather than faking it. Inspect src/url/mod.rs to learn the exact API before writing assertions.
+
+Done when (all pass in this worktree): `cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`.
+No `unwrap`/`expect`/`panic!` in non-test code (I-6). No new dependencies (I-1). Comments and identifiers in English.
+Commit (you MUST commit before finishing): `feat(script): bind read-only window.location/document.location accessors (t0269)`.
+End with a short English summary of exactly what changed and any `// TODO(spec):` you left.

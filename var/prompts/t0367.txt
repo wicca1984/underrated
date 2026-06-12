@@ -1,0 +1,69 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0367 — paint: draw presentational gridline borders for `<table border>` (MS-NewTargets parallel-menu #1, paint slice)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0367
+Branch: agent/t0367-paint-table-border (already checked out). Language for code/comments/commit = English.
+
+## Background
+Tables are laid out (`src/layout/table.rs`), but the legacy HTML presentational attribute `<table border="1">`
+draws NO cell gridlines today (paint has no table border logic). Real pages (Wikipedia infoboxes etc.) rely on
+this. CSS borders are already painted generically via `SolidRect`; we only need to add the presentational-hint
+borders that the `border` attribute implies.
+
+## Spec (keep it simple, v0 presentational hint)
+When an element is a `<table>`, `<td>`, or `<th>` AND its nearest ancestor `<table>` (inclusive, for the table
+element itself) carries a `border` attribute whose value is present and not `"0"` / empty, draw a 1px solid
+gray gridline (`Color::Rgba(128, 128, 128, 255)`) around that box's rect (all four edges).
+- Tables WITHOUT a `border` attribute, and elements not in a bordered table, get NO extra border.
+- Do NOT try to honor the numeric border width value; always draw 1px (v0). Leave a
+  `// TODO(spec): honor numeric border width / border-collapse` marker.
+
+## Where to implement
+1. NEW FILE `src/paint/table.rs` containing a pure helper, e.g.:
+   ```rust
+   //! Presentational `<table border>` gridline rendering.
+   use crate::dom::Dom;
+   use crate::infra::NodeId;
+   use crate::raster::Color;       // adjust path to match how Color is imported in paint/mod.rs
+   use crate::layout::Rect;        // adjust to actual Rect path used in paint/mod.rs
+   use super::DisplayItem;
+
+   /// Returns the 4 edge SolidRect items for a bordered table cell/table box, or empty.
+   pub fn table_border_items(dom: &Dom, node_id: NodeId, name: &str, rect: Rect) -> Vec<DisplayItem> { ... }
+   ```
+   - Match on `name.eq_ignore_ascii_case` for "table" | "td" | "th"; otherwise return `vec![]`.
+   - Find nearest ancestor (inclusive) `<table>` by walking `dom.parent(node_id)` upward and checking
+     `dom.data(n)` for `NodeData::Element { name, .. }` == "table". Use `dom.get_attribute(table_node, "border")`.
+     If `None`, or trimmed value is empty or `"0"`, return `vec![]`.
+   - Emit four 1px `DisplayItem::SolidRect { rect, color }` items (top, bottom, left, right edges) exactly like the
+     existing border-drawing code in `src/paint/mod.rs` (see the `SolidRect` edge emissions around lines 98-186 /
+     990-1052 for the rect math pattern). Use `Color::Rgba(128,128,128,255)`.
+2. Register the module in `src/paint/mod.rs`: add `mod table;` near the top with the other module/`use` lines.
+3. In `build_display_list` (`src/paint/mod.rs`), inside the per-node visitor where `dom.data(node_id)` /
+   `layout_box.rect` are in scope (the same area that handles inputs/buttons, ~line 660-730), after you have the
+   element `name`, call `items.extend(table::table_border_items(dom, node_id, name, layout_box.rect));`
+   Place this so it runs for normal (non-hidden) element nodes. Do not change existing input/button logic.
+
+## Constraints (HARD)
+- Touch ONLY `src/paint/mod.rs` and the new `src/paint/table.rs`. Do NOT modify layout, dom, or any other module.
+- No `unwrap()`/`expect()`/`panic!` in non-test code. No `#[allow(...)]` to silence warnings.
+- Do NOT delete or weaken any existing test in any file.
+- Verify the exact import paths for `Color`, `Rect`, `Dom`, `NodeId`, `NodeData`, `DisplayItem` by reading the top
+  of `src/paint/mod.rs` — use the SAME paths it uses (do not guess).
+
+## Tests (MANDATORY) — add to `#[cfg(test)] mod tests` in `src/paint/table.rs` or `src/paint/mod.rs`
+1. A table with `border="1"` containing one `td`: assert the display list gains `SolidRect` gray gridline items
+   for the table and the cell (e.g. count of `Color::Rgba(128,128,128,255)` SolidRects >= 8, i.e. 4 per box).
+2. A table WITHOUT a `border` attribute: assert NO `Color::Rgba(128,128,128,255)` SolidRect items are produced.
+   (Build a small Dom with table/tr/td, compute styles + layout like the existing paint tests do, call
+   `build_display_list`, and filter items.)
+
+## Before finishing (MANDATORY) — run from /workspaces/wt/t0367 and ensure ALL pass:
+  cargo fmt --all
+  cargo clippy --all-targets -- -D warnings
+  cargo test
+Then COMMIT (do not push; the orchestrator merges):
+  git add -A && git commit -m "feat(paint): draw presentational gridline borders for <table border> (t0367)"
+If something is genuinely ambiguous, leave a `// TODO(spec):` marker rather than inventing behavior, but still
+implement the gridline rendering above and commit.

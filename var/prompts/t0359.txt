@@ -1,0 +1,38 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0359 (branch agent/t0359-css-zindex-opacity). Language for all code/comments/commit messages: English.
+
+## Task (t0359, milestone MS-NewTargets): parse `z-index` and `opacity` CSS values into typed forms in `src/css/`
+
+Implement PARSE-ONLY, ADDITIVE typed parsing for two CSS properties, mirroring the existing typed-keyword/value style already in `src/css/values.rs` (see the `WhiteSpaceValue`, `OverflowValue`, etc. enums and their `from_str`/parse patterns — match their derive sets, naming, and ASCII-case-insensitive matching).
+
+### What to build
+1. **z-index**: a typed representation, e.g. `enum ZIndex { Auto, Layer(i32) }` (name it consistently with the crate's conventions). Parse rule: the keyword `auto` (ASCII case-insensitive) => `Auto`; an integer (optionally signed, e.g. `0`, `5`, `-1`) => `Layer(n)`; anything else (empty/invalid/float) => fall back to `Auto` (the CSS initial value is `auto`). Use a checked integer parse — NO `unwrap`/`expect` in src.
+2. **opacity**: a typed representation, e.g. a newtype `struct Opacity(f32)` or `enum`, holding a value clamped to the range `[0.0, 1.0]` per the CSS spec (values <0 clamp to 0, >1 clamp to 1). Parse a bare `<number>` (e.g. `0`, `0.5`, `1`, `1.5`->1.0, `-0.2`->0.0). Percentage support is optional; if you skip it, document that with a `// TODO(spec):` line. Invalid/empty input falls back to the initial value `1.0` (fully opaque).
+
+Add a parse function for each (e.g. `parse_z_index(&str) -> ZIndex` and `parse_opacity(&str) -> Opacity`), and a `Default` impl where it fits the established pattern (z-index default Auto, opacity default 1.0).
+
+### Hard scope
+- Touch ONLY files under `src/css/` (prefer extending `src/css/values.rs`; or add a submodule only if that matches the crate convention). Do NOT modify any other module.
+- Do NOT change, delete, or refactor any existing function, field, enum, or test. ADDITIVE only — leave all current behavior and call sites exactly as-is.
+- No `unwrap`/`expect` in non-test src code (I-6). No `transform` in this task (out of scope; separate task).
+
+### Tests (add a `#[cfg(test)]` module, or extend the existing one, in `src/css/`)
+Add at least:
+1. z-index: `auto` (and mixed-case `AUTO`) => Auto; `0`, `5`, `-1` => Layer(n); `bogus`/empty/`1.5` => Auto fallback.
+2. opacity: `0`, `0.5`, `1` parse to the expected clamped value; `1.5` => 1.0; `-0.2` => 0.0; `bogus`/empty => 1.0 fallback.
+Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/css/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(css): parse z-index and opacity into typed CssValues (t0359)"`
+Then STOP. Do not push; the orchestrator will open the PR.

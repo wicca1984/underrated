@@ -1,0 +1,47 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0370 — main: default to real Google + clean stale comment (MS-MVP-Live #4, main.rs slice)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0370
+Branch: agent/t0370-main-default-google-url (already checked out). Language for code/comments/commit = English.
+
+## Background
+`src/main.rs` currently uses `https://example.com/` as the default/search base, and the `Target::Default`
+branch (no CLI args) performs a canned search ("hello underrated") against example.com. For the MVP-Live demo
+the browser should land on the real Google homepage so the interactive flow (type into the search box -> Enter)
+can be driven. The User-Agent header is ALREADY handled (t0366) — do NOT touch net/UA code.
+
+## Spec
+1. In `src/main.rs`, change the search base from `https://example.com/` to Google:
+   - `Target::Search(query)` branch (~line 92-96): build the search URL against `https://www.google.co.jp/`
+     using the existing `search_url(...)` helper. Keep the `.unwrap_or_else(...)` offline fallback but point it
+     at `https://www.google.co.jp/`.
+   - `Target::Default` branch (~line 98-103): instead of a canned "hello underrated" SEARCH, navigate to the
+     Google HOMEPAGE `https://www.google.co.jp/` directly (so the user can type into the box). Set
+     `let url = "https://www.google.co.jp/".to_string();` and adjust the `println!` to say e.g. `default URL: {url}`.
+2. Stale comment cleanup: at ~line 109-112 there is a comment claiming the fetched page's `<style>` is NOT
+   applied ("we don't extract it yet, so render the structure with no author CSS"). VERIFY whether this is still
+   true by reading the render path (`engine::render_page` / `render_page_to_canvas`) — check whether inline
+   `<style>` from the DOM is now hoisted into the active stylesheet. 
+   - If `<style>` hoisting now happens in the render path: DELETE the stale comment (and its TODO line) — it is
+     incorrect. 
+   - If it genuinely still does NOT happen: keep a corrected, accurate one-line comment instead of deleting.
+   State which case you found in the commit body.
+3. Do NOT change `resolve_target` logic or its tests. Do NOT change CLI-arg URL handling (direct URL / explicit
+   args must still work verbatim). The existing tests that pass `https://example.com/...` as EXPLICIT args must
+   keep passing unchanged.
+
+## Constraints (HARD)
+- Touch ONLY `src/main.rs`. Do NOT modify any other module (no net/, no engine/).
+- No `unwrap()`/`expect()`/`panic!` in non-test code. No `#[allow(...)]` to silence warnings.
+- Do NOT delete or weaken any existing test. Run the existing main.rs tests to confirm resolve_target tests pass.
+
+## Tests (MANDATORY)
+- Add/adjust a unit test asserting the `Target::Default` branch yields the Google homepage URL string
+  (refactor the URL selection into a small testable helper if needed, e.g. `fn url_for_target(t: &Target) -> String`,
+  WITHOUT changing observable CLI behavior, and test that helper). Keep all existing tests green.
+
+## Definition of done
+`cd /workspaces/wt/t0370 && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test` all green,
+then `git add -A && git commit` with message `feat(main): default to google.co.jp homepage and drop stale CSS comment (t0370)`.
+COMMIT IS MANDATORY before you finish.

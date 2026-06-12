@@ -1,0 +1,45 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0350 (branch agent/t0350-layout-float). Language for all code/comments/commit messages: English.
+
+## Task (t0350, milestone MS-NewTargets, parallel menu item 3): basic `float: left|right` block formatting in `src/layout/`
+
+Implement a MINIMAL, regression-safe `float: left` / `float: right` for block-level boxes. The goal is the BASIC primitive only — NOT full CSS float semantics.
+
+### Hard scope
+- Touch ONLY files under `src/layout/` (you MAY add a new submodule file e.g. `src/layout/float.rs` plus its `mod float;` line in `src/layout/mod.rs`, and a focused hook inside the existing block child-placement code in `src/layout/mod.rs`). Do NOT modify any other module (`src/css/`, `src/style/`, `src/paint/`, `src/script/`, `src/engine/`, etc.) — other workers own those.
+- The `float` property is ALREADY available to layout via `style.get("float")` (the generic style path stores it as a keyword `CssValue`). Do NOT add float parsing to `src/css/` or `src/style/`. Read it in layout only. Confirm by inspecting how `get_text_align` / `style.get("display")` read keyword values in `src/layout/mod.rs`.
+- Pure, additive behavior gated on the `float` value. When `float` is absent or `none`, layout output MUST be byte-for-byte unchanged (do NOT regress any existing test).
+
+### What "minimal float" means here (keep it simple)
+For a block-level child whose computed `float` is `left` or `right`:
+- Give it shrink-to-fit width (reuse the existing shrink-to-fit machinery — see `apply_block_shrink_to_fit` / `calculate_shrink_to_fit_width`).
+- Position it at the LEFT edge (for `left`) or RIGHT edge (for `right`) of the containing block's content box, at the CURRENT block flow y-position.
+- Take it OUT of normal vertical flow: subsequent in-flow block siblings are laid out as if the float were not there (i.e. the float does NOT consume vertical space for the following blocks, and following blocks keep their normal x/width).
+- DO NOT implement text/line-box shortening or wrapping content around the float. DO NOT implement `clear`. DO NOT implement float stacking of multiple floats side-by-side beyond the basic left/right edge placement. Leave each of these as an explicit `// TODO(spec): ...` comment so the gap is documented.
+
+This is deliberately a stub-grade float: correct edge placement + removal from vertical flow, nothing more. A self-consistent, testable primitive is the deliverable.
+
+### Helper read first
+Study in `src/layout/mod.rs`: `layout_node` (entry, line ~142), the block child-placement loop that advances the flow y-cursor, `apply_block_shrink_to_fit` (~721), `calculate_shrink_to_fit_width` (~774), `get_px` (~973), and how `layout::flex` / `layout::table` submodules are structured and dispatched. Mirror that submodule pattern.
+
+### Tests (add to the existing `#[cfg(test)] mod tests` in `src/layout/mod.rs`, or a tests module in `src/layout/float.rs`)
+Add at least:
+1. `test_float_left_positions_at_left_edge`: a containing block with one `float: left` child (give it explicit content/width via style) — assert the float box's `x` equals the containing block content-box left edge and its width is shrink-to-fit (less than full containing width).
+2. `test_float_right_positions_at_right_edge`: same but `float: right` — assert the float box's right edge aligns to the containing block's content-box right edge.
+3. `test_float_removed_from_vertical_flow`: a `float: left` box followed by a normal block sibling — assert the following in-flow block's `y` is the SAME as it would be if the float child were absent (float does not push it down).
+Build the `Dom` + `ComputedStyle` map the same way existing layout tests in this file do (look at `test_inline_block_shrink_to_fit` ~3481 for the fixture pattern). Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass (regression-free is mandatory).
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/layout/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(layout): basic float:left/right block placement out of normal flow (t0350)"`
+Then STOP. Do not push; the orchestrator will open the PR.

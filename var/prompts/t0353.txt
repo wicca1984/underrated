@@ -1,0 +1,36 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-3 no cross-worktree access, I-4 no skipped/ignored tests).
+
+Work ONLY inside this worktree: /workspaces/wt/t0353 (branch agent/t0353-tests-wiki-oracle). Language for all code/comments/commit messages: English.
+
+## Task (t0353, milestone MS-NewTargets, parallel menu item 6): add a Wikipedia-style oracle snapshot fixture + structural test in `tests/`
+
+Extend the existing oracle snapshot suite with a representative Wikipedia-style article fixture (rich text + a nested-ish structure). This is a TEST-ONLY task — it broadens layout regression coverage (the C-1 horizontal expansion). Do NOT change any engine behavior.
+
+### Hard scope
+- Touch ONLY files under `tests/` (add ONE new HTML fixture under `tests/oracle/fixtures/` and add test(s) in `tests/oracle_snapshot_test.rs`). Do NOT modify any `src/` file. If a test reveals an engine bug, do NOT fix the engine here — instead make the assertion robust (assert only invariants that currently hold) and leave a `// TODO(spec):` note describing what stronger assertion is desired once the engine supports it. The deliverable is GREEN coverage, not an engine change.
+- Do NOT modify or re-record existing fixtures/snapshots (01..08). Purely additive.
+
+### What to add
+1. A new fixture `tests/oracle/fixtures/09_wiki_article.html`: a small, self-contained, Wikipedia-style article — a heading hierarchy (`h1`/`h2`), several paragraphs of body text, an unordered list, an inline-formatted run (e.g. `<b>`/`<i>`/`<a>` inside a paragraph), and ideally a simple two-column-ish or `div`-wrapped section. Keep it modest (a few hundred lines max), use only HTML/CSS features the engine already supports (inspect existing fixtures 02/03/04/07 to see what's exercised). Inline its CSS in a `<style>` block or `style=` attributes, matching how the existing fixtures do it. No external resources.
+2. A test in `tests/oracle_snapshot_test.rs` that renders this fixture through the SAME pipeline the existing snapshot tests use (study how fixtures 07/08 `google_mock`/`google_real` are loaded and turned into the JSON `Value` tree — reuse that exact helper/driver; do NOT write a new rendering path). Then assert structural invariants by calling the existing `assert_structural_invariants(&root)` helper, plus a few targeted, ROBUST assertions using the existing helpers (`find_element_by_tag`, `find_elements_by_tag`, `find_element_by_class`, etc.), e.g.:
+   - the `h1` exists and has a non-empty, non-negative-area rect,
+   - the list items (`li`) are present and each has a non-negative rect,
+   - body paragraphs stack vertically (a later paragraph's rect.y is >= an earlier one's) — only assert this if the existing engine output actually satisfies it; otherwise downgrade to a presence check with a `// TODO(spec):` note.
+Pick assertions you can VERIFY pass by running the test; do not assert speculative behavior.
+
+### Read first
+`tests/oracle_snapshot_test.rs` in full — especially how an existing fixture (07_google_mock / 08_google_real) is read from disk, rendered, and parsed into the `serde_json::Value` you assert against, and the existing helper functions (`assert_structural_invariants`, `find_element_by_tag`, `find_elements_by_tag`, `find_element_by_class`, `assert_centered`, `assert_max_width`). Mirror that driver exactly for the new fixture.
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new test AND every pre-existing test still pass (no existing snapshot may change).
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `tests/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "test(oracle): add Wikipedia-style article snapshot fixture + structural assertions (t0353)"`
+Then STOP. Do not push; the orchestrator will open the PR.

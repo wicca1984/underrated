@@ -1,0 +1,111 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English.
+First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src).
+
+Work ONLY inside this worktree: /workspaces/wt/t0341 (branch agent/t0341-object-fit).
+Language for all code/comments/commit messages: English.
+
+## Task (t0341, milestone MS-NewTargets / News+Wiki images): implement CSS `object-fit` for `<img>` replaced elements.
+
+### Background (verified by the orchestrator — trust these facts)
+- Decoded `<img>` images are currently ALWAYS stretched to exactly fill their layout box (anisotropic
+  scale), i.e. the implicit behavior is `object-fit: fill`. There is NO support for `contain`/`cover`/
+  `none`/`scale-down`, so non-matching aspect ratios are distorted. This task adds that.
+- The image render pipeline has exactly two relevant sites, and this is the WHOLE cohesive concern:
+  1. `src/paint/mod.rs`: the `DisplayItem::Image { rect, src, base_url, decoded }` enum variant is DEFINED
+     near the top of the file (~line 22), and CONSTRUCTED inside `pub fn build_display_list(...)` where the
+     `<img>` element is handled (search for `name == "img"`, ~line 1265, the `dom.get_image(src)` /
+     pre-decoded push at ~line 1287). At that construction site the node's computed `style` is available
+     (the function holds a `styles: &HashMap<NodeId, ComputedStyle>` and the current `node_id`/`style`;
+     mirror how other code reads `style.get("...")` e.g. `style.get("border-color")`).
+  2. `src/raster/mod.rs`: the actual per-pixel nearest-neighbour scale-into-rect lives in the
+     `DisplayItem::Image { .. }` match arm of the rasterizer (~line 163). The current loop maps each
+     destination pixel to `fx = (x - rect.x)/rect_w`, `fy = (y - rect.y)/rect_h` clamped to [0,1], then
+     samples the source. THIS is where the fit math must change.
+
+### Target modules (touch ONLY these two)
+- `src/paint/mod.rs` and `src/raster/mod.rs` (plus their inline `#[cfg(test)] mod tests`).
+- `git diff --name-only origin/main` MUST show ONLY those two files. Do NOT touch style/layout/etc.
+
+### What to implement
+
+#### 1. Carry the fit mode on the display item (`src/paint/mod.rs`)
+- Add a small enum, e.g.:
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum ObjectFit { #[default] Fill, Contain, Cover, None, ScaleDown }
+- Add a field `object_fit: ObjectFit` to the `DisplayItem::Image` variant.
+  (Adding a non-default field forces every construction/match site to update — that is intentional and
+  self-enforcing. Update EVERY `DisplayItem::Image { .. }` you find in paint AND raster, including any in
+  existing `#[cfg(test)]` tests, to set/handle the new field; tests that don't care can use
+  `object_fit: ObjectFit::Fill` or `..` rest patterns where the variant is only read.)
+- At the `<img>` construction site, read the keyword: `style.get("object-fit")` returning
+  `Some(CssValue::Keyword(kw))`; map (case-insensitive, via `kw.to_ascii_lowercase()`):
+    "contain" => Contain, "cover" => Cover, "none" => None, "scale-down" => ScaleDown,
+    "fill" | anything-else | absent => Fill.
+- IMPORTANT scope guard: the SAME file has a SECOND, fallback inline-blit path for images that are NOT
+  pre-decoded (search for the loop right after the `dom.get_image(src)` else-branch, ~line 1294, which
+  blits pixels directly instead of pushing a `DisplayItem::Image`). DO NOT implement object-fit there.
+  Leave that fallback exactly as-is and add ONE comment:
+    `// TODO(spec): object-fit is applied only on the pre-decoded DisplayItem::Image path (see raster); the inline non-pre-decoded blit fallback still stretches (fill).`
+  (The pre-decoded path is the one exercised by tests/fixtures via dom.get_image, so this is sufficient.)
+
+#### 2. Apply the fit math in the rasterizer (`src/raster/mod.rs`)
+Replace the destination→source mapping in the `DisplayItem::Image` arm so it respects `object_fit`.
+Compute, with `img_w = decoded.width as f32`, `img_h = decoded.height as f32` (both > 0, already guarded):
+- Determine a uniform scale `s` (except Fill which is anisotropic):
+    Contain:   s = min(rect_w/img_w, rect_h/img_h)
+    Cover:     s = max(rect_w/img_w, rect_h/img_h)
+    None:      s = 1.0
+    ScaleDown: s = min(1.0, min(rect_w/img_w, rect_h/img_h))
+    Fill:      keep EXACTLY the current behaviour (no aspect preservation) — see regression note below.
+- For the non-Fill modes: drawn size `dw = img_w*s`, `dh = img_h*s`; centre it in the rect:
+    `draw_x0 = rect.origin.x + (rect_w - dw)/2.0`, `draw_y0 = rect.origin.y + (rect_h - dh)/2.0`.
+  Then for each destination pixel (x,y) that you already iterate over (still CLIPPED to the rect and to
+  canvas bounds exactly as now): compute the source sample as
+    `src_fx = (x as f32 + 0.5 - draw_x0) / dw`  (and analogously src_fy with dh)
+  If `src_fx` or `src_fy` is outside [0,1) → this pixel is OUTSIDE the image (letterbox for contain/
+  scale-down) → DO NOT paint it (skip; leave background showing). Otherwise sample
+    `src_x = ((src_fx * img_w).floor() as u32).min(decoded.width - 1)` (same for src_y) and blend as now.
+  For Cover/None where the image overflows the rect, the existing rect-clip on the iteration range means
+  overflowing parts are simply never visited → natural crop. Good.
+- Keep the existing canvas-bounds clipping (`x_start/x_end/y_start/y_end`) and the `blend(...)` call
+  unchanged; only the fx/fy→src mapping and the skip-when-outside logic change.
+
+REGRESSION SAFETY (critical): `object_fit == Fill` MUST produce byte-identical output to today. The
+cleanest way: keep the current `fx/fy` clamped-[0,1] mapping verbatim for the `Fill` branch, and only use
+the new centered/scaled mapping for the other four. Do NOT alter the Fill path's arithmetic.
+
+### Acceptance (must be green) — add unit tests
+There is ALREADY a rasterizer image-scale test in `src/raster/mod.rs` (search for a test that builds a
+small source image, encodes a PNG, and asserts nearest-neighbour scaled output pixels — around line 925).
+COPY its structure. Add `#[test]` cases (do NOT weaken or delete the existing one):
+1. `Fill` (regression): a non-square image into a non-square rect yields the SAME pixels as the existing
+   test already asserts (you may simply keep/extend that test, ensuring it sets `object_fit: Fill`).
+2. `Contain`: a 2x1 (wide) image into a 4x4 rect → image drawn as 4x2 centered vertically; the TOP and
+   BOTTOM rows of the rect are NOT painted (assert those destination pixels keep the pre-fill background
+   color), while the middle band shows the image.
+3. `Cover`: a 2x1 image into a 2x2 rect → image scaled to cover (2x... cropped) so the ENTIRE rect is
+   painted (no untouched background pixel), and vertical centering crops top/bottom of the source.
+4. `None`: a 2x2 image into a 4x4 rect → drawn at intrinsic 2x2 centered (the 2x2 center region painted,
+   the surrounding border NOT painted).
+Use a distinct, easily-checked background fill before rasterizing so "not painted" is assertable. Pick
+exact pixels and assert their RGBA. Build the `DisplayItem::Image` with the appropriate `object_fit`.
+Do NOT add `#[ignore]`. Do NOT delete or weaken any existing test in either file.
+
+### Constraints (hard)
+- Modify ONLY `src/paint/mod.rs` and `src/raster/mod.rs`. Nothing else.
+- No `unwrap`/`expect`/`panic!` added in non-test src code (I-6). Use `if let`/`match`/`.min()` etc.
+- Must pass: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test`, `cargo build`.
+- If anything is ambiguous or conflicts with real browser behaviour, do NOT guess silently — leave a
+  `// TODO(spec):` and note it in your final summary.
+
+### Finish (MANDATORY — commit before you exit; the orchestrator force-removes the worktree)
+From /workspaces/wt/t0341 run:
+  cargo fmt --all
+  cargo clippy --all-targets --all-features -- -D warnings
+  cargo test
+Then:
+  git add -A
+  git commit -m "feat(paint,raster): implement CSS object-fit (contain/cover/none/scale-down) for img (t0341)"
+Print the final `git log --oneline -1` and a one-paragraph summary of what changed (files, behavior, any TODO(spec)).
+Do NOT open a PR (the orchestrator does that).

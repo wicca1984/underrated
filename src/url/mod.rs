@@ -573,7 +573,10 @@ mod tests {
         let base = Url::parse("https://www.google.com/").unwrap();
         let rel = "/images/branding/x.png";
         let resolved = resolve(&base, rel).unwrap();
-        assert_eq!(resolved.serialize(), "https://www.google.com/images/branding/x.png");
+        assert_eq!(
+            resolved.serialize(),
+            "https://www.google.com/images/branding/x.png"
+        );
 
         // Option B: path relative
         let base_b = Url::parse("https://www.google.com/a/b").unwrap();

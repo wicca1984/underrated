@@ -1,0 +1,45 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0371 — layout: implement `clear` (float clearance) (MS-NewTargets menu #1, layout slice)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0371
+Branch: agent/t0371-layout-clear (already checked out). Language for code/comments/commit = English.
+
+## Background
+The CSS `clear` property is currently NOT implemented. `src/layout/float.rs:8` carries a stale directive
+`// TODO(spec): DO NOT implement clear.` and `src/layout/mod.rs:259` notes clearance is out of scope.
+The PdM has now EXPLICITLY UNBLOCKED this: the old "do not implement" instruction is DISCARDED. Implement `clear`.
+
+## Spec (S-: pick the next free S-number in docs/SPEC and record it in the commit body)
+`clear: left | right | both | none` (default `none`). A block-level box with a `clear` value must be pushed
+DOWN (its top margin edge moved) so that its top is below the bottom outer edge of any earlier floats in the
+same block formatting context on the specified side(s):
+- `clear: left`  -> below all earlier left floats.
+- `clear: right` -> below all earlier right floats.
+- `clear: both`  -> below all earlier floats (left and right).
+- `clear: none`  -> no constraint (current behavior).
+Implement this as clearance added during block layout: when laying out a block child that has `clear`, compute
+the maximum bottom edge of the relevant active floats and advance the current block cursor `y` to at least that
+value before placing the child. Use the existing float bookkeeping in `src/layout/float.rs` (the structure that
+already tracks placed floats / their bottom edges). If float state is not currently threaded into block flow,
+thread the MINIMUM needed read-only accessor — but keep ALL changes inside `src/layout/`.
+
+## Constraints (HARD)
+- Touch ONLY files under `src/layout/`. Do NOT modify paint/, engine/, style/, or any other module.
+- Remove the stale `// TODO(spec): DO NOT implement clear.` line and correct the `src/layout/mod.rs:259` comment.
+- `clear` must be read via the normal computed-style lookup path used by other layout properties in this module
+  (do not invent a new style plumbing layer). If the property value is absent, treat as `none`.
+- No `unwrap()`/`expect()`/`panic!` in non-test code. No `#[allow(...)]` to silence warnings. No recursion added
+  to hot layout paths (keep existing iterative style — I-6).
+- Do NOT delete or weaken any existing test.
+
+## Tests (MANDATORY)
+Add unit tests in `src/layout/` (e.g. in float.rs or mod.rs test module) asserting:
+1. A left float followed by a sibling block with `clear: left` places that block's top at/below the float bottom.
+2. `clear: none` (or absent) leaves the sibling at its normal flow position (regression guard).
+Build the layout tree via the existing test helpers already used in this module's tests.
+
+## Definition of done
+`cd /workspaces/wt/t0371 && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test` all green,
+then `git add -A && git commit` with message `feat(layout): implement clear property for float clearance (t0371)`.
+COMMIT IS MANDATORY before you finish.

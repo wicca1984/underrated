@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  h3 { margin: 8px 0; }
+  table { border-spacing: 12px; margin-bottom: 24px; }
+  td { border: 2px solid #333; background: #cde; padding: 6px; }
+  table.collapse { border-collapse: collapse; }
+</style>
+</head>
+<body>
+  <h3>separate (border-spacing: 12px)</h3>
+  <table>
+    <tr><td>A1</td><td>A2</td><td>A3</td></tr>
+    <tr><td>B1</td><td>B2</td><td>B3</td></tr>
+  </table>
+
+  <h3>border-collapse: collapse (spacing zeroed)</h3>
+  <table class="collapse">
+    <tr><td>A1</td><td>A2</td><td>A3</td></tr>
+    <tr><td>B1</td><td>B2</td><td>B3</td></tr>
+  </table>
+</body>
+</html>

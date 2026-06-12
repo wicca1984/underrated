@@ -1,0 +1,69 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English.
+First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src).
+
+Work ONLY inside this worktree: /workspaces/wt/t0342 (branch agent/t0342-vertical-align-length).
+Language for all code/comments/commit messages: English.
+
+## Task (t0342, milestone MS-NewTargets / Wiki rich text): implement `<length>` and `<percentage>` values for CSS `vertical-align` on inline boxes.
+
+### Background (verified by the orchestrator — trust these facts)
+- The ONLY place inline `vertical-align` is consumed is the function `get_vertical_align_shift(...)` in
+  `src/layout/inline.rs` (starts ~line 44). It currently handles ONLY the keywords
+  `baseline`/`sub`/`super`/`text-top`/`top`/`text-bottom`/`bottom`/`middle`, and its `_ =>` arm (~line 70)
+  has a `TODO(spec)` returning `0.0` for `<percentage>` and `<length>` values. This task replaces that
+  TODO arm with real handling. Do NOT change the existing keyword arms.
+- Coordinate/sign convention IN THIS CODE (read the existing arms to confirm): the returned `shift` is
+  ADDED to the box's vertical position, and a POSITIVE shift moves the box DOWN, NEGATIVE moves it UP.
+  Evidence: `"sub" => 0.2 * font_size` (sub lowers the box → positive) and `"super" => -0.2 * font_size`
+  (super raises the box → negative).
+- Per CSS, a POSITIVE `vertical-align` length/percentage RAISES the box. So a positive CSS value must
+  produce a NEGATIVE shift here (multiply the raised amount by -1).
+- `style.get("vertical-align")` currently only matches `CssValue::Keyword(..)`. You must ALSO match
+  `CssValue::Length(value, unit)`. The relevant enum (in `src/css/values.rs`, do NOT edit that file):
+    pub enum CssValue { Keyword(String), Length(f32, LengthUnit), Number(f32), ... }
+    pub enum LengthUnit { Px, Em, Rem, Pt, Percent, Vw, Vh }
+- A helper `get_font_size(style) -> f32` already exists in this same file (returns px); use it for Em/Rem.
+
+### Target module (touch ONLY this one)
+- `src/layout/inline.rs` (implementation + its inline `#[cfg(test)] mod tests`).
+- `git diff --name-only origin/main` MUST show ONLY `src/layout/inline.rs`. Do NOT touch css/values.rs,
+  style/, paint/, or anything else.
+
+### What to implement (inside `get_vertical_align_shift`)
+Restructure the `if let Some(CssValue::Keyword(kw)) = style.get("vertical-align")` block so it ALSO
+handles `CssValue::Length(v, unit)`. Compute the raised-amount `raise` (positive = raised) then push
+`total_shift += -raise` (negative shift = up), matching the sign convention above:
+- `LengthUnit::Px` or `LengthUnit::Pt`: `raise = v` (treat pt as px, consistent with the rest of the
+  engine which already collapses non-px absolute units to px in `get_font_size`).
+- `LengthUnit::Em`: `raise = v * get_font_size(style)`.
+- `LengthUnit::Rem`: `raise = v * get_font_size(style)` (rem is resolved to the element's font-size here;
+  the engine has no separate root font-size plumbing in this module — keep it equal to Em to stay in
+  scope; add a one-line `// NOTE:` explaining this approximation).
+- `LengthUnit::Percent`: per spec, a percentage is relative to the element's `line-height`. Use the
+  `line_height` parameter already passed into this function: `raise = (v / 100.0) * line_height`.
+- `LengthUnit::Vw | Vh`: out of scope here — leave a `// TODO(spec):` and treat as `0.0` (no shift).
+Keep the existing keyword `match` fully intact for the Keyword case.
+
+### Tests (REQUIRED — real assertions, never skipped/ignored — I-4)
+Add `#[cfg(test)]` unit tests in this file (mirror the existing `test_white_space_*` style — build a DOM,
+parse a stylesheet, run inline layout, assert positions). Cover at minimum:
+1. `vertical-align: 4px` raises an inline `<span>` (its fragment top is HIGHER, i.e. smaller y, than the
+   same content with `baseline`). Assert the delta equals 4px.
+2. `vertical-align: -3px` lowers it by 3px.
+3. `vertical-align: 0.5em` with a known font-size raises by `0.5 * font_size` px.
+4. `vertical-align: 50%` raises by half the line-height.
+If asserting absolute fragment y is awkward, assert the RELATIVE delta between a baseline span and the
+shifted span on the same line (this isolates the shift and is robust). Prefer testing
+`get_vertical_align_shift` outputs directly if the function visibility allows it within the module.
+
+### Done criteria (all required before you finish)
+1. `cargo build` clean.
+2. `cargo test` green (run the inline-layout tests; do not skip/ignore anything — I-4).
+3. `cargo fmt --all` applied and `cargo clippy --all-targets -- -D warnings` clean.
+4. `git diff --name-only origin/main` shows ONLY `src/layout/inline.rs`.
+5. COMMIT your work in this worktree before finishing (do NOT leave changes uncommitted):
+   git add -A && git commit with message:
+   `feat(layout): support <length>/<percentage> vertical-align on inline boxes (t0342)`
+   Then print the commit hash and `git diff --name-only origin/main`.
+
+Report concisely in English: what you changed, test names added, and the final commit hash.

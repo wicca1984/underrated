@@ -1,0 +1,39 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0358 (branch agent/t0358-forms-input-type). Language for all code/comments/commit messages: English.
+
+## Task (t0358, milestone MS-NewTargets): parse the `<input type>` attribute into a typed `InputType` enum in `src/forms/`
+
+Implement parsing of the HTML `<input>` element's `type` attribute string into a typed enum (e.g. `InputType`), so that future form-handling code can match on a typed value instead of raw strings. This is PARSE-ONLY and ADDITIVE: introduce the enum and a parse function and unit tests. Do NOT rewrite or refactor the existing string-based logic in `src/forms/mod.rs` (e.g. the existing `eq_ignore_ascii_case("radio")` / `matches!(input_type.as_str(), "checkbox" | "radio")` call sites) — leave all current behavior and call sites exactly as-is. Just add the new typed layer alongside them.
+
+### Hard scope
+- Touch ONLY files under `src/forms/` (add the enum + parse fn either inside `src/forms/mod.rs` or a new submodule `src/forms/input_type.rs` with a `mod input_type;` line — mirror whatever submodule convention this crate already uses). Do NOT modify any other module.
+- Do NOT change, delete, or refactor any existing function, field, or test in `src/forms/`. Additive only.
+- No `unwrap`/`expect` in non-test src code (I-6).
+
+### Read first
+Skim `src/forms/mod.rs` to see how `type` is currently read as a string and how other small enums/typed values in this codebase are defined (look at the keyword-enum style used elsewhere, e.g. typed CSS keyword enums, for derive sets and naming). Mirror that style.
+
+### What to build
+- An `InputType` enum covering at least the standard control types: `Text`, `Password`, `Checkbox`, `Radio`, `Submit`, `Reset`, `Button`, `Hidden`, `File`, `Email`, `Number`, `Search`, `Tel`, `Url`, plus a fallback. Per the HTML spec, an `<input>` with a missing or unknown `type` defaults to **Text** — model this (e.g. parse returns `InputType::Text` for unknown/empty, matching the HTML "the missing/invalid value default is Text" rule). Matching MUST be ASCII case-insensitive (HTML attribute keywords are case-insensitive), consistent with the existing `eq_ignore_ascii_case` usage in this module.
+- A parse function (e.g. `InputType::from_attr(&str) -> InputType` or `parse_input_type(&str) -> InputType`) implementing the above. Add a `Default` impl returning `Text` if it fits the established pattern.
+
+### Tests (add a `#[cfg(test)]` module, or extend the existing one, in `src/forms/`)
+Add at least:
+1. Each known keyword (including mixed-case forms like `"CheckBox"`, `"RADIO"`) parses to the correct variant.
+2. An unknown value (e.g. `"bogus"`) and the empty string both parse to `InputType::Text` (the HTML default).
+Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/forms/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(forms): parse input type attribute into typed InputType enum (t0358)"`
+Then STOP. Do not push; the orchestrator will open the PR.

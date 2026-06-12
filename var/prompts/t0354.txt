@@ -1,0 +1,35 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0354 (branch agent/t0354-css-white-space). Language for all code/comments/commit messages: English.
+
+## Task (t0354, milestone MS-NewTargets): parse the CSS `white-space` property into a typed value in `src/css/`
+
+Implement parsing of the `white-space` CSS property keyword values into a typed `CssValue`, mirroring exactly how other keyword-valued properties are already parsed and stored in this crate. This is PARSE-ONLY: do NOT change layout, inline text shaping, or paint behavior — only recognize and store the value so a future layout task can consume it.
+
+### Hard scope
+- Touch ONLY files under `src/css/` (typically `src/css/values.rs` and `src/css/parser.rs`). Do NOT modify `src/layout/`, `src/style/`, `src/paint/`, etc. — other workers own those.
+- Add a typed representation for the value set: `normal | nowrap | pre | pre-wrap | pre-line` (these are the standard `white-space` keywords). Follow the SAME pattern the codebase already uses for similar keyword enums (study how `display`, `position`, `overflow`, or `z-index` are represented as typed `CssValue` variants and parsed). Add a new enum (e.g. `WhiteSpace`) and a `CssValue` variant, OR reuse the existing keyword mechanism — match whatever the established pattern is. Unknown/invalid keywords must be rejected (return None / fall through) exactly like the existing parsers do for that property family.
+- Pure, additive behavior. Do NOT regress any existing test or snapshot.
+
+### Read first
+Study `src/css/values.rs` and `src/css/parser.rs`: find an existing simple keyword property (e.g. `position`, `overflow`) and mirror its enum definition, its `CssValue` variant, and its parse arm precisely. Match naming, error handling, and module conventions.
+
+### Tests (add `#[cfg(test)]` tests in the same module as the existing CSS-value parser tests)
+Add at least:
+1. A test that each valid keyword (`normal`, `nowrap`, `pre`, `pre-wrap`, `pre-line`) parses to the correct typed variant.
+2. A test that an invalid keyword (e.g. `white-space: bogus`) does NOT produce a `WhiteSpace` value (rejected / None), consistent with sibling parsers.
+Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/css/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(css): parse white-space keyword into typed CssValue (t0354)"`
+Then STOP. Do not push; the orchestrator will open the PR.

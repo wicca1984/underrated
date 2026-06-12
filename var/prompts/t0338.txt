@@ -1,0 +1,53 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English.
+First, read the entire AGENTS.md passed via --include-directories and follow all of it (esp. I-1..I-7). One task = one module/concern.
+
+Task: t0338 (milestone MS-MVP-LAYOUT). Make an auto-width `display:inline-block` whose children are BLOCK-LEVEL shrink-to-fit to its content's intrinsic (max-content) width, instead of stretching to the full available width. This is a LAYOUT-ONLY task: the ONLY production file you may modify is `src/layout/mod.rs`.
+
+THE BUG (root cause already isolated by the orchestrator on the real Google page — do NOT re-investigate, just fix):
+On real Google, each form button is `<span class="ds"><span class="lsbb"><input class="lsb" type="submit"></span></span>` where (from the page's embedded CSS) `.ds{display:inline-block}` and `.lsbb{display:block;background:#f3f5f6;height:30px}`. The `.ds` inline-block has auto width, so it MUST shrink-to-fit to its content (the ~88px button). Instead it lays out at the FULL container width (~1020px), so the gray `.lsbb` block paints a full-viewport-width gray bar behind the centered button. Verified in the shipping-path snapshot: the `.ds` and `.lsbb` rects are width≈1020 while the `<input>` inside is correctly ~88px and centered.
+
+WHY it happens (in `layout_node`, src/layout/mod.rs):
+- A node whose children are all block-level takes the `} else if !has_inline {` branch (~line 271). There, each block child is laid out via `layout_node(..., content_width, ...)` using the FULL available `content_width`. A block child with `width:auto` (like `.lsbb`) therefore fills that full width.
+- AFTER the children pass, `calculate_shrink_to_fit_width(...)` (~line 415, fn at ~line 666) is called. For an `inline-block` with no explicit width it computes `max_child_right` from each child's ALREADY-LAID-OUT `child.rect.max_x() - content_start_x`. Because the block child was stretched to full width, `max_child_right` ≈ full width, so NO shrink happens.
+- You CANNOT recover the real intrinsic width from the laid-out boxes: the actual content (the `<input>`) is CENTERED inside the stretched `.lsbb` via `text-align:center`, so its right edge sits near the container's center, not at `intrinsic_width`. The shrink width must be computed from a LAYOUT-INDEPENDENT max-content pass.
+
+For comparison, the all-inline shrink-to-fit case already works correctly (`has_inline && !has_block` branch + `recenter_inline_children`, ~line 426). Do NOT touch that path. This task adds the missing BLOCK-children case.
+
+THE FIX (three coordinated pieces, all inside src/layout/mod.rs):
+
+1. Add a layout-independent intrinsic max-content width helper. Mark it `#[inline(never)]` (Windows 1 MiB stack regression guard — see existing `recenter_inline_children` rationale and `test_deep_tree_recursion_cap`). Suggested signature:
+   `#[inline(never)] fn max_content_width(dom: &Dom, styles: &HashMap<NodeId, ComputedStyle>, node: NodeId, depth: usize) -> f32`
+   Semantics — return the CONTENT-box max-content (preferred) width of `node`'s subtree (callers add this node's own horizontal padding/border). Cap recursion with the existing `MAX_DEPTH` guard (return 0.0 past it). For `node`:
+   - If `node`'s style has an explicit px `width` (`CssValue::Length(v, Px)`, or `CssValue::Number(0.0)`), return that `v` (0.0 for the unitless-zero case) — an explicit width fixes the content width. (Do not add padding/border here; this returns the content width.)
+   - Else if `get_form_control_button_label(dom, node)` is Some(label): return `crate::font::BitmapFont::builtin().measure(&label) as f32` (mirror the existing special-case at ~line 683 so the `<input>` button contributes its label width).
+   - Else if `node` is a Text node: return `crate::font::BitmapFont::builtin().measure(text) as f32` (max-content = unbroken text width; you may measure the whole text string).
+   - Else (element with children): gather `get_layoutable_children(dom, styles, node)`. Compute each child's OWN border-box max-content contribution = `max_content_width(child, depth+1)` + that child's horizontal padding+border (use the same `get_px`/border helpers used elsewhere in this file; skip absolutely/fixed-positioned children via the existing `is_absolute_or_fixed`). Then:
+       * if the node has ANY block-level child (`!is_inline_level` for some child): result = MAX of the children's contributions (block children stack vertically, so the widest wins).
+       * else (all inline children): result = SUM of the children's contributions (inline children flow horizontally on one max-content line).
+     Return that. Keep it simple and self-contained; do NOT try to model wrapping, floats, margins, or white-space collapsing beyond what the surrounding code already does — this is a first-cut intrinsic sizer for the real-Google button case.
+
+2. In `calculate_shrink_to_fit_width`, handle the block-children case. The current body only derives width from laid-out `children` rects. Add a parameter so it knows whether the children were block-level (e.g. add `has_block_children: bool` and pass `has_block` from the call site at ~line 415), OR pass `dom`/`styles` (it already has `dom`) and recompute. When `is_inline_blk && !has_width && has_block_children`: set the candidate width to `max_content_width(dom, styles, node, depth)` (you will need to thread `styles` and a `depth` into this fn — add them as parameters and update the single call site) instead of (or in addition to: take the MIN with) the laid-out `max_child_right`. Return `Some(candidate.min(auto_width.max(0.0)))`. Leave the all-inline branch's existing behavior byte-for-byte unchanged.
+
+3. Re-layout the block children at the shrunk width. After `content_width = w;` (~line 423), mirror the existing inline re-center guard but for the block branch: when `!has_inline && has_block && content_width != inline_pass_width`, clear the block child boxes you pushed and re-run the `!has_inline` block-children layout loop against the new (smaller) `content_width`, replacing those boxes and recomputing `child_cursor_y`. Use `children.truncate(prev_len)` with a `prev_len = children.len()` captured BEFORE the block loop (be precise — do not `clear()`). Factor the re-layout into a `#[inline(never)]` helper (e.g. `relayout_block_children`) for the same stack-frame reason, OR carefully reuse a small loop; keep `layout_node`'s own frame from growing. This makes `.lsbb` (width:auto block child) shrink to the `.ds` shrink width so the gray bar hugs the button.
+
+Do NOT change: the all-inline (`has_inline && !has_block`) branch, the MIXED branch, `recenter_inline_children`, the centering formula in `src/layout/inline.rs`, or any other module. If you think the MIXED branch needs the same treatment, leave a `// TODO(spec): block-child shrink-to-fit also needed for mixed runs` comment and keep this task scoped.
+
+SCOPE — STRICT, ONE MODULE. `git diff --name-only origin/main...HEAD` MUST list ONLY `src/layout/mod.rs` (plus any `var/` html/png you create). Do NOT modify, delete, weaken, rename, or `#[ignore]` ANY existing test anywhere. If you believe you must touch another file, STOP, leave a `// TODO(spec):` note, and report the blocker.
+
+REQUIRED NEW TEST (add to the existing `#[cfg(test)] mod tests` in `src/layout/mod.rs`; mirror the setup of `test_inline_block_shrink_to_fit` / `test_form_control_button_intrinsic_width_and_height`). Must FAIL before your fix and PASS after:
+- `test_inline_block_with_block_child_shrinks_to_content`: build a DOM equivalent to
+  `<div class="c"><span class="ds"><span class="lsbb"><input type="submit" value="Go"></span></span></div>`
+  with styles `.c` (no special width), `.ds{display:inline-block}` (auto width), `.lsbb{display:block}` (auto width). Lay out under a large containing width (e.g. 1000). Assert BOTH the `.ds` box AND the `.lsbb` box have `rect.width` approximately equal to the button's intrinsic width (the measured label width of "Go" within ~a few px), and clearly LESS than the containing width (e.g. `< 300.0`, NOT ~1000). You MAY instead drive it through `crate::oracle::export_snapshot(html, "", 1000, 200)` and assert the `.ds`/`.lsbb` rect widths are small (< 300) — pick ONE approach and make it green. Read `test_form_control_button_intrinsic_width_and_height` for the exact label-measure helper usage.
+
+GATES (all must pass before commit):
+- `cargo test` (ENTIRE suite) green — your new test AND all existing tests, ESPECIALLY `tests/oracle_snapshot_test.rs` (`07_google_mock` and all `test_inline_block_*` / `test_text_align_*` / `test_form_control_*`). If ANY existing test regresses, your fix is wrong — fix the approach, do NOT weaken the test.
+- `cargo clippy --all-targets -- -D warnings` clean (NO `unwrap`/`expect` in non-test production code — I-6).
+- `cargo fmt` then `cargo fmt --check` clean.
+
+VERIFIED-IN-WINDOW (REQUIRED — this changes rendering geometry): after gates pass, `mkdir -p var` then create `var/t0338-stf-block-child.html` containing EXACTLY:
+<html><head><style>.ds{display:inline-block;margin-left:4px}.lsbb{display:block;background:#f3f5f6;border:solid 1px #999;height:30px}.lsb{height:30px;border:none;font:15px sans-serif}.c{text-align:center}</style></head><body><div class="c"><span class="ds"><span class="lsbb"><input class="lsb" value="Google Search" type="submit"></span></span></div></body></html>
+then render the shipping-path PNG and SAVE it:
+cargo run --example render_local_png -- /workspaces/wt/t0338/var/t0338-stf-block-child.html --width 1024 --height 120 --out /workspaces/wt/t0338/var/t0338-stf-block-child.png
+The PNG MUST show a SHORT gray button box hugging the "Google Search" label and CENTERED in the 1024px viewport — NOT a full-width gray bar spanning the whole 1024px. Report the saved PNG path. (The orchestrator will independently re-dump the real Google snapshot and confirm `.ds`/`.lsbb` are no longer full-width before merge.)
+
+COMMIT: after ALL gates pass AND the PNG is saved, `git add -A` then `git commit -m "fix(layout): shrink-to-fit inline-block with block children to content max-content width (t0338)"`. Then run `git diff --name-only origin/main...HEAD` and confirm ONLY `src/layout/mod.rs` (plus var/ html+png) is listed. Do NOT push and do NOT open a PR — the orchestrator reviews, gates, and merges. Report a concise summary: the change, the new test, gate results, and the saved PNG path.

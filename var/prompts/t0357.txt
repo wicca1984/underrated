@@ -1,0 +1,32 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0357 (branch agent/t0357-news-oracle). Language for all code/comments/commit messages: English.
+
+## Task (t0357, milestone MS-NewTargets): add a News-site oracle snapshot fixture + structural assertions in `tests/`
+
+Add a representative News-article HTML fixture and a structural-invariant snapshot test, MIRRORING EXACTLY the Wikipedia fixture/test added in task t0353 (fixture `tests/oracle/fixtures/09_wiki_article.html` and `fn test_fixture_09_wiki_article` in `tests/oracle_snapshot_test.rs`). This is a TEST-ONLY task: do NOT change any engine code under `src/` — only add a fixture and a test that asserts layout/structure invariants on the existing engine output.
+
+### Hard scope
+- Touch ONLY files under `tests/` (add `tests/oracle/fixtures/10_news_article.html` and add ONE new test function to `tests/oracle_snapshot_test.rs`). Do NOT modify any file under `src/`. Do NOT modify the existing fixtures 01–09 or the existing test functions.
+- Purely additive. Do NOT regress any existing test.
+
+### Read first
+Study `tests/oracle_snapshot_test.rs`: in particular `fn test_fixture_09_wiki_article` and the helpers `load_fixture_snapshot`, `find_element_by_tag`, `find_elements_by_tag`, `find_element_by_class`, `assert_structural_invariants`. Study `tests/oracle/fixtures/09_wiki_article.html` to mirror its style (inline `<style>`, semantic structure). Match naming, snapshot-loading, and assertion conventions EXACTLY.
+
+### What to build
+1. `tests/oracle/fixtures/10_news_article.html`: a self-contained News-article page mock (no external resources). Include a clear semantic structure that your test can assert on, e.g.: a `<header>` with the site name in an `<h1>`, an article `<h2>` headline, a byline `<p class="byline">`, at least two body `<p>` paragraphs in vertical document order, and a related-links `<ul>` with several `<li>`. Use inline `<style>` only (sans-serif body, fixed-width container) like the wiki fixture. Keep it ASCII-only text (the font atlas is ASCII-only).
+2. `fn test_fixture_10_news_article` in `tests/oracle_snapshot_test.rs`: load the fixture snapshot and assert structural invariants mirroring the wiki test — e.g. root tag is `html`; the `h1` and the article `h2` exist with positive width/height; assert the exact expected count of `<p>` and `<li>` elements; assert at least two consecutive paragraphs are in top-to-bottom document order (paragraph N+1's `y` >= paragraph N's bottom, with the same small tolerance the wiki test uses). Use only the existing helper functions. Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new test AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `tests/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "test(oracle): add News-article snapshot fixture + structural assertions (t0357)"`
+Then STOP. Do not push; the orchestrator will open the PR.

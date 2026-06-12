@@ -1,0 +1,62 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0348 (branch agent/t0348-css-opacity-parse). Language for all code/comments/commit messages: English.
+
+## Task (t0348, milestone MS-NewTargets, parallel menu item 1): parse the CSS `opacity` property into a typed `CssValue` variant (a clamped alpha in [0.0, 1.0]).
+
+### Background (verified by the orchestrator — trust these facts)
+- The PRIMARY change goes in `src/css/values.rs`. You MUST also update two small, MANDATORY-for-compilation sites:
+  `src/style/mod.rs` (dispatch the property name to your new parser) and `src/script/mod.rs` (one new arm in the
+  exhaustive `match` inside `css_value_to_string`). These three edits are the SAME shape that the just-merged t0346
+  (`z-index`) task used — mirror it exactly. Touch NO other files/modules.
+- `src/css/values.rs` defines `pub enum CssValue { ... }`. The most recent variant added was `ZIndex(ZIndex)` (see
+  around line 108/128). There is an established pattern: a dedicated `pub fn parse_z_index(...) -> Option<CssValue>`
+  plus a `#[cfg(test)] fn test_parse_z_index()`. STUDY `parse_z_index` and `test_parse_z_index` in this file and
+  mirror their structure for opacity. Do NOT modify z-index code.
+- `src/style/mod.rs` `compute_node_style` has a branch chain like:
+    `if name.eq_ignore_ascii_case("transform") { parse_transform(...) }`
+    `else if name.eq_ignore_ascii_case("z-index") { parse_z_index(...) }`
+    `else { parse_value(...) }`
+  Add an `else if name.eq_ignore_ascii_case("opacity")` arm calling your new parser. Do NOT remove existing arms.
+- `src/script/mod.rs` `css_value_to_string` is an exhaustive `match` over `CssValue`. Adding a new variant REQUIRES a
+  new arm there (the compiler will fail otherwise). Add ONLY the `CssValue::Opacity(..)` arm; change nothing else.
+
+### The fix
+1. In `src/css/values.rs`, add a new variant `Opacity(f32)` to `pub enum CssValue` (place it next to `ZIndex`).
+2. Add `pub fn parse_opacity(value: &str) -> Option<CssValue>` that parses per the CSS spec:
+   - A bare `<number>` (e.g. `0`, `1`, `0.5`, `.25`, `1.0`) → that number.
+   - A `<percentage>` (e.g. `50%`) → number/100 (so `50%` → `0.5`).
+   - CLAMP the result to the range [0.0, 1.0] (values <0 become 0.0, values >1 become 1.0; `150%` → 1.0, `-5` → 0.0).
+   - Trim surrounding whitespace. Reject clearly invalid input (empty, non-numeric like `abc`, a lone `%`) with `None`.
+   - Return `Some(CssValue::Opacity(clamped))`.
+   - Do NOT use `unwrap`/`expect` in this `src` code (I-6) — use `str::parse::<f32>()` with `.ok()?` / `match`.
+   Note on parsing: leverage existing helpers in this file if one already extracts a number / percentage (search the
+   file before writing new parsing). Otherwise parse with `f32` directly. Keep it self-contained and small.
+3. In `src/style/mod.rs`, add the `opacity` dispatch arm (see above).
+4. In `src/script/mod.rs`, add the `CssValue::Opacity(a) => a.to_string()` arm to `css_value_to_string` (match the
+   exact formatting style of neighboring arms; a plain numeric string is fine).
+
+### Tests (REQUIRED — real assertions, never skipped/ignored — I-4; tests may use unwrap/expect)
+Add `#[cfg(test)]` unit tests in `src/css/values.rs`, mirroring `test_parse_z_index`. Cover at minimum:
+1. Bare numbers: `parse_opacity("0")` → `Opacity(0.0)`, `parse_opacity("1")` → `Opacity(1.0)`,
+   `parse_opacity("0.5")` → `Opacity(0.5)`, `parse_opacity(".25")` → `Opacity(0.25)`.
+2. Percentages: `parse_opacity("50%")` → `Opacity(0.5)`, `parse_opacity("100%")` → `Opacity(1.0)`.
+3. Clamping: `parse_opacity("1.5")` → `Opacity(1.0)`, `parse_opacity("-0.2")` → `Opacity(0.0)`,
+   `parse_opacity("150%")` → `Opacity(1.0)`, `parse_opacity("-10%")` → `Opacity(0.0)`.
+4. Whitespace: `parse_opacity("  0.3  ")` → `Opacity(0.3)`.
+5. Invalid → `None`: `parse_opacity("")`, `parse_opacity("abc")`, `parse_opacity("%")`.
+   (For f32 equality in asserts, compare exact values you control like 0.0/0.5/1.0, or match on the variant and use
+   an epsilon check — mirror however nearby float tests in this repo assert, if any.)
+
+### Done criteria (all required before you finish)
+1. `cargo build` is clean (no new warnings for your code).
+2. `cargo test` passes (the whole suite; your new tests included). No tests skipped/ignored.
+3. `cargo clippy --all-targets -- -D warnings` is clean for your changes.
+4. `cargo fmt` applied.
+5. Scope: `git diff --name-only origin/main` shows ONLY `src/css/values.rs`, `src/style/mod.rs`, `src/script/mod.rs`.
+   No other files.
+6. COMMIT your work on branch `agent/t0348-css-opacity-parse` with a Conventional Commit message, e.g.
+   `feat(css): parse opacity into typed CssValue (clamped [0,1] number/percentage) (t0348)`.
+   Do NOT open a PR yourself; the orchestrator will gate, review, and merge. Just commit.
+
+When finished, print `git diff --name-only origin/main` and the final `cargo test` summary line.

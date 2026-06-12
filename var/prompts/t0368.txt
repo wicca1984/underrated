@@ -1,0 +1,42 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0368 — script: skip oversized scripts entirely instead of truncating (MS-MVP-Live #7)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0368
+Branch: agent/t0368-script-skip-oversized-js (already checked out). Language for code/comments/commit = English.
+
+## Background
+In `src/script/mod.rs`, when the script-limits feature is enabled, an oversized script (char count >
+`MAX_SCRIPT_LENGTH`, default 5000) is currently TRUNCATED to the first `max_len` chars and then evaluated.
+This is dangerous: a half-parsed script can mutate the DOM into a broken partial state. The MVP policy is to
+SKIP oversized scripts ENTIRELY (do not evaluate them at all), leaving the DOM untouched.
+
+Find the evaluation site around line 2180 (`let final_src = if is_limit { ... src.chars().take(max_len)... }`).
+
+## Spec
+- When limits are enabled AND `src.chars().count() > max_len`: do NOT evaluate the script. Skip it cleanly and
+  return success (no-op) so the rest of the page proceeds. Optionally log/note via an existing logging mechanism
+  if one is already used nearby; otherwise just skip silently. Do NOT introduce new panics or errors for this case.
+- When under the limit (or limits disabled): behave exactly as today (evaluate the full source).
+- Remove the now-incorrect truncation logic (`src.chars().take(max_len).collect()`). Update the nearby doc
+  comment (currently says "Scripts exceeding this limit will be truncated or aborted safely.") to state that
+  oversized scripts are skipped entirely.
+
+## Constraints (HARD)
+- Touch ONLY `src/script/mod.rs`. Do NOT modify any other module.
+- No `unwrap()`/`expect()`/`panic!` in non-test code. No `#[allow(...)]` to silence warnings.
+- Do NOT delete or weaken any existing test in any file. If an existing test asserted truncation behavior,
+  adapt it to the new skip behavior ONLY if it now fails (and explain in the commit body).
+
+## Tests (MANDATORY) — add to the `#[cfg(test)] mod tests` in `src/script/mod.rs`
+1. Enable limits, set a small MAX_SCRIPT_LENGTH (e.g. 20), run an oversized script that WOULD mutate global
+   state if executed (e.g. sets a window/global var or document title). Assert the mutation did NOT happen
+   (script was skipped), and that evaluation returned without error.
+2. Enable limits, run an under-limit script that performs the same mutation. Assert the mutation DID happen
+   (normal evaluation still works).
+Read how existing script tests construct the engine / drive evaluation and reuse that exact harness.
+
+## Definition of done
+`cd /workspaces/wt/t0368 && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test` all green,
+then `git add -A && git commit` with message `feat(script): skip oversized scripts entirely instead of truncating (t0368)`.
+COMMIT IS MANDATORY before you finish.

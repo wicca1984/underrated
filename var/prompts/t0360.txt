@@ -1,0 +1,47 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0360 (branch agent/t0360-layout-box-rect-query). Language for all code/comments/commit messages: English.
+
+## Task (t0360, milestone MS-NewTargets): absolute-rect lookup over the layout tree in `src/layout/`
+
+This is the FOUNDATION for `Element.getBoundingClientRect()`. You will add a pure, additive query that, given the root `LayoutBox` and a target `NodeId`, returns the laid-out box's geometry. The actual JS/DOM binding is a SEPARATE later task — do NOT touch `src/dom/`, `src/script/`, or any module other than `src/layout/`.
+
+### Context (already in the crate, do not change)
+- `src/layout/mod.rs` defines `pub struct LayoutBox { pub node: Option<NodeId>, pub rect: Rect, pub children: Vec<LayoutBox>, pub text: Option<String> }`.
+- `LayoutBox.rect` is a `crate::geom::Rect` and is ALREADY in absolute (viewport) coordinates — offsets and absolute positioning are accumulated during layout. So you simply need to FIND the box and return its `rect`; no coordinate accumulation is required.
+- `Rect` lives in `src/geom`; inspect its public accessors (e.g. position/size fields) so you can read x/y/width/height.
+
+### What to build (ADDITIVE only)
+Add a public function in `src/layout/mod.rs`:
+`pub fn find_box_rect(root: &LayoutBox, node: NodeId) -> Option<Rect>`
+Semantics:
+- Depth-first search the `root` tree (root itself included). Return `Some(box.rect)` for the FIRST `LayoutBox` whose `node == Some(node)`.
+- Return `None` if no box in the tree carries that `NodeId`.
+- A given `NodeId` may appear on multiple boxes (e.g. anonymous/inline fragments share a parent's node, or list markers); returning the first match in DFS pre-order (parent before children) is the correct, documented behavior — note this in the doc comment. Do NOT try to union fragment rects in this task (leave a `// TODO(spec):` noting that getBoundingClientRect should eventually union all fragments of an element).
+- Implement DFS ITERATIVELY (explicit stack/worklist) or with bounded recursion respecting the existing `MAX_DEPTH` convention — prefer iterative to avoid deep-stack issues; do NOT introduce unbounded recursion. (See memory: workers must not reverse iterative code into recursion.)
+- No `unwrap`/`expect` in src (I-6).
+
+### Hard scope
+- Touch ONLY files under `src/layout/` (prefer extending `src/layout/mod.rs`). Do NOT modify any other module, and do NOT modify/delete any existing function, field, struct, or test. ADDITIVE only.
+
+### Tests (add a `#[cfg(test)]` module, or extend an existing one, in `src/layout/`)
+Construct `LayoutBox` trees by hand (you can build `LayoutBox` literals directly since fields are `pub`) and assert:
+1. A nested tree where a target `NodeId` lives on a deep child returns `Some(rect)` with the exact expected rect.
+2. The root node's own `NodeId` is found (root included in search).
+3. A `NodeId` not present anywhere returns `None`.
+4. When the same `NodeId` appears on two boxes, the DFS pre-order FIRST one is returned (assert which rect comes back).
+Test code MAY use `unwrap()` (I-6 applies to src, not tests). Use `crate::infra::NodeId` and `crate::geom::Rect` constructors as the rest of the crate does.
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/layout/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(layout): add find_box_rect absolute-rect lookup over layout tree (t0360)"`
+Then STOP. Do not push; the orchestrator will open the PR.

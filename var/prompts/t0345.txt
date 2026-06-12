@@ -1,0 +1,63 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0345 (branch agent/t0345-loading-attr-parse). Language for all code/comments/commit messages: English.
+
+## Task (t0345, milestone MS-NewTargets, parallel menu item 5): parse the HTML `loading` attribute (lazy-loading hint) into a typed value. PARSE-ONLY.
+
+### Background (verified by the orchestrator — trust these facts)
+- Images are fetched eagerly today in `src/engine/mod.rs::fetch_and_decode_images` (reads `dom.get_attribute(n_id, "src")`). There is NO handling of the `loading` attribute anywhere in the crate yet (verified: `grep -rn '"loading"\|LoadingMode' src/` finds nothing relevant).
+- PdM splits parse from consume (same pattern as t0344 transform). THIS task is PARSE-ONLY: produce a typed value + helper + unit tests INSIDE `src/loader/mod.rs`. DO NOT wire it into the engine fetch loop or skip any fetch — that deferral behavior is a SEPARATE future consume task and is OUT OF SCOPE here.
+- `src/loader/mod.rs` already holds small pure helpers (e.g. `decode_base64`, `load_data_uri`) with `#[cfg(test)]` unit tests at the bottom. Mirror that local style.
+
+### The fix (keep ALL logic inside `src/loader/mod.rs`)
+1. Add a public typed enum near the top of the module:
+   ```rust
+   /// The HTML `loading` attribute value for resources (img/iframe): a hint for whether the
+   /// resource may be deferred until near the viewport. Per the HTML spec the attribute is an
+   /// enumerated attribute whose missing/invalid default maps to eager loading.
+   #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+   pub enum LoadingMode {
+       #[default]
+       Eager,
+       Lazy,
+   }
+   ```
+   (Per spec there are only two keywords, `lazy` and `eager`; the missing-value and invalid-value defaults are both `eager`. So a single two-variant enum with `Eager` as the default is the correct, minimal model — do NOT invent an `Auto` variant.)
+2. Add a public parser:
+   ```rust
+   /// Parses the HTML `loading` attribute value. Matching is ASCII-case-insensitive.
+   /// `lazy` => Lazy; everything else (including absent/empty/unknown) => Eager (spec default).
+   pub fn parse_loading_attr(value: &str) -> LoadingMode { ... }
+   ```
+   Use `eq_ignore_ascii_case` for the keyword match. Trim surrounding ASCII whitespace before matching.
+3. Add a convenience method on the enum:
+   ```rust
+   impl LoadingMode {
+       /// Whether the resource fetch may be deferred (true only for `Lazy`).
+       pub fn is_deferred(self) -> bool { matches!(self, LoadingMode::Lazy) }
+   }
+   ```
+4. Do NOT touch any other file. Do NOT import or call this from engine/layout/paint. No behavior change to fetching.
+
+### Tests (REQUIRED — real assertions, never skipped/ignored — I-4; tests may use unwrap/expect)
+Add `#[cfg(test)]` unit tests in `src/loader/mod.rs` (mirror existing tests there). Cover at minimum:
+1. `parse_loading_attr("lazy") == LoadingMode::Lazy`.
+2. Case-insensitivity: `"LAZY"`, `"Lazy"` => `Lazy`; surrounding whitespace `"  lazy  "` => `Lazy`.
+3. `parse_loading_attr("eager") == LoadingMode::Eager`.
+4. Missing/invalid default to Eager: `""`, `"auto"`, `"garbage"`, `"lazyx"` => `Eager`.
+5. `LoadingMode::default() == LoadingMode::Eager`.
+6. `is_deferred`: `LoadingMode::Lazy.is_deferred()` is true; `LoadingMode::Eager.is_deferred()` is false.
+
+Do NOT use `unwrap`/`expect` in `src` non-test code (I-6).
+
+### Done criteria (all required before you finish)
+1. `cargo build` clean (no new warnings for your code).
+2. `cargo test` passes (whole suite, your new tests included). No tests skipped/ignored.
+3. `cargo clippy --all-targets -- -D warnings` clean for your changes.
+4. `cargo fmt` applied.
+5. Scope: `git diff --name-only origin/main` shows ONLY `src/loader/mod.rs`. No other files. No engine/layout/paint changes.
+6. COMMIT your work on branch `agent/t0345-loading-attr-parse` with a Conventional Commit message, e.g.
+   `feat(loader): parse HTML loading attribute (lazy/eager) into typed LoadingMode (t0345)`.
+   Do NOT open a PR yourself; the orchestrator will gate, review, and merge. Just commit.
+
+When finished, print `git diff --name-only origin/main` and the final `cargo test` summary line.

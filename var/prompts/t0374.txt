@@ -1,0 +1,36 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0374 — table: initial border-collapse border-conflict resolution (MS-NewTargets, table slice)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0374
+Branch: agent/t0374-table-border-collapse (already checked out). Language for code/comments/commit = English.
+
+## Background
+`border-collapse: collapse` is only HALF supported today:
+- `src/layout/table.rs` already detects it via `is_border_collapse(style)` and zeroes inter-cell spacing (see the `TODO(spec): border-collapse: full border conflict resolution ...` around line 204). Cell box positions are therefore correct for the collapsed model.
+- `src/paint/table.rs` draws a fixed light-gray 1px border strip on EVERY side of EVERY cell unconditionally (see the `TODO(spec): honor numeric border width / border-collapse` around line 56). In the collapsed model this DOUBLES every interior edge: the right border of cell A and the left border of cell B are painted as two adjacent 1px strips instead of one shared edge. The goal of this task is the INITIAL border-conflict resolution so interior edges collapse to a single shared 1px line.
+
+This is a PdM-authorized cross-module task (layout + paint). Keep it minimal and correct.
+
+## Spec (record `spec: S-102` in the commit body; SPEC.md lives in the meta repo — use S-102)
+Implement the "collapsed borders draw each interior grid line once" rule:
+
+1. Thread the table's `border-collapse: collapse` state from style into the cell-border paint path. Use the EXISTING `is_border_collapse` predicate in `src/layout/table.rs` — make it `pub(crate)` if it is not already, and call it from paint; do NOT duplicate the keyword-matching logic. (If `src/paint/table.rs` already receives the table `ComputedStyle`, read it from there; otherwise pass a single `bool collapse` parameter down the existing cell-border-emitting function — do NOT add broad new plumbing.)
+
+2. When the table is `border-collapse: collapse`, each cell must paint ONLY its TOP and LEFT 1px border strips, and the table/section must additionally paint the OUTER RIGHT edge of the right-most cells and the OUTER BOTTOM edge of the bottom-most cells. The simplest correct realization: in collapse mode, every cell paints its TOP and LEFT edges, plus a cell paints its RIGHT edge only if it is the last cell in its row and its BOTTOM edge only if it is in the last row. This yields exactly one 1px line per interior grid line and a closed outer frame, with no doubling.
+   - If determining "last cell in row / last row" is not cleanly available in the paint function's inputs, use this equivalent that needs no neighbor knowledge: in collapse mode paint TOP and LEFT for every cell, and rely on the existing outer table `border` (the `<table border>` presentational frame already drawn elsewhere) for the right/bottom outer frame — i.e. cells paint only TOP+LEFT. Pick whichever of the two is achievable with the data already in scope; document which in a code comment.
+
+3. When the table is NOT border-collapse (separated model, the default), keep the CURRENT behavior exactly (all four sides per cell). Do NOT regress the separated path.
+
+## Constraints (HARD)
+- Touch ONLY `src/layout/table.rs` and `src/paint/table.rs`. Do NOT modify any other file (no mod.rs signature churn beyond making `is_border_collapse` `pub(crate)` if needed).
+- Purely behavior-additive for the collapse branch; the separated-model branch must be byte-for-byte equivalent in output.
+- No `unwrap()`/`expect()`/`panic!` in non-test code. No `#[allow(...)]`. No new recursion on hot paths.
+- Do NOT delete or weaken any existing test. The existing `test_table_border_collapse_zeroes_spacing` (layout) must stay green.
+- Replace the now-resolved part of the `TODO(spec)` comment in `src/paint/table.rs` with an accurate comment describing the collapse rule you implemented; keep the "honor numeric border width" portion as a remaining TODO if you do not implement numeric widths.
+
+## Tests (MANDATORY, in `src/paint/table.rs` test module)
+Add a unit test that builds a small 2x2 `border-collapse: collapse` table (with `border` so cells have borders), produces the cell-border display items, and asserts that the number of 1px border SolidRect strips is REDUCED versus the separated model for the same table (i.e. interior edges are not doubled). Concretely: assert the collapse case emits strictly fewer border strips than the same table rendered with `border-collapse: separate`, and that at least the outer frame edges are present. Keep the assertion robust (compare counts / presence), not pixel-exact.
+
+## Definition of done
+`cd /workspaces/wt/t0374 && cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test` all green, then `git add -A && git commit` with message `feat(table): collapse adjacent cell borders for border-collapse (t0374)`. Record `spec: S-102` in the commit body. COMMIT IS MANDATORY before you finish.

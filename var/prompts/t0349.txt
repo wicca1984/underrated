@@ -1,0 +1,51 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0349 (branch agent/t0349-net-concurrent-fetch). Language for all code/comments/commit messages: English.
+
+## Task (t0349, milestone MS-NewTargets, parallel menu item 8): bounded concurrent HTTP fetch helper in `src/net/mod.rs`
+
+Add a PUBLIC function that fetches MULTIPLE URLs concurrently and returns results IN INPUT ORDER, with a caller-specified maximum concurrency (a simple bounded worker pool using `std::thread`). This is the foundation for parallel image resource loading (News-site lazy images).
+
+### Hard scope
+- Touch ONLY `src/net/mod.rs`. Do NOT modify any other file or module. This task must NOT touch `src/css/`, `src/style/`, `src/script/`, `src/loader/` (other workers own those right now).
+- Pure addition. Do not change the signature or behavior of the existing `send_request` / cookie logic.
+
+### What to implement
+Study the existing `send_request(&Url, HttpMethod, &[u8], Option<&str>) -> Result<LoaderResponse, LoadError>` in this file first; reuse it as the per-URL primitive.
+
+Add roughly:
+```rust
+/// Fetches multiple URLs concurrently with GET, honoring a maximum number of in-flight
+/// requests (`max_concurrency`, clamped to at least 1). Results are returned in the SAME
+/// order as `urls`. Each element is the individual `send_request` outcome for that URL, so a
+/// single failed fetch does NOT abort the others.
+pub fn fetch_all_concurrent(
+    urls: &[Url],
+    max_concurrency: usize,
+) -> Vec<Result<LoaderResponse, LoadError>>
+```
+Implementation notes:
+- Use a bounded pool: spawn at most `max_concurrency` worker threads (e.g. divide the index space across workers, or use an atomic/Mutex work-queue of indices). Do NOT spawn one thread per URL when `urls.len() > max_concurrency`.
+- Preserve input order: write each result into a pre-sized slot keyed by the URL's original index, then collect in order. (`Vec<Option<...>>` behind a `Mutex`, or per-worker partial vecs merged by index.)
+- `max_concurrency.max(1)` so 0 cannot deadlock.
+- Empty `urls` returns an empty `Vec`.
+- NO `unwrap()`/`expect()` in the non-test function body (I-6). For a poisoned `Mutex` lock, recover gracefully (e.g. `lock().unwrap_or_else(|e| e.into_inner())` is acceptable ONLY inside test code; in src code prefer matching and skipping). If a thread `join()` fails, treat that slot as `Err(LoadError::...)` — pick the existing variant that best fits a transport failure; do NOT add new `LoadError` variants.
+
+### Tests (in the existing `#[cfg(test)] mod tests`)
+Mirror the existing `TcpListener::bind("127.0.0.1:0")` + `thread::spawn` test-server pattern already in this file. Add at least:
+1. `test_fetch_all_concurrent_order`: start 2–3 tiny local HTTP servers (or one accept-loop server) returning distinct bodies; call `fetch_all_concurrent` with those URLs and assert results come back IN INPUT ORDER with the right bodies.
+2. `test_fetch_all_concurrent_respects_failure_isolation`: include one bad URL (e.g. unsupported scheme `file:///x`) among good ones; assert the good ones still succeed and the bad one is `Err`, order preserved.
+3. `test_fetch_all_concurrent_empty`: empty input returns empty Vec.
+Test code MAY use `unwrap()` (I-6 applies to src, not tests). Keep ports ephemeral (`:0`), no fixed ports.
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green (your new tests + all existing).
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY `src/net/mod.rs`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(net): bounded concurrent fetch_all_concurrent helper (t0349)"`
+Then STOP. Do not push; the orchestrator will open the PR.

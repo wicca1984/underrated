@@ -1,0 +1,158 @@
+{
+  "attrs": {},
+  "children": [
+    {
+      "attrs": {},
+      "children": [
+        {
+          "attrs": {},
+          "children": [
+            {
+              "text": "\n.ds{display:inline-block;margin:3px 0 4px;margin-left:4px}\n.lst{height:25px;width:496px}\n",
+              "type": "text"
+            }
+          ],
+          "rect": {
+            "height": 0.0,
+            "width": 0.0,
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": "style",
+          "type": "element"
+        }
+      ],
+      "rect": {
+        "height": 0.0,
+        "width": 0.0,
+        "x": 0.0,
+        "y": 0.0
+      },
+      "tag": "head",
+      "type": "element"
+    },
+    {
+      "attrs": {},
+      "children": [
+        {
+          "attrs": {
+            "style": "text-align:center"
+          },
+          "children": [
+            {
+              "attrs": {
+                "class": "ds"
+              },
+              "children": [
+                {
+                  "attrs": {
+                    "class": "lst",
+                    "value": ""
+                  },
+                  "children": [],
+                  "rect": {
+                    "height": 29.0,
+                    "width": 502.0,
+                    "x": 510.0,
+                    "y": 11.0
+                  },
+                  "tag": "input",
+                  "type": "element"
+                }
+              ],
+              "rect": {
+                "height": 29.0,
+                "width": 502.0,
+                "x": 259.0,
+                "y": 11.0
+              },
+              "tag": "div",
+              "type": "element"
+            }
+          ],
+          "rect": {
+            "height": 36.0,
+            "width": 1008.0,
+            "x": 8.0,
+            "y": 8.0
+          },
+          "tag": "div",
+          "type": "element"
+        },
+        {
+          "attrs": {},
+          "children": [],
+          "rect": {
+            "height": 0.0,
+            "width": 1008.0,
+            "x": 8.0,
+            "y": 44.0
+          },
+          "tag": "hr",
+          "type": "element"
+        },
+        {
+          "attrs": {
+            "style": "text-align:center"
+          },
+          "children": [
+            {
+              "attrs": {
+                "style": "display:inline-block;background:#ccc"
+              },
+              "children": [
+                {
+                  "attrs": {
+                    "style": "width:496px",
+                    "value": ""
+                  },
+                  "children": [],
+                  "rect": {
+                    "height": 4.0,
+                    "width": 502.0,
+                    "x": 510.0,
+                    "y": 48.0
+                  },
+                  "tag": "input",
+                  "type": "element"
+                }
+              ],
+              "rect": {
+                "height": 8.0,
+                "width": 502.0,
+                "x": 257.0,
+                "y": 44.0
+              },
+              "tag": "span",
+              "type": "element"
+            }
+          ],
+          "rect": {
+            "height": 8.0,
+            "width": 1008.0,
+            "x": 8.0,
+            "y": 44.0
+          },
+          "tag": "div",
+          "type": "element"
+        }
+      ],
+      "rect": {
+        "height": 44.0,
+        "width": 1008.0,
+        "x": 8.0,
+        "y": 8.0
+      },
+      "tag": "body",
+      "type": "element"
+    }
+  ],
+  "rect": {
+    "height": 60.0,
+    "width": 1024.0,
+    "x": 0.0,
+    "y": 0.0
+  },
+  "tag": "html",
+  "type": "element"
+}

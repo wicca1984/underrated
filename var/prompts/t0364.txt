@@ -1,0 +1,62 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0364 — engine: dirty バッチ flush ドライバ (S-100)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0364
+Branch: agent/t0364-engine-dirty-flush (already checked out). Language for code/comments/commit = English.
+
+## Goal (SPEC S-100, docs/SPEC.md ~line 1259; dep S-98/t0362 + S-99/t0363 already merged)
+Add an EXPLICIT, BATCHED dirty-flush driver in `src/engine` that consumes `dom.take_dirty()`,
+re-runs layout ONCE (batch), and builds a paint `DirtyRegion` from the dirty nodes' rects.
+**Synchronous per-mutation full relayout is FORBIDDEN** — the driver must do nothing (and NOT relayout)
+when there is no dirty state, and relayout at most ONCE per flush call.
+
+## Reuse these already-merged public IFs (do NOT reimplement)
+- `dom.has_dirty() -> bool`, `dom.take_dirty() -> Vec<NodeId>` (src/dom/dirty.rs, t0362)
+- `crate::paint::invalidate::DirtyRegion` with `new()`, `add(&mut self, rect: Rect)`, `bounds()`, `is_empty()`, `clear()` (t0363)
+- `crate::layout::layout_document(dom, styles, viewport_width) -> LayoutBox` (full batch layout)
+- `crate::layout::find_box_rect(root: &LayoutBox, node: NodeId) -> Option<Rect>` (per-node rect lookup, t0360)
+- `crate::geom::Rect` (DirtyRegion::add takes this Rect)
+
+## Public IF to add (fix it here; new file `src/engine/flush.rs`, register `mod flush;` in src/engine/mod.rs)
+```
+/// Explicit batched dirty-flush: consumes accumulated layout-dirty nodes, performs ONE
+/// batch relayout, and returns the new layout tree together with the paint DirtyRegion
+/// covering the dirty nodes. Returns `None` when there is no dirty state (no relayout performed).
+pub fn flush_dirty(
+    dom: &mut Dom,
+    styles: &HashMap<NodeId, ComputedStyle>,
+    viewport_width: f32,
+) -> Option<(LayoutBox, DirtyRegion)>
+```
+Behavior:
+1. If `!dom.has_dirty()` → return `None` immediately (NO relayout, NO take_dirty drain side-effect).
+2. Otherwise: `let nodes = dom.take_dirty();` then `let layout = layout_document(dom, styles, viewport_width);`
+   (exactly one relayout). Build a `DirtyRegion` by adding `find_box_rect(&layout, n)` for each `n` in `nodes`
+   that resolves to `Some(rect)`. Return `Some((layout, region))`.
+
+Use the exact type/import paths already used in src/engine/mod.rs (check its existing `use` lines for Dom,
+ComputedStyle, NodeId, HashMap). Reuse the paths above for DirtyRegion / layout_document / find_box_rect.
+No `unwrap()`/`expect()` in non-test code (use `if let Some(..)`). No `#[allow]` to silence warnings.
+
+## Invariants — add `#[cfg(test)] mod tests` in src/engine/flush.rs covering:
+1. No dirty → `flush_dirty` returns `None` AND `has_dirty()` stays false (no drain, no relayout side-effect).
+2. After `mark_dirty` on a laid-out node → returns `Some`, region is non-empty, `has_dirty()` is now false (drained).
+3. Region `bounds()` for two dirty nodes equals the bounding-box union of their two `find_box_rect` rects.
+4. Idempotent re-flush: a second `flush_dirty` immediately after returns `None` (dirty already drained).
+Build minimal DOM+styles in tests the same way existing engine/layout tests do (inspect src/layout/mod.rs
+tests and src/engine/mod.rs for the construction pattern: Dom::new, create_node, append, a ComputedStyle map).
+
+## Scope (STRICT — merge will be rejected on violation)
+- Touch ONLY: `src/engine/flush.rs` (new) and ONE registration line `mod flush;` in `src/engine/mod.rs`.
+- Do NOT modify any existing function in src/engine/mod.rs, src/dom, src/paint, src/layout.
+- Do NOT delete or weaken any existing test anywhere.
+
+## Before finishing (MANDATORY)
+Run, from /workspaces/wt/t0364, and ensure all pass:
+  cargo fmt --all
+  cargo clippy --all-targets -- -D warnings
+  cargo test
+Then COMMIT (do not push; the orchestrator merges):
+  git add -A && git commit -m "feat(engine): batched dirty-flush driver consuming take_dirty into relayout + DirtyRegion (t0364)"
+If anything is ambiguous, leave a `// TODO(spec):` marker rather than inventing behavior, but still implement the IF above and commit.

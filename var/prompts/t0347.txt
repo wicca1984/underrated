@@ -1,0 +1,69 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0347 (branch agent/t0347-loader-lazy-defer). Language for all code/comments/commit messages: English.
+
+## Task (t0347, milestone MS-NewTargets, parallel menu item 5): interpret `loading="lazy"` in the loader by adding a lazy-aware image-load planning entry point that DEFERS lazy images (skips I/O) instead of fetching them eagerly.
+
+### Background (verified by the orchestrator — trust these facts)
+- ALL changes go in ONE file: `src/loader/mod.rs`. This is a single-module task (I-5).
+- t0345 (already merged) added the typed `LoadingMode` enum to `src/loader/mod.rs`:
+    `pub enum LoadingMode { Eager (default), Lazy }`, with `pub fn parse_loading_attr(value: &str) -> LoadingMode`
+    and `impl LoadingMode { pub fn is_deferred(self) -> bool { matches!(self, LoadingMode::Lazy) } }`.
+  These exist and are tested. Do NOT re-add or modify them.
+- The eager image entry point already exists: `pub fn load_image_safely(src: &str, base_url: Option<&Url>) -> Option<Vec<u8>>`
+  (~line 122). It performs the actual fetch/decode (data: URI, http(s), allowed file paths) and returns the bytes.
+  Do NOT change its signature or behavior.
+- There is currently NO place where `LoadingMode` influences whether an image is actually fetched — that is the gap.
+  This task adds the DECISION POINT in the loader. (Engine/layout wiring that passes the real attribute through is a
+  SEPARATE follow-on task and is OUT OF SCOPE — do not touch `src/engine/`, `src/layout/`, `src/paint/`, or any other module.)
+
+### The fix (keep ALL logic inside `src/loader/mod.rs`)
+1. Add a typed outcome enum describing the result of planning an image load, e.g.:
+   ```rust
+   #[derive(Debug, Clone, PartialEq, Eq)]
+   pub enum ImageLoadOutcome {
+       /// The fetch was deferred (loading="lazy"); no I/O was performed.
+       Deferred,
+       /// The image was loaded eagerly; carries the fetched bytes.
+       Loaded(Vec<u8>),
+       /// An eager load was attempted but failed (e.g. denied/unreadable/unsupported).
+       Failed,
+   }
+   ```
+   (Adjust naming to match local style if there is an established convention in the file.)
+2. Add a dedicated planning function, e.g.:
+   ```rust
+   /// Plans an image load honoring the HTML `loading` hint. For `LoadingMode::Lazy` the fetch is
+   /// DEFERRED (returns `ImageLoadOutcome::Deferred` and performs NO I/O). For `LoadingMode::Eager`
+   /// it delegates to `load_image_safely`, mapping `Some(bytes)` -> `Loaded(bytes)` and `None` -> `Failed`.
+   pub fn plan_image_load(src: &str, base_url: Option<&Url>, mode: LoadingMode) -> ImageLoadOutcome { ... }
+   ```
+   CRITICAL: when `mode` is `Lazy` you MUST return `Deferred` WITHOUT calling `load_image_safely` (the whole point is
+   to avoid the fetch). Use `mode.is_deferred()` for the branch. Do not perform any filesystem/network access on the
+   lazy path. Keep the eager path a thin delegation to the existing `load_image_safely` — do NOT duplicate or reorder
+   its fetch logic.
+- Do NOT use `unwrap`/`expect` in `src` non-test code (I-6).
+- Do NOT add real network egress; the eager path reuses existing behavior, the lazy path does no I/O.
+
+### Tests (REQUIRED — real assertions, never skipped/ignored — I-4; tests may use unwrap/expect)
+Add `#[cfg(test)]` unit tests in `src/loader/mod.rs` (mirror the existing loader tests near the bottom of the file, e.g.
+the `test_loading_mode_*` and `test_parse_loading_attr` tests). Cover at minimum:
+1. Lazy is deferred WITHOUT I/O: `plan_image_load("<any src, even a bogus path like 'http://localhost/x.png'>", None, LoadingMode::Lazy)`
+   returns `ImageLoadOutcome::Deferred`. Use a src that, if it WERE fetched, would clearly fail — this proves no fetch happened.
+2. Eager success: build a valid `data:` image URI (a tiny 1x1 PNG data URI works, mirror how existing tests construct
+   image bytes / data URIs in this file) and assert `plan_image_load(<that data uri>, None, LoadingMode::Eager)`
+   returns `ImageLoadOutcome::Loaded(_)` with non-empty bytes.
+3. Eager failure: a src that `load_image_safely` rejects (e.g. an unsupported scheme or a denied/garbage path with
+   `LoadingMode::Eager`) returns `ImageLoadOutcome::Failed`.
+
+### Done criteria (all required before you finish)
+1. `cargo build` is clean (no new warnings for your code).
+2. `cargo test` passes (the whole suite; your new tests included). No tests skipped/ignored.
+3. `cargo clippy --all-targets -- -D warnings` is clean for your changes.
+4. `cargo fmt` applied.
+5. Scope: `git diff --name-only origin/main` shows ONLY `src/loader/mod.rs`. No other files. No layout/paint/engine/raster changes.
+6. COMMIT your work on branch `agent/t0347-loader-lazy-defer` with a Conventional Commit message, e.g.
+   `feat(loader): defer loading="lazy" images via plan_image_load outcome (t0347)`.
+   Do NOT open a PR yourself; the orchestrator will gate, review, and merge. Just commit.
+
+When finished, print `git diff --name-only origin/main` and the final `cargo test` summary line.

@@ -1,0 +1,39 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it, especially invariants I-1..I-7.
+
+Task: t0278 — Implement the DOM `Element.outerHTML` getter and setter in the JS engine bindings. This is a deliberately small, single-module, additive DOM-binding feature, closely modeled on the just-merged `innerHTML` work (t0267). `innerHTML` already exists end-to-end (JS prelude property + Rust bridge fns + tests); `outerHTML` is NOT bound today.
+
+Scope: touch ONLY `src/script/mod.rs` (the JS prelude string AND the Rust bridge functions AND the inline `#[cfg(test)] mod tests` live in this one file). `git diff --name-only` MUST show ONLY `src/script/mod.rs`. Do NOT modify src/dom, src/html, src/layout, src/paint, or any other module/worktree. No DOM/HTML module change is needed — all required helpers already exist and are listed below.
+
+Reuse / facts (verified — read these before writing):
+- The `innerHTML` property is defined in the JS prelude via `Object.defineProperty(node, 'innerHTML', { get(){ if (this.nodeType !== 1) return undefined; return bridge.getInnerHTML(this.__key__); }, set(val){ if (this.nodeType !== 1) return; bridge.setInnerHTML(this.__key__, String(val)); }, enumerable: true, configurable: true });` at src/script/mod.rs near line 1024. Add an `outerHTML` property the SAME way, right AFTER the `innerHTML` block.
+- The native bridge functions are registered next to each other near line 236: `getInnerHTML` -> `bridge_get_inner_html`, `setInnerHTML` -> `bridge_set_inner_html`. Register `getOuterHTML` -> `bridge_get_outer_html` and `setOuterHTML` -> `bridge_set_outer_html` in the SAME place, mirroring exactly how the innerHTML pair is registered (same `NativeFunction::from_fn_ptr(...)` + `JsString::from("...")` + property-set pattern on the `bridge` object).
+- `dom.serialize(node_id)` (src/dom/mod.rs line 154) serializes a node INCLUDING the element itself (its own start tag, attributes, children, end tag). `bridge_get_inner_html` (src/script/mod.rs near line 2763) iterates children and concatenates `dom.serialize(child_id)`. For outerHTML GET you instead serialize the element node itself: `dom.serialize(n_id)`.
+- `bridge_set_inner_html` (near line 2789) shows the fragment-parse pattern: wrap value in `<body>...</body>`, `crate::html::parse_document(crate::encoding::InputStream::from_utf8(wrapped.as_bytes()))`, find the `body` element in the temp dom, then for each top-level temp child call `copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom)` to clone it into the real dom. Reuse `copy_node_to_dom_recursive` and the same parse approach EXACTLY for the setter.
+- DOM mutation helpers (already exist, do NOT add new ones): `dom.parent(node) -> Option<NodeId>` (src/dom/mod.rs:118), `dom.children(parent) -> &[NodeId]` (:123), `dom.insert_before(parent, child, reference: Option<NodeId>)` (src/dom/mutate.rs:68), `dom.remove_child(parent, child)` (src/dom/mutate.rs:52), `dom.append_child(parent, child)` (src/dom/mod.rs:100). `with_dom(|dom, key_to_node| { ... })` and the `key_to_node.get(&node_key).copied()` lookup pattern are used by every existing bridge fn — reuse them verbatim.
+
+Implement (DOM `outerHTML` semantics, binding-only):
+1. JS prelude: after the `innerHTML` `Object.defineProperty` block, add an `outerHTML` property: get() returns `undefined` when `this.nodeType !== 1`, else `bridge.getOuterHTML(this.__key__)`; set(val) returns early when `this.nodeType !== 1`, else `bridge.setOuterHTML(this.__key__, String(val))`. Mirror enumerable/configurable: true.
+2. Register the two new bridge functions on the `bridge` object next to getInnerHTML/setInnerHTML (near line 236), names `getOuterHTML` / `setOuterHTML`.
+3. `fn bridge_get_outer_html(...)`: mirror `bridge_get_inner_html` signature/arg-parsing exactly, but inside `with_dom` return `dom.serialize(n_id)` for the resolved node (NOT a children loop). If the node key does not resolve, return an empty `String` (same as inner_html get). Return `Ok(JsValue::from(JsString::from(outer_html)))`.
+4. `fn bridge_set_outer_html(...)`: mirror `bridge_set_inner_html` arg-parsing (node_key from args[0], html_val from args[1], early `Ok(JsValue::undefined())` returns when missing). Inside `with_dom`:
+   a. Resolve `n_id` from `node_key`; if absent, do nothing.
+   b. Get `let parent = dom.parent(n_id);`. If `parent` is `None` (detached node or document root with no parent), do NOTHING and return undefined — outerHTML replacement requires a parent (this matches browser behavior: setting outerHTML on a parentless element is a no-op here; leave a `// TODO(spec):` noting real browsers throw a DOMException `NoModificationAllowedError` in that case).
+   c. Parse the fragment EXACTLY like set_inner_html (wrap in `<body>`, parse_document, find the `body` element, collect its top-level children).
+   d. For each parsed top-level child, `let dest = copy_node_to_dom_recursive(&temp_dom, temp_child_id, dom);` then `dom.insert_before(parent, dest, Some(n_id));` so the new nodes land in the original element's position, in order, BEFORE the old element.
+   e. After inserting all new nodes, `dom.remove_child(parent, n_id);` to remove the original element. (Order matters: insert the replacements first, THEN remove the old node, so the `Some(n_id)` reference is still valid during insertion.)
+   f. Return `Ok(JsValue::undefined())`.
+5. Leave exactly one `// TODO(spec): outerHTML on a parentless element is a no-op here; the HTML spec requires throwing a NoModificationAllowedError DOMException. Fragment parsing is emulated via a wrapped <body> like setInnerHTML.` near your setter change.
+
+Do NOT use unwrap/expect/panic/unsafe in non-test code (I-6). No new dependencies (I-1). Do NOT change iterative code back to recursive. Keep all existing public interfaces stable (this change is purely additive: two new bridge fns + one new JS property). Do NOT weaken, skip, or remove ANY existing test.
+
+Acceptance — add inline unit tests in `src/script/mod.rs` (reuse the existing JS-eval test harness used by the innerHTML tests near lines 5530..5590; build a small document, run JS, assert on the returned string / resulting DOM). Cover:
+- GET: an element with known children returns its own serialization including its start/end tag (e.g. a `<div id="x"><span>hi</span></div>` whose `outerHTML` contains `<div` and `id="x"` and `<span>hi</span>`), distinct from `innerHTML` (which would NOT include the outer `<div>`). Assert outerHTML contains the outer tag and innerHTML does not.
+- SET: replacing an element via `el.outerHTML = '<p>new</p>'` removes the old element from its parent and inserts the new node(s) in its place — assert via the parent's `innerHTML` (or children query) that the old tag is gone and the new `<p>new</p>` is present at the same position.
+- SET multiple nodes: `el.outerHTML = '<a>1</a><b>2</b>'` inserts BOTH new siblings in order where the old element was.
+- Non-element (Text node) and/or parentless element: setting outerHTML is a safe no-op (does not crash or corrupt the DOM), and getting outerHTML on a non-element returns undefined.
+
+Done when ALL of these pass in this worktree:
+  - cargo test
+  - cargo clippy --all-targets -- -D warnings
+  - cargo fmt --check
+Comments and identifiers in English. Commit (you MUST commit before finishing, BEFORE the worktree can be removed): `git add -A && git commit -m "feat(script): implement Element.outerHTML getter and setter (t0278)"`. End with a short English summary of exactly what changed in src/script/mod.rs (the JS prelude property, the two bridge functions, the registrations, the tests) and the `// TODO(spec):` you left, and confirm you committed.

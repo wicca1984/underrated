@@ -1,0 +1,44 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0352 (branch agent/t0352-dom-rect). Language for all code/comments/commit messages: English.
+
+## Task (t0352, milestone MS-NewTargets, parallel menu item 7): a `DomRect` value type for `getBoundingClientRect()` (DOM-side prep) in `src/dom/`
+
+Implement the JS-facing geometry value type that `Element.getBoundingClientRect()` returns, plus a pure constructor from layout box geometry. This is the DOM-side PREPARATION only — do NOT wire it to layout results or to the JS engine yet (those are owned by other modules/workers).
+
+### Hard scope
+- Touch ONLY files under `src/dom/` (add a new submodule file e.g. `src/dom/rect.rs` plus its `mod rect;` line — and a `pub use` if the existing files re-export submodules — in `src/dom/mod.rs`). Do NOT modify any other module (`src/layout/`, `src/paint/`, `src/script/`, `src/css/`, etc.) — other workers own those.
+- Do NOT import layout types. The constructor must take plain `f64` inputs (x, y, width, height) so `src/dom/` stays free of a layout dependency. The actual wiring from layout output is a separate future task — leave it as an explicit `// TODO(spec): ...`.
+
+### What to build (keep it simple, match the DOMRect web spec shape)
+In `src/dom/rect.rs`, define a `pub struct DomRect { x, y, width, height }` (all `f64`) with:
+- A constructor `DomRect::new(x, y, width, height)`.
+- Read-only accessors matching the DOMRectReadOnly spec: `x()`, `y()`, `width()`, `height()`, and the DERIVED edges `top()`, `right()`, `bottom()`, `left()`. Follow the spec exactly: for possibly-negative width/height, `left = min(x, x+width)`, `right = max(x, x+width)`, `top = min(y, y+height)`, `bottom = max(y, y+height)`. Document this normalization in a doc comment.
+- A method to serialize the rect to the same JSON object shape used elsewhere in this codebase for rects (an object with `x`, `y`, `width`, `height`, and ideally `top`/`right`/`bottom`/`left`). Inspect `src/dom/serialize.rs` and how `rect` objects are emitted in the snapshot/serialize path to match field names and the serialization style already in use (serde_json::Value or whatever serialize.rs uses). Do NOT invent a new serialization mechanism.
+- Add a clearly-marked `// TODO(spec):` placeholder describing that `Element::get_bounding_client_rect()` will, in a future task, read the element's laid-out box and return a `DomRect`; do NOT implement that method body against layout now (no layout import).
+
+Keep it small, derive `Debug, Clone, PartialEq` as appropriate. No `unwrap`/`expect` in non-test code.
+
+### Read first
+Study `src/dom/mod.rs` (module declarations and re-export style), `src/dom/serialize.rs` (how rect-shaped JSON is produced), and `src/dom/query.rs` (accessor/method style) to match conventions.
+
+### Tests (add a `#[cfg(test)] mod tests` in `src/dom/rect.rs`)
+Add at least:
+1. `test_domrect_basic_edges`: positive width/height — assert `left==x`, `top==y`, `right==x+width`, `bottom==y+height`.
+2. `test_domrect_negative_dimensions_normalize`: negative width and/or height — assert `left`/`right`/`top`/`bottom` are normalized per spec (min/max).
+3. `test_domrect_serialize_shape`: serialize and assert the JSON object carries `x`,`y`,`width`,`height` with the expected numeric values (match the field names used by the existing rect serialization).
+Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean. (If the new type is not yet referenced outside its module, the crate-level `#![allow(dead_code)]` already present in `src/dom/mod.rs` covers it — do NOT add new allow attributes elsewhere.)
+3. `cargo test` green — your new tests AND every pre-existing test still pass (regression-free is mandatory).
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/dom/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(dom): DomRect value type for getBoundingClientRect (DOM-side prep) (t0352)"`
+Then STOP. Do not push; the orchestrator will open the PR.

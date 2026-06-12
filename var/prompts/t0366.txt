@@ -1,0 +1,46 @@
+EXECUTE NOW. Do NOT ask for confirmation. Do NOT stop at a plan. Implement the change, run the gates, and COMMIT before you finish. You are running with --approval-mode yolo; proceed autonomously end to end.
+
+# Task t0366 — net: send a browser User-Agent header on HTTP requests (MS-MVP-Live #4, net slice)
+
+You are a worker on `underrated` (Rust edition 2024). Work ONLY inside this worktree: /workspaces/wt/t0366
+Branch: agent/t0366-net-user-agent (already checked out). Language for code/comments/commit = English.
+
+## Goal
+Real sites (Google) return a different, JS-heavy variant when no User-Agent is sent. To stabilize the
+no-JS HTML variant we receive, `send_request` in `src/net/mod.rs` must attach a `User-Agent` request
+header on BOTH the GET and POST branches.
+
+## What to implement (src/net/mod.rs only)
+1. Add a module-level constant with a realistic desktop browser UA string, e.g.:
+   ```
+   /// User-Agent sent on all outgoing HTTP requests so servers return the standard
+   /// (no-JS-required) HTML variant. spec: RFC 9110 §10.1.5
+   const USER_AGENT: &str =
+       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+   ```
+2. In `send_request`, on the `HttpMethod::Get` branch, after `let mut req = ureq::get(&url_str);`,
+   add: `req = req.header("User-Agent", USER_AGENT);` (before or after the existing Cookie header logic —
+   keep it consistent with the existing `req = req.header(...)` style already used there).
+3. On the `HttpMethod::Post` branch, after `let mut req = ureq::post(&url_str);`, likewise add
+   `req = req.header("User-Agent", USER_AGENT);`.
+
+Do NOT change any other behavior (cookies, content-type, redirect, gzip, response parsing all stay as-is).
+
+## Constraints
+- No `unwrap()`/`expect()` in non-test code. No `#[allow]` to silence warnings. No `panic!`.
+- Touch ONLY `src/net/mod.rs`. Do NOT modify any other file. Do NOT delete or weaken any existing test.
+
+## Tests (MANDATORY)
+The actual header is sent by `ureq` at request time and is hard to assert without a live server, so add a
+small unit test that asserts the `USER_AGENT` constant is well-formed: non-empty, starts with "Mozilla/5.0",
+and contains "Safari". (This guards against accidental truncation/edits.) Place it in the existing
+`#[cfg(test)] mod tests` in this file if present, otherwise add one. Do NOT make a network call in tests.
+
+## Before finishing (MANDATORY) — run from /workspaces/wt/t0366 and ensure all pass:
+  cargo fmt --all
+  cargo clippy --all-targets -- -D warnings
+  cargo test
+Then COMMIT (do not push; the orchestrator merges):
+  git add -A && git commit -m "feat(net): send desktop User-Agent header on HTTP GET/POST requests (t0366)"
+If anything is ambiguous, leave a `// TODO(spec):` marker rather than inventing behavior, but still
+implement the UA header above and commit.

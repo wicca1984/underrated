@@ -1,0 +1,51 @@
+You are a Gemini worker for the `underrated` Rust browser engine (edition 2024).
+Work ONLY inside this worktree: /workspaces/wt/t0339 (branch agent/t0339-c1-google-oracle-pin).
+Language for all code/comments/commit messages: English. Scope = TEST-ONLY (no engine/src changes).
+
+## Task (t0339, milestone C-1): Pin the real Google snapshot as a deterministic CI oracle.
+The fixture `tests/oracle/fixtures/08_google_real.html` (82KB real Google homepage HTML) is ALREADY
+placed in this worktree. Your job: add a new `#[test]` in `tests/oracle_snapshot_test.rs` that pins the
+already-correct centering/shrink-to-fit layout as a regression floor, mirroring the existing
+`test_fixture_07_google_mock` test.
+
+### Verified ground truth (current main, shipping path `export_snapshot`/`render_page_to_canvas`, viewport 800x600):
+- Search input  `<input name="q" class="lst">` : x=144 width=512 center=400  → MUST assert_centered(.., 800.0, 4.0)
+- Button `<input name="btnG" class="lsb">`      : center=402              → assert_centered + assert_max_width(.., 800.0, 0.4)
+- Button `<input name="btnI" class="lsb">`      : center=402              → assert_centered + assert_max_width(.., 800.0, 0.4)
+- The 6 `<input type="hidden">` elements (names hl/source/biw/bih...) have width==0 (display:none works) → assert each hidden input width==0.0
+These numbers are real and current; the test should pass immediately. Do NOT change any src/ code to make
+numbers move — if a number disagrees, STOP and report; do not edit the engine.
+
+### What to implement (in tests/oracle_snapshot_test.rs only):
+1. Add `#[test] fn test_fixture_08_google_real()` modeled on `test_fixture_07_google_mock`.
+2. Use the existing `load_fixture_snapshot("08_google_real.html")` helper (it renders at 800x600).
+3. Find the search input by name="q" (or class "lst") and call `assert_centered(input, 800.0, 4.0)`.
+4. Find BOTH `<input class="lsb">` buttons (btnG, btnI). There are exactly two. For each:
+   `assert_centered(button, 800.0, 4.0)` AND `assert_max_width(button, 800.0, 0.4)`.
+   NOTE: existing `find_element_by_class` returns only the FIRST match. Add a small local recursive
+   helper `find_elements_by_class<'a>(node, class, results: &mut Vec<&'a Value>)` (mirror
+   `find_elements_by_tag`, matching when the element's `attrs.class` contains the class token) — or
+   find by attr name. Assert exactly two lsb buttons are found.
+5. Assert every `<input type="hidden">` has rect width == 0.0 (regression guard for t0336 display:none).
+6. Add `println!("DIAGNOSTIC: ...")` lines for the q input and buttons (x/width/center) like the mock test.
+7. Add a leading doc comment on the test explaining it is the C-1 regression floor for the real Google
+   homepage layout (search input + both buttons centered, buttons shrink-to-fit ≤0.4 viewport).
+   Do NOT assert the known-broken `td width="25%"` percent-cell collapse (that is a SEPARATE unfixed issue,
+   tracked elsewhere); leave a `// TODO(spec): td percent-width cell collapse (real-google residual B) not yet asserted` near the test.
+
+### Constraints (hard):
+- Do NOT modify anything under src/. Do NOT modify other tests. Only edit tests/oracle_snapshot_test.rs
+  and keep the already-staged fixture file.
+- No `unwrap`/`expect` in src (N/A here — test code may use unwrap as existing tests do).
+- Must pass: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test --test oracle_snapshot_test`, `cargo build`.
+
+### Finish (MANDATORY — commit before you exit):
+Run, from /workspaces/wt/t0339:
+  cargo fmt --all
+  cargo clippy --all-targets --all-features -- -D warnings
+  cargo test --test oracle_snapshot_test
+Then:
+  git add -A
+  git commit -m "test(oracle): pin real Google homepage snapshot as C-1 CI regression floor (t0339)"
+Print the final `git log --oneline -1` and the test output summary. Do not open a PR (the orchestrator does that).

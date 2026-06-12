@@ -1,0 +1,43 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0351 (branch agent/t0351-paint-stacking). Language for all code/comments/commit messages: English.
+
+## Task (t0351, milestone MS-NewTargets, parallel menu item 4): introduce a stacking-context / z-order paint-ordering primitive in `src/paint/`
+
+Implement a MINIMAL, regression-safe primitive for ordering paint operations by CSS `z-index` (a "stacking order" sort). The goal is the BASIC primitive only — NOT full CSS stacking-context semantics (no isolation, no opacity grouping, no transform-creates-context rules).
+
+### Hard scope
+- Touch ONLY files under `src/paint/` (you MAY add a new submodule file e.g. `src/paint/stacking.rs` plus its `mod stacking;` line in `src/paint/mod.rs`, and a focused hook where paint items/draw operations are collected/emitted in `src/paint/mod.rs`). Do NOT modify any other module (`src/css/`, `src/style/`, `src/layout/`, `src/dom/`, etc.) — other workers own those.
+- `z-index` is ALREADY parsed and available on computed style (t0346 stored it as a typed `CssValue`: `auto` or an `<integer>`). Read it via the same style-access path `src/paint/mod.rs` already uses to read other CSS values. Do NOT add z-index parsing to `src/css/` or `src/style/`. Confirm by inspecting how the paint code currently reads style values.
+- Pure, additive behavior. When all participating boxes have `z-index: auto` (the overwhelmingly common case), the painting order MUST be byte-for-byte identical to today's document order. Do NOT regress any existing test or snapshot.
+
+### What "minimal stacking order" means here (keep it simple)
+- Provide a small, well-documented helper in `src/paint/stacking.rs` that takes a list of sibling paint entries (each carrying its computed `z-index` plus its original document-order index) and returns them in CSS painting order: a STABLE sort where lower z-index paints first, higher paints last, and `auto`/0 keep document order among equals. Stability (preserving document order for equal z-index) is mandatory — use a stable sort and the document index as the tie-break.
+- Wire this helper into the existing sibling paint loop so that, for a set of siblings, those with explicit numeric z-index are painted in the correct relative order. Keep the integration surface tiny and gated so the `auto`-only path is unchanged.
+- DO NOT implement: stacking-context establishment rules (position/opacity/transform creating new contexts), negative-z-index-behind-background ordering subtleties, or cross-subtree z-index interactions. Leave each of these as an explicit `// TODO(spec): ...` comment so the gap is documented.
+
+This is deliberately a stub-grade primitive: a stable z-order sort of siblings + minimal wiring, nothing more. A self-consistent, testable primitive is the deliverable.
+
+### Read first
+Study `src/paint/mod.rs`: how paint operations are produced for an element and its children, where children are iterated, and how computed style values are looked up there. Mirror the existing submodule/style-access patterns.
+
+### Tests (add a `#[cfg(test)] mod tests` in `src/paint/stacking.rs`)
+Add at least:
+1. `test_zorder_stable_for_all_auto`: a list of entries all with `z-index: auto` — assert the returned order equals the input document order exactly.
+2. `test_zorder_sorts_ascending`: entries with mixed numeric z-indices (e.g. 2, -1, 0, 1) — assert they come out in ascending z order.
+3. `test_zorder_stable_tiebreak`: two entries with the SAME numeric z-index in document order A then B — assert A still precedes B after sorting.
+Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass (regression-free is mandatory).
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/paint/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(paint): stable z-index paint-ordering primitive for siblings (t0351)"`
+Then STOP. Do not push; the orchestrator will open the PR.

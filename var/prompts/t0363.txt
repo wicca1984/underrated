@@ -1,0 +1,46 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt at a sibling task failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0363 (branch agent/t0363-paint-invalidate-region). Language for all code/comments/commit messages: English.
+
+## Task (t0363, milestone MS-NewTargets, SPEC S-99): paint invalidation region (dirty-rect) primitive in `src/paint/`
+
+### Product decision (fixed by PdM — do NOT relitigate)
+Re-paint after dynamic mutation must NOT redraw everything. The engine will, in a later slice, accumulate the rectangles that need re-painting. THIS task implements only the `src/paint`-layer primitive that UNIONs invalidated rectangles into a single bounding region. It does NOT drive any actual partial re-paint (that is the engine's job in a future slice). Keep the surface minimal.
+
+### What to build (scope: NEW FILE `src/paint/invalidate.rs` + ONE registration line in `src/paint/mod.rs`)
+1. Create `src/paint/invalidate.rs`. Reuse the existing rectangle type `crate::geom::Rect` (it already has `Rect::new(x, y, w, h)`, fields `origin: Point { x, y }` and `size: Size { width, height }`, helpers `max_x()`, `max_y()`, and a `pub fn union(&self, other: Rect) -> Rect`). Implement:
+   - `pub struct DirtyRegion` — holds the current invalidated area as an `Option<Rect>` internally (None == empty). Derive `Debug, Clone, Default` (Default == empty).
+   - `pub fn new() -> Self` — empty region (delegate to `Default`).
+   - `pub fn add(&mut self, rect: Rect)` — extend the region to the bounding-box UNION of the current region and `rect`. If currently empty, the region becomes exactly `rect`. Reuse `Rect::union` for the merge.
+   - `pub fn bounds(&self) -> Option<Rect>` — the current invalidated rectangle, or `None` if empty.
+   - `pub fn is_empty(&self) -> bool`.
+   - `pub fn clear(&mut self)` — reset to empty.
+2. Register the module: add `pub mod invalidate;` (or `mod invalidate;` if nothing outside paint needs it yet — prefer `pub mod invalidate;` so the engine can use it later) in `src/paint/mod.rs`. Keep that edit to ONE line.
+3. Doc-comment the struct and each method. Add a `// TODO(spec):` noting the engine will feed per-node dirty rects here and later use `bounds()` to scope partial re-paint.
+
+### Hard boundaries
+- Do NOT modify any existing painting function or display-item logic in `src/paint/mod.rs` — only add the one `pub mod invalidate;` registration line.
+- No `unwrap`/`expect` in src non-test code (I-6).
+- ADDITIVE only: do not change existing public signatures or refactor unrelated code.
+- Do NOT define a new Rect type; reuse `crate::geom::Rect`.
+
+### Tests (unit tests in `src/paint/invalidate.rs`, `#[cfg(test)]`)
+- A fresh `DirtyRegion` (via `new()` and via `Default`) has `is_empty() == true` and `bounds() == None`.
+- After a single `add(Rect::new(...))`, `bounds()` returns that exact rect (assert origin/size) and `is_empty() == false`.
+- After adding two disjoint rects, `bounds()` is the minimal bounding box covering BOTH (assert exact x/y/width/height — e.g. add (0,0,10,10) and (20,20,10,10) → bounds origin (0,0), size (30,30)).
+- After `clear()`, `is_empty() == true` and `bounds() == None`.
+- DO NOT delete, skip, or ignore any existing test anywhere (I-4).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY `src/paint/invalidate.rs` and `src/paint/mod.rs`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(paint): DirtyRegion bounding-box invalidation primitive (t0363)"`
+Then STOP. Do not push; the orchestrator will open the PR.

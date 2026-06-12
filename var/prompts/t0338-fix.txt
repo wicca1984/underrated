@@ -1,0 +1,24 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English.
+First, read the entire AGENTS.md passed via --include-directories and follow all of it (esp. I-1..I-7). One task = one module/concern.
+
+Context: You are continuing an EXISTING branch `agent/t0338-inline-block-stf-block-child` in this worktree (PR #307). The feature (shrink-to-fit inline-block with block children, in `src/layout/mod.rs`) is implemented and ALL CI is green EXCEPT one job: the Windows "stack-overflow regression guard". The test `layout::tests::test_deep_tree_recursion_cap` overflows its stack on Windows (1 MiB stack) because the t0338 change enlarged the per-recursion stack frame of `layout_node`.
+
+ROOT CAUSE (already isolated — do NOT re-investigate):
+`calculate_shrink_to_fit_width` (in `src/layout/mod.rs`) gained two extra parameters and an internal `if has_block_children { ... }` branch that calls `max_content_width`. It is NOT marked `#[inline(never)]`, so the compiler inlines its now-larger body into `layout_node`, enlarging `layout_node`'s stack frame on the deep all-block recursion path and overflowing the Windows 1 MiB stack in `test_deep_tree_recursion_cap`. (The sibling helpers `max_content_width` and `relayout_block_children` are already `#[inline(never)]` for exactly this reason; `recenter_inline_children` set the precedent.)
+
+THE FIX (minimal, ONE production file `src/layout/mod.rs`):
+1. Add the attribute `#[inline(never)]` to the `fn calculate_shrink_to_fit_width(...)` definition (it currently has only `#[allow(clippy::too_many_arguments)]`). Keep both attributes. This moves its locals out of `layout_node`'s frame.
+
+Do NOT change any logic, signatures, or behavior. Do NOT touch any other file. Do NOT modify or delete any test. This is purely a stack-frame-size fix; all existing tests must still pass unchanged.
+
+VERIFY locally (Linux gate cannot reproduce the Windows overflow, but must stay green):
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test --lib` (all green, including layout::tests::*)
+
+COMMIT AND PUSH (mandatory — do not finish without this):
+- `git add -A`
+- `git commit -m "fix(layout): mark calculate_shrink_to_fit_width #[inline(never)] to shrink layout_node frame (Windows stack guard, t0338)"`
+- `git push origin agent/t0338-inline-block-stf-block-child`
+
+Report the commit hash and confirm the push succeeded. The orchestrator will then re-check CI on PR #307.

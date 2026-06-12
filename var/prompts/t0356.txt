@@ -1,0 +1,35 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0356 (branch agent/t0356-loader-decoding). Language for all code/comments/commit messages: English.
+
+## Task (t0356, milestone MS-NewTargets): parse the img `decoding` attribute into a typed mode in `src/loader/`
+
+Implement parsing of the HTML `decoding` attribute on images (`sync | async | auto`) into a typed enum, MIRRORING EXACTLY how the `loading` attribute was parsed into `LoadingMode` in task t0345. This is the typed-attribute parse layer only: do NOT change decode scheduling, raster, or paint behavior — only recognize/store the hint so a future task can act on it.
+
+### Hard scope
+- Touch ONLY files under `src/loader/` (most likely `src/loader/mod.rs`, next to the existing `LoadingMode`). Do NOT modify `src/html/`, `src/paint/`, `src/raster/`, etc. — other workers own those.
+- Find the existing `LoadingMode` enum + its parse function (added in t0345) and mirror it precisely: add a `DecodingMode` enum with variants for `Sync`, `Async`, and the default `Auto`, plus a parse function that maps the attribute string (case-insensitive per HTML, matching how `LoadingMode` handles casing) to the enum, defaulting unknown/missing values to `Auto` exactly as the HTML spec requires.
+- Pure, additive behavior. Do NOT regress any existing test.
+
+### Read first
+Study the `LoadingMode` implementation in `src/loader/mod.rs`: its enum shape, derives, default handling, the parse-function signature, and its tests. Match that style exactly (naming, case-insensitivity, default-to-auto-on-unknown).
+
+### Tests (add tests alongside the existing `LoadingMode` tests)
+Add at least:
+1. `"sync"` / `"async"` / `"auto"` (and their mixed-case forms) parse to the correct `DecodingMode` variant.
+2. An unknown value (e.g. `"bogus"`) and the absent/empty case both default to `DecodingMode::Auto`.
+Test code MAY use `unwrap()` (I-6 applies to src, not tests).
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your new tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY files under `src/loader/`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "feat(loader): parse img decoding attribute into typed DecodingMode (t0356)"`
+Then STOP. Do not push; the orchestrator will open the PR.

@@ -1,0 +1,36 @@
+CRITICAL EXECUTION DIRECTIVE (read first): You are running headless in yolo mode. Do NOT stop to present a plan or wait for confirmation/feedback — there is no human to review it. Proceed DIRECTLY to implementing the code now. Only stop AFTER you have implemented the change, passed all gates, and committed. A previous attempt failed by stopping at the planning stage; do not repeat that.
+
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0361 (branch agent/t0361-loader-lazy-eager-now). Language for all code/comments/commit messages: English.
+
+## Task (t0361, milestone MS-NewTargets): honor the confirmed "eager-now" semantics for loading=lazy in `src/loader/`
+
+### Confirmed product decision (do NOT relitigate)
+The product owner has fixed the spec: in the current HEADLESS full-page rendering pipeline there is NO scroll viewport, so `loading="lazy"` images must be FETCHED IMMEDIATELY — identical to eager — and the parsed `LoadingMode` flag is RETAINED only as a hint for a future viewport-aware deferral. Today's behavior in `src/loader/mod.rs::plan_image_load` DEFERS lazy (returns `ImageLoadOutcome::Deferred`, performs no I/O), which means lazy images do not render at all in headless. That is now a spec violation. Your job: make lazy fetch now, while preserving the flag for the future.
+
+### What to change (scope: src/loader/mod.rs ONLY)
+1. `plan_image_load(src, base_url, mode)` must now fetch for BOTH `LoadingMode::Eager` AND `LoadingMode::Lazy` by delegating to `load_image_safely` and mapping `Some(bytes)` -> `Loaded(bytes)`, `None` -> `Failed`. The `mode` parameter is RETAINED in the signature (callers still pass the parsed hint) but no longer short-circuits to `Deferred` under the current headless policy. Update the function's doc comment to state the eager-now policy clearly, and add a `// TODO(spec):` noting that true viewport-proximity deferral (returning `Deferred`) is reinstated once scroll/viewport support exists.
+2. KEEP, do not delete: the `ImageLoadOutcome::Deferred` variant, `LoadingMode`, `LoadingMode::is_deferred()`, and `parse_loading_attr`. The flag and the variant remain part of the API for the future viewport-aware path. (If `Deferred` becomes unconstructed and clippy/dead-code complains, keep it constructible/used by referencing it in a doc-test or a `#[allow(dead_code)]` with an explanatory comment tied to the TODO(spec) — do NOT remove it.)
+3. No `unwrap`/`expect` in src (I-6). ADDITIVE/behavioral-minimal: do not refactor unrelated functions.
+
+### Tests (in src/loader/mod.rs)
+- UPDATE the existing test(s) that assert `plan_image_load(..., LoadingMode::Lazy)` returns `Deferred` so they now assert the eager-now behavior (lazy is fetched: expect `Loaded(_)` for a readable source or `Failed` for an unreadable one — mirror however the existing eager test sets up its source/base_url). Updating the directly-affected test to match the new, product-confirmed behavior is REQUIRED and allowed.
+- KEEP the `is_deferred()` unit test (`LoadingMode::Lazy.is_deferred() == true`) — the flag semantics are unchanged.
+- Add at least one new assertion showing lazy and eager now produce the SAME outcome for the same source.
+- DO NOT delete or skip/ignore any other test, in this file or elsewhere (I-4). Only the directly-affected lazy-deferral assertions may change.
+
+### Hard scope
+- Touch ONLY `src/loader/mod.rs`. Do NOT modify any other file or module.
+
+### Definition of done (all required before you commit)
+1. `cargo fmt --all` clean.
+2. `cargo clippy --all-targets --all-features -- -D warnings` clean.
+3. `cargo test` green — your updated tests AND every pre-existing test still pass.
+4. `cargo doc --no-deps` clean.
+5. `git diff --name-only origin/main...HEAD` shows ONLY `src/loader/mod.rs`.
+
+### Commit
+When all gates are green, COMMIT inside this worktree (do not leave changes uncommitted):
+`git add -A && git commit -m "fix(loader): fetch loading=lazy images eagerly under headless policy, retain flag (t0361)"`
+Then STOP. Do not push; the orchestrator will open the PR.

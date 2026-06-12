@@ -1,0 +1,88 @@
+You are a Gemini worker on `underrated` (an independent web browser engine in Rust, edition 2024). Work and respond in English. First, read the entire AGENTS.md passed via --include-directories (/workspaces/underrated-meta/AGENTS.md) and follow ALL of it (esp. I-1 self-implement boundary, I-3 no cross-worktree access, I-4 no skipped/ignored tests, I-5 one task = one cohesive concern, I-6 no unwrap/expect in src non-test code).
+
+Work ONLY inside this worktree: /workspaces/wt/t0344 (branch agent/t0344-css-transform-parse). Language for all code/comments/commit messages: English.
+
+## Task (t0344, milestone MS-NewTargets, parallel menu item 1): parse the CSS `transform` property's function list into a typed value.
+
+### Background (verified by the orchestrator — trust these facts)
+- CSS values are parsed in `src/css/values.rs`. The single-value parser `parse_single_value(components)`
+  handles `ComponentValue::Function { name, value }` ONLY for `rgb`/`rgba` today; ALL other functions
+  (including `translate(...)`, `scale(...)`, `rotate(...)`) fall through to `None // TODO(spec): other functions`,
+  so a declaration like `transform: translate(10px, 20px)` is currently DROPPED entirely (parse_value returns
+  None for it). This is the gap to close.
+- The typed value enum is `pub enum CssValue { Keyword, Length(f32,LengthUnit), Number(f32), Color, Multiple(Vec<CssValue>), Position, Overflow, BoxSizing, Display, FlexDirection, JustifyContent, AlignItems }` in `src/css/values.rs`.
+- `LengthUnit` (Px/Em/Rem/Pt/Vw/Vh/Percent) already exists in the same file.
+- PdM has intentionally split this into a PARSE-side task (this task) and a separate CONSUME-side task
+  (paint/layout, NOT in scope here). So this task is parse-ONLY: produce a typed value and unit-test it.
+  Do NOT wire transforms into layout/paint/style application — that is a different task and out of scope.
+
+### The fix (keep ALL logic inside `src/css/values.rs`)
+1. Add a typed representation for transform functions. Suggested shape (adjust naming to match local style):
+   ```rust
+   #[derive(Debug, Clone, PartialEq)]
+   pub enum TransformFn {
+       Translate { x: LengthOrPercent, y: LengthOrPercent }, // translate(x) => y defaults to 0
+       TranslateX(LengthOrPercent),
+       TranslateY(LengthOrPercent),
+       Scale { x: f32, y: f32 },   // scale(s) => y defaults to s (uniform); scale(x, y) => both
+       ScaleX(f32),
+       ScaleY(f32),
+       Rotate(AngleDeg),           // rotate(<angle>) — see angle handling below
+   }
+   ```
+   You may represent a length-or-percentage with the existing `CssValue::Length(f32, LengthUnit)` (Percent is
+   a LengthUnit variant) instead of a new `LengthOrPercent` type if that is cleaner and keeps the blast radius
+   smaller — your choice, but keep it tidy and well-documented.
+   Represent an angle as `f32` DEGREES. Accept `deg`, `rad` (convert rad→deg via `* 180.0 / PI`), `grad`
+   (grad→deg via `* 0.9`), and `turn` (turn→deg via `* 360.0`). A bare unitless `0` is a valid angle (0deg).
+2. Add a `Transform(Vec<TransformFn>)` variant to `CssValue`.
+3. Add a function-list parser, e.g. `fn parse_transform_list(...)`, that is invoked when the property being
+   parsed is `transform`. The cleanest wiring: in `parse_value`, special-case the `transform` property. Since
+   `parse_value`/`parse_single_value` currently do NOT receive the property name, add a small dedicated
+   public entry point, e.g. `pub fn parse_transform(components: &[ComponentValue]) -> Option<CssValue>`, that
+   iterates the top-level `ComponentValue::Function { name, value }` items (whitespace between functions is
+   allowed and ignored) and parses each known function name (case-insensitive):
+     - `translate(<l-or-p>[, <l-or-p>]?)`  (1 or 2 args; missing y = 0)
+     - `translateX(<l-or-p>)`, `translateY(<l-or-p>)`
+     - `scale(<number>[, <number>]?)`      (1 arg = uniform; 2 args = x,y)
+     - `scaleX(<number>)`, `scaleY(<number>)`
+     - `rotate(<angle>)`
+   Arguments inside a function are comma-separated `ComponentValue::Token(CssToken::Comma)` (verify the actual
+   comma token name in this crate's tokenizer and match it). Return `None` if ANY function is unknown or any
+   argument is malformed/wrong-arity (whole declaration invalid per CSS — do not partially accept).
+4. Wire it in: find where declared property values are parsed into `CssValue` (search the crate for callers of
+   `parse_value`, e.g. in `src/style/mod.rs` / `src/css/resolve.rs` / `src/css/parser.rs`). At the SINGLE place
+   that converts a declaration's components into a `CssValue`, add: if the (lowercased) property name ==
+   "transform", call `parse_transform(...)` instead of the generic `parse_value(...)`. This is the only edit
+   permitted outside `src/css/values.rs`; keep it to a 2-4 line branch and nothing else. If adding the
+   `CssValue::Transform` variant breaks any exhaustive `match` in other modules, add the MINIMAL non-logic arm
+   needed to compile (e.g. `CssValue::Transform(_) => { /* not consumed yet (t0344 is parse-only) */ }` or
+   `=> None`) — boilerplate only, never real behavior. Do not implement transform consumption anywhere.
+
+### Tests (REQUIRED — real assertions, never skipped/ignored — I-4; tests may use unwrap/expect)
+Add `#[cfg(test)]` unit tests in `src/css/values.rs` (mirror the existing value-parsing tests in that file).
+Cover at minimum:
+1. `translate(10px, 20px)` → `CssValue::Transform([TranslateX/Translate{x:10px,y:20px}])` (assert exact fields).
+2. `translate(10px)` → y defaults to 0.
+3. `translateX(5px)` and `translateY(50%)` (percentage arg) parse to the right single-axis variants.
+4. `scale(2)` → uniform x=y=2; `scale(2, 3)` → x=2,y=3; `scaleX(0.5)`.
+5. `rotate(45deg)`, `rotate(0)` (unitless zero), and one of `rotate(1turn)`/`rotate(100grad)`/`rotate(3.14159rad)`
+   with the converted-degrees value asserted (use an approx/epsilon compare for the converted cases).
+6. A chained list: `translate(1px, 2px) rotate(45deg) scale(2)` → a 3-element Vec in order.
+7. Invalid inputs return `None`: an unknown function `skew(10deg)`; wrong arity `translate(1px, 2px, 3px)`;
+   non-number scale arg `scale(10px)`.
+Do NOT use `unwrap`/`expect` in `src` non-test code (I-6).
+
+### Done criteria (all required before you finish)
+1. `cargo build` is clean (no warnings introduced for your code).
+2. `cargo test` passes (the whole suite; your new tests included). No tests skipped/ignored.
+3. `cargo clippy --all-targets -- -D warnings` is clean for your changes.
+4. `cargo fmt` applied.
+5. Scope: `git diff --name-only origin/main` shows ONLY `src/css/values.rs` plus AT MOST one other file for
+   the 2-4 line wiring branch (and only boilerplate compile-arms if a variant addition demands them). No
+   layout/paint/raster behavior changes. No unrelated files.
+6. COMMIT your work on branch `agent/t0344-css-transform-parse` with a Conventional Commit message, e.g.
+   `feat(css): parse transform function list (translate/scale/rotate) into typed CssValue (t0344)`.
+   Do NOT open a PR yourself; the orchestrator will gate, review, and merge. Just commit.
+
+When finished, print `git diff --name-only origin/main` and the final `cargo test` summary line.
