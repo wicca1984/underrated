@@ -4666,47 +4666,18 @@ fn bridge_get_bounding_client_rect(
 
     let rect = rect_opt.unwrap_or_else(|| crate::dom::DomRect::new(0.0, 0.0, 0.0, 0.0));
 
+    // DOMRectReadOnly properties are enumerable + configurable but NOT writable
+    // (getBoundingClientRect returns a DOMRectReadOnly per the CSSOM View spec).
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
     let js_rect = ObjectInitializer::new(context)
-        .property(
-            JsString::from("x"),
-            JsValue::from(rect.x()),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("y"),
-            JsValue::from(rect.y()),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("width"),
-            JsValue::from(rect.width()),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("height"),
-            JsValue::from(rect.height()),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("top"),
-            JsValue::from(rect.top()),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("right"),
-            JsValue::from(rect.right()),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("bottom"),
-            JsValue::from(rect.bottom()),
-            Attribute::all(),
-        )
-        .property(
-            JsString::from("left"),
-            JsValue::from(rect.left()),
-            Attribute::all(),
-        )
+        .property(JsString::from("x"), JsValue::from(rect.x()), ro)
+        .property(JsString::from("y"), JsValue::from(rect.y()), ro)
+        .property(JsString::from("width"), JsValue::from(rect.width()), ro)
+        .property(JsString::from("height"), JsValue::from(rect.height()), ro)
+        .property(JsString::from("top"), JsValue::from(rect.top()), ro)
+        .property(JsString::from("right"), JsValue::from(rect.right()), ro)
+        .property(JsString::from("bottom"), JsValue::from(rect.bottom()), ro)
+        .property(JsString::from("left"), JsValue::from(rect.left()), ro)
         .build();
 
     Ok(JsValue::from(js_rect))
