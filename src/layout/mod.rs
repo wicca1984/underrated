@@ -26,6 +26,25 @@ pub struct LayoutBox {
     pub text: Option<String>,
 }
 
+/// Finds the absolute rect of the first `LayoutBox` matching the given `NodeId`
+/// using an iterative depth-first search (DFS) pre-order traversal (parent before children).
+///
+/// If multiple boxes share the same `NodeId`, the first match in DFS pre-order is returned.
+///
+/// // TODO(spec): getBoundingClientRect should eventually union all fragments of an element.
+pub fn find_box_rect(root: &LayoutBox, node: NodeId) -> Option<Rect> {
+    let mut stack = vec![root];
+    while let Some(current) = stack.pop() {
+        if current.node == Some(node) {
+            return Some(current.rect);
+        }
+        for child in current.children.iter().rev() {
+            stack.push(child);
+        }
+    }
+    None
+}
+
 pub(crate) const MAX_DEPTH: usize = 500;
 
 fn collapse_margins(m1: f32, m2: f32) -> f32 {
@@ -1561,6 +1580,77 @@ mod tests {
 
     fn approx_eq(a: f32, b: f32) -> bool {
         (a - b).abs() < EPSILON
+    }
+
+    #[test]
+    fn test_find_box_rect() {
+        let mut dom = crate::dom::Dom::new();
+        let node1 = dom.document();
+        let node2 = dom.create_node(crate::dom::NodeData::Text("child1".into()));
+        let node3 = dom.create_node(crate::dom::NodeData::Text("child2".into()));
+        let node4 = dom.create_node(crate::dom::NodeData::Text("child3".into()));
+
+        // Create a handcrafted LayoutBox tree
+        // Root has node1.
+        // Child 1 has node2.
+        // Child 2 has node3.
+        // Child 3 has node2 (same NodeId as child 1 to test duplicate/first-match behavior).
+        let tree = LayoutBox {
+            node: Some(node1),
+            rect: Rect::new(0.0, 0.0, 500.0, 500.0),
+            children: vec![
+                LayoutBox {
+                    node: Some(node2),
+                    rect: Rect::new(10.0, 10.0, 100.0, 100.0),
+                    children: vec![LayoutBox {
+                        node: Some(node3),
+                        rect: Rect::new(20.0, 20.0, 50.0, 50.0),
+                        children: vec![],
+                        text: None,
+                    }],
+                    text: None,
+                },
+                LayoutBox {
+                    node: Some(node2), // Duplicate NodeId
+                    rect: Rect::new(200.0, 200.0, 150.0, 150.0),
+                    children: vec![],
+                    text: None,
+                },
+            ],
+            text: None,
+        };
+
+        // 1. Deep child search
+        let found3 = find_box_rect(&tree, node3);
+        assert!(found3.is_some());
+        let rect3 = found3.unwrap();
+        assert!(approx_eq(rect3.origin.x, 20.0));
+        assert!(approx_eq(rect3.origin.y, 20.0));
+        assert!(approx_eq(rect3.size.width, 50.0));
+        assert!(approx_eq(rect3.size.height, 50.0));
+
+        // 2. Root node search
+        let found1 = find_box_rect(&tree, node1);
+        assert!(found1.is_some());
+        let rect1 = found1.unwrap();
+        assert!(approx_eq(rect1.origin.x, 0.0));
+        assert!(approx_eq(rect1.origin.y, 0.0));
+        assert!(approx_eq(rect1.size.width, 500.0));
+        assert!(approx_eq(rect1.size.height, 500.0));
+
+        // 3. Not found search
+        let found4 = find_box_rect(&tree, node4);
+        assert!(found4.is_none());
+
+        // 4. Duplicate NodeId search (first match in DFS pre-order returned)
+        let found2 = find_box_rect(&tree, node2);
+        assert!(found2.is_some());
+        let rect2 = found2.unwrap();
+        // First match is child 1 (rect 10, 10, 100, 100), not child 3 (rect 200, 200, 150, 150)
+        assert!(approx_eq(rect2.origin.x, 10.0));
+        assert!(approx_eq(rect2.origin.y, 10.0));
+        assert!(approx_eq(rect2.size.width, 100.0));
+        assert!(approx_eq(rect2.size.height, 100.0));
     }
 
     #[test]
