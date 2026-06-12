@@ -307,6 +307,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "clear"
             | "table-layout"
             | "visibility"
+            | "cursor"
     )
 }
 
@@ -433,6 +434,51 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "visible" | "hidden" | "collapse"
+                )
+            }
+            _ => false,
+        },
+        // TODO(spec): Custom cursor images using `url(...)` and comma-separated fallback lists are currently out of scope.
+        "cursor" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto"
+                        | "default"
+                        | "none"
+                        | "context-menu"
+                        | "help"
+                        | "pointer"
+                        | "progress"
+                        | "wait"
+                        | "cell"
+                        | "crosshair"
+                        | "text"
+                        | "vertical-text"
+                        | "alias"
+                        | "copy"
+                        | "move"
+                        | "no-drop"
+                        | "not-allowed"
+                        | "grab"
+                        | "grabbing"
+                        | "e-resize"
+                        | "n-resize"
+                        | "ne-resize"
+                        | "nw-resize"
+                        | "s-resize"
+                        | "se-resize"
+                        | "sw-resize"
+                        | "w-resize"
+                        | "ew-resize"
+                        | "ns-resize"
+                        | "nesw-resize"
+                        | "nwse-resize"
+                        | "col-resize"
+                        | "row-resize"
+                        | "all-scroll"
+                        | "zoom-in"
+                        | "zoom-out"
                 )
             }
             _ => false,
@@ -608,6 +654,23 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "visible" | "hidden" | "collapse" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        // TODO(spec): Custom cursor images using `url(...)` and comma-separated fallback lists are currently out of scope.
+        "cursor" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "default" | "none" | "context-menu" | "help" | "pointer"
+                    | "progress" | "wait" | "cell" | "crosshair" | "text" | "vertical-text"
+                    | "alias" | "copy" | "move" | "no-drop" | "not-allowed" | "grab"
+                    | "grabbing" | "e-resize" | "n-resize" | "ne-resize" | "nw-resize"
+                    | "s-resize" | "se-resize" | "sw-resize" | "w-resize" | "ew-resize"
+                    | "ns-resize" | "nesw-resize" | "nwse-resize" | "col-resize" | "row-resize"
+                    | "all-scroll" | "zoom-in" | "zoom-out" => Some(val),
                     _ => None,
                 }
             } else {
@@ -2052,6 +2115,68 @@ mod tests {
         );
         assert_eq!(
             parse_property_value("visibility", &[token(CssToken::Ident("gone".to_string()))]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_cursor_property() {
+        // Test known properties
+        assert!(is_known_layout_property("cursor"));
+        assert!(is_known_layout_property("Cursor"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "cursor",
+            &CssValue::Keyword("pointer".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "cursor",
+            &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "cursor",
+            &CssValue::Keyword("not-allowed".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "cursor",
+            &CssValue::Keyword("grab".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "cursor",
+            &CssValue::Keyword("Pointer".to_string()) // Case insensitivity
+        ));
+        assert!(!is_valid_property_value(
+            "cursor",
+            &CssValue::Keyword("bogus".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "cursor",
+            &CssValue::Overflow(OverflowValue::Visible) // Non-keyword value
+        ));
+
+        // Test parse_property_value for cursor
+        assert_eq!(
+            parse_property_value("cursor", &[token(CssToken::Ident("pointer".to_string()))]),
+            Some(CssValue::Keyword("pointer".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("cursor", &[token(CssToken::Ident("auto".to_string()))]),
+            Some(CssValue::Keyword("auto".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "cursor",
+                &[token(CssToken::Ident("not-allowed".to_string()))]
+            ),
+            Some(CssValue::Keyword("not-allowed".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("cursor", &[token(CssToken::Ident("grab".to_string()))]),
+            Some(CssValue::Keyword("grab".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("cursor", &[token(CssToken::Ident("bogus".to_string()))]),
             None
         );
     }
