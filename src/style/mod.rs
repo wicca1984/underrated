@@ -1961,6 +1961,44 @@ mod tests {
     }
 
     #[test]
+    fn test_border_outset_strips_per_edge_color_for_bevel() {
+        // Guard: when any per-edge border-style resolves to outset/inset, the per-edge
+        // border-*-color longhands must be removed so paint's UA button 3D-bevel synthesis
+        // (gated on per-edge color absence) still fires, even when border-color is explicit.
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet =
+            parse_stylesheet("div { border-style: outset; border-color: red green blue yellow; }");
+        let styles = compute_styles(&dom, &stylesheet);
+        let style = styles.get(&div).unwrap();
+
+        // Per-edge styles are still expanded.
+        assert_eq!(
+            style.get("border-top-style"),
+            Some(&CssValue::Keyword("outset".to_string()))
+        );
+        // ...but per-edge colors are stripped to preserve the synthesized bevel.
+        assert_eq!(style.get("border-top-color"), None);
+        assert_eq!(style.get("border-right-color"), None);
+        assert_eq!(style.get("border-bottom-color"), None);
+        assert_eq!(style.get("border-left-color"), None);
+
+        // A non-bevel style (solid) keeps the per-edge colors.
+        let stylesheet_solid =
+            parse_stylesheet("div { border-style: solid; border-color: red green blue yellow; }");
+        let styles_solid = compute_styles(&dom, &stylesheet_solid);
+        let style_solid = styles_solid.get(&div).unwrap();
+        assert!(style_solid.get("border-top-color").is_some());
+        assert!(style_solid.get("border-left-color").is_some());
+    }
+
+    #[test]
     fn test_text_font_computed_values_and_inheritance() {
         let mut dom = Dom::new();
         let doc = dom.document();
