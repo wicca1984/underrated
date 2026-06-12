@@ -97,7 +97,7 @@ impl TreeBuilder {
             InsertionMode::InTable => self.handle_in_table(token),
             InsertionMode::InTableText => self.handle_in_table(token), // TODO(spec)
             InsertionMode::InCaption => self.handle_in_caption(token),
-            InsertionMode::InColumnGroup => self.handle_in_table(token), // TODO(spec)
+            InsertionMode::InColumnGroup => self.handle_in_column_group(token),
             InsertionMode::InTableBody => self.handle_in_table_body(token),
             InsertionMode::InRow => self.handle_in_row(token),
             InsertionMode::InCell => self.handle_in_cell(token),
@@ -670,6 +670,110 @@ impl TreeBuilder {
             Token::Eof => {
                 // Stop parsing.
             }
+        }
+    }
+
+    // spec: §13.2.6.4.13 The "in column group" insertion mode
+    fn handle_in_column_group(&mut self, token: Token) {
+        match token {
+            Token::Character(c) if is_html_whitespace(c) => {
+                self.insert_character(c);
+            }
+            Token::Comment(data) => {
+                self.insert_comment(data);
+            }
+            Token::Doctype { .. } => {
+                // Parse error. Ignore.
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => match name.as_str() {
+                "html" => {
+                    self.handle_in_body(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                "col" => {
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                    self.stack_of_open_elements.pop();
+                }
+                "template" => {
+                    self.handle_in_head(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                _ => {
+                    self.handle_in_column_group_anything_else(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+            },
+            Token::EndTag {
+                name,
+                attrs,
+                self_closing,
+            } => match name.as_str() {
+                "colgroup" => {
+                    let is_colgroup = if let Some(&top_id) = self.stack_of_open_elements.last() {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "colgroup")
+                    } else {
+                        false
+                    };
+                    if !is_colgroup {
+                        // Parse error. Ignore.
+                    } else {
+                        self.stack_of_open_elements.pop();
+                        self.insertion_mode = InsertionMode::InTable;
+                    }
+                }
+                "col" => {
+                    // An end tag "col": parse error; ignore.
+                }
+                "template" => {
+                    self.handle_in_head(Token::EndTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+                _ => {
+                    self.handle_in_column_group_anything_else(Token::EndTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
+            },
+            Token::Eof => {
+                self.handle_in_body(Token::Eof);
+            }
+            other_token => {
+                self.handle_in_column_group_anything_else(other_token);
+            }
+        }
+    }
+
+    fn handle_in_column_group_anything_else(&mut self, token: Token) {
+        let is_colgroup = if let Some(&top_id) = self.stack_of_open_elements.last() {
+            matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "colgroup")
+        } else {
+            false
+        };
+        if !is_colgroup {
+            // Parse error. Ignore.
+        } else {
+            self.stack_of_open_elements.pop();
+            self.insertion_mode = InsertionMode::InTable;
+            self.process_token(token);
         }
     }
 
@@ -1667,5 +1771,33 @@ mod tests {
             })
             .collect();
         assert_eq!(body_child_names, vec!["div"]);
+    }
+
+    #[test]
+    fn test_in_column_group_explicit() {
+        let html = "<table><colgroup><col><col></colgroup><tr><td>x</table>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><table><colgroup><col><col></colgroup><tbody><tr><td>x</td></tr></tbody></table></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_column_group_implicit_bare_col() {
+        let html = "<table><col></table>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><table><colgroup><col></colgroup></table></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_column_group_stray_text() {
+        let html = "<table><colgroup>text<col></colgroup>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        let serialized = dom.serialize(dom.document());
+        assert!(!serialized.is_empty());
     }
 }
