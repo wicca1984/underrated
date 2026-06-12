@@ -15,7 +15,7 @@ pub struct ImageCandidate {
 pub fn parse_srcset(srcset: &str) -> Vec<ImageCandidate> {
     let mut candidates = Vec::new();
 
-    // TODO(spec): Strict validation and invalidation of mixed 'w' and 'x' descriptors is left for the future.
+    // TODO(spec): Finer per-descriptor parse-error reporting is left for the future.
     for part in srcset.split(',') {
         let tokens: Vec<&str> = part.split_whitespace().collect();
         if tokens.is_empty() {
@@ -53,7 +53,13 @@ pub fn parse_srcset(srcset: &str) -> Vec<ImageCandidate> {
         }
     }
 
-    candidates
+    let has_width = candidates.iter().any(|c| c.w_descriptor.is_some());
+    let has_density = candidates.iter().any(|c| c.w_descriptor.is_none());
+    if has_width && has_density {
+        Vec::new()
+    } else {
+        candidates
+    }
 }
 
 /// Selects the best image candidate based on device pixel ratio and effective display width (effective_px).
@@ -255,5 +261,37 @@ mod tests {
         // DPR = 2.0 -> 960w
         let selected = select_candidate(&candidates, 2.0, 480);
         assert_eq!(selected.unwrap().url, "b.png");
+    }
+
+    #[test]
+    fn test_parse_srcset_mixed_w_and_x_invalid() {
+        let candidates = parse_srcset("a.png 480w, b.png 2x");
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_parse_srcset_mixed_w_and_default_invalid() {
+        let candidates = parse_srcset("a.png 480w, b.png");
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_parse_srcset_all_w_still_valid() {
+        let candidates = parse_srcset("a.png 480w, b.png 960w");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].url, "a.png");
+        assert_eq!(candidates[0].w_descriptor, Some(480));
+        assert_eq!(candidates[1].url, "b.png");
+        assert_eq!(candidates[1].w_descriptor, Some(960));
+    }
+
+    #[test]
+    fn test_parse_srcset_all_x_still_valid() {
+        let candidates = parse_srcset("a.png 1x, b.png 2x");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].url, "a.png");
+        assert_eq!(candidates[0].density, 1.0);
+        assert_eq!(candidates[1].url, "b.png");
+        assert_eq!(candidates[1].density, 2.0);
     }
 }
