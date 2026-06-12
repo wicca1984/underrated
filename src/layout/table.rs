@@ -5,7 +5,7 @@ use crate::infra::NodeId;
 use crate::layout::{
     LayoutBox, get_layoutable_children, get_px, layout_node, resolve_margins_and_width,
 };
-use crate::style::CategorizedCategorizedComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
 struct TableRowInfo {
@@ -38,10 +38,7 @@ pub fn layout_table_container(
     depth: usize,
 ) -> Option<LayoutBox> {
     let style = styles.get(&node)?;
-    let caption_side_bottom = matches!(
-        style.get("caption-side"),
-        Some(CssValue::Keyword(kw)) if kw == "bottom"
-    );
+    let caption_side_bottom = style.inherited_table.caption_side == "bottom";
 
     // Get box model values
     let margin_top = get_px(style, "margin-top", 0.0);
@@ -210,10 +207,7 @@ pub fn layout_table_container(
     let total_spacing_h = (num_cols + 1) as f32 * spacing_h;
     let avail_content_width = (content_width - total_spacing_h).max(0.0);
 
-    let table_layout_fixed = matches!(
-        style.get("table-layout"),
-        Some(CssValue::Keyword(kw)) if kw == "fixed"
-    );
+    let table_layout_fixed = style.reset_table.table_layout == "fixed";
 
     let final_content_width = if table_layout_fixed {
         let mut col_has_width = vec![false; num_cols];
@@ -301,7 +295,7 @@ pub fn layout_table_container(
         }
 
         let sum_col_widths: f32 = col_widths.iter().sum();
-        let has_definite_width = matches!(style.get("width"), Some(CssValue::Length(_, _)));
+        let has_definite_width = style.reset_box.width != -1;
 
         let final_content_width = if has_definite_width {
             content_width
@@ -476,27 +470,16 @@ pub fn layout_table_container(
                     cell_box.rect.size.height = cell_height;
 
                     if cell_height > natural_height {
-                        let align = styles
-                            .get(&cell_node)
-                            .and_then(|cs| cs.get("vertical-align"));
                         let mut dy = 0.0;
-                        match align {
-                            Some(CssValue::Keyword(kw)) => {
-                                match kw.as_str() {
-                                    "top" => {}
-                                    "middle" => {
-                                        dy = (cell_height - natural_height) / 2.0;
-                                    }
-                                    "bottom" => {
-                                        dy = cell_height - natural_height;
-                                    }
-                                    _ => {
-                                        // TODO(spec): table-cell vertical-align baseline/sub/super/text-top/text-bottom not implemented; treated as top.
-                                    }
+                        if let Some(cs) = styles.get(&cell_node) {
+                            match cs.reset_box.vertical_align {
+                                -6 => { // middle
+                                    dy = (cell_height - natural_height) / 2.0;
                                 }
-                            }
-                            _ => {
-                                // TODO(spec): table-cell vertical-align baseline/sub/super/text-top/text-bottom not implemented; treated as top.
+                                -5 => { // bottom
+                                    dy = cell_height - natural_height;
+                                }
+                                _ => {} // top and others
                             }
                         }
                         if dy > 0.0 {
@@ -546,28 +529,12 @@ pub fn layout_table_container(
 }
 
 pub(crate) fn is_border_collapse(style: &CategorizedComputedStyle) -> bool {
-    match style.get("border-collapse") {
-        Some(CssValue::Keyword(kw)) => kw == "collapse",
-        _ => false,
-    }
+    style.inherited_table.border_collapse == "collapse"
 }
 
 fn get_border_spacing(style: &CategorizedComputedStyle) -> (f32, f32) {
-    match style.get("border-spacing") {
-        Some(CssValue::Length(v, _)) => (*v, *v),
-        Some(CssValue::Multiple(values)) if values.len() >= 2 => {
-            let h = match &values[0] {
-                CssValue::Length(v, _) => *v,
-                _ => 0.0,
-            };
-            let v = match &values[1] {
-                CssValue::Length(v, _) => *v,
-                _ => 0.0,
-            };
-            (h, v)
-        }
-        _ => (0.0, 0.0),
-    }
+    let bs = style.inherited_table.border_spacing as f32;
+    (bs, bs)
 }
 
 fn gather_table_rows(
@@ -593,12 +560,10 @@ fn gather_table_rows(
                 continue;
             }
             let style = styles.get(&child);
-            let display = style.and_then(|s| s.get("display"));
-            let is_row = matches_display(display, "table-row")
-                || matches_display(display, "table-row-group")
+            let is_row = style.map_or(false, |s| s.reset_box.display == "table-row" || s.reset_box.display == "table-row-group")
                 || is_table_row_element(dom, child);
-            let is_cell =
-                matches_display(display, "table-cell") || is_table_cell_element(dom, child);
+            let is_cell = style.map_or(false, |s| s.reset_box.display == "table-cell")
+                || is_table_cell_element(dom, child);
 
             if is_row {
                 if !implicit_row_cells.is_empty() {
@@ -642,8 +607,7 @@ fn gather_row_cells(
     let layoutable_children = get_layoutable_children(dom, styles, row_node);
     for &child in &layoutable_children {
         let style = styles.get(&child);
-        let display = style.and_then(|s| s.get("display"));
-        let is_cell = matches_display(display, "table-cell") || is_table_cell_element(dom, child);
+        let is_cell = style.map_or(false, |s| s.reset_box.display == "table-cell") || is_table_cell_element(dom, child);
         if is_cell {
             cells.push(child);
         } else {
@@ -705,10 +669,10 @@ fn get_cell_preferred_width(
     depth: usize,
 ) -> f32 {
     let mut width = 0.0_f32;
-    if let Some(cs) = styles.get(&cell_node)
-        && let Some(CssValue::Length(val, LengthUnit::Px)) = cs.get("width")
-    {
-        width = *val;
+    if let Some(cs) = styles.get(&cell_node) {
+        if cs.reset_box.width != -1 {
+            width = cs.reset_box.width as f32;
+        }
     }
     if width == 0.0
         && let Some(cell_box) = layout_node(dom, styles, cell_node, content_width, 0.0, 0.0, depth)
@@ -723,7 +687,7 @@ mod tests {
     use super::*;
     use crate::css::values::{CssValue, DisplayValue, LengthUnit};
     use crate::dom::{Dom, NodeData};
-    use crate::style::CategorizedCategorizedComputedStyle;
+    use crate::style::CategorizedComputedStyle;
     use std::collections::HashMap;
 
     fn style_with_display(display: &str) -> CategorizedComputedStyle {
@@ -734,7 +698,7 @@ mod tests {
             "table-cell" => CssValue::Display(DisplayValue::TableCell),
             _ => CssValue::Keyword(display.to_string()),
         };
-        s.insert("display".to_string(), val);
+        s.set_property("display", &val);
         s
     }
 
@@ -1189,8 +1153,8 @@ mod tests {
 
         for &c in &[cell1_node, cell2_node, cell3_node, cell4_node] {
             let mut style = style_with_display("table-cell");
-            style.insert("width".to_string(), CssValue::Length(25.0, LengthUnit::Px));
-            style.insert("height".to_string(), CssValue::Length(10.0, LengthUnit::Px));
+            style.set_width(25);
+            style.set_height(10);
             styles.insert(c, style);
         }
 

@@ -3,7 +3,7 @@ use crate::dom::Dom;
 use crate::geom::{Point, Rect};
 use crate::infra::NodeId;
 use crate::layout::{LayoutBox, get_px, is_absolute_or_fixed, layout_node};
-use crate::style::CategorizedCategorizedComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
 pub fn layout_flex_container(
@@ -47,117 +47,46 @@ pub fn layout_flex_container(
     let border_box_y = offset_y + margin_top;
 
     // Flex properties
-    let flex_direction = match style.get("flex-direction") {
-        Some(CssValue::Keyword(kw)) if kw == "column" => FlexDirection::Column,
-        _ => FlexDirection::Row,
+    let flex_direction = if style.reset_flex.flex_direction == "column" {
+        FlexDirection::Column
+    } else {
+        FlexDirection::Row
     };
 
-    let justify_content = match style.get("justify-content") {
-        Some(CssValue::JustifyContent(val)) => match val {
-            JustifyContentValue::FlexStart => JustifyContent::FlexStart,
-            JustifyContentValue::FlexEnd => JustifyContent::FlexEnd,
-            JustifyContentValue::Center => JustifyContent::Center,
-            JustifyContentValue::SpaceBetween => JustifyContent::SpaceBetween,
-            JustifyContentValue::SpaceAround => JustifyContent::SpaceAround,
-            JustifyContentValue::SpaceEvenly => JustifyContent::SpaceEvenly,
-        },
-        Some(CssValue::Keyword(kw)) => match kw.as_str() {
-            "flex-start" => JustifyContent::FlexStart,
-            "flex-end" => JustifyContent::FlexEnd,
-            "center" => JustifyContent::Center,
-            "space-between" => JustifyContent::SpaceBetween,
-            "space-around" => JustifyContent::SpaceAround,
-            "space-evenly" => JustifyContent::SpaceEvenly,
-            _ => JustifyContent::FlexStart,
-        },
+    let justify_content = match style.reset_flex.justify_content.as_str() {
+        "flex-start" => JustifyContent::FlexStart,
+        "flex-end" => JustifyContent::FlexEnd,
+        "center" => JustifyContent::Center,
+        "space-between" => JustifyContent::SpaceBetween,
+        "space-around" => JustifyContent::SpaceAround,
+        "space-evenly" => JustifyContent::SpaceEvenly,
         _ => JustifyContent::FlexStart,
     };
 
-    let align_items = match style.get("align-items") {
-        Some(CssValue::AlignItems(val)) => match val {
-            AlignItemsValue::Stretch => AlignItems::Stretch,
-            AlignItemsValue::FlexStart => AlignItems::FlexStart,
-            AlignItemsValue::FlexEnd => AlignItems::FlexEnd,
-            AlignItemsValue::Center => AlignItems::Center,
-            AlignItemsValue::Baseline => AlignItems::Baseline,
-        },
-        Some(CssValue::Keyword(kw)) => match kw.as_str() {
-            "stretch" => AlignItems::Stretch,
-            "flex-start" => AlignItems::FlexStart,
-            "flex-end" => AlignItems::FlexEnd,
-            "center" => AlignItems::Center,
-            "baseline" => AlignItems::Baseline,
-            _ => AlignItems::Stretch,
-        },
+    let align_items = match style.reset_flex.align_items.as_str() {
+        "stretch" => AlignItems::Stretch,
+        "flex-start" => AlignItems::FlexStart,
+        "flex-end" => AlignItems::FlexEnd,
+        "center" => AlignItems::Center,
+        "baseline" => AlignItems::Baseline,
         _ => AlignItems::Stretch,
     };
 
-    let align_content = match style.get("align-content") {
-        Some(CssValue::Keyword(kw)) if kw == "center" => AlignContent::Center,
-        Some(CssValue::Keyword(kw)) if kw == "space-between" => AlignContent::SpaceBetween,
-        // TODO(spec): stretch / space-around are OUT of scope
+    let align_content = match style.reset_flex.align_content.as_str() {
+        "center" => AlignContent::Center,
+        "space-between" => AlignContent::SpaceBetween,
         _ => AlignContent::FlexStart,
     };
 
-    let flex_wrap = match style.get("flex-wrap") {
-        Some(CssValue::Keyword(kw)) if kw == "wrap" => FlexWrap::Wrap,
-        Some(CssValue::Keyword(kw)) if kw == "wrap-reverse" => {
-            // TODO(spec): wrap-reverse is OUT of scope
-            FlexWrap::Nowrap
-        }
-        _ => FlexWrap::Nowrap,
+    let flex_wrap = if style.reset_flex.flex_wrap == "wrap" {
+        FlexWrap::Wrap
+    } else {
+        FlexWrap::Nowrap
     };
 
     // Resolve main_gap and cross_gap from style
-    let mut row_gap = None;
-    let mut col_gap = None;
-
-    if let Some(CssValue::Length(px, LengthUnit::Px)) = style.get("row-gap") {
-        row_gap = Some(*px);
-    } else if style.get("row-gap").is_some() {
-        // TODO(spec): non-px gap units
-    }
-
-    if let Some(CssValue::Length(px, LengthUnit::Px)) = style.get("column-gap") {
-        col_gap = Some(*px);
-    } else if style.get("column-gap").is_some() {
-        // TODO(spec): non-px gap units
-    }
-
-    if let (true, Some(val)) = (row_gap.is_none() || col_gap.is_none(), style.get("gap")) {
-        match val {
-            CssValue::Length(px, LengthUnit::Px) => {
-                if row_gap.is_none() {
-                    row_gap = Some(*px);
-                }
-                if col_gap.is_none() {
-                    col_gap = Some(*px);
-                }
-            }
-            CssValue::Multiple(vals) if vals.len() > 1 => {
-                if let Some(CssValue::Length(px, LengthUnit::Px)) = vals.first() {
-                    if row_gap.is_none() {
-                        row_gap = Some(*px);
-                    }
-                } else {
-                    // TODO(spec): non-px gap units
-                }
-                if let Some(CssValue::Length(px, LengthUnit::Px)) = vals.get(1) {
-                    if col_gap.is_none() {
-                        col_gap = Some(*px);
-                    }
-                } else {
-                    // TODO(spec): non-px gap units
-                }
-            }
-            _ => {
-                // TODO(spec): non-px gap units
-            }
-        }
-    }
-
-    let row_gap = row_gap.unwrap_or(0.0).max(0.0);
-    let col_gap = col_gap.unwrap_or(0.0).max(0.0);
+    let row_gap = if style.reset_flex.row_gap == -1 { 0.0 } else { style.reset_flex.row_gap as f32 };
+    let col_gap = if style.reset_flex.column_gap == -1 { 0.0 } else { style.reset_flex.column_gap as f32 };
 
     let (main_gap, cross_gap) = match flex_direction {
         FlexDirection::Row => (col_gap, row_gap),
@@ -591,8 +520,10 @@ enum FlexWrap {
 }
 
 fn get_number(style: &CategorizedComputedStyle, prop: &str, default: f32) -> f32 {
-    match style.get(prop) {
-        Some(CssValue::Number(v)) => *v,
+    match prop {
+        "flex-grow" => style.reset_flex.flex_grow,
+        "flex-shrink" => style.reset_flex.flex_shrink,
+        "opacity" => style.reset_effects.opacity,
         _ => default,
     }
 }
@@ -601,9 +532,10 @@ fn has_explicit_size(style: Option<&CategorizedComputedStyle>, prop: &str) -> bo
     let Some(style) = style else {
         return false;
     };
-    match style.get(prop) {
-        Some(CssValue::Length(_, _)) => true,
-        Some(CssValue::Keyword(kw)) if kw != "auto" => true,
+    match prop {
+        "width" => style.reset_box.width != -1,
+        "height" => style.reset_box.height != -1,
+        "flex-basis" => style.reset_flex.flex_basis != -1,
         _ => false,
     }
 }
@@ -612,23 +544,13 @@ fn get_align_self(style: Option<&CategorizedComputedStyle>, default: AlignItems)
     let Some(style) = style else {
         return default;
     };
-    match style.get("align-self") {
-        Some(CssValue::AlignItems(val)) => match val {
-            AlignItemsValue::Stretch => AlignItems::Stretch,
-            AlignItemsValue::FlexStart => AlignItems::FlexStart,
-            AlignItemsValue::FlexEnd => AlignItems::FlexEnd,
-            AlignItemsValue::Center => AlignItems::Center,
-            AlignItemsValue::Baseline => AlignItems::Baseline,
-        },
-        Some(CssValue::Keyword(kw)) => match kw.to_ascii_lowercase().as_str() {
-            "auto" => default,
-            "stretch" => AlignItems::Stretch,
-            "flex-start" => AlignItems::FlexStart,
-            "flex-end" => AlignItems::FlexEnd,
-            "center" => AlignItems::Center,
-            "baseline" => AlignItems::Baseline,
-            _ => default,
-        },
+    match style.reset_flex.align_self.to_ascii_lowercase().as_str() {
+        "auto" => default,
+        "stretch" => AlignItems::Stretch,
+        "flex-start" => AlignItems::FlexStart,
+        "flex-end" => AlignItems::FlexEnd,
+        "center" => AlignItems::Center,
+        "baseline" => AlignItems::Baseline,
         _ => default,
     }
 }

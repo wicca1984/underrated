@@ -7,7 +7,7 @@ use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
 use crate::layout::LayoutBox;
-use crate::style::CategorizedCategorizedComputedStyle;
+use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
 /// spec: object-fit keyword values
