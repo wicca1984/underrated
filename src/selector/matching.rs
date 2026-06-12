@@ -298,6 +298,8 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "checked" => is_checked(dom, node),
                     "disabled" => is_disabled(dom, node),
                     "enabled" => is_enabled(dom, node),
+                    "required" => is_required(dom, node),
+                    "optional" => is_optional(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -627,6 +629,36 @@ fn is_enabled(dom: &Dom, node: NodeId) -> bool {
                 && !attrs
                     .iter()
                     .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "disabled"))
+        }
+        _ => false,
+    }
+}
+
+fn is_required(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = ascii::eq_ignore_ascii_case(name, "input")
+                || ascii::eq_ignore_ascii_case(name, "select")
+                || ascii::eq_ignore_ascii_case(name, "textarea");
+            is_applicable
+                && attrs
+                    .iter()
+                    .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "required"))
+        }
+        _ => false,
+    }
+}
+
+fn is_optional(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = ascii::eq_ignore_ascii_case(name, "input")
+                || ascii::eq_ignore_ascii_case(name, "select")
+                || ascii::eq_ignore_ascii_case(name, "textarea");
+            is_applicable
+                && !attrs
+                    .iter()
+                    .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "required"))
         }
         _ => false,
     }
@@ -1616,6 +1648,116 @@ mod tests {
             &parse_selector_list(":enabled").unwrap(),
             &dom,
             select_mixed_disabled
+        ));
+
+        // Test :required and :optional
+        // <input required>
+        let input_required = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        dom.append_child(doc, input_required);
+
+        // <input> (no required)
+        let input_not_required = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_not_required);
+
+        // <select required>
+        let select_required = dom.create_node(NodeData::Element {
+            name: "select".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        dom.append_child(doc, select_required);
+
+        // <textarea>
+        let textarea_optional = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, textarea_optional);
+
+        // <div required>
+        let div_required = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        dom.append_child(doc, div_required);
+
+        // Tests
+        assert!(matches(
+            &parse_selector_list("input:required").unwrap(),
+            &dom,
+            input_required
+        ));
+        assert!(!matches(
+            &parse_selector_list("input:optional").unwrap(),
+            &dom,
+            input_required
+        ));
+
+        assert!(matches(
+            &parse_selector_list("input:optional").unwrap(),
+            &dom,
+            input_not_required
+        ));
+        assert!(!matches(
+            &parse_selector_list("input:required").unwrap(),
+            &dom,
+            input_not_required
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":required").unwrap(),
+            &dom,
+            select_required
+        ));
+        assert!(!matches(
+            &parse_selector_list(":optional").unwrap(),
+            &dom,
+            select_required
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":optional").unwrap(),
+            &dom,
+            textarea_optional
+        ));
+        assert!(!matches(
+            &parse_selector_list(":required").unwrap(),
+            &dom,
+            textarea_optional
+        ));
+
+        assert!(!matches(
+            &parse_selector_list(":required").unwrap(),
+            &dom,
+            div_required
+        ));
+        assert!(!matches(
+            &parse_selector_list(":optional").unwrap(),
+            &dom,
+            div_required
+        ));
+
+        // Mixed case and attribute spelling checks
+        let input_mixed_required = dom.create_node(NodeData::Element {
+            name: "InPuT".into(),
+            attrs: vec![("ReQuIrEd".into(), "true".into())],
+        });
+        dom.append_child(doc, input_mixed_required);
+
+        assert!(matches(
+            &parse_selector_list(":required").unwrap(),
+            &dom,
+            input_mixed_required
+        ));
+        assert!(!matches(
+            &parse_selector_list(":optional").unwrap(),
+            &dom,
+            input_mixed_required
         ));
     }
 
