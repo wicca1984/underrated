@@ -19,6 +19,12 @@ pub struct InheritedText {
     pub font_style: String,
     pub font_weight: String,
     pub line_height: u32,
+    /// Set when `line-height` was specified as a unitless number (`line-height: 2`).
+    /// Spec: a unitless line-height inherits the *number*, and each element resolves
+    /// it against its own font-size. `line_height` (px) holds this element's resolved
+    /// value; this preserves the number so descendants recompute correctly and
+    /// `get("line-height")` reports `Number(n)` rather than the resolved px.
+    pub line_height_number: Option<f32>,
     pub text_align: String,
     pub letter_spacing: i32,
     pub word_spacing: i32,
@@ -48,6 +54,7 @@ impl Default for InheritedText {
             font_style: "normal".to_string(),
             font_weight: "normal".to_string(),
             line_height: LINE_HEIGHT_NORMAL,
+            line_height_number: None,
             text_align: "start".to_string(),
             letter_spacing: -1,
             word_spacing: -1,
@@ -665,14 +672,18 @@ impl CategorizedComputedStyle {
             }
             "line-height" => {
                 let fs = self.inherited_text.font_size;
-                let px = match value {
-                    CssValue::Length(v, _) => v.round().max(0.0) as u32,
-                    CssValue::Number(v) => (v * fs as f32).round().max(0.0) as u32,
+                let (px, number) = match value {
+                    CssValue::Length(v, _) => (v.round().max(0.0) as u32, None),
+                    // A unitless number resolves to px against this element's font-size,
+                    // but the number itself is what inherits (descendants recompute).
+                    CssValue::Number(v) => ((v * fs as f32).round().max(0.0) as u32, Some(*v)),
                     // `normal` (and any non-length keyword) stays unspecified so layout
                     // falls back to the font's intrinsic line height.
-                    _ => LINE_HEIGHT_NORMAL,
+                    _ => (LINE_HEIGHT_NORMAL, None),
                 };
-                Arc::make_mut(&mut self.inherited_text).line_height = px;
+                let it = Arc::make_mut(&mut self.inherited_text);
+                it.line_height = px;
+                it.line_height_number = number;
             }
             "text-align" => {
                 Arc::make_mut(&mut self.inherited_text).text_align = css_value_to_string(value)
