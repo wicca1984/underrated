@@ -28,6 +28,7 @@ pub enum Charset {
     Iso8859_9,
     Iso8859_6,
     Iso8859_8,
+    Iso8859_11,
     Koi8R,
     Koi8U,
 }
@@ -118,6 +119,10 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             | "iso88598" | "iso_8859-8" => {
                 return Charset::Iso8859_8;
             }
+            "iso-8859-11" | "iso8859-11" | "iso_8859_11" | "iso885911" | "8859_11" | "cp874"
+            | "windows-874" | "tis-620" | "tis620" | "thai" => {
+                return Charset::Iso8859_11;
+            }
             "koi8-r" | "koi8_r" | "cskoi8r" => {
                 return Charset::Koi8R;
             }
@@ -199,6 +204,10 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "iso-8859-8" | "iso8859-8" | "iso_8859_8" | "iso-ir-138" | "hebrew"
                 | "csisolatinhebrew" | "8859_8" | "cp28598" | "windows-28598" | "visual"
                 | "iso88598" | "iso_8859-8" => return Some(Charset::Iso8859_8),
+                "iso-8859-11" | "iso8859-11" | "iso_8859_11" | "iso885911" | "8859_11"
+                | "cp874" | "windows-874" | "tis-620" | "tis620" | "thai" => {
+                    return Some(Charset::Iso8859_11);
+                }
                 "koi8-r" => return Some(Charset::Koi8R),
                 "koi8-u" => return Some(Charset::Koi8U),
                 _ => {}
@@ -235,6 +244,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_9 => decode_iso8859_9(bytes),
         Charset::Iso8859_6 => decode_iso8859_6(bytes),
         Charset::Iso8859_8 => decode_iso8859_8(bytes),
+        Charset::Iso8859_11 => decode_iso8859_11(bytes),
         Charset::Koi8R => decode_koi8r(bytes),
         Charset::Koi8U => decode_koi8u(bytes),
     }
@@ -3050,6 +3060,128 @@ fn decode_iso8859_8(bytes: &[u8]) -> String {
     result
 }
 
+const ISO_8859_11_MAP: [char; 128] = [
+    // 0x80..=0x9F (C1 control range, identity mapping)
+    '\u{0080}', '\u{0081}', '\u{0082}', '\u{0083}', '\u{0084}', '\u{0085}', '\u{0086}', '\u{0087}',
+    '\u{0088}', '\u{0089}', '\u{008A}', '\u{008B}', '\u{008C}', '\u{008D}', '\u{008E}', '\u{008F}',
+    '\u{0090}', '\u{0091}', '\u{0092}', '\u{0093}', '\u{0094}', '\u{0095}', '\u{0096}', '\u{0097}',
+    '\u{0098}', '\u{0099}', '\u{009A}', '\u{009B}', '\u{009C}', '\u{009D}', '\u{009E}', '\u{009F}',
+    // 0xA0..=0xAF
+    '\u{00A0}', // 0xA0  U+00A0
+    '\u{0E01}', // 0xA1  U+0E01
+    '\u{0E02}', // 0xA2  U+0E02
+    '\u{0E03}', // 0xA3  U+0E03
+    '\u{0E04}', // 0xA4  U+0E04
+    '\u{0E05}', // 0xA5  U+0E05
+    '\u{0E06}', // 0xA6  U+0E06
+    '\u{0E07}', // 0xA7  U+0E07
+    '\u{0E08}', // 0xA8  U+0E08
+    '\u{0E09}', // 0xA9  U+0E09
+    '\u{0E0A}', // 0xAA  U+0E0A
+    '\u{0E0B}', // 0xAB  U+0E0B
+    '\u{0E0C}', // 0xAC  U+0E0C
+    '\u{0E0D}', // 0xAD  U+0E0D
+    '\u{0E0E}', // 0xAE  U+0E0E
+    '\u{0E0F}', // 0xAF  U+0E0F
+    // 0xB0..=0xBF
+    '\u{0E10}', // 0xB0  U+0E10
+    '\u{0E11}', // 0xB1  U+0E11
+    '\u{0E12}', // 0xB2  U+0E12
+    '\u{0E13}', // 0xB3  U+0E13
+    '\u{0E14}', // 0xB4  U+0E14
+    '\u{0E15}', // 0xB5  U+0E15
+    '\u{0E16}', // 0xB6  U+0E16
+    '\u{0E17}', // 0xB7  U+0E17
+    '\u{0E18}', // 0xB8  U+0E18
+    '\u{0E19}', // 0xB9  U+0E19
+    '\u{0E1A}', // 0xBA  U+0E1A
+    '\u{0E1B}', // 0xBB  U+0E1B
+    '\u{0E1C}', // 0xBC  U+0E1C
+    '\u{0E1D}', // 0xBD  U+0E1D
+    '\u{0E1E}', // 0xBE  U+0E1E
+    '\u{0E1F}', // 0xBF  U+0E1F
+    // 0xC0..=0xCF
+    '\u{0E20}', // 0xC0  U+0E20
+    '\u{0E21}', // 0xC1  U+0E21
+    '\u{0E22}', // 0xC2  U+0E22
+    '\u{0E23}', // 0xC3  U+0E23
+    '\u{0E24}', // 0xC4  U+0E24
+    '\u{0E25}', // 0xC5  U+0E25
+    '\u{0E26}', // 0xC6  U+0E26
+    '\u{0E27}', // 0xC7  U+0E27
+    '\u{0E28}', // 0xC8  U+0E28
+    '\u{0E29}', // 0xC9  U+0E29
+    '\u{0E2A}', // 0xCA  U+0E2A
+    '\u{0E2B}', // 0xCB  U+0E2B
+    '\u{0E2C}', // 0xCC  U+0E2C
+    '\u{0E2D}', // 0xCD  U+0E2D
+    '\u{0E2E}', // 0xCE  U+0E2E
+    '\u{0E2F}', // 0xCF  U+0E2F
+    // 0xD0..=0xDF
+    '\u{0E30}', // 0xD0  U+0E30
+    '\u{0E31}', // 0xD1  U+0E31
+    '\u{0E32}', // 0xD2  U+0E32
+    '\u{0E33}', // 0xD3  U+0E33
+    '\u{0E34}', // 0xD4  U+0E34
+    '\u{0E35}', // 0xD5  U+0E35
+    '\u{0E36}', // 0xD6  U+0E36
+    '\u{0E37}', // 0xD7  U+0E37
+    '\u{0E38}', // 0xD8  U+0E38
+    '\u{0E39}', // 0xD9  U+0E39
+    '\u{0E3A}', // 0xDA  U+0E3A
+    '\u{FFFD}', // 0xDB  U+FFFD
+    '\u{FFFD}', // 0xDC  U+FFFD
+    '\u{FFFD}', // 0xDD  U+FFFD
+    '\u{FFFD}', // 0xDE  U+FFFD
+    '\u{0E3F}', // 0xDF  U+0E3F
+    // 0xE0..=0xEF
+    '\u{0E40}', // 0xE0  U+0E40
+    '\u{0E41}', // 0xE1  U+0E41
+    '\u{0E42}', // 0xE2  U+0E42
+    '\u{0E43}', // 0xE3  U+0E43
+    '\u{0E44}', // 0xE4  U+0E44
+    '\u{0E45}', // 0xE5  U+0E45
+    '\u{0E46}', // 0xE6  U+0E46
+    '\u{0E47}', // 0xE7  U+0E47
+    '\u{0E48}', // 0xE8  U+0E48
+    '\u{0E49}', // 0xE9  U+0E49
+    '\u{0E4A}', // 0xEA  U+0E4A
+    '\u{0E4B}', // 0xEB  U+0E4B
+    '\u{0E4C}', // 0xEC  U+0E4C
+    '\u{0E4D}', // 0xED  U+0E4D
+    '\u{0E4E}', // 0xEE  U+0E4E
+    '\u{0E4F}', // 0xEF  U+0E4F
+    // 0xF0..=0xFF
+    '\u{0E50}', // 0xF0  U+0E50
+    '\u{0E51}', // 0xF1  U+0E51
+    '\u{0E52}', // 0xF2  U+0E52
+    '\u{0E53}', // 0xF3  U+0E53
+    '\u{0E54}', // 0xF4  U+0E54
+    '\u{0E55}', // 0xF5  U+0E55
+    '\u{0E56}', // 0xF6  U+0E56
+    '\u{0E57}', // 0xF7  U+0E57
+    '\u{0E58}', // 0xF8  U+0E58
+    '\u{0E59}', // 0xF9  U+0E59
+    '\u{0E5A}', // 0xFA  U+0E5A
+    '\u{0E5B}', // 0xFB  U+0E5B
+    '\u{FFFD}', // 0xFC  U+FFFD
+    '\u{FFFD}', // 0xFD  U+FFFD
+    '\u{FFFD}', // 0xFE  U+FFFD
+    '\u{FFFD}', // 0xFF  U+FFFD
+];
+
+fn decode_iso8859_11(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(ISO_8859_11_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4129,5 +4261,72 @@ mod tests {
         // C1 control characters map to their identity code points (C1 range)
         assert_eq!(decode(&[0x80], Charset::Iso8859_8), "\u{0080}");
         assert_eq!(decode(&[0x9F], Charset::Iso8859_8), "\u{009F}");
+    }
+
+    #[test]
+    fn test_iso8859_11_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-8859-11")),
+            Charset::Iso8859_11
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso8859-11")),
+            Charset::Iso8859_11
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso_8859_11")),
+            Charset::Iso8859_11
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso885911")),
+            Charset::Iso8859_11
+        );
+        assert_eq!(sniff_charset(b"abc", Some("8859_11")), Charset::Iso8859_11);
+        assert_eq!(sniff_charset(b"abc", Some("cp874")), Charset::Iso8859_11);
+        assert_eq!(
+            sniff_charset(b"abc", Some("windows-874")),
+            Charset::Iso8859_11
+        );
+        assert_eq!(sniff_charset(b"abc", Some("tis-620")), Charset::Iso8859_11);
+        assert_eq!(sniff_charset(b"abc", Some("tis620")), Charset::Iso8859_11);
+        assert_eq!(sniff_charset(b"abc", Some("thai")), Charset::Iso8859_11);
+
+        // Case-insensitivity check
+        assert_eq!(
+            sniff_charset(b"abc", Some("ISO-8859-11")),
+            Charset::Iso8859_11
+        );
+        assert_eq!(sniff_charset(b"abc", Some("TIS-620")), Charset::Iso8859_11);
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"iso-8859-11\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_11);
+    }
+
+    #[test]
+    fn test_iso8859_11_decode() {
+        // Pure-ASCII round-trip
+        assert_eq!(decode(b"abc 123", Charset::Iso8859_11), "abc 123");
+
+        // Defined checkpoints
+        assert_eq!(decode(&[0xA0], Charset::Iso8859_11), "\u{00A0}"); // NBSP
+        assert_eq!(decode(&[0xA1], Charset::Iso8859_11), "\u{0E01}"); // KO KAI
+        assert_eq!(decode(&[0xDA], Charset::Iso8859_11), "\u{0E3A}");
+        assert_eq!(decode(&[0xDF], Charset::Iso8859_11), "\u{0E3F}"); // BAHT
+        assert_eq!(decode(&[0xFB], Charset::Iso8859_11), "\u{0E5B}");
+
+        // Undefined codepoints map to replacement char U+FFFD
+        assert_eq!(decode(&[0xDB], Charset::Iso8859_11), "\u{FFFD}");
+        assert_eq!(decode(&[0xDC], Charset::Iso8859_11), "\u{FFFD}");
+        assert_eq!(decode(&[0xDD], Charset::Iso8859_11), "\u{FFFD}");
+        assert_eq!(decode(&[0xDE], Charset::Iso8859_11), "\u{FFFD}");
+        assert_eq!(decode(&[0xFC], Charset::Iso8859_11), "\u{FFFD}");
+        assert_eq!(decode(&[0xFD], Charset::Iso8859_11), "\u{FFFD}");
+        assert_eq!(decode(&[0xFE], Charset::Iso8859_11), "\u{FFFD}");
+        assert_eq!(decode(&[0xFF], Charset::Iso8859_11), "\u{FFFD}");
+
+        // C1 control characters map to their identity code points (C1 range)
+        assert_eq!(decode(&[0x80], Charset::Iso8859_11), "\u{0080}");
+        assert_eq!(decode(&[0x9F], Charset::Iso8859_11), "\u{009F}");
     }
 }
