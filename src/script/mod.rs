@@ -311,6 +311,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_normalize),
+                JsString::from("normalize"),
+                0,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_is_connected),
                 JsString::from("isConnected"),
                 1,
@@ -1197,38 +1202,6 @@ impl BoaHost {
                     }
                 }
 
-                function normalizeHelper(node) {
-                    if (!node) return;
-                    const kids = node.childNodes;
-                    if (!kids) return;
-                    let i = 0;
-                    while (i < kids.length) {
-                        const child = kids[i];
-                        if (child.nodeType === 3) { // TEXT_NODE
-                            let text = String(child.textContent || '');
-                            let j = i + 1;
-                            while (j < kids.length && kids[j].nodeType === 3) {
-                                text += String(kids[j].textContent || '');
-                                j++;
-                            }
-                            for (let k = i + 1; k < j; k++) {
-                                node.removeChild(kids[k]);
-                            }
-                            if (text.length === 0) {
-                                node.removeChild(child);
-                            } else {
-                                const newText = document.createTextNode(text);
-                                node.replaceChild(newText, child);
-                            }
-                            // TODO(spec): Node.normalize() should also handle CDATASection nodes (nodeType === 4) as text nodes, but this engine does not expose them.
-                            i = j;
-                        } else {
-                            normalizeHelper(child);
-                            i++;
-                        }
-                    }
-                }
-
                 function getOrCreateNode(key) {
                     if (!key) return null;
                     if (registry[key]) {
@@ -1318,6 +1291,9 @@ impl BoaHost {
                                 throw new DOMException("SyntaxError: The position provided is not one of the allowed values.", "SyntaxError");
                             }
                             bridge.insertAdjacentText(this.__key__, pos, String(data));
+                        },
+                        normalize() {
+                            bridge.normalize(this.__key__);
                         },
                         click() {
                             if (this.nodeType !== 1) return;
@@ -1542,7 +1518,7 @@ impl BoaHost {
                     Object.defineProperty(node, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
 
                     node.normalize = function() {
-                        normalizeHelper(this);
+                        bridge.normalize(this.__key__);
                     };
 
                     node.getBoundingClientRect = function() {
@@ -2193,7 +2169,7 @@ impl BoaHost {
                 Object.defineProperty(document, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
 
                 document.normalize = function() {
-                    normalizeHelper(this);
+                    bridge.normalize(this.__key__);
                 };
 
                 Object.defineProperty(document, 'childNodes', {
@@ -4268,6 +4244,78 @@ fn bridge_parent_node(
     } else {
         Ok(JsValue::null())
     }
+}
+
+fn normalize_node(dom: &mut Dom, node_id: NodeId) {
+    // 1. Collect children first to avoid concurrent borrow/mutation of the DOM tree.
+    let children = dom.children(node_id).to_vec();
+    for &child in &children {
+        normalize_node(dom, child);
+    }
+
+    // 2. Coalesce adjacent Text nodes and remove empty Text nodes among the direct children of node_id.
+    let mut current_children = dom.children(node_id).to_vec();
+    let mut i = 0;
+    while i < current_children.len() {
+        let child = current_children[i];
+        let is_text_opt = if let Some(NodeData::Text(text)) = dom.data(child) {
+            Some(text.clone())
+        } else {
+            None
+        };
+
+        if let Some(text) = is_text_opt {
+            if text.is_empty() {
+                dom.remove_child(node_id, child);
+                current_children.remove(i);
+                continue;
+            }
+
+            // Look ahead to collect contiguous adjacent Text siblings
+            let mut next_idx = i + 1;
+            let mut merged_text = text.clone();
+            let mut to_remove = Vec::new();
+            while next_idx < current_children.len() {
+                let next_child = current_children[next_idx];
+                if let Some(NodeData::Text(next_text)) = dom.data(next_child) {
+                    merged_text.push_str(next_text);
+                    to_remove.push(next_child);
+                    next_idx += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if !to_remove.is_empty() {
+                dom.set_text(child, &merged_text);
+                for rem_child in to_remove {
+                    dom.remove_child(node_id, rem_child);
+                }
+                current_children.drain(i + 1..next_idx);
+            }
+        }
+        i += 1;
+    }
+}
+
+fn bridge_normalize(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            normalize_node(dom, node_id);
+        }
+    })?;
+
+    Ok(JsValue::undefined())
 }
 
 fn bridge_is_connected(
