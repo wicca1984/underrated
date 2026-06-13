@@ -102,6 +102,8 @@ impl BrowserSession {
                     };
                     let new_page =
                         crate::engine::navigate(&req, &self.base_url, loader, self.width as f32);
+                    self.base_url = new_page.url.clone();
+                    self.form_state.set_current_url(&new_page.url.serialize());
                     self.browsing_context.navigate(new_page);
                     self.input_manager.blur();
                 }
@@ -117,6 +119,8 @@ impl BrowserSession {
                             loader,
                             self.width as f32,
                         ) {
+                            self.base_url = new_page.url.clone();
+                            self.form_state.set_current_url(&new_page.url.serialize());
                             self.browsing_context.navigate(new_page);
                             self.input_manager.blur();
                         }
