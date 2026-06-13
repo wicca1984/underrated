@@ -1783,6 +1783,43 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'dir', {
+                        get() {
+                            return this.getAttribute('dir') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('dir', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'lang', {
+                        get() {
+                            return this.getAttribute('lang') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('lang', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'hidden', {
+                        get() {
+                            return this.hasAttribute('hidden');
+                        },
+                        set(val) {
+                            if (val) {
+                                this.setAttribute('hidden', '');
+                            } else {
+                                this.removeAttribute('hidden');
+                            }
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     // TODO(spec): input.value dirty-value-flag / live IDL value vs content attribute (see HTML spec)
                     Object.defineProperty(node, 'value', {
                         get() {
@@ -12678,6 +12715,48 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|foo bar|x y|test-class,test-class".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_dir_lang_hidden() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. dir string reflected attribute
+            let div_dir = document.createElement('div');
+            let d1 = div_dir.dir; // absent default
+            div_dir.dir = 'rtl';
+            let d2 = div_dir.getAttribute('dir'); // setter wrote content attribute
+            div_dir.setAttribute('dir', 'ltr');
+            let d3 = div_dir.dir; // getter reads content attribute
+
+            // 2. lang string reflected attribute
+            let div_lang = document.createElement('div');
+            let l1 = div_lang.lang; // absent default
+            div_lang.lang = 'en';
+            let l2 = div_lang.getAttribute('lang'); // setter wrote content attribute
+            div_lang.setAttribute('lang', 'fr');
+            let l3_real = div_lang.lang; // getter reads content attribute
+
+            // 3. hidden boolean reflected attribute
+            let div_hidden = document.createElement('div');
+            let h1 = div_hidden.hidden; // absent default (false)
+            div_hidden.hidden = true;
+            let h2_attr = div_hidden.hasAttribute('hidden'); // true
+            let h2_val = div_hidden.getAttribute('hidden'); // '' (empty string)
+            let h2_prop = div_hidden.hidden; // true
+
+            div_hidden.hidden = false;
+            let h3_attr = div_hidden.hasAttribute('hidden'); // false
+            let h3_prop = div_hidden.hidden; // false
+
+            [d1, d2, d3, l1, l2, l3_real, h1, h2_attr, h2_val, h2_prop, h3_attr, h3_prop].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|rtl|ltr||en|fr|false|true||true|false|false".to_string())
         );
     }
 
