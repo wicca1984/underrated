@@ -1443,6 +1443,54 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    // TODO(spec): clientWidth approximates border-box width from getBoundingClientRect
+                    // because scrollbars and overflow scrolling are not currently modeled in this engine.
+                    Object.defineProperty(node, 'clientWidth', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return rect ? Math.round(rect.width) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    // TODO(spec): clientHeight approximates border-box height from getBoundingClientRect
+                    // because scrollbars and overflow scrolling are not currently modeled in this engine.
+                    Object.defineProperty(node, 'clientHeight', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return rect ? Math.round(rect.height) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    // TODO(spec): scrollWidth approximates border-box width from getBoundingClientRect
+                    // because scrollbars and overflow scrolling are not currently modeled in this engine.
+                    Object.defineProperty(node, 'scrollWidth', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return rect ? Math.round(rect.width) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    // TODO(spec): scrollHeight approximates border-box height from getBoundingClientRect
+                    // because scrollbars and overflow scrolling are not currently modeled in this engine.
+                    Object.defineProperty(node, 'scrollHeight', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return rect ? Math.round(rect.height) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'childNodes', {
                         get() {
                             const keys = bridge.childNodes(this.__key__);
@@ -8158,6 +8206,74 @@ mod tests {
 
         let res = host.eval_with_dom(script, &mut dom).unwrap();
         assert_eq!(res, "true|true|true|true|true|true|true|true");
+    }
+
+    #[test]
+    fn test_element_client_scroll_dimensions() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "client-scroll-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.getElementById('client-scroll-div');
+            
+            // Check original types and rounded default values (original should be 0 because bounding client rect is 0)
+            const origClientWidthType = typeof el.clientWidth;
+            const origClientHeightType = typeof el.clientHeight;
+            const origScrollWidthType = typeof el.scrollWidth;
+            const origScrollHeightType = typeof el.scrollHeight;
+
+            const origClientWidth = el.clientWidth;
+            const origClientHeight = el.clientHeight;
+            const origScrollWidth = el.scrollWidth;
+            const origScrollHeight = el.scrollHeight;
+
+            // Mock getBoundingClientRect to test rounding behavior on elements
+            el.getBoundingClientRect = () => ({ width: 120.6, height: 80.2 });
+            const mockClientWidth = el.clientWidth;
+            const mockClientHeight = el.clientHeight;
+            const mockScrollWidth = el.scrollWidth;
+            const mockScrollHeight = el.scrollHeight;
+
+            // Non-element nodeType !== 1 (Text Node)
+            const textNode = document.createTextNode('hello');
+            const textClientWidth = textNode.clientWidth;
+            const textClientHeight = textNode.clientHeight;
+            const textScrollWidth = textNode.scrollWidth;
+            const textScrollHeight = textNode.scrollHeight;
+
+            [
+                origClientWidthType === 'number',
+                origClientHeightType === 'number',
+                origScrollWidthType === 'number',
+                origScrollHeightType === 'number',
+                origClientWidth === 0,
+                origClientHeight === 0,
+                origScrollWidth === 0,
+                origScrollHeight === 0,
+                mockClientWidth === 121,
+                mockClientHeight === 80,
+                mockScrollWidth === 121,
+                mockScrollHeight === 80,
+                textClientWidth === 0,
+                textClientHeight === 0,
+                textScrollWidth === 0,
+                textScrollHeight === 0
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(
+            res,
+            "true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true"
+        );
     }
 
     #[test]
