@@ -11,9 +11,16 @@ pub struct Timer {
     pub is_interval: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct AnimationFrame {
+    pub id: i32,
+}
+
 thread_local! {
     static NEXT_TIMER_ID: RefCell<i32> = const { RefCell::new(1) };
     static TIMERS: RefCell<HashMap<i32, Timer>> = RefCell::new(HashMap::new());
+    static NEXT_RAF_ID: RefCell<i32> = const { RefCell::new(1) };
+    static ANIMATION_FRAMES: RefCell<HashMap<i32, AnimationFrame>> = RefCell::new(HashMap::new());
 }
 
 /// Clear all timers and reset the ID counter (mainly for test isolation).
@@ -22,6 +29,12 @@ pub fn clear_all_timers() {
         *cell.borrow_mut() = 1;
     });
     TIMERS.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+    NEXT_RAF_ID.with(|cell| {
+        *cell.borrow_mut() = 1;
+    });
+    ANIMATION_FRAMES.with(|cell| {
         cell.borrow_mut().clear();
     });
 }
@@ -34,6 +47,11 @@ pub fn get_timer(id: i32) -> Option<Timer> {
 /// Get the count of active registered timers.
 pub fn get_timer_count() -> usize {
     TIMERS.with(|cell| cell.borrow().len())
+}
+
+/// Get the count of active registered animation frames.
+pub fn get_animation_frame_count() -> usize {
+    ANIMATION_FRAMES.with(|cell| cell.borrow().len())
 }
 
 fn get_or_create_timers_obj(
@@ -49,6 +67,25 @@ fn get_or_create_timers_obj(
     } else {
         timers_val.as_object().ok_or_else(|| {
             JsError::from_opaque(JsValue::from(JsString::from("__timers__ is not an object")))
+        })
+    }
+}
+
+fn get_or_create_animation_frames_obj(
+    context: &mut Context,
+) -> Result<boa_engine::object::JsObject, JsError> {
+    let global_obj = context.global_object().clone();
+    let raf_prop = JsString::from("__animation_frames__");
+    let raf_val = global_obj.get(raf_prop.clone(), context)?;
+    if raf_val.is_undefined() || raf_val.is_null() {
+        let new_obj = ObjectInitializer::new(context).build();
+        global_obj.set(raf_prop, JsValue::from(new_obj.clone()), false, context)?;
+        Ok(new_obj)
+    } else {
+        raf_val.as_object().ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "__animation_frames__ is not an object",
+            )))
         })
     }
 }
@@ -107,6 +144,53 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
             callback_args.push(arg_val);
         }
     }
+
+    if let Some(callback_obj) = callback.as_object() {
+        let global_this = context.global_object().clone();
+        callback_obj.call(&JsValue::from(global_this), &callback_args, context)
+    } else if callback.is_string() {
+        let code_str = callback.to_string(context)?;
+        let std_str = code_str.to_std_string().unwrap_or_default();
+        let source = Source::from_bytes(std_str.as_bytes());
+        context.eval(source)
+    } else {
+        // No-op or ignore non-callable callbacks gracefully
+        Ok(JsValue::undefined())
+    }
+}
+
+/// Trigger an animation frame callback manually (for testing or event loop MVP).
+/// Always removes the callback since requestAnimationFrame is one-shot.
+pub fn trigger_animation_frame(id: i32, context: &mut Context) -> Result<JsValue, JsError> {
+    let exists = ANIMATION_FRAMES.with(|cell| cell.borrow_mut().remove(&id).is_some());
+
+    if !exists {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "Animation frame not found",
+        ))));
+    }
+
+    let raf_obj = get_or_create_animation_frames_obj(context)?;
+    let frame_info_val = raf_obj.get(id, context)?;
+    if frame_info_val.is_undefined() || frame_info_val.is_null() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "Animation frame info not found in JS state",
+        ))));
+    }
+
+    let frame_info_obj = frame_info_val.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "Animation frame info is not an object",
+        )))
+    })?;
+
+    // Clean up the JS-side state
+    let _ = raf_obj.delete_property_or_throw(id, context)?;
+
+    let callback = frame_info_obj.get(JsString::from("callback"), context)?;
+
+    // Create a dummy timestamp of 16.0 for the callback.
+    let callback_args = vec![JsValue::from(16.0)];
 
     if let Some(callback_obj) = callback.as_object() {
         let global_this = context.global_object().clone();
@@ -307,6 +391,57 @@ pub fn clear_interval(
     Ok(JsValue::undefined())
 }
 
+pub fn request_animation_frame(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+
+    let id = NEXT_RAF_ID.with(|cell| {
+        let mut next_id = cell.borrow_mut();
+        let cur = *next_id;
+        *next_id += 1;
+        cur
+    });
+
+    // Store in Rust side
+    let frame = AnimationFrame { id };
+    ANIMATION_FRAMES.with(|cell| {
+        cell.borrow_mut().insert(id, frame);
+    });
+
+    // Store callback and args in JS side __animation_frames__ object
+    let raf_obj = get_or_create_animation_frames_obj(context)?;
+
+    let timer_info = ObjectInitializer::new(context)
+        .property(JsString::from("callback"), callback, Attribute::all())
+        .build();
+
+    raf_obj.set(id, JsValue::from(timer_info), false, context)?;
+
+    Ok(JsValue::from(id))
+}
+
+pub fn cancel_animation_frame(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    if let Some(id_val) = args.first() {
+        let id = js_value_to_i32(id_val, context);
+        // Remove from Rust side
+        ANIMATION_FRAMES.with(|cell| {
+            cell.borrow_mut().remove(&id);
+        });
+        // Remove from JS side
+        if let Ok(raf_obj) = get_or_create_animation_frames_obj(context) {
+            let _ = raf_obj.delete_property_or_throw(id, context)?;
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
 pub fn register_timer_builtins(context: &mut Context) -> Result<(), JsError> {
     context.register_global_builtin_callable(
         JsString::from("setTimeout"),
@@ -327,6 +462,16 @@ pub fn register_timer_builtins(context: &mut Context) -> Result<(), JsError> {
         JsString::from("clearInterval"),
         1,
         NativeFunction::from_fn_ptr(clear_interval),
+    )?;
+    context.register_global_builtin_callable(
+        JsString::from("requestAnimationFrame"),
+        1,
+        NativeFunction::from_fn_ptr(request_animation_frame),
+    )?;
+    context.register_global_builtin_callable(
+        JsString::from("cancelAnimationFrame"),
+        1,
+        NativeFunction::from_fn_ptr(cancel_animation_frame),
     )?;
     Ok(())
 }
@@ -501,5 +646,53 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(get_timer_count(), 0);
+    }
+
+    #[test]
+    fn test_request_animation_frame_t0500() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. Assert requestAnimationFrame registration and count
+        let source1 = Source::from_bytes(r#"requestAnimationFrame(() => {})"#);
+        let id1_val = context.eval(source1).unwrap();
+        let id1 = id1_val.as_number().unwrap() as i32;
+        assert_eq!(id1, 1);
+        assert_eq!(get_animation_frame_count(), 1);
+
+        // 2. Assert cancelAnimationFrame removes it
+        context
+            .eval(Source::from_bytes(
+                format!("cancelAnimationFrame({})", id1).as_bytes(),
+            ))
+            .unwrap();
+        assert_eq!(get_animation_frame_count(), 0);
+
+        // 3. Assert requestAnimationFrame and trigger execution
+        context
+            .eval(Source::from_bytes(
+                r#"
+            var y = 0;
+            var rafId = requestAnimationFrame((timestamp) => { y = timestamp; });
+        "#,
+            ))
+            .unwrap();
+
+        let id2_val = context.eval(Source::from_bytes("rafId")).unwrap();
+        let id2 = id2_val.as_number().unwrap() as i32;
+        assert_eq!(id2, 2);
+        assert_eq!(get_animation_frame_count(), 1);
+
+        // Trigger the callback
+        let result = trigger_animation_frame(id2, &mut context);
+        assert!(result.is_ok());
+
+        // Check if the callback set the global variable to the timestamp (16.0)
+        let y_val = context.eval(Source::from_bytes("y")).unwrap();
+        assert_eq!(y_val.as_number().unwrap(), 16.0);
+
+        // Since it's requestAnimationFrame (one-shot), triggering it should remove it
+        assert_eq!(get_animation_frame_count(), 0);
     }
 }
