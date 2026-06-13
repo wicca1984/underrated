@@ -285,6 +285,51 @@ impl TryFrom<&CssValue> for WritingModeValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum TextOrientationValue {
+    Mixed,
+    Upright,
+    Sideways,
+}
+
+impl TextOrientationValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "mixed" => Some(Self::Mixed),
+            "upright" => Some(Self::Upright),
+            "sideways" | "sideways-right" => Some(Self::Sideways),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Mixed => "mixed",
+            Self::Upright => "upright",
+            Self::Sideways => "sideways",
+        }
+    }
+}
+
+impl std::str::FromStr for TextOrientationValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for TextOrientationValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -2714,6 +2759,82 @@ mod tests {
             Ok(WritingModeValue::HorizontalTb)
         );
         assert_eq!(WritingModeValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
+    fn test_text_orientation_value() {
+        // Test parsing keyword strings to TextOrientationValue
+        assert_eq!(
+            TextOrientationValue::parse("mixed"),
+            Some(TextOrientationValue::Mixed)
+        );
+        assert_eq!(
+            TextOrientationValue::parse("upright"),
+            Some(TextOrientationValue::Upright)
+        );
+        assert_eq!(
+            TextOrientationValue::parse("sideways"),
+            Some(TextOrientationValue::Sideways)
+        );
+        assert_eq!(
+            TextOrientationValue::parse("sideways-right"),
+            Some(TextOrientationValue::Sideways)
+        );
+        assert_eq!(
+            TextOrientationValue::parse("MIXED"),
+            Some(TextOrientationValue::Mixed)
+        );
+        assert_eq!(
+            TextOrientationValue::parse("Upright"),
+            Some(TextOrientationValue::Upright)
+        );
+        assert_eq!(
+            TextOrientationValue::parse("Sideways-Right"),
+            Some(TextOrientationValue::Sideways)
+        );
+        assert_eq!(TextOrientationValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "mixed".parse::<TextOrientationValue>(),
+            Ok(TextOrientationValue::Mixed)
+        );
+        assert_eq!(
+            "upright".parse::<TextOrientationValue>(),
+            Ok(TextOrientationValue::Upright)
+        );
+        assert_eq!(
+            "sideways".parse::<TextOrientationValue>(),
+            Ok(TextOrientationValue::Sideways)
+        );
+        assert_eq!(
+            "sideways-right".parse::<TextOrientationValue>(),
+            Ok(TextOrientationValue::Sideways)
+        );
+        assert_eq!("BOGUS".parse::<TextOrientationValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(TextOrientationValue::Mixed.as_str(), "mixed");
+        assert_eq!(TextOrientationValue::Upright.as_str(), "upright");
+        assert_eq!(TextOrientationValue::Sideways.as_str(), "sideways");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            TextOrientationValue::try_from(&CssValue::Keyword("upright".to_string())),
+            Ok(TextOrientationValue::Upright)
+        );
+        assert_eq!(
+            TextOrientationValue::try_from(&CssValue::Keyword("MIXED".to_string())),
+            Ok(TextOrientationValue::Mixed)
+        );
+        assert_eq!(
+            TextOrientationValue::try_from(&CssValue::Keyword("sideways-right".to_string())),
+            Ok(TextOrientationValue::Sideways)
+        );
+        assert_eq!(
+            TextOrientationValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
     }
 
     #[test]
