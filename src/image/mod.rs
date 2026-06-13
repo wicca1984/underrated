@@ -1853,8 +1853,11 @@ pub fn decode_pcx(bytes: &[u8]) -> Option<DecodedImage> {
     let mut rle_decoder = RleDecoder::new(&bytes[..rle_limit]);
     let mut rgba = vec![0u8; (width * height * 4) as usize];
 
+    // Allocated once and reused across scanlines; every iteration fully
+    // overwrites the buffer below before reading it.
+    let mut scanline_buf = vec![0u8; total_scanline_bytes];
+
     for y in 0..height {
-        let mut scanline_buf = vec![0u8; total_scanline_bytes];
         for b in &mut scanline_buf {
             *b = rle_decoder.next_byte()?;
         }

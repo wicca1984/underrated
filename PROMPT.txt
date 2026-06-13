@@ -1,0 +1,31 @@
+EXECUTE IMMEDIATELY. Do not ask for confirmation. Do not present a plan and wait. Implement, test, commit, and push autonomously to completion.
+
+You are a worker for the `underrated` Rust browser engine (edition 2024). Your working directory is the git worktree /workspaces/wt/t0570 on branch agent/t0570-pcx-decoder.
+
+TASK (t0570): Add a PCX (ZSoft Paintbrush) image decoder.
+
+SCOPE — SINGLE MODULE ONLY: edit ONLY `src/image/mod.rs`. Do NOT touch any other file. Do NOT delete or modify any existing test.
+
+REQUIREMENTS:
+1. Add `pub fn decode_pcx(bytes: &[u8]) -> Option<DecodedImage>` following the exact style of the existing `decode_tga` / `decode_qoi` functions already in this file.
+   - `DecodedImage { pub width: u32, pub height: u32, pub rgba: Vec<u8> }` (RGBA8, 4 bytes/pixel, row-major top-to-bottom).
+   - Parse the 128-byte PCX header: byte0 must be 0x0A (manufacturer=ZSoft) else return None. byte1=version, byte2=encoding (1 = RLE), byte3=bitsPerPixel. Bytes 4..12 = Xmin,Ymin,Xmax,Ymax as little-endian u16; width = Xmax-Xmin+1, height = Ymax-Ymin+1. byte65 = NPlanes (number of color planes). bytes 66..68 = BytesPerLine (LE u16).
+   - Support the two common real-world variants: (a) 8 bits/plane × 3 planes = 24-bit RGB; (b) 8 bits/plane × 1 plane = 256-color indexed with a 769-byte VGA palette at the end of the file (last 769 bytes: a 0x0C marker byte followed by 256 RGB triples). Decode both to opaque RGBA (alpha=255).
+   - Scanline data starts at offset 128 and is PCX-RLE compressed: if (byte & 0xC0) == 0xC0, the low 6 bits are a run count and the next byte is the value repeated that many times; otherwise the byte is a single literal. Decode exactly NPlanes*BytesPerLine bytes per scanline; planes are stored consecutively within a scanline (all of plane 0, then plane 1, ...). Use only the first `width` bytes of each plane (BytesPerLine may exceed width for padding).
+   - Use `bytes.get(...)` / checked indexing and `?` — NO unwrap/expect/panic/indexing that can panic on malformed input. Return None on any inconsistency.
+2. Wire PCX into the `decode_image` dispatch function: add a branch `else if bytes.first() == Some(&0x0A) && bytes.get(2) == Some(&1) { decode_pcx(bytes) }` placed BEFORE the TGA last-resort fallback (PCX has a definite magic byte so it must be checked before the heuristic TGA path). Keep existing branches intact.
+3. Add at least 2 unit tests inside the existing `#[cfg(test)] mod tests`:
+   - Build a tiny synthetic 2x2 24-bit (3-plane) RLE PCX byte buffer in-test and assert decode_pcx yields width==2, height==2, and the expected RGBA pixels.
+   - A second test for the 8-bit indexed (palette) variant on a 2x2 image, asserting correct palette-mapped RGBA.
+   - Optionally assert `decode_image` routes the same bytes to the PCX decoder.
+
+VERIFICATION before commit (run from /workspaces/wt/t0570):
+  cargo fmt
+  cargo clippy --all-targets -- -D warnings
+  cargo test image::   (or: cargo test --lib image)
+All must be green. Then:
+  git add -A
+  git commit -m "feat(image): add PCX (ZSoft Paintbrush) image decoder (t0570)"
+  git push -u origin agent/t0570-pcx-decoder
+
+IMPORTANT: You MUST commit AND push before finishing. Do not stop at a plan. If clippy complains, fix it. If a test fails, fix the decoder, not the test.
