@@ -3940,6 +3940,41 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_farbfeld_2x2() {
+        let mut ff = Vec::new();
+        ff.extend_from_slice(b"farbfeld");
+        ff.extend_from_slice(&2u32.to_be_bytes()); // width
+        ff.extend_from_slice(&2u32.to_be_bytes()); // height
+        // Row 1
+        // Pixel (0,0): R=0x1111, G=0x2222, B=0x3333, A=0x4444
+        ff.extend_from_slice(&[0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x44, 0x44]);
+        // Pixel (1,0): R=0x5555, G=0x6666, B=0x7777, A=0x8888
+        ff.extend_from_slice(&[0x55, 0x55, 0x66, 0x66, 0x77, 0x77, 0x88, 0x88]);
+        // Row 2
+        // Pixel (0,1): R=0x9999, G=0xAAAA, B=0xBBBB, A=0xCCCC
+        ff.extend_from_slice(&[0x99, 0x99, 0xAA, 0xAA, 0xBB, 0xBB, 0xCC, 0xCC]);
+        // Pixel (1,1): R=0xDDDD, G=0xEEEE, B=0xFFFF, A=0x0000
+        ff.extend_from_slice(&[0xDD, 0xDD, 0xEE, 0xEE, 0xFF, 0xFF, 0x00, 0x00]);
+
+        let decoded = decode_farbfeld(&ff).expect("Should decode 2x2 farbfeld");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(
+            decoded.rgba,
+            vec![
+                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+                0xFF, 0x00,
+            ]
+        );
+
+        // Test routing
+        let routed = decode_image(&ff).expect("Should route and decode 2x2 farbfeld");
+        assert_eq!(routed.width, 2);
+        assert_eq!(routed.height, 2);
+        assert_eq!(routed.rgba, decoded.rgba);
+    }
+
+    #[test]
     fn test_decode_farbfeld_failures() {
         // Too short input
         assert!(decode_farbfeld(&[]).is_none());
