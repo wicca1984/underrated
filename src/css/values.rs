@@ -82,6 +82,41 @@ pub enum AlignItemsValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ScrollSnapAxis {
+    X,
+    Y,
+    Block,
+    Inline,
+    Both,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ScrollSnapStrictness {
+    Mandatory,
+    Proximity,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ScrollSnapTypeValue {
+    None,
+    Axis(ScrollSnapAxis, ScrollSnapStrictness),
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ScrollSnapAlignKeyword {
+    None,
+    Start,
+    End,
+    Center,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct ScrollSnapAlignValue {
+    pub block: ScrollSnapAlignKeyword,
+    pub inline: ScrollSnapAlignKeyword,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum WhiteSpaceValue {
     Normal,
     Nowrap,
@@ -245,6 +280,8 @@ pub enum CssValue {
     ZIndex(ZIndex),
     Opacity(f32),
     GridTemplate(Vec<GridTrackSize>),
+    ScrollSnapType(ScrollSnapTypeValue),
+    ScrollSnapAlign(ScrollSnapAlignValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -335,6 +372,8 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "clear"
             | "table-layout"
             | "scroll-behavior"
+            | "scroll-snap-type"
+            | "scroll-snap-align"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -356,6 +395,26 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
     let name_lower = name.to_ascii_lowercase();
     match name_lower.as_str() {
         "grid-template-columns" | "grid-template-rows" => true,
+        "scroll-snap-type" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "none" | "x" | "y" | "block" | "inline" | "both"
+                )
+            }
+            CssValue::ScrollSnapType(_) => true,
+            _ => false,
+        },
+        "scroll-snap-align" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "none" | "start" | "end" | "center"
+                )
+            }
+            CssValue::ScrollSnapAlign(_) => true,
+            _ => false,
+        },
         "position" => match value {
             CssValue::Keyword(kw) => {
                 matches!(
@@ -659,6 +718,114 @@ fn parse_grid_template(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::GridTemplate(tracks))
 }
 
+fn parse_scroll_snap_type(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for scroll-snap-type recognition
+        }
+    }
+
+    if idents.is_empty() {
+        return None;
+    }
+
+    if idents.len() == 1 {
+        let first = idents[0].as_str();
+        if first == "none" {
+            return Some(CssValue::ScrollSnapType(ScrollSnapTypeValue::None));
+        }
+        let axis = match first {
+            "x" => ScrollSnapAxis::X,
+            "y" => ScrollSnapAxis::Y,
+            "block" => ScrollSnapAxis::Block,
+            "inline" => ScrollSnapAxis::Inline,
+            "both" => ScrollSnapAxis::Both,
+            _ => return None,
+        };
+        // default strictness when axis is present is proximity
+        return Some(CssValue::ScrollSnapType(ScrollSnapTypeValue::Axis(
+            axis,
+            ScrollSnapStrictness::Proximity,
+        )));
+    } else if idents.len() == 2 {
+        let first = idents[0].as_str();
+        let second = idents[1].as_str();
+
+        let axis = match first {
+            "x" => ScrollSnapAxis::X,
+            "y" => ScrollSnapAxis::Y,
+            "block" => ScrollSnapAxis::Block,
+            "inline" => ScrollSnapAxis::Inline,
+            "both" => ScrollSnapAxis::Both,
+            _ => return None,
+        };
+
+        let strictness = match second {
+            "mandatory" => ScrollSnapStrictness::Mandatory,
+            "proximity" => ScrollSnapStrictness::Proximity,
+            _ => return None,
+        };
+
+        return Some(CssValue::ScrollSnapType(ScrollSnapTypeValue::Axis(
+            axis, strictness,
+        )));
+    }
+
+    // TODO(spec): Support multi-value or global keywords like inherit/initial if required in future
+    None
+}
+
+fn parse_scroll_snap_align(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for scroll-snap-align recognition
+        }
+    }
+
+    if idents.is_empty() {
+        return None;
+    }
+
+    let parse_kw = |s: &str| -> Option<ScrollSnapAlignKeyword> {
+        match s {
+            "none" => Some(ScrollSnapAlignKeyword::None),
+            "start" => Some(ScrollSnapAlignKeyword::Start),
+            "end" => Some(ScrollSnapAlignKeyword::End),
+            "center" => Some(ScrollSnapAlignKeyword::Center),
+            _ => None,
+        }
+    };
+
+    if idents.len() == 1 {
+        let kw = parse_kw(idents[0].as_str())?;
+        // a single value applies to both axes
+        return Some(CssValue::ScrollSnapAlign(ScrollSnapAlignValue {
+            block: kw,
+            inline: kw,
+        }));
+    } else if idents.len() == 2 {
+        let block = parse_kw(idents[0].as_str())?;
+        let inline = parse_kw(idents[1].as_str())?;
+        return Some(CssValue::ScrollSnapAlign(ScrollSnapAlignValue {
+            block,
+            inline,
+        }));
+    }
+
+    // TODO(spec): Support global keywords like inherit/initial if required in future
+    None
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -667,6 +834,12 @@ pub fn parse_property_value(
     let name_lower = property_name.to_ascii_lowercase();
     if name_lower == "grid-template-columns" || name_lower == "grid-template-rows" {
         return parse_grid_template(components);
+    }
+    if name_lower == "scroll-snap-type" {
+        return parse_scroll_snap_type(components);
+    }
+    if name_lower == "scroll-snap-align" {
+        return parse_scroll_snap_align(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -3326,5 +3499,102 @@ mod tests {
             ),
             Some(CssValue::GridTemplate(vec![GridTrackSize::Auto]))
         );
+    }
+
+    #[test]
+    fn test_scroll_snap_parsing_and_recognition() {
+        // Test scroll-snap-type: x mandatory
+        assert_eq!(
+            parse_property_value(
+                "scroll-snap-type",
+                &[
+                    token(CssToken::Ident("x".to_string())),
+                    token(CssToken::Whitespace),
+                    token(CssToken::Ident("mandatory".to_string())),
+                ]
+            ),
+            Some(CssValue::ScrollSnapType(ScrollSnapTypeValue::Axis(
+                ScrollSnapAxis::X,
+                ScrollSnapStrictness::Mandatory,
+            )))
+        );
+
+        // Test scroll-snap-type: y
+        assert_eq!(
+            parse_property_value(
+                "scroll-snap-type",
+                &[token(CssToken::Ident("y".to_string()))]
+            ),
+            Some(CssValue::ScrollSnapType(ScrollSnapTypeValue::Axis(
+                ScrollSnapAxis::Y,
+                ScrollSnapStrictness::Proximity,
+            )))
+        );
+
+        // Test scroll-snap-type: none
+        assert_eq!(
+            parse_property_value(
+                "scroll-snap-type",
+                &[token(CssToken::Ident("none".to_string()))]
+            ),
+            Some(CssValue::ScrollSnapType(ScrollSnapTypeValue::None))
+        );
+
+        // Test scroll-snap-align: start
+        assert_eq!(
+            parse_property_value(
+                "scroll-snap-align",
+                &[token(CssToken::Ident("start".to_string()))]
+            ),
+            Some(CssValue::ScrollSnapAlign(ScrollSnapAlignValue {
+                block: ScrollSnapAlignKeyword::Start,
+                inline: ScrollSnapAlignKeyword::Start,
+            }))
+        );
+
+        // Test scroll-snap-align: start end
+        assert_eq!(
+            parse_property_value(
+                "scroll-snap-align",
+                &[
+                    token(CssToken::Ident("start".to_string())),
+                    token(CssToken::Whitespace),
+                    token(CssToken::Ident("end".to_string())),
+                ]
+            ),
+            Some(CssValue::ScrollSnapAlign(ScrollSnapAlignValue {
+                block: ScrollSnapAlignKeyword::Start,
+                inline: ScrollSnapAlignKeyword::End,
+            }))
+        );
+
+        // Test invalid value: scroll-snap-type: banana
+        assert_eq!(
+            parse_property_value(
+                "scroll-snap-type",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("scroll-snap-type"));
+        assert!(is_known_layout_property("scroll-snap-align"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "scroll-snap-type",
+            &CssValue::ScrollSnapType(ScrollSnapTypeValue::Axis(
+                ScrollSnapAxis::X,
+                ScrollSnapStrictness::Mandatory
+            ))
+        ));
+        assert!(is_valid_property_value(
+            "scroll-snap-align",
+            &CssValue::ScrollSnapAlign(ScrollSnapAlignValue {
+                block: ScrollSnapAlignKeyword::Start,
+                inline: ScrollSnapAlignKeyword::End,
+            })
+        ));
     }
 }
