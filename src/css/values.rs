@@ -210,6 +210,37 @@ impl std::str::FromStr for BackgroundBlendModeValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum IsolationValue {
+    Auto,
+    Isolate,
+}
+
+impl IsolationValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "isolate" => Some(Self::Isolate),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Isolate => "isolate",
+        }
+    }
+}
+
+impl std::str::FromStr for IsolationValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum WhiteSpaceValue {
     Normal,
     Nowrap,
@@ -965,6 +996,7 @@ pub enum CssValue {
     ScrollSnapAlign(ScrollSnapAlignValue),
     MixBlendMode(MixBlendModeValue),
     BackgroundBlendMode(BackgroundBlendModeValue),
+    Isolation(IsolationValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1059,6 +1091,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "scroll-snap-align"
             | "mix-blend-mode"
             | "background-blend-mode"
+            | "isolation"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -1157,6 +1190,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::BackgroundBlendMode(_) => true,
+            _ => false,
+        },
+        "isolation" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "auto" | "isolate")
+            }
+            CssValue::Isolation(_) => true,
             _ => false,
         },
         "position" => match value {
@@ -1706,6 +1746,27 @@ fn parse_background_blend_mode(components: &[ComponentValue]) -> Option<CssValue
     Some(CssValue::BackgroundBlendMode(kw))
 }
 
+fn parse_isolation(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for isolation recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = IsolationValue::parse(&idents[0])?;
+    Some(CssValue::Isolation(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -1726,6 +1787,9 @@ pub fn parse_property_value(
     }
     if name_lower == "background-blend-mode" {
         return parse_background_blend_mode(components);
+    }
+    if name_lower == "isolation" {
+        return parse_isolation(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -5875,6 +5939,59 @@ mod tests {
         assert_eq!(
             BackgroundBlendModeValue::parse("MULTIPLY"),
             Some(BackgroundBlendModeValue::Multiply)
+        );
+    }
+
+    #[test]
+    fn test_isolation_parsing_and_recognition() {
+        // Test isolation: isolate
+        assert_eq!(
+            parse_property_value(
+                "isolation",
+                &[token(CssToken::Ident("isolate".to_string()))]
+            ),
+            Some(CssValue::Isolation(IsolationValue::Isolate))
+        );
+
+        // Test auto default
+        assert_eq!(
+            parse_property_value("isolation", &[token(CssToken::Ident("auto".to_string()))]),
+            Some(CssValue::Isolation(IsolationValue::Auto))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value("isolation", &[token(CssToken::Ident("banana".to_string()))]),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("isolation"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "isolation",
+            &CssValue::Isolation(IsolationValue::Isolate)
+        ));
+        assert!(is_valid_property_value(
+            "isolation",
+            &CssValue::Keyword("isolate".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "isolation",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test IsolationValue::parse directly
+        assert_eq!(
+            IsolationValue::parse("isolate"),
+            Some(IsolationValue::Isolate)
+        );
+        assert_eq!(IsolationValue::parse("auto"), Some(IsolationValue::Auto));
+        assert_eq!(IsolationValue::parse("banana"), None);
+        assert_eq!(
+            IsolationValue::parse("ISOLATE"),
+            Some(IsolationValue::Isolate)
         );
     }
 }
