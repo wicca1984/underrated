@@ -16,11 +16,18 @@ pub struct AnimationFrame {
     pub id: i32,
 }
 
+#[derive(Clone, Debug)]
+pub struct IdleCallback {
+    pub id: i32,
+}
+
 thread_local! {
     static NEXT_TIMER_ID: RefCell<i32> = const { RefCell::new(1) };
     static TIMERS: RefCell<HashMap<i32, Timer>> = RefCell::new(HashMap::new());
     static NEXT_RAF_ID: RefCell<i32> = const { RefCell::new(1) };
     static ANIMATION_FRAMES: RefCell<HashMap<i32, AnimationFrame>> = RefCell::new(HashMap::new());
+    static NEXT_IDLE_ID: RefCell<i32> = const { RefCell::new(1) };
+    static IDLE_CALLBACKS: RefCell<HashMap<i32, IdleCallback>> = RefCell::new(HashMap::new());
     static MICROTASK_QUEUE: RefCell<std::collections::VecDeque<JsValue>> = const { RefCell::new(std::collections::VecDeque::new()) };
 }
 
@@ -36,6 +43,12 @@ pub fn clear_all_timers() {
         *cell.borrow_mut() = 1;
     });
     ANIMATION_FRAMES.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+    NEXT_IDLE_ID.with(|cell| {
+        *cell.borrow_mut() = 1;
+    });
+    IDLE_CALLBACKS.with(|cell| {
         cell.borrow_mut().clear();
     });
 }
@@ -60,6 +73,11 @@ pub fn get_timer_count() -> usize {
 /// Get the count of active registered animation frames.
 pub fn get_animation_frame_count() -> usize {
     ANIMATION_FRAMES.with(|cell| cell.borrow().len())
+}
+
+/// Get the count of active registered idle callbacks.
+pub fn get_idle_callback_count() -> usize {
+    IDLE_CALLBACKS.with(|cell| cell.borrow().len())
 }
 
 fn get_or_create_timers_obj(
@@ -93,6 +111,25 @@ fn get_or_create_animation_frames_obj(
         raf_val.as_object().ok_or_else(|| {
             JsError::from_opaque(JsValue::from(JsString::from(
                 "__animation_frames__ is not an object",
+            )))
+        })
+    }
+}
+
+fn get_or_create_idle_callbacks_obj(
+    context: &mut Context,
+) -> Result<boa_engine::object::JsObject, JsError> {
+    let global_obj = context.global_object().clone();
+    let idle_prop = JsString::from("__idle_callbacks__");
+    let idle_val = global_obj.get(idle_prop.clone(), context)?;
+    if idle_val.is_undefined() || idle_val.is_null() {
+        let new_obj = ObjectInitializer::new(context).build();
+        global_obj.set(idle_prop, JsValue::from(new_obj.clone()), false, context)?;
+        Ok(new_obj)
+    } else {
+        idle_val.as_object().ok_or_else(|| {
+            JsError::from_opaque(JsValue::from(JsString::from(
+                "__idle_callbacks__ is not an object",
             )))
         })
     }
@@ -203,6 +240,74 @@ pub fn trigger_animation_frame(id: i32, context: &mut Context) -> Result<JsValue
 
     // Create a dummy timestamp of 16.0 for the callback.
     let callback_args = vec![JsValue::from(16.0)];
+
+    if let Some(callback_obj) = callback.as_object() {
+        let global_this = context.global_object().clone();
+        callback_obj.call(&JsValue::from(global_this), &callback_args, context)
+    } else if callback.is_string() {
+        let code_str = callback.to_string(context)?;
+        let std_str = code_str.to_std_string().unwrap_or_default();
+        let source = Source::from_bytes(std_str.as_bytes());
+        context.eval(source)
+    } else {
+        // No-op or ignore non-callable callbacks gracefully
+        Ok(JsValue::undefined())
+    }
+}
+
+fn time_remaining_fixed(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    Ok(JsValue::from(50.0))
+}
+
+// TODO(spec): timeRemaining() returns a fixed budget and didTimeout is always false; a real idle scheduler requires event-loop deadline tracking (out of scope for this single-module task).
+/// Trigger an idle callback manually (for testing or event loop MVP).
+/// Always removes the callback since requestIdleCallback is one-shot.
+pub fn trigger_idle_callback(id: i32, context: &mut Context) -> Result<JsValue, JsError> {
+    let exists = IDLE_CALLBACKS.with(|cell| cell.borrow_mut().remove(&id).is_some());
+
+    if !exists {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "Idle callback not found",
+        ))));
+    }
+
+    let idle_obj = get_or_create_idle_callbacks_obj(context)?;
+    let callback_info_val = idle_obj.get(id, context)?;
+    if callback_info_val.is_undefined() || callback_info_val.is_null() {
+        return Err(JsError::from_opaque(JsValue::from(JsString::from(
+            "Idle callback info not found in JS state",
+        ))));
+    }
+
+    let callback_info_obj = callback_info_val.as_object().ok_or_else(|| {
+        JsError::from_opaque(JsValue::from(JsString::from(
+            "Idle callback info is not an object",
+        )))
+    })?;
+
+    // Clean up the JS-side state
+    let _ = idle_obj.delete_property_or_throw(id, context)?;
+
+    let callback = callback_info_obj.get(JsString::from("callback"), context)?;
+
+    let deadline_obj = ObjectInitializer::new(context)
+        .property(
+            JsString::from("didTimeout"),
+            JsValue::from(false),
+            Attribute::all(),
+        )
+        .function(
+            NativeFunction::from_fn_ptr(time_remaining_fixed),
+            JsString::from("timeRemaining"),
+            0,
+        )
+        .build();
+
+    let callback_args = vec![JsValue::from(deadline_obj)];
 
     if let Some(callback_obj) = callback.as_object() {
         let global_this = context.global_object().clone();
@@ -454,6 +559,57 @@ pub fn cancel_animation_frame(
     Ok(JsValue::undefined())
 }
 
+pub fn request_idle_callback(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+
+    let id = NEXT_IDLE_ID.with(|cell| {
+        let mut next_id = cell.borrow_mut();
+        let cur = *next_id;
+        *next_id += 1;
+        cur
+    });
+
+    // Store in Rust side
+    let idle = IdleCallback { id };
+    IDLE_CALLBACKS.with(|cell| {
+        cell.borrow_mut().insert(id, idle);
+    });
+
+    // Store callback and args in JS side __idle_callbacks__ object
+    let idle_obj = get_or_create_idle_callbacks_obj(context)?;
+
+    let timer_info = ObjectInitializer::new(context)
+        .property(JsString::from("callback"), callback, Attribute::all())
+        .build();
+
+    idle_obj.set(id, JsValue::from(timer_info), false, context)?;
+
+    Ok(JsValue::from(id))
+}
+
+pub fn cancel_idle_callback(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    if let Some(id_val) = args.first() {
+        let id = js_value_to_i32(id_val, context);
+        // Remove from Rust side
+        IDLE_CALLBACKS.with(|cell| {
+            cell.borrow_mut().remove(&id);
+        });
+        // Remove from JS side
+        if let Ok(idle_obj) = get_or_create_idle_callbacks_obj(context) {
+            let _ = idle_obj.delete_property_or_throw(id, context)?;
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
 pub fn queue_microtask(
     _this: &JsValue,
     args: &[JsValue],
@@ -523,6 +679,16 @@ pub fn register_timer_builtins(context: &mut Context) -> Result<(), JsError> {
         JsString::from("cancelAnimationFrame"),
         1,
         NativeFunction::from_fn_ptr(cancel_animation_frame),
+    )?;
+    context.register_global_builtin_callable(
+        JsString::from("requestIdleCallback"),
+        1,
+        NativeFunction::from_fn_ptr(request_idle_callback),
+    )?;
+    context.register_global_builtin_callable(
+        JsString::from("cancelIdleCallback"),
+        1,
+        NativeFunction::from_fn_ptr(cancel_idle_callback),
     )?;
     context.register_global_builtin_callable(
         JsString::from("queueMicrotask"),
@@ -750,6 +916,75 @@ mod tests {
 
         // Since it's requestAnimationFrame (one-shot), triggering it should remove it
         assert_eq!(get_animation_frame_count(), 0);
+    }
+
+    #[test]
+    fn test_request_idle_callback_t0548() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. After request_idle_callback, get_idle_callback_count() == 1 and the returned id is 1
+        let source1 = Source::from_bytes(r#"requestIdleCallback(() => {})"#);
+        let id1_val = context.eval(source1).unwrap();
+        let id1 = id1_val.as_number().unwrap() as i32;
+        assert_eq!(id1, 1);
+        assert_eq!(get_idle_callback_count(), 1);
+
+        // 2. A second request_idle_callback returns id 2 and count becomes 2
+        let source2 = Source::from_bytes(r#"requestIdleCallback(() => {})"#);
+        let id2_val = context.eval(source2).unwrap();
+        let id2 = id2_val.as_number().unwrap() as i32;
+        assert_eq!(id2, 2);
+        assert_eq!(get_idle_callback_count(), 2);
+
+        // 3. cancel_idle_callback with id 1 drops the count back to 1 and removes that id
+        context
+            .eval(Source::from_bytes(
+                format!("cancelIdleCallback({})", id1).as_bytes(),
+            ))
+            .unwrap();
+        assert_eq!(get_idle_callback_count(), 1);
+
+        // 4. trigger_idle_callback invokes the JS callback (assert an observable side effect on a global)
+        context
+            .eval(Source::from_bytes(
+                r#"
+            var ran = false;
+            var time_remaining = -1;
+            var did_timeout = null;
+            var idleId = requestIdleCallback((deadline) => {
+                ran = true;
+                time_remaining = deadline.timeRemaining();
+                did_timeout = deadline.didTimeout;
+            });
+        "#,
+            ))
+            .unwrap();
+
+        let id3_val = context.eval(Source::from_bytes("idleId")).unwrap();
+        let id3 = id3_val.as_number().unwrap() as i32;
+        // id should be 3 because NEXT_IDLE_ID is 3 now
+        assert_eq!(id3, 3);
+        assert_eq!(get_idle_callback_count(), 2); // id 2 is still there, and id 3 is added
+
+        // Trigger the callback for id 3
+        let result = trigger_idle_callback(id3, &mut context);
+        assert!(result.is_ok());
+
+        // afterwards get_idle_callback_count() decreased (one-shot removal)
+        assert_eq!(get_idle_callback_count(), 1); // only id 2 remains
+
+        // Check side effects
+        let ran_val = context.eval(Source::from_bytes("ran")).unwrap();
+        assert!(ran_val.as_boolean().unwrap());
+
+        // 5. Inside the triggered callback, the deadline arg's timeRemaining() returns 50 and didTimeout is false
+        let time_remaining_val = context.eval(Source::from_bytes("time_remaining")).unwrap();
+        assert_eq!(time_remaining_val.as_number().unwrap(), 50.0);
+
+        let did_timeout_val = context.eval(Source::from_bytes("did_timeout")).unwrap();
+        assert!(!did_timeout_val.as_boolean().unwrap());
     }
 
     #[test]
