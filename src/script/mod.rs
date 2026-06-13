@@ -1930,6 +1930,21 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'autofocus', {
+                        get() {
+                            return this.hasAttribute('autofocus');
+                        },
+                        set(val) {
+                            if (val) {
+                                this.setAttribute('autofocus', '');
+                            } else {
+                                this.removeAttribute('autofocus');
+                            }
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     // TODO(spec): input.value dirty-value-flag / live IDL value vs content attribute (see HTML spec)
                     Object.defineProperty(node, 'value', {
                         get() {
@@ -12893,6 +12908,32 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|rtl|ltr||en|fr|false|true||true|false|false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_autofocus() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            let af1 = div.autofocus; // absent default is false
+            
+            div.autofocus = true;
+            let af2_attr = div.hasAttribute('autofocus'); // true
+            let af2_val = div.getAttribute('autofocus'); // ''
+            let af2_prop = div.autofocus; // true
+
+            div.autofocus = false;
+            let af3_attr = div.hasAttribute('autofocus'); // false
+            let af3_prop = div.autofocus; // false
+
+            [af1, af2_attr, af2_val, af2_prop, af3_attr, af3_prop].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("false|true||true|false|false".to_string())
         );
     }
 
