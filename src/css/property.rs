@@ -729,6 +729,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "box-decoration-break",
+        inherited: false,
+        initial: "slice",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1311,6 +1316,13 @@ mod tests {
         assert_eq!(break_inside.name, "break-inside");
         assert!(!break_inside.inherited);
         assert_eq!(break_inside.initial, "auto");
+
+        let box_decoration_break = lookup("BOX-DECORATION-BREAK");
+        assert!(box_decoration_break.is_some());
+        let box_decoration_break = box_decoration_break.unwrap();
+        assert_eq!(box_decoration_break.name, "box-decoration-break");
+        assert!(!box_decoration_break.inherited);
+        assert_eq!(box_decoration_break.initial, "slice");
     }
 
     #[test]
