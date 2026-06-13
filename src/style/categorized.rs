@@ -770,7 +770,7 @@ impl CategorizedComputedStyle {
             // ResetBox
             "display" => self.set_display(css_value_to_string(value)),
             "width" => self.set_width(value_to_px_or_auto(value, fs)),
-            "height" => self.set_height(value_to_px_or_auto(value, fs)),
+            "height" => self.set_height(height_value_to_px_or_auto(value, fs)),
             "position" => Arc::make_mut(&mut self.reset_box).position = css_value_to_string(value),
             "float" => Arc::make_mut(&mut self.reset_box).float = css_value_to_string(value),
             "clear" => Arc::make_mut(&mut self.reset_box).clear = css_value_to_string(value),
@@ -1760,6 +1760,16 @@ fn value_to_px_or_auto(val: &crate::css::values::CssValue, font_size: u32) -> i3
         return if *v == 0.0 { 0 } else { -1 };
     }
     value_to_px(val, font_size)
+}
+
+/// Special helper for `height`: resolves a percentage `height` to `auto` (-1)
+/// because containing-block heights are indefinite (content-driven) in this engine.
+/// All other values resolve normally as in `value_to_px_or_auto`.
+fn height_value_to_px_or_auto(val: &crate::css::values::CssValue, font_size: u32) -> i32 {
+    if let crate::css::values::CssValue::Length(_, crate::css::values::LengthUnit::Percent) = val {
+        return -1;
+    }
+    value_to_px_or_auto(val, font_size)
 }
 
 /// Percentage offset for min/max-width: values `>= WIDTH_PERCENT_BAND` encode a
