@@ -2407,7 +2407,7 @@ pub fn decode_wbmp(bytes: &[u8]) -> Option<DecodedImage> {
     let mut offset = 2;
 
     // Helper to parse variable-length unsigned integer (uintvar)
-    let mut parse_uintvar = |offset: &mut usize| -> Option<u32> {
+    let parse_uintvar = |offset: &mut usize| -> Option<u32> {
         let mut value: u32 = 0;
         let mut bytes_read = 0;
         loop {
@@ -3916,7 +3916,7 @@ mod tests {
         // Height: 1 -> single-byte uintvar [0x01]
         // Row padding: (129).div_ceil(8) = 17 bytes per row. Let's provide 17 bytes of 0xFF (all white).
         let mut wbmp_data = vec![0x00, 0x00, 0x81, 0x01, 0x01];
-        wbmp_data.extend(std::iter::repeat(0xFF).take(17));
+        wbmp_data.extend(std::iter::repeat_n(0xFF, 17));
 
         let decoded = decode_image(&wbmp_data).expect("Should decode WBMP with multi-byte uintvar");
         assert_eq!(decoded.width, 129);
