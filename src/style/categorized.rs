@@ -1794,8 +1794,9 @@ impl CategorizedComputedStyle {
 // Private value conversion helpers for CategorizedComputedStyle
 fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     use crate::css::values::{
-        AlignItemsValue, BoxSizingValue, Color, CssValue, DisplayValue, FlexDirectionValue,
-        JustifyContentValue, LengthUnit, MixBlendModeValue, OverflowValue, PositionValue, ZIndex,
+        AlignItemsValue, BackgroundBlendModeValue, BoxSizingValue, Color, CssValue, DisplayValue,
+        FlexDirectionValue, JustifyContentValue, LengthUnit, MixBlendModeValue, OverflowValue,
+        PositionValue, ZIndex,
     };
     match val {
         CssValue::Keyword(s) => s.clone(),
@@ -2005,6 +2006,24 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             MixBlendModeValue::Saturation => "saturation".to_string(),
             MixBlendModeValue::Color => "color".to_string(),
             MixBlendModeValue::Luminosity => "luminosity".to_string(),
+        },
+        CssValue::BackgroundBlendMode(bbm) => match bbm {
+            BackgroundBlendModeValue::Normal => "normal".to_string(),
+            BackgroundBlendModeValue::Multiply => "multiply".to_string(),
+            BackgroundBlendModeValue::Screen => "screen".to_string(),
+            BackgroundBlendModeValue::Overlay => "overlay".to_string(),
+            BackgroundBlendModeValue::Darken => "darken".to_string(),
+            BackgroundBlendModeValue::Lighten => "lighten".to_string(),
+            BackgroundBlendModeValue::ColorDodge => "color-dodge".to_string(),
+            BackgroundBlendModeValue::ColorBurn => "color-burn".to_string(),
+            BackgroundBlendModeValue::HardLight => "hard-light".to_string(),
+            BackgroundBlendModeValue::SoftLight => "soft-light".to_string(),
+            BackgroundBlendModeValue::Difference => "difference".to_string(),
+            BackgroundBlendModeValue::Exclusion => "exclusion".to_string(),
+            BackgroundBlendModeValue::Hue => "hue".to_string(),
+            BackgroundBlendModeValue::Saturation => "saturation".to_string(),
+            BackgroundBlendModeValue::Color => "color".to_string(),
+            BackgroundBlendModeValue::Luminosity => "luminosity".to_string(),
         },
     }
 }
@@ -2399,6 +2418,30 @@ mod tests {
         );
         assert_eq!(
             css_value_to_string(&CssValue::MixBlendMode(MixBlendModeValue::Normal)),
+            "normal".to_string()
+        );
+    }
+
+    #[test]
+    fn test_background_blend_mode_serialization() {
+        use crate::css::values::{BackgroundBlendModeValue, CssValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::BackgroundBlendMode(
+                BackgroundBlendModeValue::Multiply
+            )),
+            "multiply".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::BackgroundBlendMode(
+                BackgroundBlendModeValue::ColorDodge
+            )),
+            "color-dodge".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::BackgroundBlendMode(
+                BackgroundBlendModeValue::Normal
+            )),
             "normal".to_string()
         );
     }
