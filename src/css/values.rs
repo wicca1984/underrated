@@ -507,8 +507,9 @@ impl TryFrom<&CssValue> for TextJustifyValue {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum WordBreakValue {
+    #[default]
     Normal,
     BreakAll,
     KeepAll,
@@ -545,6 +546,52 @@ impl std::str::FromStr for WordBreakValue {
 }
 
 impl TryFrom<&CssValue> for WordBreakValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum OverflowWrapValue {
+    #[default]
+    Normal,
+    BreakWord,
+    Anywhere,
+}
+
+impl OverflowWrapValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "break-word" => Some(Self::BreakWord),
+            "anywhere" => Some(Self::Anywhere),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::BreakWord => "break-word",
+            Self::Anywhere => "anywhere",
+        }
+    }
+}
+
+impl std::str::FromStr for OverflowWrapValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for OverflowWrapValue {
     type Error = ();
 
     fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
@@ -902,6 +949,8 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "font-kerning"
             | "text-justify"
             | "word-break"
+            | "overflow-wrap"
+            | "word-wrap"
             | "object-fit"
             | "caption-side"
             | "pointer-events"
@@ -1117,6 +1166,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "normal" | "break-all" | "keep-all" | "break-word"
+                )
+            }
+            _ => false,
+        },
+        "overflow-wrap" | "word-wrap" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "normal" | "break-word" | "anywhere"
                 )
             }
             _ => false,
@@ -1708,6 +1766,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "normal" | "break-all" | "keep-all" | "break-word" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "overflow-wrap" | "word-wrap" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "normal" | "break-word" | "anywhere" => Some(val),
                     _ => None,
                 }
             } else {
@@ -3791,6 +3859,77 @@ mod tests {
             Ok(WordBreakValue::BreakWord)
         );
         assert_eq!(WordBreakValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation
+        assert_eq!(WordBreakValue::default(), WordBreakValue::Normal);
+    }
+
+    #[test]
+    fn test_overflow_wrap_value() {
+        // Test parsing keyword strings to OverflowWrapValue
+        assert_eq!(
+            OverflowWrapValue::parse("normal"),
+            Some(OverflowWrapValue::Normal)
+        );
+        assert_eq!(
+            OverflowWrapValue::parse("break-word"),
+            Some(OverflowWrapValue::BreakWord)
+        );
+        assert_eq!(
+            OverflowWrapValue::parse("anywhere"),
+            Some(OverflowWrapValue::Anywhere)
+        );
+        assert_eq!(
+            OverflowWrapValue::parse("NORMAL"),
+            Some(OverflowWrapValue::Normal)
+        );
+        assert_eq!(
+            OverflowWrapValue::parse("Break-Word"),
+            Some(OverflowWrapValue::BreakWord)
+        );
+        assert_eq!(
+            OverflowWrapValue::parse("ANYWHERE"),
+            Some(OverflowWrapValue::Anywhere)
+        );
+        assert_eq!(OverflowWrapValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "normal".parse::<OverflowWrapValue>(),
+            Ok(OverflowWrapValue::Normal)
+        );
+        assert_eq!(
+            "break-word".parse::<OverflowWrapValue>(),
+            Ok(OverflowWrapValue::BreakWord)
+        );
+        assert_eq!(
+            "anywhere".parse::<OverflowWrapValue>(),
+            Ok(OverflowWrapValue::Anywhere)
+        );
+        assert_eq!("BOGUS".parse::<OverflowWrapValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(OverflowWrapValue::Normal.as_str(), "normal");
+        assert_eq!(OverflowWrapValue::BreakWord.as_str(), "break-word");
+        assert_eq!(OverflowWrapValue::Anywhere.as_str(), "anywhere");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            OverflowWrapValue::try_from(&CssValue::Keyword("normal".to_string())),
+            Ok(OverflowWrapValue::Normal)
+        );
+        assert_eq!(
+            OverflowWrapValue::try_from(&CssValue::Keyword("BREAK-WORD".to_string())),
+            Ok(OverflowWrapValue::BreakWord)
+        );
+        assert_eq!(
+            OverflowWrapValue::try_from(&CssValue::Keyword("anywhere".to_string())),
+            Ok(OverflowWrapValue::Anywhere)
+        );
+        assert_eq!(OverflowWrapValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation
+        assert_eq!(OverflowWrapValue::default(), OverflowWrapValue::Normal);
     }
 
     #[test]
@@ -4885,6 +5024,36 @@ mod tests {
             "word-break",
             &CssValue::Keyword("invalid-value".to_string())
         ));
+
+        // Test parse_property_value and is_valid_property_value for overflow-wrap and word-wrap
+        assert!(is_known_layout_property("overflow-wrap"));
+        assert!(is_known_layout_property("word-wrap"));
+        assert!(is_known_layout_property("Overflow-Wrap"));
+        assert!(is_known_layout_property("Word-Wrap"));
+
+        for prop in &["overflow-wrap", "word-wrap"] {
+            for val in &["normal", "break-word", "anywhere", "NORMAL", "Break-Word"] {
+                assert_eq!(
+                    parse_property_value(prop, &[token(CssToken::Ident(val.to_string()))]),
+                    Some(CssValue::Keyword(val.to_string()))
+                );
+            }
+            assert_eq!(
+                parse_property_value(prop, &[token(CssToken::Ident("invalid-value".to_string()))]),
+                None
+            );
+
+            for val in &["normal", "break-word", "anywhere", "NORMAL", "Break-Word"] {
+                assert!(is_valid_property_value(
+                    prop,
+                    &CssValue::Keyword(val.to_string())
+                ));
+            }
+            assert!(!is_valid_property_value(
+                prop,
+                &CssValue::Keyword("invalid-value".to_string())
+            ));
+        }
 
         // Test parse_property_value for accent-color and caret-color (t0477)
         assert_eq!(
