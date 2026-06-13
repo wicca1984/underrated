@@ -16,11 +16,13 @@ pub fn is_absolute_or_fixed(
         if is_abs_or_fixed {
             let has_explicit_top = style.reset_surround.top != -1;
             let has_explicit_left = style.reset_surround.left != -1;
+            let has_explicit_right = style.reset_surround.right != -1;
 
             // TODO(spec): True CSS static-position-for-out-of-flow semantics is deferred:
-            // we use an interim decision where if both top and left are unspecified (auto),
+            // we use an interim decision where if both top and left are unspecified (auto)
+            // (and we also check right here to avoid normal flow when right is specified),
             // we keep the element in normal flow (as if position: static) to avoid collapsing to (0,0).
-            has_explicit_top || has_explicit_left
+            has_explicit_top || has_explicit_left || has_explicit_right
         } else {
             false
         }
@@ -216,6 +218,8 @@ pub fn layout_absolute_and_fixed_elements(
         } else {
             style.reset_surround.left as f32
         };
+
+        // TODO(spec): bottom offset needs containing-block height (not threaded into this signature)
         let top = if style.reset_surround.top == -1 {
             0.0
         } else {
@@ -223,7 +227,18 @@ pub fn layout_absolute_and_fixed_elements(
         };
 
         // Layout the node with viewport width as containing width, and top/left as offsets
-        if let Some(child_box) = layout_node(dom, styles, node, viewport_width, left, top, 0) {
+        if let Some(mut child_box) = layout_node(dom, styles, node, viewport_width, left, top, 0) {
+            // If left is auto (-1) and right is set (not -1), position from the right offset.
+            if style.reset_surround.left == -1 && style.reset_surround.right != -1 {
+                let right = style.reset_surround.right as f32;
+                let target_x = viewport_width - right - child_box.rect.size.width;
+                let shift_dx = target_x - child_box.rect.origin.x;
+                child_box.rect.origin.x += shift_dx;
+                for child in &mut child_box.children {
+                    shift_layout_box(child, styles, shift_dx, 0.0, 1);
+                }
+            }
+
             // Find nearest ancestor in the layout tree and append to its children
             insert_into_nearest_ancestor_layout_box(dom, root_box, node, child_box);
         }
@@ -293,5 +308,111 @@ mod tests {
         // Static height of first div is 50px. Sibling should start at (0, 50).
         assert_eq!(sibling_box.rect.origin.x, 0.0);
         assert_eq!(sibling_box.rect.origin.y, 50.0);
+    }
+
+    #[test]
+    fn test_absolute_position_right_offset() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                right: 40px;
+                width: 120px;
+                height: 50px;
+                top: 10px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found in layout tree");
+        // Expected x = viewport_width - right - width = 800.0 - 40.0 - 120.0 = 640.0
+        assert_eq!(div_box.rect.size.width, 120.0);
+        assert_eq!(div_box.rect.origin.x, 640.0);
+        assert_eq!(div_box.rect.origin.y, 10.0);
+    }
+
+    #[test]
+    fn test_absolute_position_left_wins_over_right() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                left: 30px;
+                right: 40px;
+                width: 120px;
+                height: 50px;
+                top: 10px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found in layout tree");
+        // Since both left and right are set, left (30.0) should win.
+        assert_eq!(div_box.rect.origin.x, 30.0);
+        assert_eq!(div_box.rect.origin.y, 10.0);
     }
 }
