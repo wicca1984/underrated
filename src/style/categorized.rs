@@ -1795,7 +1795,7 @@ impl CategorizedComputedStyle {
 fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     use crate::css::values::{
         AlignItemsValue, BoxSizingValue, Color, CssValue, DisplayValue, FlexDirectionValue,
-        JustifyContentValue, LengthUnit, OverflowValue, PositionValue, ZIndex,
+        JustifyContentValue, LengthUnit, MixBlendModeValue, OverflowValue, PositionValue, ZIndex,
     };
     match val {
         CssValue::Keyword(s) => s.clone(),
@@ -1988,6 +1988,24 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
                 format!("{} {}", fmt_kw(ssa.block), fmt_kw(ssa.inline))
             }
         }
+        CssValue::MixBlendMode(mbm) => match mbm {
+            MixBlendModeValue::Normal => "normal".to_string(),
+            MixBlendModeValue::Multiply => "multiply".to_string(),
+            MixBlendModeValue::Screen => "screen".to_string(),
+            MixBlendModeValue::Overlay => "overlay".to_string(),
+            MixBlendModeValue::Darken => "darken".to_string(),
+            MixBlendModeValue::Lighten => "lighten".to_string(),
+            MixBlendModeValue::ColorDodge => "color-dodge".to_string(),
+            MixBlendModeValue::ColorBurn => "color-burn".to_string(),
+            MixBlendModeValue::HardLight => "hard-light".to_string(),
+            MixBlendModeValue::SoftLight => "soft-light".to_string(),
+            MixBlendModeValue::Difference => "difference".to_string(),
+            MixBlendModeValue::Exclusion => "exclusion".to_string(),
+            MixBlendModeValue::Hue => "hue".to_string(),
+            MixBlendModeValue::Saturation => "saturation".to_string(),
+            MixBlendModeValue::Color => "color".to_string(),
+            MixBlendModeValue::Luminosity => "luminosity".to_string(),
+        },
     }
 }
 
@@ -2364,6 +2382,24 @@ mod tests {
         assert_eq!(
             style.get_property_as_string("transform"),
             Some("none".to_string())
+        );
+    }
+
+    #[test]
+    fn test_mix_blend_mode_serialization() {
+        use crate::css::values::{CssValue, MixBlendModeValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::MixBlendMode(MixBlendModeValue::Multiply)),
+            "multiply".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::MixBlendMode(MixBlendModeValue::ColorDodge)),
+            "color-dodge".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::MixBlendMode(MixBlendModeValue::Normal)),
+            "normal".to_string()
         );
     }
 }
