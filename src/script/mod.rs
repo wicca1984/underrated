@@ -502,6 +502,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_prefix),
+                JsString::from("prefix"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_namespace_uri),
                 JsString::from("namespaceURI"),
                 1,
@@ -2187,6 +2192,14 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'prefix', {
+                        get() {
+                            return bridge.prefix(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'namespaceURI', {
                         get() {
                             return bridge.namespaceURI(this.__key__);
@@ -2729,6 +2742,14 @@ impl BoaHost {
                 Object.defineProperty(Document.prototype, 'localName', {
                     get() {
                         return bridge.localName(this.__key__);
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(Document.prototype, 'prefix', {
+                    get() {
+                        return bridge.prefix(this.__key__);
                     },
                     enumerable: true,
                     configurable: true
@@ -6175,7 +6196,11 @@ fn bridge_local_name(
     let local_name_opt = with_dom(|dom, key_to_node| {
         if let Some(&node_id) = key_to_node.get(&node_key) {
             if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
-                Some(name.to_ascii_lowercase())
+                if let Some(pos) = name.find(':') {
+                    Some(name[pos + 1..].to_ascii_lowercase())
+                } else {
+                    Some(name.to_ascii_lowercase())
+                }
             } else {
                 None
             }
@@ -6188,6 +6213,36 @@ fn bridge_local_name(
         Ok(JsValue::from(JsString::from(local_name)))
     } else {
         Ok(JsValue::undefined())
+    }
+}
+
+fn bridge_prefix(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let prefix_opt = with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            if let Some(NodeData::Element { name, .. }) = dom.data(node_id) {
+                name.find(':').map(|pos| name[..pos].to_ascii_lowercase())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(prefix) = prefix_opt {
+        Ok(JsValue::from(JsString::from(prefix)))
+    } else {
+        Ok(JsValue::null())
     }
 }
 
@@ -11872,6 +11927,57 @@ mod tests {
         assert_eq!(
             res,
             Ok(r##"{"spanTagName":"SPAN","spanLocalName":"span","divUpperTagName":"DIV","divUpperLocalName":"div","divLowerTagName":"DIV","divLowerLocalName":"div","isReadOnly":true}"##.to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_prefix() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // 1. Create ordinary element SPAN
+        let span_id = dom.create_node(NodeData::Element {
+            name: "SPAN".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(document, span_id);
+
+        // 2. Create element with prefix "svg:rect"
+        let svg_id = dom.create_node(NodeData::Element {
+            name: "svg:rect".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(document, svg_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            (function() {
+                const span = document.childNodes[0];
+                const svgRect = document.childNodes[1];
+                const div = document.createElement('div');
+
+                // Test read-only property: assigning to prefix should be ignored
+                const origPrefix = svgRect.prefix;
+                svgRect.prefix = "custom";
+                const isReadOnly = svgRect.prefix === origPrefix;
+
+                const verification = {
+                    spanLocalName: span.localName,
+                    spanPrefix: span.prefix,
+                    svgRectLocalName: svgRect.localName,
+                    svgRectPrefix: svgRect.prefix,
+                    divPrefix: div.prefix,
+                    isReadOnly: isReadOnly,
+                };
+                return JSON.stringify(verification);
+            })()
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok(r##"{"spanLocalName":"span","spanPrefix":null,"svgRectLocalName":"rect","svgRectPrefix":"svg","divPrefix":null,"isReadOnly":true}"##.to_string())
         );
     }
 
