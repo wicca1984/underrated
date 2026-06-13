@@ -98,6 +98,8 @@ thread_local! {
     static KEY_TO_NODE: RefCell<HashMap<String, NodeId>> = RefCell::new(HashMap::new());
     static CURRENT_STYLES: RefCell<Option<HashMap<NodeId, crate::style::CategorizedComputedStyle>>> = const { RefCell::new(None) };
     static PENDING_NAVIGATION: RefCell<Option<String>> = const { RefCell::new(None) };
+    static ELEMENT_SCROLL_TOP: RefCell<HashMap<NodeId, f64>> = RefCell::new(HashMap::new());
+    static ELEMENT_SCROLL_LEFT: RefCell<HashMap<NodeId, f64>> = RefCell::new(HashMap::new());
 }
 
 impl BoaHost {
@@ -422,6 +424,26 @@ impl BoaHost {
                 NativeFunction::from_fn_ptr(bridge_get_bounding_client_rect),
                 JsString::from("getBoundingClientRect"),
                 1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_get_scroll_top),
+                JsString::from("getScrollTop"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_set_scroll_top),
+                JsString::from("setScrollTop"),
+                2,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_get_scroll_left),
+                JsString::from("getScrollLeft"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_set_scroll_left),
+                JsString::from("setScrollLeft"),
+                2,
             )
             .build();
 
@@ -1566,6 +1588,32 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'scrollTop', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            return bridge.getScrollTop(this.__key__);
+                        },
+                        set(val) {
+                            if (this.nodeType !== 1) return;
+                            bridge.setScrollTop(this.__key__, Number(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'scrollLeft', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            return bridge.getScrollLeft(this.__key__);
+                        },
+                        set(val) {
+                            if (this.nodeType !== 1) return;
+                            bridge.setScrollLeft(this.__key__, Number(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'childNodes', {
                         get() {
                             const keys = bridge.childNodes(this.__key__);
@@ -2371,7 +2419,7 @@ impl BoaHost {
                 if let Some(final_dom) = restored_dom {
                     *dom = final_dom;
                 }
-                KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
+                clear_bridge_state();
                 return Ok(String::new());
             }
         }
@@ -2420,7 +2468,7 @@ impl BoaHost {
             *dom = final_dom;
         }
 
-        KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
+        clear_bridge_state();
 
         // 5. Handle evaluation result
         let res_val = res_val.map_err(map_boa_error)?;
@@ -2600,7 +2648,7 @@ impl BoaHost {
             *dom = final_dom;
         }
 
-        KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
+        clear_bridge_state();
 
         CURRENT_STYLES.with(|cell| {
             *cell.borrow_mut() = None;
@@ -2646,7 +2694,7 @@ impl BoaHost {
             *dom = final_dom;
         }
 
-        KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
+        clear_bridge_state();
 
         dispatch_result
     }
@@ -2782,6 +2830,12 @@ where
             ))))
         }
     })
+}
+
+fn clear_bridge_state() {
+    KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
+    ELEMENT_SCROLL_TOP.with(|cell| cell.borrow_mut().clear());
+    ELEMENT_SCROLL_LEFT.with(|cell| cell.borrow_mut().clear());
 }
 
 fn request_navigation(
@@ -4759,6 +4813,112 @@ fn bridge_get_bounding_client_rect(
         .build();
 
     Ok(JsValue::from(js_rect))
+}
+
+fn bridge_get_scroll_top(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(0.0));
+    };
+
+    let scroll_top = with_dom(|_dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            ELEMENT_SCROLL_TOP.with(|cell| *cell.borrow().get(&n_id).unwrap_or(&0.0))
+        } else {
+            0.0
+        }
+    })?;
+
+    Ok(JsValue::from(scroll_top))
+}
+
+fn bridge_set_scroll_top(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let val = if let Some(arg) = args.get(1) {
+        arg.to_number(context)?
+    } else {
+        0.0
+    };
+
+    let val_clamped = if val.is_nan() || val < 0.0 { 0.0 } else { val };
+
+    with_dom(|_dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            ELEMENT_SCROLL_TOP.with(|cell| {
+                cell.borrow_mut().insert(n_id, val_clamped);
+            });
+            // TODO(spec): wire scrollTop/scrollLeft setter to actual layout scroll (cross-module)
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_get_scroll_left(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(0.0));
+    };
+
+    let scroll_left = with_dom(|_dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            ELEMENT_SCROLL_LEFT.with(|cell| *cell.borrow().get(&n_id).unwrap_or(&0.0))
+        } else {
+            0.0
+        }
+    })?;
+
+    Ok(JsValue::from(scroll_left))
+}
+
+fn bridge_set_scroll_left(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let val = if let Some(arg) = args.get(1) {
+        arg.to_number(context)?
+    } else {
+        0.0
+    };
+
+    let val_clamped = if val.is_nan() || val < 0.0 { 0.0 } else { val };
+
+    with_dom(|_dom, key_to_node| {
+        if let Some(n_id) = key_to_node.get(&node_key).copied() {
+            ELEMENT_SCROLL_LEFT.with(|cell| {
+                cell.borrow_mut().insert(n_id, val_clamped);
+            });
+            // TODO(spec): wire scrollTop/scrollLeft setter to actual layout scroll (cross-module)
+        }
+    })?;
+
+    Ok(JsValue::undefined())
 }
 
 impl Default for BoaHost {
@@ -8414,6 +8574,75 @@ mod tests {
         assert_eq!(
             res,
             "true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true"
+        );
+    }
+
+    #[test]
+    fn test_element_scroll_top_left() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "scroll-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.getElementById('scroll-div');
+
+            // Default values
+            const defaultTopType = typeof el.scrollTop;
+            const defaultLeftType = typeof el.scrollLeft;
+            const defaultTop = el.scrollTop;
+            const defaultLeft = el.scrollLeft;
+
+            // Set positive values
+            el.scrollTop = 15.5;
+            el.scrollLeft = 42.8;
+            const topAfterSet = el.scrollTop;
+            const leftAfterSet = el.scrollLeft;
+
+            // Set negative values (should clamp to 0)
+            el.scrollTop = -10;
+            el.scrollLeft = -5.5;
+            const topAfterNegative = el.scrollTop;
+            const leftAfterNegative = el.scrollLeft;
+
+            // Type coercion (should convert strings to numbers)
+            el.scrollTop = "100.2";
+            el.scrollLeft = "200.7";
+            const topAfterString = el.scrollTop;
+            const leftAfterString = el.scrollLeft;
+
+            // Non-element nodeType !== 1 (Text Node)
+            const textNode = document.createTextNode('hello');
+            const textTopDefault = textNode.scrollTop;
+            textNode.scrollTop = 50;
+            const textTopAfterSet = textNode.scrollTop;
+
+            [
+                defaultTopType === 'number',
+                defaultLeftType === 'number',
+                defaultTop === 0,
+                defaultLeft === 0,
+                topAfterSet === 15.5,
+                leftAfterSet === 42.8,
+                topAfterNegative === 0,
+                leftAfterNegative === 0,
+                topAfterString === 100.2,
+                leftAfterString === 200.7,
+                textTopDefault === 0,
+                textTopAfterSet === 0
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(
+            res,
+            "true|true|true|true|true|true|true|true|true|true|true|true"
         );
     }
 
