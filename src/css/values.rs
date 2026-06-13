@@ -645,6 +645,62 @@ impl TryFrom<&CssValue> for TextAlignLastValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy, Eq, Default)]
+pub enum UnicodeBidiValue {
+    #[default]
+    Normal,
+    Embed,
+    Isolate,
+    BidiOverride,
+    IsolateOverride,
+    Plaintext,
+}
+
+impl UnicodeBidiValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "embed" => Some(Self::Embed),
+            "isolate" => Some(Self::Isolate),
+            "bidi-override" => Some(Self::BidiOverride),
+            "isolate-override" => Some(Self::IsolateOverride),
+            "plaintext" => Some(Self::Plaintext),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Embed => "embed",
+            Self::Isolate => "isolate",
+            Self::BidiOverride => "bidi-override",
+            Self::IsolateOverride => "isolate-override",
+            Self::Plaintext => "plaintext",
+        }
+    }
+}
+
+impl std::str::FromStr for UnicodeBidiValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for UnicodeBidiValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::UnicodeBidi(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum HyphensValue {
     None,
@@ -1395,6 +1451,7 @@ pub enum CssValue {
     BackfaceVisibility(BackfaceVisibilityValue),
     EmptyCells(EmptyCellsValue),
     TextAlignLast(TextAlignLastValue),
+    UnicodeBidi(UnicodeBidiValue),
     Hyphens(HyphensValue),
     TextRendering(TextRenderingValue),
     ImageRendering(ImageRenderingValue),
@@ -1525,6 +1582,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "object-fit"
             | "caption-side"
             | "pointer-events"
+            | "unicode-bidi"
     )
 }
 
@@ -1637,6 +1695,11 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "text-align-last" => match value {
             CssValue::Keyword(kw) => TextAlignLastValue::parse(kw).is_some(),
             CssValue::TextAlignLast(_) => true,
+            _ => false,
+        },
+        "unicode-bidi" => match value {
+            CssValue::Keyword(kw) => UnicodeBidiValue::parse(kw).is_some(),
+            CssValue::UnicodeBidi(_) => true,
             _ => false,
         },
         "hyphens" => match value {
@@ -2330,6 +2393,27 @@ fn parse_text_align_last(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::TextAlignLast(kw))
 }
 
+fn parse_unicode_bidi(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for unicode-bidi recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = UnicodeBidiValue::parse(&idents[0])?;
+    Some(CssValue::UnicodeBidi(kw))
+}
+
 fn parse_hyphens(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2467,6 +2551,9 @@ pub fn parse_property_value(
     }
     if name_lower == "text-align-last" {
         return parse_text_align_last(components);
+    }
+    if name_lower == "unicode-bidi" {
+        return parse_unicode_bidi(components);
     }
     if name_lower == "hyphens" {
         return parse_hyphens(components);
@@ -4808,6 +4895,102 @@ mod tests {
             TextAlignLastValue::try_from(&CssValue::Number(1.0)),
             Err(())
         );
+    }
+
+    #[test]
+    fn test_unicode_bidi_value() {
+        // Test parsing keyword strings to UnicodeBidiValue
+        assert_eq!(
+            UnicodeBidiValue::parse("normal"),
+            Some(UnicodeBidiValue::Normal)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("embed"),
+            Some(UnicodeBidiValue::Embed)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("isolate"),
+            Some(UnicodeBidiValue::Isolate)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("bidi-override"),
+            Some(UnicodeBidiValue::BidiOverride)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("isolate-override"),
+            Some(UnicodeBidiValue::IsolateOverride)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("plaintext"),
+            Some(UnicodeBidiValue::Plaintext)
+        );
+
+        // Parsing is case-insensitive
+        assert_eq!(
+            UnicodeBidiValue::parse("NORMAL"),
+            Some(UnicodeBidiValue::Normal)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("Embed"),
+            Some(UnicodeBidiValue::Embed)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("ISOLATE"),
+            Some(UnicodeBidiValue::Isolate)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("Bidi-Override"),
+            Some(UnicodeBidiValue::BidiOverride)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("Isolate-Override"),
+            Some(UnicodeBidiValue::IsolateOverride)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("PLAINTEXT"),
+            Some(UnicodeBidiValue::Plaintext)
+        );
+
+        // Unknown keyword is rejected
+        assert_eq!(UnicodeBidiValue::parse("invalid"), None);
+        assert_eq!(UnicodeBidiValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "normal".parse::<UnicodeBidiValue>(),
+            Ok(UnicodeBidiValue::Normal)
+        );
+        assert_eq!(
+            "bidi-override".parse::<UnicodeBidiValue>(),
+            Ok(UnicodeBidiValue::BidiOverride)
+        );
+        assert_eq!("BOGUS".parse::<UnicodeBidiValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(UnicodeBidiValue::Normal.as_str(), "normal");
+        assert_eq!(UnicodeBidiValue::Embed.as_str(), "embed");
+        assert_eq!(UnicodeBidiValue::Isolate.as_str(), "isolate");
+        assert_eq!(UnicodeBidiValue::BidiOverride.as_str(), "bidi-override");
+        assert_eq!(
+            UnicodeBidiValue::IsolateOverride.as_str(),
+            "isolate-override"
+        );
+        assert_eq!(UnicodeBidiValue::Plaintext.as_str(), "plaintext");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            UnicodeBidiValue::try_from(&CssValue::Keyword("normal".to_string())),
+            Ok(UnicodeBidiValue::Normal)
+        );
+        assert_eq!(
+            UnicodeBidiValue::try_from(&CssValue::Keyword("BIDI-OVERRIDE".to_string())),
+            Ok(UnicodeBidiValue::BidiOverride)
+        );
+        assert_eq!(
+            UnicodeBidiValue::try_from(&CssValue::UnicodeBidi(UnicodeBidiValue::Isolate)),
+            Ok(UnicodeBidiValue::Isolate)
+        );
+        assert_eq!(UnicodeBidiValue::try_from(&CssValue::Number(1.0)), Err(()));
     }
 
     #[test]
@@ -7394,6 +7577,69 @@ mod tests {
         assert_eq!(
             TextAlignLastValue::parse("JUSTIFY"),
             Some(TextAlignLastValue::Justify)
+        );
+    }
+
+    #[test]
+    fn test_unicode_bidi_parsing_and_recognition() {
+        // Test unicode-bidi: normal
+        assert_eq!(
+            parse_property_value(
+                "unicode-bidi",
+                &[token(CssToken::Ident("normal".to_string()))]
+            ),
+            Some(CssValue::UnicodeBidi(UnicodeBidiValue::Normal))
+        );
+
+        // Test unicode-bidi: isolate-override
+        assert_eq!(
+            parse_property_value(
+                "unicode-bidi",
+                &[token(CssToken::Ident("isolate-override".to_string()))]
+            ),
+            Some(CssValue::UnicodeBidi(UnicodeBidiValue::IsolateOverride))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value(
+                "unicode-bidi",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("unicode-bidi"));
+        assert!(is_known_layout_property("Unicode-Bidi"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "unicode-bidi",
+            &CssValue::UnicodeBidi(UnicodeBidiValue::Normal)
+        ));
+        assert!(is_valid_property_value(
+            "unicode-bidi",
+            &CssValue::Keyword("normal".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "unicode-bidi",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test UnicodeBidiValue::parse directly
+        assert_eq!(
+            UnicodeBidiValue::parse("normal"),
+            Some(UnicodeBidiValue::Normal)
+        );
+        assert_eq!(
+            UnicodeBidiValue::parse("isolate-override"),
+            Some(UnicodeBidiValue::IsolateOverride)
+        );
+        assert_eq!(UnicodeBidiValue::parse("banana"), None);
+        assert_eq!(
+            UnicodeBidiValue::parse("ISOLATE-OVERRIDE"),
+            Some(UnicodeBidiValue::IsolateOverride)
         );
     }
 }
