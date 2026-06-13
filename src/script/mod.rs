@@ -1869,6 +1869,42 @@ impl BoaHost {
 
                 window.__getOrCreateNode = getOrCreateNode;
 
+                function decorateCollection(arr) {
+                    Object.defineProperty(arr, 'item', {
+                        value: function(index) {
+                            const i = Number(index) | 0;
+                            if (i < 0 || i >= this.length) return null;
+                            return this[i];
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+                    Object.defineProperty(arr, 'namedItem', {
+                        value: function(name) {
+                            const strName = String(name);
+                            if (strName === "") return null;
+                            for (let i = 0; i < this.length; i++) {
+                                const el = this[i];
+                                if (el && el.id === strName) {
+                                    return el;
+                                }
+                            }
+                            for (let i = 0; i < this.length; i++) {
+                                const el = this[i];
+                                if (el && typeof el.getAttribute === 'function' && el.getAttribute('name') === strName) {
+                                    return el;
+                                }
+                            }
+                            return null;
+                        },
+                        enumerable: false,
+                        configurable: true,
+                        writable: true
+                    });
+                    return arr;
+                }
+
                 document.createElement = function(tagName) {
                     const key = bridge.createElement(String(tagName));
                     return getOrCreateNode(key);
@@ -1902,14 +1938,14 @@ impl BoaHost {
 
                 document.getElementsByTagName = function(tagName) {
                     const keys = bridge.getElementsByTagName(String(tagName));
-                    if (!keys) return [];
-                    return keys.map(key => getOrCreateNode(key));
+                    if (!keys) return decorateCollection([]);
+                    return decorateCollection(keys.map(key => getOrCreateNode(key)));
                 };
 
                 document.getElementsByClassName = function(className) {
                     const keys = bridge.getElementsByClassName(String(className));
-                    if (!keys) return [];
-                    return keys.map(key => getOrCreateNode(key));
+                    if (!keys) return decorateCollection([]);
+                    return decorateCollection(keys.map(key => getOrCreateNode(key)));
                 };
 
                 document.getElementsByName = function(name) {
@@ -6384,6 +6420,106 @@ mod tests {
         // Empty string
         let res_empty = host.eval_with_dom("document.getElementsByName('').length", &mut dom);
         assert_eq!(res_empty, Ok("0".to_string()));
+    }
+
+    #[test]
+    fn test_htmlcollection_methods() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div1_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("id".to_string(), "first_id".to_string()),
+                ("name".to_string(), "name_one".to_string()),
+                ("class".to_string(), "my-class".to_string()),
+            ],
+        });
+        let div2_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("id".to_string(), "second_id".to_string()),
+                ("name".to_string(), "name_two".to_string()),
+                ("class".to_string(), "my-class".to_string()),
+            ],
+        });
+        dom.append_child(document, div1_id);
+        dom.append_child(document, div2_id);
+
+        let mut host = BoaHost::new();
+
+        // 1. Existing index access coll[i] and coll.length still work
+        assert_eq!(
+            host.eval_with_dom("document.getElementsByTagName('div').length", &mut dom),
+            Ok("2".to_string())
+        );
+        assert_eq!(
+            host.eval_with_dom("document.getElementsByTagName('div')[0].id", &mut dom),
+            Ok("first_id".to_string())
+        );
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementsByClassName('my-class').length",
+                &mut dom
+            ),
+            Ok("2".to_string())
+        );
+
+        // 2. item(index) returns the same element as coll[0], and item(999) returns null
+        assert_eq!(
+            host.eval_with_dom("document.getElementsByTagName('div').item(0).id", &mut dom),
+            Ok("first_id".to_string())
+        );
+        assert_eq!(
+            host.eval_with_dom("document.getElementsByTagName('div').item(1).id", &mut dom),
+            Ok("second_id".to_string())
+        );
+        assert_eq!(
+            host.eval_with_dom("document.getElementsByTagName('div').item(999)", &mut dom),
+            Ok("null".to_string())
+        );
+        // item parameter coercion check: item("1") should resolve to index 1
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementsByTagName('div').item('1').id",
+                &mut dom
+            ),
+            Ok("second_id".to_string())
+        );
+
+        // 3. namedItem(name) finds by id
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementsByTagName('div').namedItem('first_id').id",
+                &mut dom
+            ),
+            Ok("first_id".to_string())
+        );
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementsByClassName('my-class').namedItem('second_id').id",
+                &mut dom
+            ),
+            Ok("second_id".to_string())
+        );
+
+        // 4. namedItem(name) finds by name attribute when no matching id
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementsByTagName('div').namedItem('name_two').id",
+                &mut dom
+            ),
+            Ok("second_id".to_string())
+        );
+
+        // 5. namedItem(nope) returns null
+        assert_eq!(
+            host.eval_with_dom(
+                "document.getElementsByTagName('div').namedItem('nope')",
+                &mut dom
+            ),
+            Ok("null".to_string())
+        );
     }
 
     #[test]
