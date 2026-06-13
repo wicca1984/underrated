@@ -1544,6 +1544,16 @@ impl TreeBuilder {
                     self.pop_until("select");
                     self.reset_insertion_mode_appropriately();
                 }
+                "input" | "keygen" | "textarea" if self.is_in_select_scope("select") => {
+                    // Parse error.
+                    self.pop_until("select");
+                    self.reset_insertion_mode_appropriately();
+                    self.process_token(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
                 _ => {
                     // Parse error. Ignore.
                 }
@@ -2571,16 +2581,34 @@ mod tests {
     fn test_in_select_input_edge_case() {
         // "in select" insertion mode: an `<input>` start tag inside `<select>` acts to close the select.
         //
-        // TODO(spec): Per the HTML5 spec, an "input" (or "textarea", "keygen") start tag in
+        // Per the HTML5 spec, an "input" (or "textarea", "keygen") start tag in
         // "in select" mode should act as an end tag for "select", and then the "input" token is reprocessed.
         // This should close the select and then insert an <input> element into the body.
-        // However, this engine ignores the "input" start tag inside a select, so the select is only
-        // closed implicitly at EOF, and the <input> element is completely ignored/omitted.
         let html = "<select><option>a</option><input>";
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
         assert_eq!(
             dom.serialize(dom.document()),
-            "<html><head></head><body><select><option>a</option></select></body></html>"
+            "<html><head></head><body><select><option>a</option></select><input></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_select_textarea_edge_case() {
+        let html = "<select><option>a</option><textarea></textarea>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><option>a</option></select><textarea></textarea></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_select_keygen_edge_case() {
+        let html = "<select><option>a</option><keygen>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><select><option>a</option></select><keygen></keygen></body></html>"
         );
     }
 
