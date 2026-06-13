@@ -208,6 +208,7 @@ fn component_to_calc_tokens(
     root_font_size: f32,
     viewport_w: f32,
     viewport_h: f32,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
     tokens: &mut Vec<CalcToken>,
 ) -> bool {
     match comp {
@@ -259,15 +260,195 @@ fn component_to_calc_tokens(
         } => {
             tokens.push(CalcToken::LeftParen);
             for v in value {
-                if !component_to_calc_tokens(v, root_font_size, viewport_w, viewport_h, tokens) {
+                if !component_to_calc_tokens(
+                    v,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                    tokens,
+                ) {
                     return false;
                 }
             }
             tokens.push(CalcToken::RightParen);
             true
         }
+        ComponentValue::Function { name, value } => {
+            let resolved = if name.eq_ignore_ascii_case("calc") {
+                evaluate_calc(
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            } else if name.eq_ignore_ascii_case("min")
+                || name.eq_ignore_ascii_case("max")
+                || name.eq_ignore_ascii_case("clamp")
+            {
+                evaluate_math_fn(
+                    name,
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            } else {
+                None
+            };
+
+            match resolved {
+                Some(CssValue::Length(px, _)) => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(px)));
+                    true
+                }
+                Some(CssValue::Number(num)) => {
+                    tokens.push(CalcToken::Val(CalcValue::Number(num)));
+                    true
+                }
+                _ => false,
+            }
+        }
         _ => false,
     }
+}
+
+/// Evaluates CSS math functions `min()`, `max()`, and `clamp()`.
+/// `kind` must be "min", "max", or "clamp".
+pub fn evaluate_math_fn(
+    kind: &str,
+    components: &[ComponentValue],
+    root_font_size: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CssValue> {
+    // 1. Split by top-level Comma tokens.
+    let mut args = Vec::new();
+    let mut start = 0;
+    for (i, comp) in components.iter().enumerate() {
+        if matches!(comp, ComponentValue::Token(CssToken::Comma)) {
+            args.push(&components[start..i]);
+            start = i + 1;
+        }
+    }
+    args.push(&components[start..]);
+
+    // 2. Evaluate each argument group with the existing evaluate_calc.
+    let mut evaluated_args = Vec::new();
+    for arg_group in args {
+        let trimmed_group = trim_whitespace(arg_group);
+        if trimmed_group.is_empty() {
+            return None;
+        }
+        let evaluated = evaluate_calc(
+            trimmed_group,
+            root_font_size,
+            viewport_w,
+            viewport_h,
+            custom_properties,
+        )?;
+        evaluated_args.push(evaluated);
+    }
+
+    if evaluated_args.is_empty() {
+        return None;
+    }
+
+    // 3. Ensure all arguments are of the same kind: all Lengths in Px or all Numbers.
+    let is_length = match evaluated_args[0] {
+        CssValue::Length(_, LengthUnit::Px) => true,
+        CssValue::Number(_) => false,
+        _ => return None,
+    };
+
+    for arg in &evaluated_args {
+        match arg {
+            CssValue::Length(_, LengthUnit::Px) if is_length => {}
+            CssValue::Number(_) if !is_length => {}
+            _ => return None, // Mismatched kinds
+        }
+    }
+
+    // 4. Extract f32 values.
+    let values: Vec<f32> = if is_length {
+        evaluated_args
+            .iter()
+            .map(|arg| match arg {
+                CssValue::Length(v, _) => *v,
+                _ => 0.0,
+            })
+            .collect()
+    } else {
+        evaluated_args
+            .iter()
+            .map(|arg| match arg {
+                CssValue::Number(v) => *v,
+                _ => 0.0,
+            })
+            .collect()
+    };
+
+    // 5. Combine values based on math function kind.
+    let result = if kind.eq_ignore_ascii_case("min") {
+        let &first = values.first()?;
+        let mut min_val = first;
+        for &v in &values[1..] {
+            min_val = min_val.min(v);
+        }
+        min_val
+    } else if kind.eq_ignore_ascii_case("max") {
+        let &first = values.first()?;
+        let mut max_val = first;
+        for &v in &values[1..] {
+            max_val = max_val.max(v);
+        }
+        max_val
+    } else if kind.eq_ignore_ascii_case("clamp") {
+        if values.len() != 3 {
+            return None;
+        }
+        let min_val = values[0];
+        let val_val = values[1];
+        let max_val = values[2];
+        // clamp(MIN, VAL, MAX) = max(MIN, min(VAL, MAX))
+        min_val.max(val_val.min(max_val))
+    } else {
+        return None;
+    };
+
+    // 6. Return the result in the corresponding variant.
+    // TODO(spec): percentage arguments in min/max/clamp are not resolved against a layout reference
+    if is_length {
+        Some(CssValue::Length(result, LengthUnit::Px))
+    } else {
+        Some(CssValue::Number(result))
+    }
+}
+
+/// Helper function to trim whitespace from a component slice.
+fn trim_whitespace(components: &[ComponentValue]) -> &[ComponentValue] {
+    let mut start = 0;
+    while start < components.len()
+        && matches!(
+            components[start],
+            ComponentValue::Token(CssToken::Whitespace)
+        )
+    {
+        start += 1;
+    }
+    let mut end = components.len();
+    while end > start
+        && matches!(
+            components[end - 1],
+            ComponentValue::Token(CssToken::Whitespace)
+        )
+    {
+        end -= 1;
+    }
+    &components[start..end]
 }
 
 /// Evaluates a CSS `calc()` expression.
@@ -283,7 +464,14 @@ pub fn evaluate_calc(
 
     let mut tokens = Vec::new();
     for comp in &substituted {
-        if !component_to_calc_tokens(comp, root_font_size, viewport_w, viewport_h, &mut tokens) {
+        if !component_to_calc_tokens(
+            comp,
+            root_font_size,
+            viewport_w,
+            viewport_h,
+            custom_properties,
+            &mut tokens,
+        ) {
             return None;
         }
     }
@@ -335,6 +523,36 @@ pub fn resolve_value(
         match &trimmed[0] {
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("calc") => {
                 evaluate_calc(
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("min") => {
+                evaluate_math_fn(
+                    "min",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("max") => {
+                evaluate_math_fn(
+                    "max",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("clamp") => {
+                evaluate_math_fn(
+                    "clamp",
                     value,
                     root_font_size,
                     viewport_w,
@@ -526,6 +744,110 @@ mod tests {
         assert_eq!(
             resolve_string("calc(10px + +)", 16.0, 1000.0, 800.0, &vars),
             None
+        );
+    }
+
+    #[test]
+    fn test_resolve_math_fns() {
+        let vars = HashMap::new();
+
+        // 1. Basic min/max/clamp resolving to lengths in Px
+        assert_eq!(
+            resolve_string("min(10px, 20px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("max(10px, 20px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(20.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("clamp(10px, 5px, 20px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("clamp(10px, 30px, 20px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(20.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("clamp(10px, 15px, 20px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(15.0, LengthUnit::Px))
+        );
+
+        // 2. Bare numbers support
+        assert_eq!(
+            resolve_string("min(4, 2, 8)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(2.0))
+        );
+        assert_eq!(
+            resolve_string("max(4, 2, 8)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(8.0))
+        );
+        assert_eq!(
+            resolve_string("clamp(10, 5, 20)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(10.0))
+        );
+
+        // 3. Nested math/calc functions
+        assert_eq!(
+            resolve_string("max(10px, calc(5px + 8px))", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(13.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string(
+                "calc(min(10px, 20px) + max(5px, 15px))",
+                16.0,
+                1000.0,
+                800.0,
+                &vars
+            ),
+            Some(CssValue::Length(25.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string(
+                "clamp(min(5px, 10px), 15px, max(20px, 30px))",
+                16.0,
+                1000.0,
+                800.0,
+                &vars
+            ),
+            Some(CssValue::Length(15.0, LengthUnit::Px))
+        );
+
+        // 4. Mixed types and invalid clamp cases should return None
+        assert_eq!(
+            resolve_string("min(10px, 5)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+        assert_eq!(
+            resolve_string("clamp(10px, 15px)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+        assert_eq!(
+            resolve_string("clamp(10px, 15px, 20px, 25px)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // 5. Variables inside min/max/clamp
+        let mut vars_with_custom = HashMap::new();
+        vars_with_custom.insert(
+            "--limit".to_string(),
+            crate::css::parser::parse_component_values("15px"),
+        );
+        assert_eq!(
+            resolve_string(
+                "min(10px, var(--limit))",
+                16.0,
+                1000.0,
+                800.0,
+                &vars_with_custom
+            ),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
+
+        // 6. clamp MIN > MAX case
+        assert_eq!(
+            resolve_string("clamp(20px, 15px, 10px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(20.0, LengthUnit::Px))
         );
     }
 }
