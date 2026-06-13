@@ -41,6 +41,7 @@ pub struct InheritedText {
     pub hyphens: String,
     pub text_rendering: String,
     pub image_rendering: String,
+    pub font_variant_caps: String,
     pub text_shadow: Option<crate::css::values::CssValue>,
 }
 
@@ -73,6 +74,7 @@ impl Default for InheritedText {
             hyphens: "manual".to_string(),
             text_rendering: "auto".to_string(),
             image_rendering: "auto".to_string(),
+            font_variant_caps: "normal".to_string(),
             text_shadow: None,
         }
     }
@@ -812,6 +814,10 @@ impl CategorizedComputedStyle {
             "image-rendering" => {
                 Arc::make_mut(&mut self.inherited_text).image_rendering = css_value_to_string(value)
             }
+            "font-variant-caps" => {
+                Arc::make_mut(&mut self.inherited_text).font_variant_caps =
+                    css_value_to_string(value)
+            }
             "text-shadow" => {
                 Arc::make_mut(&mut self.inherited_text).text_shadow = Some(value.clone())
             }
@@ -1481,6 +1487,7 @@ impl CategorizedComputedStyle {
             "hyphens" => Some(self.inherited_text.hyphens.clone()),
             "text-rendering" => Some(self.inherited_text.text_rendering.clone()),
             "image-rendering" => Some(self.inherited_text.image_rendering.clone()),
+            "font-variant-caps" => Some(self.inherited_text.font_variant_caps.clone()),
             "text-shadow" => self
                 .inherited_text
                 .text_shadow
@@ -2059,6 +2066,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::Hyphens(h) => h.as_str().to_string(),
         CssValue::TextRendering(tr) => tr.as_str().to_string(),
         CssValue::ImageRendering(ir) => ir.as_str().to_string(),
+        CssValue::FontVariantCaps(fvc) => fvc.as_str().to_string(),
     }
 }
 
@@ -2599,6 +2607,74 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::ImageRendering(ImageRenderingValue::HighQuality)),
             "high-quality".to_string()
+        );
+    }
+
+    #[test]
+    fn test_font_variant_caps_style_categorization() {
+        use crate::css::values::{CssValue, FontVariantCapsValue};
+
+        let mut style = CategorizedComputedStyle::initial();
+        // Check initial default is normal
+        assert_eq!(
+            style.get_property_as_string("font-variant-caps"),
+            Some("normal".to_string())
+        );
+
+        // Set to small-caps and read back
+        style.set_property(
+            "font-variant-caps",
+            &CssValue::FontVariantCaps(FontVariantCapsValue::SmallCaps),
+        );
+        assert_eq!(
+            style.get_property_as_string("font-variant-caps"),
+            Some("small-caps".to_string())
+        );
+
+        // Set to unicase and read back
+        style.set_property(
+            "font-variant-caps",
+            &CssValue::FontVariantCaps(FontVariantCapsValue::Unicase),
+        );
+        assert_eq!(
+            style.get_property_as_string("font-variant-caps"),
+            Some("unicase".to_string())
+        );
+
+        // Test css_value_to_string serialization directly
+        assert_eq!(
+            css_value_to_string(&CssValue::FontVariantCaps(FontVariantCapsValue::Normal)),
+            "normal".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontVariantCaps(FontVariantCapsValue::SmallCaps)),
+            "small-caps".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontVariantCaps(
+                FontVariantCapsValue::AllSmallCaps
+            )),
+            "all-small-caps".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontVariantCaps(FontVariantCapsValue::PetiteCaps)),
+            "petite-caps".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontVariantCaps(
+                FontVariantCapsValue::AllPetiteCaps
+            )),
+            "all-petite-caps".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontVariantCaps(FontVariantCapsValue::Unicase)),
+            "unicase".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontVariantCaps(
+                FontVariantCapsValue::TitlingCaps
+            )),
+            "titling-caps".to_string()
         );
     }
 }
