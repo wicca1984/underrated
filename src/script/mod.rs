@@ -1849,6 +1849,39 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'spellcheck', {
+                        get() {
+                            return this.getAttribute('spellcheck') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('spellcheck', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'translate', {
+                        get() {
+                            return this.getAttribute('translate') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('translate', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'draggable', {
+                        get() {
+                            return this.getAttribute('draggable') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('draggable', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'hidden', {
                         get() {
                             return this.hasAttribute('hidden');
@@ -12847,6 +12880,44 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|a|b||words|sentences||search|done||numeric|url".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_reflected_spellcheck_translate_draggable() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. spellcheck string reflected attribute (reflects lowercase 'spellcheck')
+            let div_sc = document.createElement('div');
+            let sc1 = div_sc.spellcheck; // absent default
+            div_sc.spellcheck = 'true';
+            let sc2 = div_sc.getAttribute('spellcheck'); // setter wrote content attribute
+            div_sc.setAttribute('spellcheck', 'false');
+            let sc3 = div_sc.spellcheck; // getter reads content attribute
+
+            // 2. translate string reflected attribute (reflects lowercase 'translate')
+            let div_tr = document.createElement('div');
+            let tr1 = div_tr.translate; // absent default
+            div_tr.translate = 'yes';
+            let tr2 = div_tr.getAttribute('translate'); // setter wrote content attribute
+            div_tr.setAttribute('translate', 'no');
+            let tr3 = div_tr.translate; // getter reads content attribute
+
+            // 3. draggable string reflected attribute (reflects lowercase 'draggable')
+            let div_dr = document.createElement('div');
+            let dr1 = div_dr.draggable; // absent default
+            div_dr.draggable = 'true';
+            let dr2 = div_dr.getAttribute('draggable'); // setter wrote content attribute
+            div_dr.setAttribute('draggable', 'false');
+            let dr3 = div_dr.draggable; // getter reads content attribute
+
+            [sc1, sc2, sc3, tr1, tr2, tr3, dr1, dr2, dr3].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|true|false||yes|no||true|false".to_string())
         );
     }
 
