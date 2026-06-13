@@ -35,6 +35,7 @@ pub struct InheritedText {
     pub font_stretch: String,
     pub text_indent: i32,
     pub word_break: String,
+    pub line_break: String,
     pub overflow_wrap: String,
     pub text_align_last: String,
     pub tab_size: u32,
@@ -68,6 +69,7 @@ impl Default for InheritedText {
             font_stretch: "normal".to_string(),
             text_indent: -1,
             word_break: "normal".to_string(),
+            line_break: "auto".to_string(),
             overflow_wrap: "normal".to_string(),
             text_align_last: "auto".to_string(),
             tab_size: 8,
@@ -522,6 +524,7 @@ fn is_inherited_property_name(name: &str) -> bool {
             | "text-transform"
             | "text-indent"
             | "word-break"
+            | "line-break"
             | "overflow-wrap"
             | "word-wrap"
             | "list-style-type"
@@ -795,6 +798,9 @@ impl CategorizedComputedStyle {
             }
             "word-break" => {
                 Arc::make_mut(&mut self.inherited_text).word_break = css_value_to_string(value)
+            }
+            "line-break" => {
+                Arc::make_mut(&mut self.inherited_text).line_break = css_value_to_string(value)
             }
             // `word-wrap` is the legacy alias of `overflow-wrap`; normalize both
             // into the same typed field (the raw alias was lost in the migration).
@@ -1481,6 +1487,7 @@ impl CategorizedComputedStyle {
                 format!("{}px", self.inherited_text.text_indent)
             }),
             "word-break" => Some(self.inherited_text.word_break.clone()),
+            "line-break" => Some(self.inherited_text.line_break.clone()),
             "overflow-wrap" => Some(self.inherited_text.overflow_wrap.clone()),
             "text-align-last" => Some(self.inherited_text.text_align_last.clone()),
             "tab-size" => Some(self.inherited_text.tab_size.to_string()),
@@ -2064,6 +2071,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             EmptyCellsValue::Hide => "hide".to_string(),
         },
         CssValue::Hyphens(h) => h.as_str().to_string(),
+        CssValue::LineBreak(lb) => lb.as_str().to_string(),
         CssValue::TextRendering(tr) => tr.as_str().to_string(),
         CssValue::ImageRendering(ir) => ir.as_str().to_string(),
         CssValue::FontVariantCaps(fvc) => fvc.as_str().to_string(),
@@ -2612,6 +2620,54 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::ImageRendering(ImageRenderingValue::HighQuality)),
             "high-quality".to_string()
+        );
+    }
+
+    #[test]
+    fn test_line_break_style_categorization() {
+        use crate::css::values::{CssValue, LineBreakValue};
+
+        let mut style = CategorizedComputedStyle::initial();
+        // Check initial default is auto
+        assert_eq!(
+            style.get_property_as_string("line-break"),
+            Some("auto".to_string())
+        );
+
+        // Set to strict and read back
+        style.set_property("line-break", &CssValue::LineBreak(LineBreakValue::Strict));
+        assert_eq!(
+            style.get_property_as_string("line-break"),
+            Some("strict".to_string())
+        );
+
+        // Set to anywhere and read back
+        style.set_property("line-break", &CssValue::LineBreak(LineBreakValue::Anywhere));
+        assert_eq!(
+            style.get_property_as_string("line-break"),
+            Some("anywhere".to_string())
+        );
+
+        // Test css_value_to_string serialization directly
+        assert_eq!(
+            css_value_to_string(&CssValue::LineBreak(LineBreakValue::Auto)),
+            "auto".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::LineBreak(LineBreakValue::Loose)),
+            "loose".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::LineBreak(LineBreakValue::Normal)),
+            "normal".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::LineBreak(LineBreakValue::Strict)),
+            "strict".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::LineBreak(LineBreakValue::Anywhere)),
+            "anywhere".to_string()
         );
     }
 

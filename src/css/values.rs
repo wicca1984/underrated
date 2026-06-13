@@ -1111,6 +1111,59 @@ impl TryFrom<&CssValue> for WordBreakValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum LineBreakValue {
+    #[default]
+    Auto,
+    Loose,
+    Normal,
+    Strict,
+    Anywhere,
+}
+
+impl LineBreakValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "loose" => Some(Self::Loose),
+            "normal" => Some(Self::Normal),
+            "strict" => Some(Self::Strict),
+            "anywhere" => Some(Self::Anywhere),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Loose => "loose",
+            Self::Normal => "normal",
+            Self::Strict => "strict",
+            Self::Anywhere => "anywhere",
+        }
+    }
+}
+
+impl std::str::FromStr for LineBreakValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for LineBreakValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::LineBreak(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum OverflowWrapValue {
     #[default]
     Normal,
@@ -1453,6 +1506,7 @@ pub enum CssValue {
     TextAlignLast(TextAlignLastValue),
     UnicodeBidi(UnicodeBidiValue),
     Hyphens(HyphensValue),
+    LineBreak(LineBreakValue),
     TextRendering(TextRenderingValue),
     ImageRendering(ImageRenderingValue),
     FontVariantCaps(FontVariantCapsValue),
@@ -1577,6 +1631,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "font-kerning"
             | "text-justify"
             | "word-break"
+            | "line-break"
             | "overflow-wrap"
             | "word-wrap"
             | "object-fit"
@@ -1707,6 +1762,16 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "none" | "manual" | "auto")
             }
             CssValue::Hyphens(_) => true,
+            _ => false,
+        },
+        "line-break" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "loose" | "normal" | "strict" | "anywhere"
+                )
+            }
+            CssValue::LineBreak(_) => true,
             _ => false,
         },
         "text-rendering" => match value {
@@ -2435,6 +2500,26 @@ fn parse_hyphens(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::Hyphens(kw))
 }
 
+fn parse_line_break(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for line-break recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = LineBreakValue::parse(&idents[0])?;
+    Some(CssValue::LineBreak(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2557,6 +2642,9 @@ pub fn parse_property_value(
     }
     if name_lower == "hyphens" {
         return parse_hyphens(components);
+    }
+    if name_lower == "line-break" {
+        return parse_line_break(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -5398,6 +5486,73 @@ mod tests {
     }
 
     #[test]
+    fn test_line_break_value() {
+        // Test parsing keyword strings to LineBreakValue
+        assert_eq!(LineBreakValue::parse("auto"), Some(LineBreakValue::Auto));
+        assert_eq!(LineBreakValue::parse("loose"), Some(LineBreakValue::Loose));
+        assert_eq!(
+            LineBreakValue::parse("normal"),
+            Some(LineBreakValue::Normal)
+        );
+        assert_eq!(
+            LineBreakValue::parse("strict"),
+            Some(LineBreakValue::Strict)
+        );
+        assert_eq!(
+            LineBreakValue::parse("anywhere"),
+            Some(LineBreakValue::Anywhere)
+        );
+        assert_eq!(LineBreakValue::parse("AUTO"), Some(LineBreakValue::Auto));
+        assert_eq!(
+            LineBreakValue::parse("Strict"),
+            Some(LineBreakValue::Strict)
+        );
+        assert_eq!(LineBreakValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!("auto".parse::<LineBreakValue>(), Ok(LineBreakValue::Auto));
+        assert_eq!("loose".parse::<LineBreakValue>(), Ok(LineBreakValue::Loose));
+        assert_eq!(
+            "normal".parse::<LineBreakValue>(),
+            Ok(LineBreakValue::Normal)
+        );
+        assert_eq!(
+            "strict".parse::<LineBreakValue>(),
+            Ok(LineBreakValue::Strict)
+        );
+        assert_eq!(
+            "anywhere".parse::<LineBreakValue>(),
+            Ok(LineBreakValue::Anywhere)
+        );
+        assert_eq!("BOGUS".parse::<LineBreakValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(LineBreakValue::Auto.as_str(), "auto");
+        assert_eq!(LineBreakValue::Loose.as_str(), "loose");
+        assert_eq!(LineBreakValue::Normal.as_str(), "normal");
+        assert_eq!(LineBreakValue::Strict.as_str(), "strict");
+        assert_eq!(LineBreakValue::Anywhere.as_str(), "anywhere");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            LineBreakValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(LineBreakValue::Auto)
+        );
+        assert_eq!(
+            LineBreakValue::try_from(&CssValue::Keyword("STRICT".to_string())),
+            Ok(LineBreakValue::Strict)
+        );
+        assert_eq!(
+            LineBreakValue::try_from(&CssValue::LineBreak(LineBreakValue::Anywhere)),
+            Ok(LineBreakValue::Anywhere)
+        );
+        assert_eq!(LineBreakValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation
+        assert_eq!(LineBreakValue::default(), LineBreakValue::Auto);
+    }
+
+    #[test]
     fn test_overflow_wrap_value() {
         // Test parsing keyword strings to OverflowWrapValue
         assert_eq!(
@@ -6747,6 +6902,49 @@ mod tests {
                 &CssValue::Keyword("invalid-value".to_string())
             ));
         }
+
+        // Test parse_property_value and is_valid_property_value for line-break
+        assert!(is_known_layout_property("line-break"));
+        assert!(is_known_layout_property("Line-Break"));
+
+        for (val, expected_variant) in &[
+            ("auto", LineBreakValue::Auto),
+            ("loose", LineBreakValue::Loose),
+            ("normal", LineBreakValue::Normal),
+            ("strict", LineBreakValue::Strict),
+            ("anywhere", LineBreakValue::Anywhere),
+            ("AUTO", LineBreakValue::Auto),
+            ("Strict", LineBreakValue::Strict),
+        ] {
+            assert_eq!(
+                parse_property_value("line-break", &[token(CssToken::Ident((*val).to_string()))]),
+                Some(CssValue::LineBreak(*expected_variant))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "line-break",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "auto", "loose", "normal", "strict", "anywhere", "AUTO", "Strict",
+        ] {
+            assert!(is_valid_property_value(
+                "line-break",
+                &CssValue::Keyword((*val).to_string())
+            ));
+            assert!(is_valid_property_value(
+                "line-break",
+                &CssValue::LineBreak(LineBreakValue::Auto)
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "line-break",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
 
         // Test parse_property_value for accent-color and caret-color (t0477)
         assert_eq!(
