@@ -2591,10 +2591,10 @@ pub fn decode_xbm(bytes: &[u8]) -> Option<DecodedImage> {
                 rgba[out_idx + 2] = 0;
                 rgba[out_idx + 3] = 255;
             } else {
-                rgba[out_idx] = 0;
-                rgba[out_idx + 1] = 0;
-                rgba[out_idx + 2] = 0;
-                rgba[out_idx + 3] = 0;
+                rgba[out_idx] = 255;
+                rgba[out_idx + 1] = 255;
+                rgba[out_idx + 2] = 255;
+                rgba[out_idx + 3] = 255;
             }
         }
     }
@@ -4612,13 +4612,13 @@ mod tests {
         let idx = 4;
         assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 255]);
 
-        // Row 0, pixel 2: bit 2 of 0x13 is 0 -> background (0, 0, 0, 0)
+        // Row 0, pixel 2: bit 2 of 0x13 is 0 -> background (255, 255, 255, 255)
         let idx = 8;
-        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[255, 255, 255, 255]);
 
-        // Row 0, pixel 8: bit 0 of 0x00 is 0 -> background (0, 0, 0, 0)
+        // Row 0, pixel 8: bit 0 of 0x00 is 0 -> background (255, 255, 255, 255)
         let idx = 32;
-        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[255, 255, 255, 255]);
     }
 
     #[test]
@@ -4640,11 +4640,11 @@ mod tests {
         let idx = 0;
         assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 255]);
         let idx = 4;
-        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[255, 255, 255, 255]);
 
         // Row 1, byte 0 is 2 (binary 0000 0010). Pixel 0 is clear, pixel 1 is set.
         let idx = 32;
-        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[255, 255, 255, 255]);
         let idx = 36;
         assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 255]);
     }
@@ -4664,6 +4664,46 @@ mod tests {
         let bad3 =
             b"#define test_width 16\n#define test_height 2\nstatic char test_bits[] = { 1 };";
         assert!(decode_image(bad3).is_none());
+    }
+
+    #[test]
+    fn test_decode_xbm_16x16() {
+        let xbm_data = r#"
+            #define checker_width 16
+            #define checker_height 16
+            static unsigned char checker_bits[] = {
+               0x55, 0x55, 0xaa, 0xaa, 0x55, 0x55, 0xaa, 0xaa,
+               0x55, 0x55, 0xaa, 0xaa, 0x55, 0x55, 0xaa, 0xaa,
+               0x55, 0x55, 0xaa, 0xaa, 0x55, 0x55, 0xaa, 0xaa,
+               0x55, 0x55, 0xaa, 0xaa, 0x55, 0x55, 0xaa, 0xaa
+            };
+        "#;
+
+        let decoded = decode_image(xbm_data.as_bytes()).expect("Should decode 16x16 XBM image");
+        assert_eq!(decoded.width, 16);
+        assert_eq!(decoded.height, 16);
+
+        // Row 0 (0x55, 0x55) - index 0 is first pixel, index 16 * 4 is start of row 1
+        // x = 0: set -> foreground [0, 0, 0, 255]
+        let idx0 = 0;
+        assert_eq!(&decoded.rgba[idx0..idx0 + 4], &[0, 0, 0, 255]);
+
+        // x = 1: unset -> background [255, 255, 255, 255]
+        let idx1 = 4;
+        assert_eq!(&decoded.rgba[idx1..idx1 + 4], &[255, 255, 255, 255]);
+
+        // x = 8 (first pixel of second byte): set -> foreground [0, 0, 0, 255]
+        let idx8 = 32;
+        assert_eq!(&decoded.rgba[idx8..idx8 + 4], &[0, 0, 0, 255]);
+
+        // Row 1 (0xAA, 0xAA) - starts at pixel 16
+        // x = 0: unset -> background [255, 255, 255, 255]
+        let r1_idx0 = 64;
+        assert_eq!(&decoded.rgba[r1_idx0..r1_idx0 + 4], &[255, 255, 255, 255]);
+
+        // x = 1: set -> foreground [0, 0, 0, 255]
+        let r1_idx1 = 68;
+        assert_eq!(&decoded.rgba[r1_idx1..r1_idx1 + 4], &[0, 0, 0, 255]);
     }
 
     #[test]
