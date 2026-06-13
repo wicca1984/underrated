@@ -4268,43 +4268,42 @@ mod tests {
         let num_entries = 9u16;
         push_u16(&mut buf, num_entries);
 
-        let push_entry =
-            |b: &mut Vec<u8>, tag: u16, ty: u16, count: u32, val_or_offset: u32| {
-                push_u16(b, tag);
-                push_u16(b, ty);
-                push_u32(b, count);
-                let val_bytes = match endian {
-                    Endian::Little => {
-                        if ty == 3 && count == 1 {
-                            [
-                                (val_or_offset & 0xFF) as u8,
-                                ((val_or_offset >> 8) & 0xFF) as u8,
-                                0,
-                                0,
-                            ]
-                        } else if ty == 1 && count == 1 {
-                            [(val_or_offset & 0xFF) as u8, 0, 0, 0]
-                        } else {
-                            val_or_offset.to_le_bytes()
-                        }
+        let push_entry = |b: &mut Vec<u8>, tag: u16, ty: u16, count: u32, val_or_offset: u32| {
+            push_u16(b, tag);
+            push_u16(b, ty);
+            push_u32(b, count);
+            let val_bytes = match endian {
+                Endian::Little => {
+                    if ty == 3 && count == 1 {
+                        [
+                            (val_or_offset & 0xFF) as u8,
+                            ((val_or_offset >> 8) & 0xFF) as u8,
+                            0,
+                            0,
+                        ]
+                    } else if ty == 1 && count == 1 {
+                        [(val_or_offset & 0xFF) as u8, 0, 0, 0]
+                    } else {
+                        val_or_offset.to_le_bytes()
                     }
-                    Endian::Big => {
-                        if ty == 3 && count == 1 {
-                            [
-                                ((val_or_offset >> 8) & 0xFF) as u8,
-                                (val_or_offset & 0xFF) as u8,
-                                0,
-                                0,
-                            ]
-                        } else if ty == 1 && count == 1 {
-                            [(val_or_offset & 0xFF) as u8, 0, 0, 0]
-                        } else {
-                            val_or_offset.to_be_bytes()
-                        }
+                }
+                Endian::Big => {
+                    if ty == 3 && count == 1 {
+                        [
+                            ((val_or_offset >> 8) & 0xFF) as u8,
+                            (val_or_offset & 0xFF) as u8,
+                            0,
+                            0,
+                        ]
+                    } else if ty == 1 && count == 1 {
+                        [(val_or_offset & 0xFF) as u8, 0, 0, 0]
+                    } else {
+                        val_or_offset.to_be_bytes()
                     }
-                };
-                b.extend_from_slice(&val_bytes);
+                }
             };
+            b.extend_from_slice(&val_bytes);
+        };
 
         push_entry(&mut buf, 256, 4, 1, width);
         push_entry(&mut buf, 257, 4, 1, height);
