@@ -273,6 +273,13 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                     }
                 }
             }
+            DisplayItem::Gradient {
+                rect,
+                css,
+                border_radius,
+            } => {
+                rasterize_gradient_box(&mut canvas, *rect, css, *border_radius);
+            }
         }
     }
 
@@ -1027,6 +1034,44 @@ mod tests {
         let canvas = rasterize(&list, 2, 2);
         assert_eq!(canvas.width, 2);
         assert_eq!(canvas.height, 2);
+    }
+
+    #[test]
+    fn test_rasterize_gradient_integration() {
+        // Build a display list containing a Gradient item
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let items = vec![DisplayItem::Gradient {
+            rect,
+            css: "linear-gradient(to bottom, #ff0000, #0000ff)".to_string(),
+            border_radius: None,
+        }];
+        let list = DisplayList(items);
+        let canvas = rasterize(&list, 10, 10);
+
+        // Assert that at least some pixels are non-background (non-0xFFFFFFFF)
+        let mut found_non_bg = false;
+        for y in 0..10 {
+            for x in 0..10 {
+                if canvas.pixel(x, y) != 0xFFFFFFFF {
+                    found_non_bg = true;
+                }
+            }
+        }
+        assert!(found_non_bg, "Should render non-background pixels");
+
+        // Verify color at top (near #ff0000)
+        let top_pixel = canvas.pixel(5, 0);
+        let top_r = (top_pixel >> 16) & 0xFF;
+        let top_b = top_pixel & 0xFF;
+        assert!(top_r > 200, "Top should be mostly red");
+        assert!(top_b < 50, "Top should have low blue");
+
+        // Verify color at bottom (near #0000ff)
+        let bot_pixel = canvas.pixel(5, 9);
+        let bot_r = (bot_pixel >> 16) & 0xFF;
+        let bot_b = bot_pixel & 0xFF;
+        assert!(bot_r < 50, "Bottom should have low red");
+        assert!(bot_b > 200, "Bottom should be mostly blue");
     }
 
     #[test]
