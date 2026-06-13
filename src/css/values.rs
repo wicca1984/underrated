@@ -790,6 +790,70 @@ impl TryFrom<&CssValue> for FontVariantCapsValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FontStretchValue {
+    UltraCondensed,
+    ExtraCondensed,
+    Condensed,
+    SemiCondensed,
+    Normal,
+    SemiExpanded,
+    Expanded,
+    ExtraExpanded,
+    UltraExpanded,
+}
+
+impl FontStretchValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "ultra-condensed" => Some(Self::UltraCondensed),
+            "extra-condensed" => Some(Self::ExtraCondensed),
+            "condensed" => Some(Self::Condensed),
+            "semi-condensed" => Some(Self::SemiCondensed),
+            "normal" => Some(Self::Normal),
+            "semi-expanded" => Some(Self::SemiExpanded),
+            "expanded" => Some(Self::Expanded),
+            "extra-expanded" => Some(Self::ExtraExpanded),
+            "ultra-expanded" => Some(Self::UltraExpanded),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UltraCondensed => "ultra-condensed",
+            Self::ExtraCondensed => "extra-condensed",
+            Self::Condensed => "condensed",
+            Self::SemiCondensed => "semi-condensed",
+            Self::Normal => "normal",
+            Self::SemiExpanded => "semi-expanded",
+            Self::Expanded => "expanded",
+            Self::ExtraExpanded => "extra-expanded",
+            Self::UltraExpanded => "ultra-expanded",
+        }
+    }
+}
+
+impl std::str::FromStr for FontStretchValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for FontStretchValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::FontStretch(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum FontKerningValue {
     Auto,
     Normal,
@@ -1275,6 +1339,7 @@ pub enum CssValue {
     TextRendering(TextRenderingValue),
     ImageRendering(ImageRenderingValue),
     FontVariantCaps(FontVariantCapsValue),
+    FontStretch(FontStretchValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1390,6 +1455,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "grid-template-rows"
             | "image-rendering"
             | "font-variant-caps"
+            | "font-stretch"
             | "font-kerning"
             | "text-justify"
             | "word-break"
@@ -1678,6 +1744,11 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::FontVariantCaps(_) => true,
+            _ => false,
+        },
+        "font-stretch" => match value {
+            CssValue::Keyword(kw) => FontStretchValue::parse(kw).is_some(),
+            CssValue::FontStretch(_) => true,
             _ => false,
         },
         "font-kerning" => match value {
@@ -2254,6 +2325,26 @@ fn parse_font_variant_caps(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::FontVariantCaps(kw))
 }
 
+fn parse_font_stretch(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_string());
+            }
+            _ => return None, // invalid token for font-stretch recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = FontStretchValue::parse(&idents[0])?;
+    Some(CssValue::FontStretch(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -2298,6 +2389,9 @@ pub fn parse_property_value(
     }
     if name_lower == "font-variant-caps" {
         return parse_font_variant_caps(components);
+    }
+    if name_lower == "font-stretch" {
+        return parse_font_stretch(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -3515,6 +3609,69 @@ mod tests {
         ));
         assert!(!is_valid_property_value(
             "font-variant-caps",
+            &CssValue::Keyword("bogus".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_font_stretch() {
+        use std::str::FromStr;
+
+        // Test parsing and roundtrip via parse and FromStr
+        let keywords = [
+            ("ultra-condensed", FontStretchValue::UltraCondensed),
+            ("extra-condensed", FontStretchValue::ExtraCondensed),
+            ("condensed", FontStretchValue::Condensed),
+            ("semi-condensed", FontStretchValue::SemiCondensed),
+            ("normal", FontStretchValue::Normal),
+            ("semi-expanded", FontStretchValue::SemiExpanded),
+            ("expanded", FontStretchValue::Expanded),
+            ("extra-expanded", FontStretchValue::ExtraExpanded),
+            ("ultra-expanded", FontStretchValue::UltraExpanded),
+        ];
+
+        for (name, variant) in keywords {
+            assert_eq!(FontStretchValue::parse(name), Some(variant));
+            assert_eq!(FontStretchValue::from_str(name), Ok(variant));
+            assert_eq!(variant.as_str(), name);
+
+            // Case insensitivity
+            let uppercase = name.to_uppercase();
+            assert_eq!(FontStretchValue::parse(&uppercase), Some(variant));
+            assert_eq!(FontStretchValue::from_str(&uppercase), Ok(variant));
+        }
+
+        // Unknown keywords are rejected
+        assert_eq!(FontStretchValue::parse("bogus"), None);
+        assert_eq!(FontStretchValue::from_str("bogus"), Err(()));
+
+        // Test TryFrom<&CssValue>
+        let css_val_keyword = CssValue::Keyword("condensed".to_string());
+        assert_eq!(
+            FontStretchValue::try_from(&css_val_keyword),
+            Ok(FontStretchValue::Condensed)
+        );
+
+        let css_val_typed = CssValue::FontStretch(FontStretchValue::SemiExpanded);
+        assert_eq!(
+            FontStretchValue::try_from(&css_val_typed),
+            Ok(FontStretchValue::SemiExpanded)
+        );
+
+        let css_val_invalid = CssValue::Keyword("bogus".to_string());
+        assert_eq!(FontStretchValue::try_from(&css_val_invalid), Err(()));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "font-stretch",
+            &CssValue::FontStretch(FontStretchValue::Condensed)
+        ));
+        assert!(is_valid_property_value(
+            "font-stretch",
+            &CssValue::Keyword("expanded".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "font-stretch",
             &CssValue::Keyword("bogus".to_string())
         ));
     }
