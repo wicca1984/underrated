@@ -659,6 +659,26 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "image-rendering",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "contain",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "text-decoration-thickness",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "text-underline-offset",
+        inherited: true,
+        initial: "auto",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -998,6 +1018,37 @@ mod tests {
         assert_eq!(clip_rule.name, "clip-rule");
         assert!(clip_rule.inherited);
         assert_eq!(clip_rule.initial, "nonzero");
+    }
+
+    #[test]
+    fn test_additive_properties_t0524() {
+        let image_rendering = lookup("image-rendering");
+        assert!(image_rendering.is_some());
+        let image_rendering = image_rendering.unwrap();
+        assert_eq!(image_rendering.name, "image-rendering");
+        assert!(image_rendering.inherited);
+        assert_eq!(image_rendering.initial, "auto");
+
+        let contain = lookup("contain");
+        assert!(contain.is_some());
+        let contain = contain.unwrap();
+        assert_eq!(contain.name, "contain");
+        assert!(!contain.inherited);
+        assert_eq!(contain.initial, "none");
+
+        let text_decor_thick = lookup("text-decoration-thickness");
+        assert!(text_decor_thick.is_some());
+        let text_decor_thick = text_decor_thick.unwrap();
+        assert_eq!(text_decor_thick.name, "text-decoration-thickness");
+        assert!(!text_decor_thick.inherited);
+        assert_eq!(text_decor_thick.initial, "auto");
+
+        let text_under_offset = lookup("text-underline-offset");
+        assert!(text_under_offset.is_some());
+        let text_under_offset = text_under_offset.unwrap();
+        assert_eq!(text_under_offset.name, "text-underline-offset");
+        assert!(text_under_offset.inherited);
+        assert_eq!(text_under_offset.initial, "auto");
     }
 
     #[test]
