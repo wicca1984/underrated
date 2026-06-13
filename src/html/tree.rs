@@ -2615,4 +2615,49 @@ mod tests {
             "<html><head></head><body><table><caption>cap</caption><colgroup><col></colgroup><tbody><tr><td>x</td></tr></tbody></table></body></html>"
         );
     }
+
+    #[test]
+    fn test_google_real_element_count() {
+        let html_path = "tests/oracle/fixtures/08_google_real.html";
+        let html_content = std::fs::read_to_string(html_path).unwrap();
+        let dom = parse_document(InputStream::from_utf8(html_content.as_bytes()));
+
+        let mut element_count = 0;
+        for node_id in dom.descendants(dom.document()) {
+            if let Some(crate::dom::NodeData::Element { .. }) = dom.data(node_id) {
+                element_count += 1;
+            }
+        }
+        let total_descendants = dom.descendants(dom.document()).len();
+        println!("REAL GOOGLE ELEMENT COUNT: {}", element_count);
+        println!("REAL GOOGLE DESCENDANT COUNT: {}", total_descendants);
+
+        assert!(
+            element_count > 75,
+            "Element count was too small: {}",
+            element_count
+        );
+        assert!(
+            total_descendants > 100,
+            "Descendant count was too small: {}",
+            total_descendants
+        );
+    }
+
+    #[test]
+    fn test_synthetic_script_escaped_end_tag() {
+        let html = r#"<script>var s = "<\/script>"; var t = "</scr"+"ipt>";</script><div id=after>X</div>"#;
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        let doc = dom.document();
+        let mut found = false;
+        for id in dom.descendants(doc) {
+            if let Some(crate::dom::NodeData::Element { name, attrs }) = dom.data(id)
+                && name == "div"
+                && attrs.iter().any(|(k, v)| k == "id" && v == "after")
+            {
+                found = true;
+            }
+        }
+        assert!(found, "post-script element (id=after) was not found in DOM");
+    }
 }
