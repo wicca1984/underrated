@@ -897,6 +897,23 @@ fn scale_color_alpha(color: &Color, factor: f32) -> Color {
     }
 }
 
+/// Resolve a LengthOrPercent value to pixels.
+fn resolve_length_or_percent(
+    lp: &crate::css::values::LengthOrPercent,
+    percent_basis: f32,
+    font_size: u32,
+) -> f32 {
+    use crate::css::values::LengthUnit;
+    match lp.unit {
+        LengthUnit::Px => lp.value,
+        LengthUnit::Em => lp.value * font_size as f32,
+        LengthUnit::Rem => lp.value * 16.0,
+        LengthUnit::Pt => lp.value * 96.0 / 72.0,
+        LengthUnit::Percent => lp.value / 100.0 * percent_basis,
+        _ => lp.value,
+    }
+}
+
 /// Builds a display list from the layout tree.
 /// spec: S-12
 pub fn build_display_list(
@@ -916,10 +933,46 @@ pub fn build_display_list_with_caret(
     caret: Option<(NodeId, usize)>,
 ) -> DisplayList {
     let mut items = Vec::new();
-    let mut stack = vec![(layout, 1.0)];
+    let mut stack = vec![(layout, 1.0, (0.0f32, 0.0f32))];
 
     // spec: iterative pre-order traversal (no unbounded recursion — I-6)
-    while let Some((layout_box, inherited_opacity)) = stack.pop() {
+    while let Some((layout_box, inherited_opacity, inherited_offset)) = stack.pop() {
+        let mut tx = 0.0f32;
+        let mut ty = 0.0f32;
+
+        if let Some(style) = layout_box.node.and_then(|id| styles.get(&id)) {
+            let font_size = style.inherited_text.font_size;
+            let box_w = layout_box.rect.size.width;
+            let box_h = layout_box.rect.size.height;
+
+            for tf in &style.reset_effects.transform {
+                match tf {
+                    crate::css::values::TransformFn::Translate { x, y } => {
+                        tx += resolve_length_or_percent(x, box_w, font_size);
+                        ty += resolve_length_or_percent(y, box_h, font_size);
+                    }
+                    crate::css::values::TransformFn::TranslateX(x) => {
+                        tx += resolve_length_or_percent(x, box_w, font_size);
+                    }
+                    crate::css::values::TransformFn::TranslateY(y) => {
+                        ty += resolve_length_or_percent(y, box_h, font_size);
+                    }
+                    crate::css::values::TransformFn::Scale { .. }
+                    | crate::css::values::TransformFn::ScaleX(_)
+                    | crate::css::values::TransformFn::ScaleY(_)
+                    | crate::css::values::TransformFn::Rotate(_) => {
+                        // TODO(spec): scale/rotate require a raster transform matrix
+                    }
+                }
+            }
+        }
+
+        let effective_offset = (inherited_offset.0 + tx, inherited_offset.1 + ty);
+
+        let mut layout_box_rect = layout_box.rect;
+        layout_box_rect.origin.x += effective_offset.0;
+        layout_box_rect.origin.y += effective_offset.1;
+
         let mut skip_children = false;
 
         let mut effective_opacity = inherited_opacity;
@@ -993,7 +1046,7 @@ pub fn build_display_list_with_caret(
             if is_btn_or_submit {
                 skip_children = true;
 
-                let rect = layout_box.rect;
+                let rect = layout_box_rect;
                 let x = rect.origin.x;
                 let y = rect.origin.y;
                 let w = rect.size.width.max(0.0);
@@ -1019,7 +1072,7 @@ pub fn build_display_list_with_caret(
             } else if is_text_input {
                 skip_children = true;
 
-                let rect = layout_box.rect;
+                let rect = layout_box_rect;
                 let x = rect.origin.x;
                 let y = rect.origin.y;
                 let w = rect.size.width.max(0.0);
@@ -1107,7 +1160,7 @@ pub fn build_display_list_with_caret(
                         dom,
                         node_id,
                         name,
-                        layout_box.rect,
+                        layout_box_rect,
                         collapse,
                     ));
                 }
@@ -1181,11 +1234,11 @@ pub fn build_display_list_with_caret(
                                     };
 
                                     // Only paint shadow if the border box is valid (has positive dimensions)
-                                    if layout_box.rect.size.width > 0.0
-                                        && layout_box.rect.size.height > 0.0
+                                    if layout_box_rect.size.width > 0.0
+                                        && layout_box_rect.size.height > 0.0
                                     {
                                         // Translate and inflate/deflate by spread
-                                        let mut shadow_rect = layout_box.rect;
+                                        let mut shadow_rect = layout_box_rect;
                                         shadow_rect.origin.x += offset_x - spread;
                                         shadow_rect.origin.y += offset_y - spread;
                                         shadow_rect.size.width += 2.0 * spread;
@@ -1233,10 +1286,10 @@ pub fn build_display_list_with_caret(
                     let Color::Rgba(_, _, _, a) = color;
                     if a > 0 {
                         // B-4: do not paint background for zero/negative-area boxes
-                        if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
+                        if layout_box_rect.size.width > 0.0 && layout_box_rect.size.height > 0.0 {
                             // TODO(spec): border/images/gradients/rasterization
                             items.push(DisplayItem::SolidRect {
-                                rect: layout_box.rect,
+                                rect: layout_box_rect,
                                 color: scale_color_alpha(&color, effective_opacity),
                             });
                         }
@@ -1249,14 +1302,14 @@ pub fn build_display_list_with_caret(
                     || kw.starts_with("radial-gradient(")
                     || kw.starts_with("conic-gradient(")
                 {
-                    if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
+                    if layout_box_rect.size.width > 0.0 && layout_box_rect.size.height > 0.0 {
                         let border_radius = if style.reset_surround.border_top_left_radius >= 0 {
                             Some(style.reset_surround.border_top_left_radius as f32)
                         } else {
                             None
                         };
                         items.push(DisplayItem::Gradient {
-                            rect: layout_box.rect,
+                            rect: layout_box_rect,
                             css: kw.clone(),
                             border_radius,
                         });
@@ -1274,7 +1327,7 @@ pub fn build_display_list_with_caret(
                     if let Some(src) = bg_img_src
                         && let Some(decoded) = dom.get_image(&src)
                     {
-                        let box_rect = layout_box.rect;
+                        let box_rect = layout_box_rect;
                         if box_rect.size.width > 0.0 && box_rect.size.height > 0.0 {
                             // Extract repeat
                             let repeat_val = style
@@ -1448,7 +1501,7 @@ pub fn build_display_list_with_caret(
                         || border_bottom > 0.0
                         || border_left > 0.0)
                 {
-                    let rect = layout_box.rect;
+                    let rect = layout_box_rect;
                     let x = rect.origin.x;
                     let y = rect.origin.y;
                     let w = rect.size.width.max(0.0);
@@ -1521,7 +1574,7 @@ pub fn build_display_list_with_caret(
                     if ow > 0.0 {
                         let offset = get_outline_offset(style);
                         let d = offset + ow;
-                        let rect = layout_box.rect;
+                        let rect = layout_box_rect;
                         let x = rect.origin.x;
                         let y = rect.origin.y;
                         let w = rect.size.width.max(0.0);
@@ -1672,13 +1725,13 @@ pub fn build_display_list_with_caret(
                     // Center-align 8px font glyphs vertically inside the line box height.
                     let font = crate::font::BitmapFont::builtin();
                     let font_height = font.line_height() as f32;
-                    let height = layout_box.rect.size.height;
+                    let height = layout_box_rect.size.height;
                     let dy = ((height - font_height) / 2.0).max(0.0);
 
                     let corrected_rect = Rect::new(
-                        layout_box.rect.origin.x,
-                        layout_box.rect.origin.y + dy,
-                        layout_box.rect.size.width,
+                        layout_box_rect.origin.x,
+                        layout_box_rect.origin.y + dy,
+                        layout_box_rect.size.width,
                         font_height,
                     );
 
@@ -1915,7 +1968,7 @@ pub fn build_display_list_with_caret(
 
                     if let Some(pre_decoded) = dom.get_image(src) {
                         items.push(DisplayItem::Image {
-                            rect: layout_box.rect,
+                            rect: layout_box_rect,
                             src: src.to_string(),
                             base_url,
                             decoded: Some(pre_decoded),
@@ -1930,8 +1983,8 @@ pub fn build_display_list_with_caret(
                                 crate::loader::load_image_safely(src, base_url_parsed.as_ref())
                             && let Some(decoded) = crate::image::decode_png(&bytes)
                         {
-                            let rect_w = layout_box.rect.size.width;
-                            let rect_h = layout_box.rect.size.height;
+                            let rect_w = layout_box_rect.size.width;
+                            let rect_h = layout_box_rect.size.height;
                             if rect_w > 0.0
                                 && rect_h > 0.0
                                 && decoded.width > 0
@@ -1950,8 +2003,8 @@ pub fn build_display_list_with_caret(
                                             let a = decoded.rgba[idx + 3];
                                             let color = Color::Rgba(r, g, b, a);
                                             let sub_rect = Rect::new(
-                                                layout_box.rect.origin.x + x as f32 * sub_w,
-                                                layout_box.rect.origin.y + y as f32 * sub_h,
+                                                layout_box_rect.origin.x + x as f32 * sub_w,
+                                                layout_box_rect.origin.y + y as f32 * sub_h,
                                                 sub_w,
                                                 sub_h,
                                             );
@@ -1967,7 +2020,7 @@ pub fn build_display_list_with_caret(
 
                         if !painted_as_pixels {
                             items.push(DisplayItem::Image {
-                                rect: layout_box.rect,
+                                rect: layout_box_rect,
                                 src: src.to_string(),
                                 base_url,
                                 decoded: None,
@@ -1996,7 +2049,7 @@ pub fn build_display_list_with_caret(
         if !skip_children {
             let sorted_children = stacking::sort_siblings(&layout_box.children, styles);
             for child in sorted_children.into_iter().rev() {
-                stack.push((child, effective_opacity));
+                stack.push((child, effective_opacity, effective_offset));
             }
         }
     }
@@ -3664,7 +3717,7 @@ mod tests {
 
             // Layout box height is 16.0px (12pt * 96 / 72 = 16.0px)
             // dy = (16.0 - 8.0) / 2.0 = 4.0
-            // The text rect origin.y should be shifted by dy (4.0) relative to layout_box.rect.origin.y
+            // The text rect origin.y should be shifted by dy (4.0) relative to layout_box_rect.origin.y
             // Let's assert the relationship
             if let DisplayItem::SolidRect {
                 rect: rect_rect, ..
@@ -6115,5 +6168,108 @@ mod tests {
         let res = resolve_bg_size((200.0, 100.0), (50.0, 25.0), &val);
         // height 50% of 100.0 is 50.0. width is auto (preserving ratio: 50 * (50/25) = 100.0) -> (100.0, 50.0)
         assert_eq!(res, (100.0, 50.0));
+    }
+
+    #[test]
+    fn test_transform_translate_t0503() {
+        use crate::css::values::{CssValue, LengthOrPercent, LengthUnit, TransformFn};
+
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div1".into())],
+        });
+        dom.append_child(body, div1);
+
+        let text1 = dom.create_node(NodeData::Text("Hello".into()));
+        dom.append_child(div1, text1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div2".into())],
+        });
+        dom.append_child(body, div2);
+
+        let text2 = dom.create_node(NodeData::Text("Hello".into()));
+        dom.append_child(div2, text2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #div1 { background-color: #ff0000; width: 100px; height: 50px; }
+            #div2 { background-color: #00ff00; width: 100px; height: 50px; }
+            ",
+        );
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        if let Some(style) = styles.get_mut(&div2) {
+            let transform_val = CssValue::Transform(vec![TransformFn::Translate {
+                x: LengthOrPercent {
+                    value: 20.0,
+                    unit: LengthUnit::Px,
+                },
+                y: LengthOrPercent {
+                    value: 30.0,
+                    unit: LengthUnit::Px,
+                },
+            }]);
+            style.set_property("transform", &transform_val);
+        }
+
+        let layout = layout_document(&dom, &styles, 800.0);
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let mut div1_bg = None;
+        let mut div2_bg = None;
+
+        for item in &items {
+            if let DisplayItem::SolidRect { rect, color } = item {
+                if *color == Color::Rgba(255, 0, 0, 255) {
+                    div1_bg = Some(*rect);
+                } else if *color == Color::Rgba(0, 255, 0, 255) {
+                    div2_bg = Some(*rect);
+                }
+            }
+        }
+
+        let r1 = div1_bg.expect("Should find red background rect");
+        let r2 = div2_bg.expect("Should find green background rect");
+
+        let expected_untranslated_y = r1.origin.y + 50.0;
+        let expected_untranslated_x = r1.origin.x;
+
+        assert_eq!(r2.origin.x, expected_untranslated_x + 20.0);
+        assert_eq!(r2.origin.y, expected_untranslated_y + 30.0);
+
+        let mut div1_text_rect = None;
+        let mut div2_text_rect = None;
+
+        for item in &items {
+            if let DisplayItem::Text { rect, text, .. } = item
+                && text == "Hello"
+            {
+                if (rect.origin.y - r1.origin.y).abs() < 25.0 {
+                    div1_text_rect = Some(*rect);
+                } else if (rect.origin.y - r2.origin.y).abs() < 25.0 {
+                    div2_text_rect = Some(*rect);
+                }
+            }
+        }
+
+        let t1 = div1_text_rect.expect("Should find text for div1");
+        let t2 = div2_text_rect.expect("Should find text for div2");
+
+        let expected_untranslated_text_y = t1.origin.y + 50.0;
+        let expected_untranslated_text_x = t1.origin.x;
+
+        assert_eq!(t2.origin.x, expected_untranslated_text_x + 20.0);
+        assert_eq!(t2.origin.y, expected_untranslated_text_y + 30.0);
     }
 }
