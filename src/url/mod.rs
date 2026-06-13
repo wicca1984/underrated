@@ -78,7 +78,9 @@ impl Url {
                             buffer.push(c.to_ascii_lowercase());
                             state = State::Scheme;
                         } else {
+                            // If we don't start with a scheme (e.g. "/images/..."), reset pointer and try NoScheme
                             state = State::NoScheme;
+                            buffer.clear();
                             continue;
                         }
                     } else {
@@ -100,13 +102,18 @@ impl Url {
                                 state = State::PathStart;
                             }
                         } else {
+                            // Not a valid scheme (e.g. "foo/bar"). Reset pointer to 0 and try NoScheme
                             state = State::NoScheme;
                             buffer.clear();
                             pointer = 0;
                             continue;
                         }
                     } else {
-                        return Err(UrlParseError::ValidationError);
+                        // EOF while parsing scheme
+                        state = State::NoScheme;
+                        buffer.clear();
+                        pointer = 0;
+                        continue;
                     }
                 }
                 State::NoScheme => {
@@ -289,11 +296,16 @@ impl Url {
                     if is_special(&url.scheme) && (c == Some('/') || c == Some('\\')) {
                         state = State::SpecialAuthorityIgnoreSlashes;
                     } else if c == Some('/') {
-                        state = State::Authority;
+                        // protocol-relative "//ssl.gstatic.com/..."
+                        // We go to SpecialAuthorityIgnoreSlashes to read the host
+                        state = State::SpecialAuthorityIgnoreSlashes;
                     } else {
                         let base = base.ok_or(UrlParseError::MissingBase)?;
                         url.host = base.host.clone();
                         url.port = base.port;
+                        // For root-relative paths like "/images/...", we want to replace the path completely.
+                        // The relative state sets path_segments to base.path, so we need to clear it here.
+                        path_segments.clear();
                         state = State::Path;
                         continue;
                     }
@@ -554,6 +566,34 @@ pub fn resolve(base: &Url, rel: &str) -> Option<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_root_relative_human_oracle() {
+        // Option A: root-relative
+        let base = Url::parse("https://www.google.com/").unwrap();
+        let rel = "/images/branding/x.png";
+        let resolved = resolve(&base, rel).unwrap();
+        assert_eq!(
+            resolved.serialize(),
+            "https://www.google.com/images/branding/x.png"
+        );
+
+        // Option B: path relative
+        let base_b = Url::parse("https://www.google.com/a/b").unwrap();
+        let rel_b = "c.png";
+        let resolved_b = resolve(&base_b, rel_b).unwrap();
+        assert_eq!(resolved_b.serialize(), "https://www.google.com/a/c.png");
+
+        // Option C: protocol relative
+        let rel_c = "//ssl.gstatic.com/x.png";
+        let resolved_c = resolve(&base, rel_c).unwrap();
+        assert_eq!(resolved_c.serialize(), "https://ssl.gstatic.com/x.png");
+
+        // Option D: parent relative
+        let rel_d = "../x.png";
+        let resolved_d = resolve(&base_b, rel_d).unwrap();
+        assert_eq!(resolved_d.serialize(), "https://www.google.com/x.png");
+    }
 
     #[test]
     fn test_parse_absolute_basic() {
