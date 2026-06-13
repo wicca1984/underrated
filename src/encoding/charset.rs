@@ -15,6 +15,7 @@ pub enum Charset {
     Windows1256,
     Windows1257,
     Windows1258,
+    Iso8859_1,
     Iso8859_15,
     Iso8859_2,
     Iso8859_3,
@@ -51,9 +52,12 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "utf-16le" | "utf-16" | "csunicode" | "iso-10646-ucs-2" | "ucs-2" | "unicode"
             | "unicodefeff" => return Charset::Utf16Le,
             "utf-16be" | "unicodefffe" => return Charset::Utf16Be,
-            "windows-1252" | "ansi_x3.4-1968" | "ascii" | "us-ascii" | "iso-8859-1"
-            | "iso8859-1" | "iso_8859-1" | "latin1" | "l1" | "cp1252" | "cp819" | "ibm819"
-            | "x-cp1252" => return Charset::Windows1252,
+            "windows-1252" | "ansi_x3.4-1968" | "ascii" | "us-ascii" | "cp1252" | "x-cp1252" => {
+                return Charset::Windows1252;
+            }
+            "iso-8859-1" | "iso8859-1" | "iso_8859-1" | "latin1" | "l1" | "cp819" | "ibm819" => {
+                return Charset::Iso8859_1;
+            }
             "windows-1251" | "cp1251" | "x-cp1251" => return Charset::Windows1251,
             "windows-1250" | "cp1250" | "x-cp1250" => return Charset::Windows1250,
             "windows-1253" | "cp1253" | "x-cp1253" => return Charset::Windows1253,
@@ -157,6 +161,10 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "windows-1256" => return Some(Charset::Windows1256),
                 "windows-1257" => return Some(Charset::Windows1257),
                 "windows-1258" => return Some(Charset::Windows1258),
+                "iso-8859-1" | "iso8859-1" | "iso_8859-1" | "latin1" | "l1" | "cp819"
+                | "ibm819" => {
+                    return Some(Charset::Iso8859_1);
+                }
                 "iso-8859-15" => return Some(Charset::Iso8859_15),
                 "iso-8859-2" => return Some(Charset::Iso8859_2),
                 "iso-8859-3" => return Some(Charset::Iso8859_3),
@@ -190,6 +198,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Windows1256 => decode_windows1256(bytes),
         Charset::Windows1257 => decode_windows1257(bytes),
         Charset::Windows1258 => decode_windows1258(bytes),
+        Charset::Iso8859_1 => decode_iso8859_1(bytes),
         Charset::Iso8859_15 => decode_iso8859_15(bytes),
         Charset::Iso8859_2 => decode_iso8859_2(bytes),
         Charset::Iso8859_3 => decode_iso8859_3(bytes),
@@ -570,6 +579,14 @@ fn decode_windows1250(bytes: &[u8]) -> String {
         } else {
             result.push(b as char);
         }
+    }
+    result
+}
+
+fn decode_iso8859_1(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        result.push(char::from(b));
     }
     result
 }
@@ -2735,12 +2752,24 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_iso8859_1() {
+        assert_eq!(decode(&[0x80], Charset::Iso8859_1), "\u{0080}");
+        assert_eq!(decode(&[0xA9], Charset::Iso8859_1), "\u{00A9}");
+        assert_eq!(decode(&[0xE9], Charset::Iso8859_1), "\u{00E9}");
+        assert_eq!(decode(&[0xFF], Charset::Iso8859_1), "\u{00FF}");
+        assert_eq!(decode(b"abc", Charset::Iso8859_1), "abc");
+    }
+
+    #[test]
     fn test_label_latin1_alias() {
         assert_eq!(
             sniff_charset(b"abc", Some("iso-8859-1")),
-            Charset::Windows1252
+            Charset::Iso8859_1
         );
-        assert_eq!(sniff_charset(b"abc", Some("latin1")), Charset::Windows1252);
+        assert_eq!(sniff_charset(b"abc", Some("latin1")), Charset::Iso8859_1);
+        assert_eq!(sniff_charset(b"abc", Some("l1")), Charset::Iso8859_1);
+        assert_eq!(sniff_charset(b"abc", Some("cp819")), Charset::Iso8859_1);
+        assert_eq!(sniff_charset(b"abc", Some("ibm819")), Charset::Iso8859_1);
     }
 
     #[test]
