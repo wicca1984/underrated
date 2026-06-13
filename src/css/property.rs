@@ -849,6 +849,23 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         longhands: &["row-gap", "column-gap"],
     },
     ShorthandExpansion {
+        name: "grid-area",
+        longhands: &[
+            "grid-row-start",
+            "grid-column-start",
+            "grid-row-end",
+            "grid-column-end",
+        ],
+    },
+    ShorthandExpansion {
+        name: "grid-column",
+        longhands: &["grid-column-start", "grid-column-end"],
+    },
+    ShorthandExpansion {
+        name: "grid-row",
+        longhands: &["grid-row-start", "grid-row-end"],
+    },
+    ShorthandExpansion {
         name: "inset",
         longhands: &["top", "right", "bottom", "left"],
     },
@@ -1382,6 +1399,25 @@ mod tests {
                     "transition-delay"
                 ][..]
             )
+        );
+        assert_eq!(
+            shorthand_longhands("grid-area"),
+            Some(
+                &[
+                    "grid-row-start",
+                    "grid-column-start",
+                    "grid-row-end",
+                    "grid-column-end"
+                ][..]
+            )
+        );
+        assert_eq!(
+            shorthand_longhands("grid-column"),
+            Some(&["grid-column-start", "grid-column-end"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("grid-row"),
+            Some(&["grid-row-start", "grid-row-end"][..])
         );
         assert_eq!(shorthand_longhands("completely-unknown"), None);
     }
