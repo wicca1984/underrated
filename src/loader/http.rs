@@ -194,28 +194,58 @@ impl HttpLoader {
 }
 
 impl ResourceLoader for HttpLoader {
-    fn load(&self, url: &Url) -> Result<Vec<u8>, LoadError> {
-        // // spec: support http and https schemes
+    fn load_request_hop(
+        &self,
+        url: &Url,
+        method: HttpMethod,
+        body: &[u8],
+        content_type: Option<&str>,
+    ) -> Result<(crate::loader::RedirectMeta, crate::loader::LoaderResponse), LoadError> {
         if url.scheme != "http" && url.scheme != "https" {
             return Err(LoadError::UnsupportedScheme);
         }
 
         let url_str = url.serialize();
-        let mut req = ureq::get(url_str);
+        let agent_config = ureq::Agent::config_builder().max_redirects(0).build();
+        let agent = ureq::Agent::new_with_config(agent_config);
 
-        // Add cookies
-        if let Some(cookie_hdr) = get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path) {
-            req = req.header("Cookie", cookie_hdr);
-        }
+        let cookie_hdr = get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path);
 
-        // // spec: follow redirects, decode gzip
-        // ureq v3 follows redirects and decodes gzip by default if the features are enabled.
-        let response = req.call().map_err(|e| match e {
-            ureq::Error::StatusCode(404) => LoadError::NotFound,
-            _ => LoadError::Io(e.to_string()),
-        })?;
+        let response_result = if method == HttpMethod::Post {
+            let mut req = agent.post(&url_str);
+            if let Some(c) = cookie_hdr {
+                req = req.header("Cookie", c);
+            }
+            let ct = content_type.unwrap_or("application/x-www-form-urlencoded");
+            req = req.header("Content-Type", ct);
+            req.send(body)
+        } else {
+            let mut req = agent.get(&url_str);
+            if let Some(c) = cookie_hdr {
+                req = req.header("Cookie", c);
+            }
+            req.call()
+        };
 
-        // Extract Set-Cookie headers
+        let response = match response_result {
+            Ok(resp) => resp,
+            Err(e) => {
+                if let ureq::Error::StatusCode(code) = e
+                    && code == 404
+                {
+                    return Err(LoadError::NotFound);
+                }
+                return Err(LoadError::Io(e.to_string()));
+            }
+        };
+
+        let status = response.status().into();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
         for header_value in response.headers().get_all("set-cookie") {
             if let Some(cookie) = header_value.to_str().ok().and_then(|cookie_str| {
                 parse_set_cookie(cookie_str, url.host.as_deref().unwrap_or(""), &url.path)
@@ -224,68 +254,30 @@ impl ResourceLoader for HttpLoader {
             }
         }
 
-        let mut body = Vec::new();
-        response
-            .into_body()
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| LoadError::Io(e.to_string()))?;
-
-        Ok(body)
-    }
-
-    fn load_rich(&self, url: &Url) -> Result<crate::loader::LoaderResponse, LoadError> {
-        // // spec: support http and https schemes
-        if url.scheme != "http" && url.scheme != "https" {
-            return Err(LoadError::UnsupportedScheme);
-        }
-
-        let url_str = url.serialize();
-        let mut req = ureq::get(url_str);
-
-        // Add cookies
-        if let Some(cookie_hdr) = get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path) {
-            req = req.header("Cookie", cookie_hdr);
-        }
-
-        // // spec: follow redirects, decode gzip
-        // ureq v3 follows redirects and decodes gzip by default if the features are enabled.
-        let response = req.call().map_err(|e| match e {
-            ureq::Error::StatusCode(404) => LoadError::NotFound,
-            _ => LoadError::Io(e.to_string()),
-        })?;
-
-        // Extract Set-Cookie headers
-        for header_value in response.headers().get_all("set-cookie") {
-            if let Some(cookie) = header_value.to_str().ok().and_then(|cookie_str| {
-                parse_set_cookie(cookie_str, url.host.as_deref().unwrap_or(""), &url.path)
-            }) {
-                add_cookie(cookie);
-            }
-        }
-
-        // Extract Content-Type header
         let transport_content_type = response
             .headers()
             .get("content-type")
             .and_then(|value| value.to_str().ok())
             .map(|s| s.to_string());
 
-        let mut body = Vec::new();
+        let mut out_body = Vec::new();
         response
             .into_body()
             .into_reader()
-            .read_to_end(&mut body)
+            .read_to_end(&mut out_body)
             .map_err(|e| LoadError::Io(e.to_string()))?;
 
         let (content_type, charset) =
-            crate::loader::sniff_response(&body, url, transport_content_type.as_deref());
+            crate::loader::sniff_response(&out_body, url, transport_content_type.as_deref());
 
-        Ok(crate::loader::LoaderResponse {
-            bytes: body,
-            content_type,
-            charset,
-        })
+        Ok((
+            crate::loader::RedirectMeta { status, location },
+            crate::loader::LoaderResponse {
+                bytes: out_body,
+                content_type,
+                charset,
+            },
+        ))
     }
 
     fn load_request(
@@ -295,22 +287,18 @@ impl ResourceLoader for HttpLoader {
         body: &[u8],
         content_type: Option<&str>,
     ) -> Result<crate::loader::LoaderResponse, LoadError> {
-        match method {
-            HttpMethod::Get => self.load_rich(url),
-            HttpMethod::Post => {
-                if url.scheme != "http" && url.scheme != "https" {
-                    return Err(LoadError::UnsupportedScheme);
-                }
-                let ct = content_type.unwrap_or("application/x-www-form-urlencoded");
-                let bytes = self.post(url, body, ct)?;
-                let (content_type, charset) = crate::loader::sniff_response(&bytes, url, None);
-                Ok(crate::loader::LoaderResponse {
-                    bytes,
-                    content_type,
-                    charset,
-                })
-            }
-        }
+        let (resp, _final_url) = crate::loader::follow_redirects(url, |u| {
+            self.load_request_hop(u, method, body, content_type)
+        })?;
+        Ok(resp)
+    }
+
+    fn load_rich(&self, url: &Url) -> Result<crate::loader::LoaderResponse, LoadError> {
+        self.load_request(url, HttpMethod::Get, &[], None)
+    }
+
+    fn load(&self, url: &Url) -> Result<Vec<u8>, LoadError> {
+        self.load_rich(url).map(|r| r.bytes)
     }
 }
 

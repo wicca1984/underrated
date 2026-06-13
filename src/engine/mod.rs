@@ -11,6 +11,7 @@ use std::collections::HashMap;
 /// A rendered page containing the DOM, computed styles, and layout tree.
 /// spec: S-13
 pub struct Page {
+    pub url: crate::url::Url,
     pub dom: Dom,
     pub styles: HashMap<NodeId, CategorizedComputedStyle>,
     pub layout: LayoutBox,
@@ -487,6 +488,7 @@ pub fn render_page(
     fetch_and_decode_images(&dom, base_url, loader, viewport_width);
 
     Page {
+        url: base_url.clone(),
         dom,
         styles,
         layout,

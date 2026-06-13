@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use underrated::dom::NodeData;
 use underrated::engine;
-use underrated::loader::{HttpLoader, ResourceLoader};
+use underrated::loader::HttpLoader;
 use underrated::url::Url;
 
 fn main() {
@@ -27,17 +27,29 @@ fn main() {
     };
 
     let loader = HttpLoader;
-    let bytes = match loader.load(&base) {
-        Ok(b) => b,
+    let (resp, final_url) = match underrated::loader::follow_redirects(&base, |u| {
+        underrated::loader::ResourceLoader::load_request_hop(
+            &loader,
+            u,
+            underrated::loader::HttpMethod::Get,
+            &[],
+            None,
+        )
+    }) {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("fetch failed: {e:?}");
             std::process::exit(2);
         }
     };
-    let html = String::from_utf8_lossy(&bytes).into_owned();
-    println!("fetched   : {} bytes from {url_str}", bytes.len());
+    let html = String::from_utf8_lossy(&resp.bytes).into_owned();
+    println!(
+        "fetched   : {} bytes from {url_str}, final_url={}",
+        resp.bytes.len(),
+        final_url.serialize()
+    );
 
-    let page = engine::render_page(&html, &base, &loader, width as f32);
+    let page = engine::render_page(&html, &final_url, &loader, width as f32);
 
     // DOM stats
     let doc = page.dom.document();
@@ -59,7 +71,7 @@ fn main() {
     }
     println!("dom       : {elements} elements, {texts} text nodes, {links} <a>, {imgs} <img>");
 
-    let canvas = engine::render_page_to_canvas(&html, &base, &loader, width, height);
+    let canvas = engine::render_page_to_canvas(&html, &final_url, &loader, width, height);
     let total = canvas.pixels.len();
     let nonzero = canvas
         .pixels
