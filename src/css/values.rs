@@ -738,6 +738,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "grid-template-rows"
             | "image-rendering"
             | "font-kerning"
+            | "object-fit"
     )
 }
 
@@ -933,6 +934,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "font-kerning" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "normal" | "none")
+            }
+            _ => false,
+        },
+        "object-fit" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "fill" | "contain" | "cover" | "none" | "scale-down"
+                )
             }
             _ => false,
         },
@@ -1470,6 +1480,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "normal" | "none" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "object-fit" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "fill" | "contain" | "cover" | "none" | "scale-down" => Some(val),
                     _ => None,
                 }
             } else {
@@ -4139,6 +4159,51 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "font-kerning",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for object-fit (t0545)
+        assert!(is_known_layout_property("object-fit"));
+        assert!(is_known_layout_property("Object-Fit"));
+
+        for val in &[
+            "fill",
+            "contain",
+            "cover",
+            "none",
+            "scale-down",
+            "FILL",
+            "Scale-Down",
+        ] {
+            assert_eq!(
+                parse_property_value("object-fit", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "object-fit",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "fill",
+            "contain",
+            "cover",
+            "none",
+            "scale-down",
+            "FILL",
+            "Scale-Down",
+        ] {
+            assert!(is_valid_property_value(
+                "object-fit",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "object-fit",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
