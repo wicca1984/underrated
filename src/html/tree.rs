@@ -173,6 +173,11 @@ enum FormattingElement {
     Marker,
 }
 
+struct InsertionPoint {
+    parent: NodeId,
+    reference: Option<NodeId>,
+}
+
 /// The tree builder state machine.
 // spec: https://html.spec.whatwg.org/multipage/parsing.html#tree-construction
 pub struct TreeBuilder {
@@ -1850,8 +1855,9 @@ impl TreeBuilder {
     // Helper: create and insert an element
     fn create_and_insert_element(&mut self, name: String, attrs: Vec<(String, String)>) -> NodeId {
         let node = self.dom.create_node(NodeData::Element { name, attrs });
-        let parent = self.get_appropriate_place_for_inserting_node();
-        self.dom.append_child(parent, node);
+        let insertion_point = self.get_appropriate_place_for_inserting_node();
+        self.dom
+            .insert_before(insertion_point.parent, node, insertion_point.reference);
         node
     }
 
@@ -1904,20 +1910,55 @@ impl TreeBuilder {
     // If the node's last child is already a Text node, append the character to that
     // existing text node's data; otherwise create a new Text node.
     fn insert_character(&mut self, c: char) {
-        let parent = self.get_appropriate_place_for_inserting_node();
-        if let Some(&last_child) = self.dom.children(parent).last()
-            && let Some(NodeData::Text(s)) = self.dom.data(last_child)
+        let insertion_point = self.get_appropriate_place_for_inserting_node();
+        let parent = insertion_point.parent;
+        let reference = insertion_point.reference;
+
+        let children = self.dom.children(parent);
+        let target_text_node = match reference {
+            Some(ref_id) => {
+                if let Some(idx) = children.iter().position(|&child| child == ref_id) {
+                    if idx > 0 {
+                        let prev_child = children[idx - 1];
+                        if let Some(NodeData::Text(_)) = self.dom.data(prev_child) {
+                            Some(prev_child)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            None => {
+                if let Some(&last_child) = children.last() {
+                    if let Some(NodeData::Text(_)) = self.dom.data(last_child) {
+                        Some(last_child)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
+        if let Some(text_node) = target_text_node
+            && let Some(NodeData::Text(s)) = self.dom.data(text_node)
         {
             let mut s = s.clone();
             s.push(c);
-            self.dom.set_text(last_child, &s);
+            self.dom.set_text(text_node, &s);
             return;
         }
+
         let node = self.dom.create_node(NodeData::Text(c.to_string()));
-        self.dom.append_child(parent, node);
+        self.dom.insert_before(parent, node, reference);
     }
 
-    fn get_appropriate_place_for_inserting_node(&self) -> NodeId {
+    fn get_appropriate_place_for_inserting_node(&self) -> InsertionPoint {
         let target = self
             .stack_of_open_elements
             .last()
@@ -1927,18 +1968,45 @@ impl TreeBuilder {
         if self.foster_parenting
             && matches!(self.dom.data(target), Some(NodeData::Element { name, .. }) if name == "table" || name == "tbody" || name == "tfoot" || name == "thead" || name == "tr")
         {
-            // TODO(spec): proper foster parenting search
-            // For now, look for the last table element in the stack
-            for &node_id in self.stack_of_open_elements.iter().rev() {
+            // Find the last table element in the stack of open elements
+            let mut foster_table_idx = None;
+            for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
                 if matches!(self.dom.data(node_id), Some(NodeData::Element { name, .. }) if name == "table")
-                    && let Some(parent) = self.dom.parent(node_id)
                 {
-                    return parent;
+                    foster_table_idx = Some(idx);
+                    break;
+                }
+            }
+
+            if let Some(idx) = foster_table_idx {
+                let table_id = self.stack_of_open_elements[idx];
+                if let Some(parent) = self.dom.parent(table_id) {
+                    return InsertionPoint {
+                        parent,
+                        reference: Some(table_id),
+                    };
+                } else {
+                    // Fallback: element immediately preceding the table in the stack of open elements
+                    if idx > 0 {
+                        return InsertionPoint {
+                            parent: self.stack_of_open_elements[idx - 1],
+                            reference: None,
+                        };
+                    } else {
+                        // If table is the first element, fall back to target
+                        return InsertionPoint {
+                            parent: target,
+                            reference: None,
+                        };
+                    }
                 }
             }
         }
 
-        target
+        InsertionPoint {
+            parent: target,
+            reference: None,
+        }
     }
 
     fn is_in_scope(&self, target_name: &str) -> bool {
@@ -2255,12 +2323,19 @@ mod tests {
     fn test_table_foster_parenting() {
         let html = "<table>text<tr><td>cell</td></tr></table>";
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
-        // TODO(spec): proper foster parenting inserts BEFORE the table.
-        // Currently we only have append_child, so it ends up AFTER the table's preceding siblings.
-        // Since table is the first child here, it ends up after the table.
         assert_eq!(
             dom.serialize(dom.document()),
-            "<html><head></head><body><table><tbody><tr><td>cell</td></tr></tbody></table>text</body></html>"
+            "<html><head></head><body>text<table><tbody><tr><td>cell</td></tr></tbody></table></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_table_foster_parenting_element() {
+        let html = "<table><div>x</div><tr><td>cell</td></tr></table>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><div>x</div><table><tbody><tr><td>cell</td></tr></tbody></table></body></html>"
         );
     }
 
@@ -2748,18 +2823,12 @@ mod tests {
     fn test_in_table_foster_parenting_stray_text() {
         // "in table" insertion mode: foster-parenting of stray character/text content.
         // Any character/text token directly inside `<table>` (like "hello" in `<table>hello...`)
-        // is foster-parented out.
-        //
-        // TODO(spec): Per the HTML5 spec, foster-parented nodes must be inserted immediately BEFORE
-        // the table.
-        // However, this engine only supports `append_child` in foster parenting, meaning the foster-parented
-        // text node is appended as the last child of the table's parent (e.g., body), placing it AFTER
-        // the table rather than BEFORE it.
+        // is foster-parented out immediately BEFORE the table.
         let html = "<p>pre</p><table>hello<tr><td>x</td></tr></table>";
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
         assert_eq!(
             dom.serialize(dom.document()),
-            "<html><head></head><body><p>pre</p><table><tbody><tr><td>x</td></tr></tbody></table>hello</body></html>"
+            "<html><head></head><body><p>pre</p>hello<table><tbody><tr><td>x</td></tr></tbody></table></body></html>"
         );
     }
 
