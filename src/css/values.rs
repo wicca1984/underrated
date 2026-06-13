@@ -460,6 +460,54 @@ impl TryFrom<&CssValue> for FontKerningValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum TextJustifyValue {
+    Auto,
+    InterWord,
+    InterCharacter,
+    None,
+}
+
+impl TextJustifyValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "inter-word" => Some(Self::InterWord),
+            "inter-character" => Some(Self::InterCharacter),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::InterWord => "inter-word",
+            Self::InterCharacter => "inter-character",
+            Self::None => "none",
+        }
+    }
+}
+
+impl std::str::FromStr for TextJustifyValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for TextJustifyValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ImageRendering {
     Auto,
     Smooth,
@@ -738,6 +786,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "grid-template-rows"
             | "image-rendering"
             | "font-kerning"
+            | "text-justify"
             | "object-fit"
     )
 }
@@ -934,6 +983,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "font-kerning" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "normal" | "none")
+            }
+            _ => false,
+        },
+        "text-justify" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "inter-word" | "inter-character" | "none"
+                )
             }
             _ => false,
         },
@@ -1480,6 +1538,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "normal" | "none" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "text-justify" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "inter-word" | "inter-character" | "none" => Some(val),
                     _ => None,
                 }
             } else {
@@ -3287,6 +3355,88 @@ mod tests {
     }
 
     #[test]
+    fn test_text_justify_value() {
+        // Test parsing keyword strings to TextJustifyValue
+        assert_eq!(
+            TextJustifyValue::parse("auto"),
+            Some(TextJustifyValue::Auto)
+        );
+        assert_eq!(
+            TextJustifyValue::parse("inter-word"),
+            Some(TextJustifyValue::InterWord)
+        );
+        assert_eq!(
+            TextJustifyValue::parse("inter-character"),
+            Some(TextJustifyValue::InterCharacter)
+        );
+        assert_eq!(
+            TextJustifyValue::parse("none"),
+            Some(TextJustifyValue::None)
+        );
+        assert_eq!(
+            TextJustifyValue::parse("AUTO"),
+            Some(TextJustifyValue::Auto)
+        );
+        assert_eq!(
+            TextJustifyValue::parse("Inter-Word"),
+            Some(TextJustifyValue::InterWord)
+        );
+        assert_eq!(
+            TextJustifyValue::parse("Inter-Character"),
+            Some(TextJustifyValue::InterCharacter)
+        );
+        assert_eq!(
+            TextJustifyValue::parse("NONE"),
+            Some(TextJustifyValue::None)
+        );
+        assert_eq!(TextJustifyValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "auto".parse::<TextJustifyValue>(),
+            Ok(TextJustifyValue::Auto)
+        );
+        assert_eq!(
+            "inter-word".parse::<TextJustifyValue>(),
+            Ok(TextJustifyValue::InterWord)
+        );
+        assert_eq!(
+            "inter-character".parse::<TextJustifyValue>(),
+            Ok(TextJustifyValue::InterCharacter)
+        );
+        assert_eq!(
+            "none".parse::<TextJustifyValue>(),
+            Ok(TextJustifyValue::None)
+        );
+        assert_eq!("BOGUS".parse::<TextJustifyValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(TextJustifyValue::Auto.as_str(), "auto");
+        assert_eq!(TextJustifyValue::InterWord.as_str(), "inter-word");
+        assert_eq!(TextJustifyValue::InterCharacter.as_str(), "inter-character");
+        assert_eq!(TextJustifyValue::None.as_str(), "none");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            TextJustifyValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(TextJustifyValue::Auto)
+        );
+        assert_eq!(
+            TextJustifyValue::try_from(&CssValue::Keyword("INTER-WORD".to_string())),
+            Ok(TextJustifyValue::InterWord)
+        );
+        assert_eq!(
+            TextJustifyValue::try_from(&CssValue::Keyword("inter-character".to_string())),
+            Ok(TextJustifyValue::InterCharacter)
+        );
+        assert_eq!(
+            TextJustifyValue::try_from(&CssValue::Keyword("none".to_string())),
+            Ok(TextJustifyValue::None)
+        );
+        assert_eq!(TextJustifyValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
     fn test_parse_transform() {
         let parse = |input: &str| {
             let components = crate::css::parser::parse_component_values(input);
@@ -4159,6 +4309,49 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "font-kerning",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for text-justify (t0547)
+        assert!(is_known_layout_property("text-justify"));
+        assert!(is_known_layout_property("Text-Justify"));
+
+        for val in &[
+            "auto",
+            "inter-word",
+            "inter-character",
+            "none",
+            "AUTO",
+            "Inter-Word",
+        ] {
+            assert_eq!(
+                parse_property_value("text-justify", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "text-justify",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "auto",
+            "inter-word",
+            "inter-character",
+            "none",
+            "AUTO",
+            "Inter-Word",
+        ] {
+            assert!(is_valid_property_value(
+                "text-justify",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "text-justify",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
