@@ -730,6 +730,10 @@ pub fn parse_property_value(
                 None
             }
         }
+        "object-position" => {
+            // // TODO(spec): full position resolution for object-position grammar.
+            Some(val)
+        }
         _ => Some(val),
     }
 }
@@ -2581,6 +2585,29 @@ mod tests {
                 &[token(CssToken::Ident("bogus".to_string()))]
             ),
             None
+        );
+
+        // Test parse_property_value for object-position (t0471)
+        assert_eq!(
+            parse_property_value(
+                "object-position",
+                &[token(CssToken::Ident("center".to_string()))]
+            ),
+            Some(CssValue::Keyword("center".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "object-position",
+                &[
+                    token(CssToken::Percentage(50.0)),
+                    token(CssToken::Whitespace),
+                    token(CssToken::Percentage(50.0)),
+                ]
+            ),
+            Some(CssValue::Multiple(vec![
+                CssValue::Length(50.0, LengthUnit::Percent),
+                CssValue::Length(50.0, LengthUnit::Percent),
+            ]))
         );
     }
 }
