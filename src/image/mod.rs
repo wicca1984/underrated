@@ -1924,7 +1924,10 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_svg(bytes)
     } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
         decode_pnm(bytes)
-    } else if bytes.first() == Some(&0x0A) && bytes.get(2) == Some(&1) {
+    } else if bytes.first() == Some(&0x0A)
+        && bytes.get(2) == Some(&1)
+        && matches!(bytes.get(1), Some(0 | 2 | 3 | 4 | 5))
+    {
         decode_pcx(bytes)
     } else {
         // Detect TGA as a last resort
