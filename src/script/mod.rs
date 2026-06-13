@@ -9,9 +9,12 @@ pub mod xhr;
 
 use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
+use boa_engine::class::{Class, ClassBuilder};
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction, Source};
+use boa_engine::{JsData, JsNativeError, JsResult};
+use boa_gc::{Finalize, GcRefCell, Trace};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -138,6 +141,7 @@ impl BoaHost {
     fn setup_experimental_dom(context: &mut Context) {
         let _ = context.register_global_class::<event::EventTarget>();
         let _ = context.register_global_class::<event::Event>();
+        let _ = context.register_global_class::<URLSearchParams>();
 
         let bridge = ObjectInitializer::new(context)
             .function(
@@ -5676,9 +5680,363 @@ pub fn run_scripts(
     dom
 }
 
+/// Implementation of WHATWG URL `URLSearchParams` interface.
+/// Spec: <https://url.spec.whatwg.org/#interface-urlsearchparams>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct URLSearchParams {
+    pub(crate) pairs: GcRefCell<Vec<(String, String)>>,
+}
+
+impl Class for URLSearchParams {
+    const NAME: &'static str = "URLSearchParams";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let mut pairs = Vec::new();
+        if let Some(arg) = args.first()
+            && !arg.is_undefined()
+            && !arg.is_null()
+        {
+            let init_str = arg.to_string(context)?.to_std_string().unwrap_or_default();
+            pairs = crate::url::parse_query(&init_str);
+        }
+        Ok(URLSearchParams {
+            pairs: GcRefCell::new(pairs),
+        })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        class
+            .method(
+                JsString::from("get"),
+                1,
+                NativeFunction::from_fn_ptr(url_search_params_get),
+            )
+            .method(
+                JsString::from("getAll"),
+                1,
+                NativeFunction::from_fn_ptr(url_search_params_get_all),
+            )
+            .method(
+                JsString::from("has"),
+                1,
+                NativeFunction::from_fn_ptr(url_search_params_has),
+            )
+            .method(
+                JsString::from("append"),
+                2,
+                NativeFunction::from_fn_ptr(url_search_params_append),
+            )
+            .method(
+                JsString::from("set"),
+                2,
+                NativeFunction::from_fn_ptr(url_search_params_set),
+            )
+            .method(
+                JsString::from("delete"),
+                1,
+                NativeFunction::from_fn_ptr(url_search_params_delete),
+            )
+            .method(
+                JsString::from("toString"),
+                0,
+                NativeFunction::from_fn_ptr(url_search_params_to_string),
+            );
+
+        Ok(())
+    }
+}
+
+pub fn url_search_params_get(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let params = obj.downcast_ref::<URLSearchParams>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-URLSearchParams object"),
+        )
+    })?;
+
+    let name = args
+        .first()
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    let pairs = params.pairs.borrow();
+    for (k, v) in pairs.iter() {
+        if k == &name {
+            return Ok(JsValue::from(JsString::from(v.as_str())));
+        }
+    }
+
+    Ok(JsValue::null())
+}
+
+pub fn url_search_params_get_all(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let params = obj.downcast_ref::<URLSearchParams>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-URLSearchParams object"),
+        )
+    })?;
+
+    let name = args
+        .first()
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    let pairs = params.pairs.borrow();
+    let elements: Vec<JsValue> = pairs
+        .iter()
+        .filter(|(k, _)| k == &name)
+        .map(|(_, v)| JsValue::from(JsString::from(v.as_str())))
+        .collect();
+
+    let array = boa_engine::object::builtins::JsArray::from_iter(elements, context);
+    Ok(JsValue::from(array))
+}
+
+pub fn url_search_params_has(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let params = obj.downcast_ref::<URLSearchParams>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-URLSearchParams object"),
+        )
+    })?;
+
+    let name = args
+        .first()
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    let pairs = params.pairs.borrow();
+    let has_key = pairs.iter().any(|(k, _)| k == &name);
+    Ok(JsValue::from(has_key))
+}
+
+pub fn url_search_params_append(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let params = obj.downcast_ref::<URLSearchParams>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-URLSearchParams object"),
+        )
+    })?;
+
+    let name = args
+        .first()
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    let val = args
+        .get(1)
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    params.pairs.borrow_mut().push((name, val));
+    Ok(JsValue::undefined())
+}
+
+pub fn url_search_params_set(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let params = obj.downcast_ref::<URLSearchParams>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-URLSearchParams object"),
+        )
+    })?;
+
+    let name = args
+        .first()
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    let val = args
+        .get(1)
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    let mut pairs = params.pairs.borrow_mut();
+    let mut found = false;
+    let mut i = 0;
+    while i < pairs.len() {
+        if pairs[i].0 == name {
+            if !found {
+                pairs[i].1 = val.clone();
+                found = true;
+                i += 1;
+            } else {
+                pairs.remove(i);
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    if !found {
+        pairs.push((name, val));
+    }
+
+    Ok(JsValue::undefined())
+}
+
+pub fn url_search_params_delete(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let params = obj.downcast_ref::<URLSearchParams>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-URLSearchParams object"),
+        )
+    })?;
+
+    let name = args
+        .first()
+        .map(|v| v.to_string(context))
+        .transpose()?
+        .map(|s| s.to_std_string().unwrap_or_default())
+        .unwrap_or_default();
+
+    let mut pairs = params.pairs.borrow_mut();
+    pairs.retain(|(k, _)| k != &name);
+
+    Ok(JsValue::undefined())
+}
+
+pub fn url_search_params_to_string(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let params = obj.downcast_ref::<URLSearchParams>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-URLSearchParams object"),
+        )
+    })?;
+
+    let pairs = params.pairs.borrow();
+    let serialized =
+        crate::url::serialize_form_urlencoded(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    Ok(JsValue::from(JsString::from(serialized)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_url_search_params_basic() {
+        let mut host = BoaHost::new();
+
+        // 1. Constructor with query string parsing, get, getAll, has
+        host.eval(
+            r#"{
+            const params = new URLSearchParams("a=1&b=2&a=3");
+            if (params.get("a") !== "1") throw "get(a) mismatch";
+            if (params.get("b") !== "2") throw "get(b) mismatch";
+            if (params.get("z") !== null) throw "get(z) should be null";
+
+            const allA = params.getAll("a");
+            if (allA.length !== 2 || allA[0] !== "1" || allA[1] !== "3") throw "getAll(a) mismatch";
+
+            if (params.has("b") !== true) throw "has(b) should be true";
+            if (params.has("z") !== false) throw "has(z) should be false";
+        }"#,
+        )
+        .unwrap();
+
+        // 2. Leading "?" stripping
+        host.eval(
+            r#"{
+            const params = new URLSearchParams("?x=y");
+            if (params.get("x") !== "y") throw "leading ? strip mismatch";
+        }"#,
+        )
+        .unwrap();
+
+        // 3. Percent and plus decoding
+        host.eval(
+            r#"{
+            const params = new URLSearchParams("q=hello+world%21");
+            if (params.get("q") !== "hello world!") throw "percent/plus decode mismatch";
+        }"#,
+        )
+        .unwrap();
+
+        // 4. Mutation operations: set, append, delete, toString
+        host.eval(
+            r#"{
+            const params = new URLSearchParams();
+            params.append("a", "1");
+            params.append("b", "2");
+            if (params.toString() !== "a=1&b=2") throw "initial toString mismatch";
+
+            params.append("a", "3");
+            if (params.toString() !== "a=1&b=2&a=3") throw "after append toString mismatch";
+
+            params.set("a", "4");
+            if (params.get("a") !== "4") throw "after set get(a) mismatch";
+            if (params.getAll("a").length !== 1) throw "set should collapse occurrences";
+            if (params.toString() !== "a=4&b=2") throw "after set toString mismatch";
+
+            params.delete("b");
+            if (params.has("b") !== false) throw "after delete has(b) should be false";
+            if (params.toString() !== "a=4") throw "after delete toString mismatch";
+        }"#,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn test_deep_recursive_js_does_not_overflow() {
