@@ -330,6 +330,48 @@ impl TryFrom<&CssValue> for TextOrientationValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum CaptionSideValue {
+    Top,
+    Bottom,
+}
+
+impl CaptionSideValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
+impl std::str::FromStr for CaptionSideValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for CaptionSideValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -2835,6 +2877,45 @@ mod tests {
             TextOrientationValue::try_from(&CssValue::Number(1.0)),
             Err(())
         );
+    }
+
+    #[test]
+    fn test_caption_side_value() {
+        // Test parsing keyword strings to CaptionSideValue
+        assert_eq!(CaptionSideValue::parse("top"), Some(CaptionSideValue::Top));
+        assert_eq!(
+            CaptionSideValue::parse("bottom"),
+            Some(CaptionSideValue::Bottom)
+        );
+        assert_eq!(CaptionSideValue::parse("TOP"), Some(CaptionSideValue::Top));
+        assert_eq!(
+            CaptionSideValue::parse("Bottom"),
+            Some(CaptionSideValue::Bottom)
+        );
+        assert_eq!(CaptionSideValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!("top".parse::<CaptionSideValue>(), Ok(CaptionSideValue::Top));
+        assert_eq!(
+            "bottom".parse::<CaptionSideValue>(),
+            Ok(CaptionSideValue::Bottom)
+        );
+        assert_eq!("BOGUS".parse::<CaptionSideValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(CaptionSideValue::Top.as_str(), "top");
+        assert_eq!(CaptionSideValue::Bottom.as_str(), "bottom");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            CaptionSideValue::try_from(&CssValue::Keyword("top".to_string())),
+            Ok(CaptionSideValue::Top)
+        );
+        assert_eq!(
+            CaptionSideValue::try_from(&CssValue::Keyword("BOTTOM".to_string())),
+            Ok(CaptionSideValue::Bottom)
+        );
+        assert_eq!(CaptionSideValue::try_from(&CssValue::Number(1.0)), Err(()));
     }
 
     #[test]
