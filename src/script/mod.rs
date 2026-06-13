@@ -1254,6 +1254,21 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'innerText', {
+                        get() {
+                            // TODO(spec): innerText is layout-aware in real browsers; this is a whitespace-collapsing textContent approximation
+                            if (this.nodeType !== 1) return '';
+                            const text = bridge.getTextContent(this.__key__) || '';
+                            return text.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '').replace(/[ \t\n\r\f]+/g, ' ');
+                        },
+                        set(val) {
+                            if (this.nodeType !== 1) return;
+                            bridge.setTextContent(this.__key__, String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'innerHTML', {
                         get() {
                             if (this.nodeType !== 1) return undefined;
@@ -8189,5 +8204,47 @@ mod tests {
 
         let res = host.eval_with_dom(script, &mut dom).unwrap();
         assert_eq!(res, "true|true|true|true");
+    }
+
+    #[test]
+    fn test_element_inner_text() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "inner-text-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.getElementById('inner-text-div');
+            el.innerHTML = ' \n\t  Hello   <span>  Beautiful  \r\f  World  </span>\n\t ';
+
+            const origInnerText = el.innerText;
+            const origType = typeof el.innerText;
+
+            // Set innerText
+            el.innerText = 'hello world';
+            const afterSetTextContent = el.textContent;
+            const afterSetInnerText = el.innerText;
+
+            // Test on Text node
+            const textNode = document.createTextNode('  some  text  ');
+            const textNodeInnerText = textNode.innerText;
+
+            [
+                origInnerText === 'Hello Beautiful World',
+                origType === 'string',
+                afterSetTextContent === 'hello world',
+                afterSetInnerText === 'hello world',
+                textNodeInnerText === ''
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "true|true|true|true|true");
     }
 }
