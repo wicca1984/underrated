@@ -2607,9 +2607,12 @@ pub fn decode_xbm(bytes: &[u8]) -> Option<DecodedImage> {
 }
 
 fn is_xpm_sniff(bytes: &[u8]) -> bool {
-    let limit = std::cmp::min(bytes.len(), 256);
-    let slice = &bytes[..limit];
-    slice.windows(9).any(|w| w == b"/* XPM */") || slice.windows(7).any(|w| w == b"/*XPM*/")
+    let mut idx = 0;
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    let remaining = &bytes[idx..];
+    remaining.starts_with(b"/* XPM */") || remaining.starts_with(b"/*XPM*/")
 }
 
 fn extract_string_literals(s: &str) -> Vec<String> {
@@ -4794,6 +4797,16 @@ mod tests {
         // Row too short
         let bad4 = b"/* XPM */ static char *test[] = { \"2 2 1 1\", \"a c red\", \"aa\", \"a\" };";
         assert!(decode_image(bad4).is_none());
+    }
+
+    #[test]
+    fn test_is_xpm_sniff_whitespace() {
+        assert!(is_xpm_sniff(b"/* XPM */"));
+        assert!(is_xpm_sniff(b"/*XPM*/"));
+        assert!(is_xpm_sniff(b"   \n\t  /* XPM */"));
+        assert!(is_xpm_sniff(b"\r\n/*XPM*/"));
+        assert!(!is_xpm_sniff(b"/* XPM"));
+        assert!(!is_xpm_sniff(b"XPM"));
     }
 
     #[test]
