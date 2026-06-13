@@ -173,6 +173,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "manual",
     },
+    PropertyMetadata {
+        name: "accent-color",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "caret-color",
+        inherited: true,
+        initial: "auto",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "display",
@@ -803,6 +813,23 @@ mod tests {
         assert_eq!(user_select.name, "user-select");
         assert!(!user_select.inherited);
         assert_eq!(user_select.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0477() {
+        let accent_color = lookup("accent-color");
+        assert!(accent_color.is_some());
+        let accent_color = accent_color.unwrap();
+        assert_eq!(accent_color.name, "accent-color");
+        assert!(accent_color.inherited);
+        assert_eq!(accent_color.initial, "auto");
+
+        let caret_color = lookup("caret-color");
+        assert!(caret_color.is_some());
+        let caret_color = caret_color.unwrap();
+        assert_eq!(caret_color.name, "caret-color");
+        assert!(caret_color.inherited);
+        assert_eq!(caret_color.initial, "auto");
     }
 
     #[test]

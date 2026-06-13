@@ -115,6 +115,8 @@ impl Default for InheritedTable {
 pub struct InheritedUI {
     pub cursor: String,
     pub quotes: String,
+    pub accent_color: String,
+    pub caret_color: String,
 }
 
 impl Default for InheritedUI {
@@ -122,6 +124,8 @@ impl Default for InheritedUI {
         Self {
             cursor: "auto".to_string(),
             quotes: "auto".to_string(),
+            accent_color: "auto".to_string(),
+            caret_color: "auto".to_string(),
         }
     }
 }
@@ -511,6 +515,8 @@ fn is_inherited_property_name(name: &str) -> bool {
             | "border-spacing"
             | "caption-side"
             | "cursor"
+            | "accent-color"
+            | "caret-color"
             | "visibility"
     )
 }
@@ -678,6 +684,19 @@ impl CategorizedComputedStyle {
             }
         }
 
+        if name == "accent-color" || name == "caret-color" {
+            let is_valid = match value {
+                CssValue::Color(_) => true,
+                CssValue::Keyword(kw) => {
+                    matches!(kw.to_ascii_lowercase().as_str(), "auto" | "currentcolor")
+                }
+                _ => false,
+            };
+            if !is_valid {
+                return;
+            }
+        }
+
         if self.extra_values.is_none() {
             self.extra_values = Some(Arc::new(HashMap::new()));
         }
@@ -795,6 +814,12 @@ impl CategorizedComputedStyle {
             // InheritedUI
             "cursor" => Arc::make_mut(&mut self.inherited_ui).cursor = css_value_to_string(value),
             "quotes" => Arc::make_mut(&mut self.inherited_ui).quotes = css_value_to_string(value),
+            "accent-color" => {
+                Arc::make_mut(&mut self.inherited_ui).accent_color = css_value_to_string(value)
+            }
+            "caret-color" => {
+                Arc::make_mut(&mut self.inherited_ui).caret_color = css_value_to_string(value)
+            }
 
             // InheritedEffects
             "visibility" => {
@@ -1415,6 +1440,8 @@ impl CategorizedComputedStyle {
             // InheritedUI
             "cursor" => Some(self.inherited_ui.cursor.clone()),
             "quotes" => Some(self.inherited_ui.quotes.clone()),
+            "accent-color" => Some(self.inherited_ui.accent_color.clone()),
+            "caret-color" => Some(self.inherited_ui.caret_color.clone()),
 
             // InheritedEffects
             "visibility" => Some(self.inherited_effects.visibility.clone()),
