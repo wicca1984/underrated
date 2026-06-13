@@ -461,6 +461,7 @@ pub fn sniff_response(
             crate::encoding::Charset::Windows1251 => Some("windows-1251".to_string()),
             crate::encoding::Charset::Windows1250 => Some("windows-1250".to_string()),
             crate::encoding::Charset::Windows1253 => Some("windows-1253".to_string()),
+            crate::encoding::Charset::Windows1254 => Some("windows-1254".to_string()),
             crate::encoding::Charset::Iso8859_15 => Some("iso-8859-15".to_string()),
         };
     }
