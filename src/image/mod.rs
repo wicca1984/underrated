@@ -1030,7 +1030,212 @@ pub fn decode_ico(bytes: &[u8]) -> Option<DecodedImage> {
     }
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, or ICO) into a DecodedImage by sniffing the format.
+/// Decodes a QOI (Quite OK Image) byte stream into a DecodedImage.
+/// spec: S-19
+pub fn decode_qoi(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 22 {
+        return None;
+    }
+
+    if bytes.get(0..4)? != b"qoif" {
+        return None;
+    }
+
+    let width = u32::from_be_bytes(bytes.get(4..8)?.try_into().ok()?);
+    let height = u32::from_be_bytes(bytes.get(8..12)?.try_into().ok()?);
+    let channels = *bytes.get(12)?;
+    let colorspace = *bytes.get(13)?;
+
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if channels != 3 && channels != 4 {
+        return None;
+    }
+    if colorspace != 0 && colorspace != 1 {
+        return None;
+    }
+
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+    let total_bytes = total_pixels.checked_mul(4)?;
+    let mut rgba = vec![0u8; total_bytes];
+
+    let mut px_prev = [0u8, 0u8, 0u8, 255u8];
+    let mut index = [[0u8; 4]; 64];
+
+    let mut p_in = 14;
+    let mut p_out = 0;
+
+    while p_out < total_bytes {
+        // Stop at the 8-byte end marker
+        if bytes.get(p_in..p_in + 8) == Some(&[0, 0, 0, 0, 0, 0, 0, 1]) {
+            break;
+        }
+
+        let tag = match bytes.get(p_in) {
+            Some(&t) => t,
+            None => return None,
+        };
+        p_in += 1;
+
+        if tag == 0xFE {
+            // QOI_OP_RGB
+            let r = *bytes.get(p_in)?;
+            let g = *bytes.get(p_in + 1)?;
+            let b = *bytes.get(p_in + 2)?;
+            p_in += 3;
+
+            px_prev = [r, g, b, px_prev[3]];
+            let hash = ((px_prev[0] as usize * 3)
+                + (px_prev[1] as usize * 5)
+                + (px_prev[2] as usize * 7)
+                + (px_prev[3] as usize * 11))
+                % 64;
+            index[hash] = px_prev;
+
+            if p_out + 4 <= total_bytes {
+                rgba[p_out] = px_prev[0];
+                rgba[p_out + 1] = px_prev[1];
+                rgba[p_out + 2] = px_prev[2];
+                rgba[p_out + 3] = px_prev[3];
+                p_out += 4;
+            } else {
+                break;
+            }
+        } else if tag == 0xFF {
+            // QOI_OP_RGBA
+            let r = *bytes.get(p_in)?;
+            let g = *bytes.get(p_in + 1)?;
+            let b = *bytes.get(p_in + 2)?;
+            let a = *bytes.get(p_in + 3)?;
+            p_in += 4;
+
+            px_prev = [r, g, b, a];
+            let hash = ((px_prev[0] as usize * 3)
+                + (px_prev[1] as usize * 5)
+                + (px_prev[2] as usize * 7)
+                + (px_prev[3] as usize * 11))
+                % 64;
+            index[hash] = px_prev;
+
+            if p_out + 4 <= total_bytes {
+                rgba[p_out] = px_prev[0];
+                rgba[p_out + 1] = px_prev[1];
+                rgba[p_out + 2] = px_prev[2];
+                rgba[p_out + 3] = px_prev[3];
+                p_out += 4;
+            } else {
+                break;
+            }
+        } else {
+            let op = tag & 0xC0;
+            if op == 0x00 {
+                // QOI_OP_INDEX
+                let idx = (tag & 0x3F) as usize;
+                px_prev = index[idx];
+
+                if p_out + 4 <= total_bytes {
+                    rgba[p_out] = px_prev[0];
+                    rgba[p_out + 1] = px_prev[1];
+                    rgba[p_out + 2] = px_prev[2];
+                    rgba[p_out + 3] = px_prev[3];
+                    p_out += 4;
+                } else {
+                    break;
+                }
+            } else if op == 0x40 {
+                // QOI_OP_DIFF
+                let dr = ((tag >> 4) & 0x03).wrapping_sub(2);
+                let dg = ((tag >> 2) & 0x03).wrapping_sub(2);
+                let db = (tag & 0x03).wrapping_sub(2);
+
+                let r = px_prev[0].wrapping_add(dr);
+                let g = px_prev[1].wrapping_add(dg);
+                let b = px_prev[2].wrapping_add(db);
+
+                px_prev = [r, g, b, px_prev[3]];
+                let hash = ((px_prev[0] as usize * 3)
+                    + (px_prev[1] as usize * 5)
+                    + (px_prev[2] as usize * 7)
+                    + (px_prev[3] as usize * 11))
+                    % 64;
+                index[hash] = px_prev;
+
+                if p_out + 4 <= total_bytes {
+                    rgba[p_out] = px_prev[0];
+                    rgba[p_out + 1] = px_prev[1];
+                    rgba[p_out + 2] = px_prev[2];
+                    rgba[p_out + 3] = px_prev[3];
+                    p_out += 4;
+                } else {
+                    break;
+                }
+            } else if op == 0x80 {
+                // QOI_OP_LUMA
+                let byte2 = match bytes.get(p_in) {
+                    Some(&b) => b,
+                    None => return None,
+                };
+                p_in += 1;
+
+                let dg = (tag & 0x3F).wrapping_sub(32);
+                let dr_minus_dg = ((byte2 >> 4) & 0x0F).wrapping_sub(8);
+                let db_minus_dg = (byte2 & 0x0F).wrapping_sub(8);
+
+                let dr = dr_minus_dg.wrapping_add(dg);
+                let db = db_minus_dg.wrapping_add(dg);
+
+                let r = px_prev[0].wrapping_add(dr);
+                let g = px_prev[1].wrapping_add(dg);
+                let b = px_prev[2].wrapping_add(db);
+
+                px_prev = [r, g, b, px_prev[3]];
+                let hash = ((px_prev[0] as usize * 3)
+                    + (px_prev[1] as usize * 5)
+                    + (px_prev[2] as usize * 7)
+                    + (px_prev[3] as usize * 11))
+                    % 64;
+                index[hash] = px_prev;
+
+                if p_out + 4 <= total_bytes {
+                    rgba[p_out] = px_prev[0];
+                    rgba[p_out + 1] = px_prev[1];
+                    rgba[p_out + 2] = px_prev[2];
+                    rgba[p_out + 3] = px_prev[3];
+                    p_out += 4;
+                } else {
+                    break;
+                }
+            } else if op == 0xC0 {
+                // QOI_OP_RUN
+                let run_len = ((tag & 0x3F) + 1) as usize;
+                for _ in 0..run_len {
+                    if p_out + 4 <= total_bytes {
+                        rgba[p_out] = px_prev[0];
+                        rgba[p_out + 1] = px_prev[1];
+                        rgba[p_out + 2] = px_prev[2];
+                        rgba[p_out + 3] = px_prev[3];
+                        p_out += 4;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if p_out == total_bytes {
+        Some(DecodedImage {
+            width,
+            height,
+            rgba,
+        })
+    } else {
+        None
+    }
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, or QOI) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -1044,6 +1249,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_webp(bytes)
     } else if bytes.len() >= 6 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0 {
         decode_ico(bytes)
+    } else if bytes.starts_with(b"qoif") {
+        decode_qoi(bytes)
     } else if let Some(true) = is_svg_sniff(bytes) {
         decode_svg(bytes)
     } else {
@@ -1652,5 +1859,125 @@ mod tests {
         assert!(decode_ico(&[]).is_none());
         assert!(decode_ico(&[0, 0, 1]).is_none());
         assert!(decode_ico(&[0, 0, 1, 0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn test_decode_qoi_run() {
+        let qoi_bytes = vec![
+            // Header
+            0x71, 0x6F, 0x69, 0x66, // magic: qoif
+            0, 0, 0, 2, // width: 2
+            0, 0, 0, 2, // height: 2
+            4, // channels: 4
+            0, // colorspace: 0
+            // Chunks
+            0xFF, 255, 0, 0, 255,  // QOI_OP_RGBA: [255, 0, 0, 255]
+            0xC2, // QOI_OP_RUN: repeat 3 times
+            // End marker
+            0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+        let decoded = decode_qoi(&qoi_bytes).expect("Should decode QOI run successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 16);
+        for i in 0..4 {
+            assert_eq!(&decoded.rgba[i * 4..(i + 1) * 4], &[255, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn test_decode_qoi_diff() {
+        let qoi_bytes = vec![
+            // Header
+            0x71, 0x6F, 0x69, 0x66, // magic: qoif
+            0, 0, 0, 2, // width: 2
+            0, 0, 0, 1, // height: 1
+            4, // channels: 4
+            0, // colorspace: 0
+            // Chunks
+            0xFF, 0, 255, 0, 255,  // QOI_OP_RGBA: [0, 255, 0, 255]
+            0x76, // QOI_OP_DIFF: dr=1, dg=-1, db=0 -> [1, 254, 0, 255]
+            // End marker
+            0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+        let decoded = decode_qoi(&qoi_bytes).expect("Should decode QOI diff successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.rgba.len(), 8);
+        assert_eq!(&decoded.rgba[0..4], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[1, 254, 0, 255]);
+    }
+
+    #[test]
+    fn test_decode_qoi_rgb_and_index() {
+        let qoi_bytes = vec![
+            // Header
+            0x71, 0x6F, 0x69, 0x66, // magic: qoif
+            0, 0, 0, 2, // width: 2
+            0, 0, 0, 1, // height: 1
+            4, // channels: 4
+            0, // colorspace: 0
+            // Chunks
+            0xFE, 100, 150, 200,  // QOI_OP_RGB: [100, 150, 200, 255]
+            0x00, // QOI_OP_INDEX: load from index 0 -> [0, 0, 0, 0]
+            // End marker
+            0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+        let decoded = decode_qoi(&qoi_bytes).expect("Should decode QOI RGB and INDEX successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.rgba.len(), 8);
+        assert_eq!(&decoded.rgba[0..4], &[100, 150, 200, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_decode_qoi_luma() {
+        let qoi_bytes = vec![
+            // Header
+            0x71, 0x6F, 0x69, 0x66, // magic: qoif
+            0, 0, 0, 2, // width: 2
+            0, 0, 0, 1, // height: 1
+            4, // channels: 4
+            0, // colorspace: 0
+            // Chunks
+            0xFF, 50, 100, 150, 255, // QOI_OP_RGBA: [50, 100, 150, 255]
+            0xA3, 0x69, // QOI_OP_LUMA: dg=3, dr_minus_dg=-2, db_minus_dg=1
+            // End marker
+            0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+        let decoded = decode_qoi(&qoi_bytes).expect("Should decode QOI luma successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.rgba.len(), 8);
+        assert_eq!(&decoded.rgba[0..4], &[50, 100, 150, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[51, 103, 154, 255]);
+    }
+
+    #[test]
+    fn test_decode_qoi_malformed_and_routing() {
+        // 1. Assert decode_qoi on a too-short / wrong-magic buffer returns None (no panic).
+        assert!(decode_qoi(&[]).is_none());
+        assert!(decode_qoi(b"qoif").is_none());
+        assert!(decode_qoi(b"wrongmagic_with_plenty_of_bytes_to_exceed_header").is_none());
+
+        // 2. Assert decode_image routes a qoif-prefixed buffer to the QOI path.
+        let qoi_bytes = vec![
+            0x71, 0x6F, 0x69, 0x66, // magic: qoif
+            0, 0, 0, 2, // width: 2
+            0, 0, 0, 1, // height: 1
+            4, // channels: 4
+            0, // colorspace: 0
+            // Chunks
+            0xFF, 50, 100, 150, 255,  // QOI_OP_RGBA
+            0xC0, // QOI_OP_RUN: 1 repeat
+            // End marker
+            0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+        let decoded = decode_image(&qoi_bytes).expect("Should route to QOI decoder");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(&decoded.rgba[0..4], &[50, 100, 150, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[50, 100, 150, 255]);
     }
 }
