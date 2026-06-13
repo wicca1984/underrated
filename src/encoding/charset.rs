@@ -26,6 +26,7 @@ pub enum Charset {
     Iso8859_10,
     Iso8859_16,
     Iso8859_9,
+    Iso8859_6,
     Koi8R,
     Koi8U,
 }
@@ -107,6 +108,10 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             | "latin5" | "csisolatin5" => {
                 return Charset::Iso8859_9;
             }
+            "iso-8859-6" | "iso8859-6" | "iso88596" | "iso_8859-6" | "iso_8859_6" | "arabic"
+            | "csisolatingrabic" | "iso-ir-127" | "iso_8859-6:1987" | "ecma-114" | "asmo-708" => {
+                return Charset::Iso8859_6;
+            }
             "koi8-r" | "koi8_r" | "cskoi8r" => {
                 return Charset::Koi8R;
             }
@@ -182,6 +187,9 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 | "l10" | "latin10" => return Some(Charset::Iso8859_16),
                 "iso-8859-9" | "iso8859-9" | "iso88599" | "iso_8859-9" | "iso_8859_9" | "l5"
                 | "latin5" | "csisolatin5" => return Some(Charset::Iso8859_9),
+                "iso-8859-6" | "iso8859-6" | "iso88596" | "iso_8859-6" | "iso_8859_6"
+                | "arabic" | "csisolatingrabic" | "iso-ir-127" | "iso_8859-6:1987" | "ecma-114"
+                | "asmo-708" => return Some(Charset::Iso8859_6),
                 "koi8-r" => return Some(Charset::Koi8R),
                 "koi8-u" => return Some(Charset::Koi8U),
                 _ => {}
@@ -216,6 +224,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_10 => decode_iso8859_10(bytes),
         Charset::Iso8859_16 => decode_iso8859_16(bytes),
         Charset::Iso8859_9 => decode_iso8859_9(bytes),
+        Charset::Iso8859_6 => decode_iso8859_6(bytes),
         Charset::Koi8R => decode_koi8r(bytes),
         Charset::Koi8U => decode_koi8u(bytes),
     }
@@ -2787,6 +2796,128 @@ fn decode_iso8859_9(bytes: &[u8]) -> String {
     result
 }
 
+const ISO_8859_6_MAP: [char; 128] = [
+    // 0x80..=0x9F (C1 control range, identity mapping)
+    '\u{0080}', '\u{0081}', '\u{0082}', '\u{0083}', '\u{0084}', '\u{0085}', '\u{0086}', '\u{0087}',
+    '\u{0088}', '\u{0089}', '\u{008A}', '\u{008B}', '\u{008C}', '\u{008D}', '\u{008E}', '\u{008F}',
+    '\u{0090}', '\u{0091}', '\u{0092}', '\u{0093}', '\u{0094}', '\u{0095}', '\u{0096}', '\u{0097}',
+    '\u{0098}', '\u{0099}', '\u{009A}', '\u{009B}', '\u{009C}', '\u{009D}', '\u{009E}', '\u{009F}',
+    // 0xA0..=0xAF
+    '\u{00A0}', // 0xA0  NO-BREAK SPACE
+    '\u{FFFD}', // 0xA1  UNDEFINED
+    '\u{FFFD}', // 0xA2  UNDEFINED
+    '\u{FFFD}', // 0xA3  UNDEFINED
+    '\u{00A4}', // 0xA4  CURRENCY SIGN
+    '\u{FFFD}', // 0xA5  UNDEFINED
+    '\u{FFFD}', // 0xA6  UNDEFINED
+    '\u{FFFD}', // 0xA7  UNDEFINED
+    '\u{FFFD}', // 0xA8  UNDEFINED
+    '\u{FFFD}', // 0xA9  UNDEFINED
+    '\u{FFFD}', // 0xAA  UNDEFINED
+    '\u{FFFD}', // 0xAB  UNDEFINED
+    '\u{060C}', // 0xAC  ARABIC COMMA
+    '\u{00AD}', // 0xAD  SOFT HYPHEN
+    '\u{FFFD}', // 0xAE  UNDEFINED
+    '\u{FFFD}', // 0xAF  UNDEFINED
+    // 0xB0..=0xBF
+    '\u{FFFD}', // 0xB0  UNDEFINED
+    '\u{FFFD}', // 0xB1  UNDEFINED
+    '\u{FFFD}', // 0xB2  UNDEFINED
+    '\u{FFFD}', // 0xB3  UNDEFINED
+    '\u{FFFD}', // 0xB4  UNDEFINED
+    '\u{FFFD}', // 0xB5  UNDEFINED
+    '\u{FFFD}', // 0xB6  UNDEFINED
+    '\u{FFFD}', // 0xB7  UNDEFINED
+    '\u{FFFD}', // 0xB8  UNDEFINED
+    '\u{FFFD}', // 0xB9  UNDEFINED
+    '\u{FFFD}', // 0xBA  UNDEFINED
+    '\u{061B}', // 0xBB  ARABIC SEMICOLON
+    '\u{FFFD}', // 0xBC  UNDEFINED
+    '\u{FFFD}', // 0xBD  UNDEFINED
+    '\u{FFFD}', // 0xBE  UNDEFINED
+    '\u{061F}', // 0xBF  ARABIC QUESTION MARK
+    // 0xC0..=0xCF
+    '\u{FFFD}', // 0xC0  UNDEFINED
+    '\u{0621}', // 0xC1  ARABIC LETTER HAMZA
+    '\u{0622}', // 0xC2  ARABIC LETTER ALEF WITH MADDA ABOVE
+    '\u{0623}', // 0xC3  ARABIC LETTER ALEF WITH HAMZA ABOVE
+    '\u{0624}', // 0xC4  ARABIC LETTER WAW WITH HAMZA ABOVE
+    '\u{0625}', // 0xC5  ARABIC LETTER ALEF WITH HAMZA BELOW
+    '\u{0626}', // 0xC6  ARABIC LETTER YEH WITH HAMZA ABOVE
+    '\u{0627}', // 0xC7  ARABIC LETTER ALEF
+    '\u{0628}', // 0xC8  ARABIC LETTER BEH
+    '\u{0629}', // 0xC9  ARABIC LETTER TEH MARBUTA
+    '\u{062A}', // 0xCA  ARABIC LETTER TEH
+    '\u{062B}', // 0xCB  ARABIC LETTER THEH
+    '\u{062C}', // 0xCC  ARABIC LETTER JEEM
+    '\u{062D}', // 0xCD  ARABIC LETTER HAH
+    '\u{062E}', // 0xCE  ARABIC LETTER KHAH
+    '\u{062F}', // 0xCF  ARABIC LETTER DAL
+    // 0xD0..=0xDF
+    '\u{0630}', // 0xD0  ARABIC LETTER THAL
+    '\u{0631}', // 0xD1  ARABIC LETTER REH
+    '\u{0632}', // 0xD2  ARABIC LETTER ZAIN
+    '\u{0633}', // 0xD3  ARABIC LETTER SEEN
+    '\u{0634}', // 0xD4  ARABIC LETTER SHEEN
+    '\u{0635}', // 0xD5  ARABIC LETTER SAD
+    '\u{0636}', // 0xD6  ARABIC LETTER DAD
+    '\u{0637}', // 0xD7  ARABIC LETTER TAH
+    '\u{0638}', // 0xD8  ARABIC LETTER ZAH
+    '\u{0639}', // 0xD9  ARABIC LETTER AIN
+    '\u{063A}', // 0xDA  ARABIC LETTER GHAIN
+    '\u{FFFD}', // 0xDB  UNDEFINED
+    '\u{FFFD}', // 0xDC  UNDEFINED
+    '\u{FFFD}', // 0xDD  UNDEFINED
+    '\u{FFFD}', // 0xDE  UNDEFINED
+    '\u{FFFD}', // 0xDF  UNDEFINED
+    // 0xE0..=0xEF
+    '\u{0640}', // 0xE0  ARABIC TATWEEL
+    '\u{0641}', // 0xE1  ARABIC LETTER FEH
+    '\u{0642}', // 0xE2  ARABIC LETTER QAF
+    '\u{0643}', // 0xE3  ARABIC LETTER KAF
+    '\u{0644}', // 0xE4  ARABIC LETTER LAM
+    '\u{0645}', // 0xE5  ARABIC LETTER MEEM
+    '\u{0646}', // 0xE6  ARABIC LETTER NOON
+    '\u{0647}', // 0xE7  ARABIC LETTER HEH
+    '\u{0648}', // 0xE8  ARABIC LETTER WAW
+    '\u{0649}', // 0xE9  ARABIC LETTER ALEF MAKSURA
+    '\u{064A}', // 0xEA  ARABIC LETTER YEH
+    '\u{064B}', // 0xEB  ARABIC FATHATAN
+    '\u{064C}', // 0xEC  ARABIC DAMMATAN
+    '\u{064D}', // 0xED  ARABIC KASRATAN
+    '\u{064E}', // 0xEE  ARABIC FATHA
+    '\u{064F}', // 0xEF  ARABIC DAMMA
+    // 0xF0..=0xFF
+    '\u{0650}', // 0xF0  ARABIC KASRA
+    '\u{0651}', // 0xF1  ARABIC SHADDA
+    '\u{0652}', // 0xF2  ARABIC SUKUN
+    '\u{FFFD}', // 0xF3  UNDEFINED
+    '\u{FFFD}', // 0xF4  UNDEFINED
+    '\u{FFFD}', // 0xF5  UNDEFINED
+    '\u{FFFD}', // 0xF6  UNDEFINED
+    '\u{FFFD}', // 0xF7  UNDEFINED
+    '\u{FFFD}', // 0xF8  UNDEFINED
+    '\u{FFFD}', // 0xF9  UNDEFINED
+    '\u{FFFD}', // 0xFA  UNDEFINED
+    '\u{FFFD}', // 0xFB  UNDEFINED
+    '\u{FFFD}', // 0xFC  UNDEFINED
+    '\u{FFFD}', // 0xFD  UNDEFINED
+    '\u{FFFD}', // 0xFE  UNDEFINED
+    '\u{FFFD}', // 0xFF  UNDEFINED
+];
+
+fn decode_iso8859_6(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(ISO_8859_6_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3731,5 +3862,56 @@ mod tests {
         assert_eq!(decode(&[0xE9], Charset::Iso8859_9), "é"); // é (U+00E9)
         assert_eq!(decode(&[0x80], Charset::Iso8859_9), "\u{0080}");
         assert_eq!(decode(&[0x9F], Charset::Iso8859_9), "\u{009F}");
+    }
+
+    #[test]
+    fn test_iso8859_6_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-8859-6")),
+            Charset::Iso8859_6
+        );
+        assert_eq!(sniff_charset(b"abc", Some("arabic")), Charset::Iso8859_6);
+        assert_eq!(sniff_charset(b"abc", Some("asmo-708")), Charset::Iso8859_6);
+        assert_eq!(sniff_charset(b"abc", Some("iso8859-6")), Charset::Iso8859_6);
+        assert_eq!(sniff_charset(b"abc", Some("iso88596")), Charset::Iso8859_6);
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso_8859-6")),
+            Charset::Iso8859_6
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso_8859_6")),
+            Charset::Iso8859_6
+        );
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"iso-8859-6\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_6);
+    }
+
+    #[test]
+    fn test_iso8859_6_decode() {
+        // Pure-ASCII round-trip
+        assert_eq!(decode(b"abc 123", Charset::Iso8859_6), "abc 123");
+
+        // Verified ISO-8859-6 (Latin/Arabic) defined codepoints
+        assert_eq!(decode(&[0xA0], Charset::Iso8859_6), "\u{00A0}"); // NBSP
+        assert_eq!(decode(&[0xA4], Charset::Iso8859_6), "\u{00A4}"); // CURRENCY
+        assert_eq!(decode(&[0xAC], Charset::Iso8859_6), "\u{060C}"); // ARABIC COMMA
+        assert_eq!(decode(&[0xAD], Charset::Iso8859_6), "\u{00AD}"); // SOFT HYPHEN
+        assert_eq!(decode(&[0xBB], Charset::Iso8859_6), "\u{061B}"); // ARABIC SEMICOLON
+        assert_eq!(decode(&[0xBF], Charset::Iso8859_6), "\u{061F}"); // ARABIC QUESTION MARK
+        assert_eq!(decode(&[0xC1], Charset::Iso8859_6), "\u{0621}"); // ARABIC LETTER HAMZA
+        assert_eq!(decode(&[0xC7], Charset::Iso8859_6), "\u{0627}"); // ARABIC LETTER ALEF
+        assert_eq!(decode(&[0xE0], Charset::Iso8859_6), "\u{0640}"); // ARABIC TATWEEL
+        assert_eq!(decode(&[0xF2], Charset::Iso8859_6), "\u{0652}"); // ARABIC SUKUN
+
+        // Undefined codepoints map to replacement char U+FFFD
+        assert_eq!(decode(&[0xA1], Charset::Iso8859_6), "\u{FFFD}");
+        assert_eq!(decode(&[0xDB], Charset::Iso8859_6), "\u{FFFD}");
+        assert_eq!(decode(&[0xFF], Charset::Iso8859_6), "\u{FFFD}");
+
+        // C1 control characters map to their identity code points (C1 range)
+        assert_eq!(decode(&[0x80], Charset::Iso8859_6), "\u{0080}");
+        assert_eq!(decode(&[0x9F], Charset::Iso8859_6), "\u{009F}");
     }
 }
