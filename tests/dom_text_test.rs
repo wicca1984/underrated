@@ -54,3 +54,41 @@ fn test_text_content_document() {
     dom.append_child(doc, text);
     assert_eq!(dom.text_content(doc), "hello");
 }
+
+#[test]
+fn test_outer_text_getter() {
+    use underrated::script::BoaHost;
+
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    // Create <div>Hello <span>World</span></div>
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "test-div".into())],
+    });
+    dom.append_child(doc, div);
+
+    let text_hello = dom.create_node(NodeData::Text("Hello ".into()));
+    dom.append_child(div, text_hello);
+
+    let span = dom.create_node(NodeData::Element {
+        name: "span".into(),
+        attrs: vec![],
+    });
+    dom.append_child(div, span);
+
+    let text_world = dom.create_node(NodeData::Text("World".into()));
+    dom.append_child(span, text_world);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('test-div');
+        const inner = el.innerText;
+        const outer = el.outerText;
+        [inner, outer].join('|');
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "Hello World|Hello World");
+}
