@@ -728,6 +728,32 @@ pub struct ShorthandExpansion {
 /// Static table of shorthand properties and their corresponding ordered longhands.
 static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
+        name: "animation",
+        longhands: &[
+            "animation-name",
+            "animation-duration",
+            "animation-timing-function",
+            "animation-delay",
+            "animation-iteration-count",
+            "animation-direction",
+            "animation-fill-mode",
+            "animation-play-state",
+        ],
+    },
+    ShorthandExpansion {
+        name: "background",
+        longhands: &[
+            "background-color",
+            "background-image",
+            "background-position",
+            "background-size",
+            "background-repeat",
+            "background-origin",
+            "background-clip",
+            "background-attachment",
+        ],
+    },
+    ShorthandExpansion {
         name: "border",
         longhands: &["border-width", "border-style", "border-color"],
     },
@@ -870,6 +896,15 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "text-decoration-style",
             "text-decoration-color",
             "text-decoration-thickness",
+        ],
+    },
+    ShorthandExpansion {
+        name: "transition",
+        longhands: &[
+            "transition-property",
+            "transition-duration",
+            "transition-timing-function",
+            "transition-delay",
         ],
     },
 ];
@@ -1307,12 +1342,54 @@ mod tests {
             shorthand_longhands("flex-flow"),
             Some(&["flex-direction", "flex-wrap"][..])
         );
+        assert_eq!(
+            shorthand_longhands("animation"),
+            Some(
+                &[
+                    "animation-name",
+                    "animation-duration",
+                    "animation-timing-function",
+                    "animation-delay",
+                    "animation-iteration-count",
+                    "animation-direction",
+                    "animation-fill-mode",
+                    "animation-play-state"
+                ][..]
+            )
+        );
+        assert_eq!(
+            shorthand_longhands("background"),
+            Some(
+                &[
+                    "background-color",
+                    "background-image",
+                    "background-position",
+                    "background-size",
+                    "background-repeat",
+                    "background-origin",
+                    "background-clip",
+                    "background-attachment"
+                ][..]
+            )
+        );
+        assert_eq!(
+            shorthand_longhands("transition"),
+            Some(
+                &[
+                    "transition-property",
+                    "transition-duration",
+                    "transition-timing-function",
+                    "transition-delay"
+                ][..]
+            )
+        );
         assert_eq!(shorthand_longhands("completely-unknown"), None);
     }
 
     #[test]
     fn test_shorthand_expansions_no_duplicates() {
         let mut names = HashSet::new();
+        let mut last_name = "";
         for sh in SHORTHAND_EXPANSIONS {
             assert_eq!(
                 sh.name,
@@ -1321,10 +1398,17 @@ mod tests {
                 sh.name
             );
             assert!(
+                sh.name > last_name,
+                "SHORTHAND_EXPANSIONS is not sorted alphabetically: '{}' comes after '{}'",
+                sh.name,
+                last_name
+            );
+            assert!(
                 names.insert(sh.name),
                 "Duplicate shorthand name found: {}",
                 sh.name
             );
+            last_name = sh.name;
         }
         assert_eq!(names.len(), SHORTHAND_EXPANSIONS.len());
     }
