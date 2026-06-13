@@ -732,6 +732,64 @@ impl TryFrom<&CssValue> for ImageRenderingValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FontVariantCapsValue {
+    Normal,
+    SmallCaps,
+    AllSmallCaps,
+    PetiteCaps,
+    AllPetiteCaps,
+    Unicase,
+    TitlingCaps,
+}
+
+impl FontVariantCapsValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "small-caps" => Some(Self::SmallCaps),
+            "all-small-caps" => Some(Self::AllSmallCaps),
+            "petite-caps" => Some(Self::PetiteCaps),
+            "all-petite-caps" => Some(Self::AllPetiteCaps),
+            "unicase" => Some(Self::Unicase),
+            "titling-caps" => Some(Self::TitlingCaps),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::SmallCaps => "small-caps",
+            Self::AllSmallCaps => "all-small-caps",
+            Self::PetiteCaps => "petite-caps",
+            Self::AllPetiteCaps => "all-petite-caps",
+            Self::Unicase => "unicase",
+            Self::TitlingCaps => "titling-caps",
+        }
+    }
+}
+
+impl std::str::FromStr for FontVariantCapsValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for FontVariantCapsValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::FontVariantCaps(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum FontKerningValue {
     Auto,
     Normal,
@@ -1216,6 +1274,7 @@ pub enum CssValue {
     Hyphens(HyphensValue),
     TextRendering(TextRenderingValue),
     ImageRendering(ImageRenderingValue),
+    FontVariantCaps(FontVariantCapsValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1330,6 +1389,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "grid-template-columns"
             | "grid-template-rows"
             | "image-rendering"
+            | "font-variant-caps"
             | "font-kerning"
             | "text-justify"
             | "word-break"
@@ -1602,6 +1662,22 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::ImageRendering(_) => true,
+            _ => false,
+        },
+        "font-variant-caps" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "normal"
+                        | "small-caps"
+                        | "all-small-caps"
+                        | "petite-caps"
+                        | "all-petite-caps"
+                        | "unicase"
+                        | "titling-caps"
+                )
+            }
+            CssValue::FontVariantCaps(_) => true,
             _ => false,
         },
         "font-kerning" => match value {
@@ -2158,6 +2234,26 @@ fn parse_image_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::ImageRendering(kw))
 }
 
+fn parse_font_variant_caps(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_string());
+            }
+            _ => return None, // invalid token for font-variant-caps recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = FontVariantCapsValue::parse(&idents[0])?;
+    Some(CssValue::FontVariantCaps(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -2199,6 +2295,9 @@ pub fn parse_property_value(
     }
     if name_lower == "image-rendering" {
         return parse_image_rendering(components);
+    }
+    if name_lower == "font-variant-caps" {
+        return parse_font_variant_caps(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -3290,6 +3389,132 @@ mod tests {
         ));
         assert!(!is_valid_property_value(
             "image-rendering",
+            &CssValue::Keyword("bogus".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_font_variant_caps() {
+        use std::str::FromStr;
+
+        // Test parsing and roundtrip via parse and FromStr
+        assert_eq!(
+            FontVariantCapsValue::parse("normal"),
+            Some(FontVariantCapsValue::Normal)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("normal"),
+            Ok(FontVariantCapsValue::Normal)
+        );
+        assert_eq!(FontVariantCapsValue::Normal.as_str(), "normal");
+
+        assert_eq!(
+            FontVariantCapsValue::parse("small-caps"),
+            Some(FontVariantCapsValue::SmallCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("small-caps"),
+            Ok(FontVariantCapsValue::SmallCaps)
+        );
+        assert_eq!(FontVariantCapsValue::SmallCaps.as_str(), "small-caps");
+
+        assert_eq!(
+            FontVariantCapsValue::parse("all-small-caps"),
+            Some(FontVariantCapsValue::AllSmallCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("all-small-caps"),
+            Ok(FontVariantCapsValue::AllSmallCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::AllSmallCaps.as_str(),
+            "all-small-caps"
+        );
+
+        assert_eq!(
+            FontVariantCapsValue::parse("petite-caps"),
+            Some(FontVariantCapsValue::PetiteCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("petite-caps"),
+            Ok(FontVariantCapsValue::PetiteCaps)
+        );
+        assert_eq!(FontVariantCapsValue::PetiteCaps.as_str(), "petite-caps");
+
+        assert_eq!(
+            FontVariantCapsValue::parse("all-petite-caps"),
+            Some(FontVariantCapsValue::AllPetiteCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("all-petite-caps"),
+            Ok(FontVariantCapsValue::AllPetiteCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::AllPetiteCaps.as_str(),
+            "all-petite-caps"
+        );
+
+        assert_eq!(
+            FontVariantCapsValue::parse("unicase"),
+            Some(FontVariantCapsValue::Unicase)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("unicase"),
+            Ok(FontVariantCapsValue::Unicase)
+        );
+        assert_eq!(FontVariantCapsValue::Unicase.as_str(), "unicase");
+
+        assert_eq!(
+            FontVariantCapsValue::parse("titling-caps"),
+            Some(FontVariantCapsValue::TitlingCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("titling-caps"),
+            Ok(FontVariantCapsValue::TitlingCaps)
+        );
+        assert_eq!(FontVariantCapsValue::TitlingCaps.as_str(), "titling-caps");
+
+        // Case-insensitivity check
+        assert_eq!(
+            FontVariantCapsValue::parse("SMALL-CAPS"),
+            Some(FontVariantCapsValue::SmallCaps)
+        );
+        assert_eq!(
+            FontVariantCapsValue::from_str("SMALL-CAPS"),
+            Ok(FontVariantCapsValue::SmallCaps)
+        );
+
+        // Unknown keywords are rejected
+        assert_eq!(FontVariantCapsValue::parse("bogus"), None);
+        assert_eq!(FontVariantCapsValue::from_str("bogus"), Err(()));
+
+        // Test TryFrom<&CssValue>
+        let css_val_keyword = CssValue::Keyword("small-caps".to_string());
+        assert_eq!(
+            FontVariantCapsValue::try_from(&css_val_keyword),
+            Ok(FontVariantCapsValue::SmallCaps)
+        );
+
+        let css_val_typed = CssValue::FontVariantCaps(FontVariantCapsValue::Unicase);
+        assert_eq!(
+            FontVariantCapsValue::try_from(&css_val_typed),
+            Ok(FontVariantCapsValue::Unicase)
+        );
+
+        let css_val_invalid = CssValue::Keyword("bogus".to_string());
+        assert_eq!(FontVariantCapsValue::try_from(&css_val_invalid), Err(()));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "font-variant-caps",
+            &CssValue::FontVariantCaps(FontVariantCapsValue::SmallCaps)
+        ));
+        assert!(is_valid_property_value(
+            "font-variant-caps",
+            &CssValue::Keyword("titling-caps".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "font-variant-caps",
             &CssValue::Keyword("bogus".to_string())
         ));
     }
@@ -5657,6 +5882,58 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "image-rendering",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for font-variant-caps (t0601)
+        assert!(is_known_layout_property("font-variant-caps"));
+        assert!(is_known_layout_property("Font-Variant-Caps"));
+
+        for (val, expected_variant) in &[
+            ("normal", FontVariantCapsValue::Normal),
+            ("small-caps", FontVariantCapsValue::SmallCaps),
+            ("all-small-caps", FontVariantCapsValue::AllSmallCaps),
+            ("petite-caps", FontVariantCapsValue::PetiteCaps),
+            ("all-petite-caps", FontVariantCapsValue::AllPetiteCaps),
+            ("unicase", FontVariantCapsValue::Unicase),
+            ("titling-caps", FontVariantCapsValue::TitlingCaps),
+            ("NORMAL", FontVariantCapsValue::Normal),
+            ("Small-Caps", FontVariantCapsValue::SmallCaps),
+        ] {
+            assert_eq!(
+                parse_property_value(
+                    "font-variant-caps",
+                    &[token(CssToken::Ident(val.to_string()))]
+                ),
+                Some(CssValue::FontVariantCaps(*expected_variant))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "font-variant-caps",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "normal",
+            "small-caps",
+            "all-small-caps",
+            "petite-caps",
+            "all-petite-caps",
+            "unicase",
+            "titling-caps",
+            "NORMAL",
+            "Small-Caps",
+        ] {
+            assert!(is_valid_property_value(
+                "font-variant-caps",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "font-variant-caps",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
