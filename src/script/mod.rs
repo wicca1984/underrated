@@ -2705,6 +2705,16 @@ impl BoaHost {
                     }
                 }
             }
+
+            // Also support on<event_type> property handlers (e.g., window.onload)
+            let on_prop_name = format!("on{}", event_type);
+            if let Ok(on_handler_val) =
+                target_obj.get(JsString::from(on_prop_name), &mut self.context)
+                && let Some(on_handler_obj) = on_handler_val.as_object()
+                && on_handler_obj.is_callable()
+            {
+                listeners_to_call.push(on_handler_val);
+            }
         }
 
         for listener in listeners_to_call {
@@ -9165,6 +9175,42 @@ mod tests {
 
         let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
         assert_eq!(mutated_dom.text_content(element_id), "windowloaded");
+    }
+
+    #[test]
+    fn test_lifecycle_window_onload_property() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        // Register a window onload property during script execution
+        let script_text = dom.create_node(NodeData::Text(
+            r#"
+            window.onload = () => {
+                document.getElementById('target').textContent = 'windowloaded_via_onload';
+            };
+            "#
+            .to_string(),
+        ));
+        dom.append_child(script_id, script_text);
+        dom.append_child(document, script_id);
+
+        let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
+        assert_eq!(
+            mutated_dom.text_content(element_id),
+            "windowloaded_via_onload"
+        );
     }
 
     #[test]
