@@ -734,6 +734,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "slice",
     },
+    PropertyMetadata {
+        name: "mask-type",
+        inherited: false,
+        initial: "luminance",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1323,6 +1328,13 @@ mod tests {
         assert_eq!(box_decoration_break.name, "box-decoration-break");
         assert!(!box_decoration_break.inherited);
         assert_eq!(box_decoration_break.initial, "slice");
+
+        let mask_type = lookup("MASK-TYPE");
+        assert!(mask_type.is_some());
+        let mask_type = mask_type.unwrap();
+        assert_eq!(mask_type.name, "mask-type");
+        assert!(!mask_type.inherited);
+        assert_eq!(mask_type.initial, "luminance");
     }
 
     #[test]
