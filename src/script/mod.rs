@@ -19,6 +19,7 @@ use boa_gc::{Finalize, GcRefCell, Trace};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+pub mod crypto;
 pub mod event;
 pub mod formdata;
 pub mod navigator;
@@ -556,6 +557,10 @@ impl BoaHost {
             performance,
             Attribute::all(),
         );
+
+        let crypto = crypto::create_crypto(context);
+        let _ =
+            context.register_global_property(JsString::from("crypto"), crypto, Attribute::all());
 
         let global = context.global_object().clone();
         let _ =
@@ -8729,6 +8734,92 @@ mod tests {
         assert!(
             host.eval("const t1 = performance.now(); const t2 = performance.now(); if (!(t2 >= t1)) throw 'not monotonic';")
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_crypto_api() {
+        let mut host = BoaHost::new();
+        let script = r#"
+            // Check typeof
+            if (typeof crypto !== "object" || crypto === null) throw "crypto is not an object";
+            if (typeof crypto.randomUUID !== "function") throw "randomUUID is not a function";
+            if (typeof crypto.getRandomValues !== "function") throw "getRandomValues is not a function";
+
+            // Check randomUUID shape
+            const uuid1 = crypto.randomUUID();
+            if (typeof uuid1 !== "string") throw "uuid1 is not a string";
+            if (uuid1.length !== 36) throw "uuid1 length is not 36, got " + uuid1.length;
+            if (uuid1[8] !== '-' || uuid1[13] !== '-' || uuid1[18] !== '-' || uuid1[23] !== '-') {
+                throw "uuid1 missing dashes at correct places: " + uuid1;
+            }
+            if (uuid1[14] !== '4') throw "uuid1 version must be 4, got " + uuid1[14];
+            const y = uuid1[19];
+            if (y !== '8' && y !== '9' && y !== 'a' && y !== 'b') {
+                throw "uuid1 variant must be 8, 9, a, or b, got " + y;
+            }
+
+            // Two randomUUID calls return different strings
+            const uuid2 = crypto.randomUUID();
+            if (uuid1 === uuid2) throw "uuid1 and uuid2 are identical: " + uuid1;
+
+            // getRandomValues on a new Uint8Array(16) returns the same array and is not all-zero
+            const arr = new Uint8Array(16);
+            const result = crypto.getRandomValues(arr);
+            if (result !== arr) throw "getRandomValues did not return the exact same array object";
+
+            let allZero = true;
+            for (let i = 0; i < arr.length; i++) {
+                if (arr[i] !== 0) {
+                    allZero = false;
+                    break;
+                }
+            }
+            if (allZero) throw "getRandomValues filled with all zeros";
+
+            // getRandomValues on Int16Array, Int32Array, BigInt64Array
+            const int16 = new Int16Array(5);
+            const int16_res = crypto.getRandomValues(int16);
+            if (int16_res !== int16) throw "Int16Array: getRandomValues failed";
+
+            const int32 = new Int32Array(5);
+            const int32_res = crypto.getRandomValues(int32);
+            if (int32_res !== int32) throw "Int32Array: getRandomValues failed";
+
+            const bigint64 = new BigInt64Array(5);
+            const bigint64_res = crypto.getRandomValues(bigint64);
+            if (bigint64_res !== bigint64) throw "BigInt64Array: getRandomValues failed";
+
+            // getRandomValues throws when passed a non-TypedArray
+            let threw = false;
+            try {
+                crypto.getRandomValues({});
+            } catch (e) {
+                threw = true;
+            }
+            if (!threw) throw "getRandomValues should throw for a plain object";
+
+            threw = false;
+            try {
+                crypto.getRandomValues(42);
+            } catch (e) {
+                threw = true;
+            }
+            if (!threw) throw "getRandomValues should throw for a number";
+
+            // Check byteLength > 65536 throws
+            threw = false;
+            try {
+                const huge = new Uint8Array(65537);
+                crypto.getRandomValues(huge);
+            } catch (e) {
+                threw = true;
+            }
+            if (!threw) throw "getRandomValues should throw for array larger than 65536 bytes";
+        "#;
+        assert!(
+            host.eval(script).is_ok(),
+            "Crypto API JS verification failed!"
         );
     }
 
