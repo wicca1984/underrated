@@ -19,6 +19,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 pub mod event;
+pub mod formdata;
 pub mod navigator;
 
 /// Errors that can occur during script execution.
@@ -142,6 +143,7 @@ impl BoaHost {
         let _ = context.register_global_class::<event::EventTarget>();
         let _ = context.register_global_class::<event::Event>();
         let _ = context.register_global_class::<URLSearchParams>();
+        let _ = context.register_global_class::<formdata::FormData>();
 
         let bridge = ObjectInitializer::new(context)
             .function(
