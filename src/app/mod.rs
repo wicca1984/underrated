@@ -183,6 +183,54 @@ impl BrowserSession {
             }
         }
     }
+
+    /// If the DOM has pending mutations, recompute styles, re-layout via
+    /// engine::flush_dirty, update the cached page layout, and return the
+    /// painted-region hint. Returns None if nothing was dirty.
+    pub fn flush_pending_layout(&mut self) -> Option<crate::paint::invalidate::DirtyRegion> {
+        if !self.browsing_context.page.dom.has_dirty() {
+            return None;
+        }
+
+        // Recompute styles (full recompute is acceptable in Phase 1)
+        let mut css_accumulator = String::from(crate::engine::UA_DEFAULT_CSS);
+        let doc = self.browsing_context.page.dom.document();
+        for node_id in self.browsing_context.page.dom.descendants(doc) {
+            if let Some(crate::dom::NodeData::Element { name, .. }) =
+                self.browsing_context.page.dom.data(node_id)
+                && name.eq_ignore_ascii_case("style")
+            {
+                for &child_id in self.browsing_context.page.dom.children(node_id) {
+                    if let Some(crate::dom::NodeData::Text(text)) =
+                        self.browsing_context.page.dom.data(child_id)
+                    {
+                        css_accumulator.push_str(text);
+                    }
+                }
+            }
+        }
+
+        let stylesheet = crate::css::parser::parse_stylesheet(&css_accumulator);
+        let recomputed_styles = crate::style::compute_styles_with_viewport(
+            &self.browsing_context.page.dom,
+            &stylesheet,
+            self.width as f32,
+        );
+
+        let flush_res = crate::engine::flush::flush_dirty(
+            &mut self.browsing_context.page.dom,
+            &recomputed_styles,
+            self.width as f32,
+        );
+
+        if let Some((layout_box, region)) = flush_res {
+            self.browsing_context.page.styles = recomputed_styles;
+            self.browsing_context.page.layout = layout_box;
+            Some(region)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -857,5 +905,93 @@ mod tests {
             }
         }
         assert!(h1_found, "h1 element not found on navigated results page");
+    }
+
+    #[test]
+    fn test_flush_pending_layout_mutation() {
+        let html = r#"
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <style>
+              div { display: block; width: 100px; height: 50px; }
+            </style>
+            </head>
+            <body>
+              <div id="target-box">Hello</div>
+            </body>
+            </html>
+        "#;
+
+        let base_url = Url::parse("https://example.com/").unwrap();
+        let loader = TestMockLoader {
+            responses: HashMap::new(),
+        };
+
+        let page = render_page(html, &base_url, &loader, 800.0);
+        let browsing_context = BrowsingContext::new(page);
+        let input_manager = ShellInputManager::new();
+        let form_state = FormState::new();
+
+        let mut session = BrowserSession::new(
+            browsing_context,
+            input_manager,
+            form_state,
+            base_url,
+            800,
+            600,
+        );
+
+        // Find the div target element
+        let doc = session.browsing_context.page.dom.document();
+        let mut target_id = None;
+        for node_id in session.browsing_context.page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, attrs }) =
+                session.browsing_context.page.dom.data(node_id)
+                && name.eq_ignore_ascii_case("div")
+                && attrs.iter().any(|(k, v)| k == "id" && v == "target-box")
+            {
+                target_id = Some(node_id);
+                break;
+            }
+        }
+        let target_id = target_id.expect("Could not find target div");
+
+        // Clear initial dirty state from parsing and rendering
+        session.browsing_context.page.dom.clear_dirty();
+
+        // Verify that initially there is no dirty state, so flush_pending_layout returns None.
+        assert!(session.flush_pending_layout().is_none());
+
+        // Get initial layout geometry for target box
+        let initial_rect =
+            crate::layout::find_box_rect(&session.browsing_context.page.layout, target_id)
+                .expect("Could not find initial box rect");
+        assert_eq!(initial_rect.size.width, 100.0);
+        assert_eq!(initial_rect.size.height, 50.0);
+
+        // Mutate the DOM: set style to width: 200px; height: 120px;
+        session.browsing_context.page.dom.set_attribute(
+            target_id,
+            "style",
+            "width: 200px; height: 120px;",
+        );
+
+        // Verify it is dirty
+        assert!(session.browsing_context.page.dom.has_dirty());
+
+        // Flush pending layout and ensure we get Some(DirtyRegion)
+        let region = session.flush_pending_layout();
+        assert!(region.is_some());
+
+        // Second immediate call must be idempotent and return None
+        assert!(session.flush_pending_layout().is_none());
+
+        // Get updated layout geometry for target box and verify it changed
+        let updated_rect =
+            crate::layout::find_box_rect(&session.browsing_context.page.layout, target_id)
+                .expect("Could not find updated box rect");
+        assert_eq!(updated_rect.size.width, 200.0);
+        assert_eq!(updated_rect.size.height, 120.0);
     }
 }
