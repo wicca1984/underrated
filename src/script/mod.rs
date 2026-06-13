@@ -566,6 +566,15 @@ impl BoaHost {
         let _ =
             context.register_global_property(JsString::from("crypto"), crypto, Attribute::all());
 
+        let css = ObjectInitializer::new(context)
+            .function(
+                NativeFunction::from_fn_ptr(css_escape),
+                JsString::from("escape"),
+                1,
+            )
+            .build();
+        let _ = context.register_global_property(JsString::from("CSS"), css, Attribute::all());
+
         let global = context.global_object().clone();
         let _ =
             context.register_global_property(JsString::from("window"), global, Attribute::all());
@@ -3351,6 +3360,51 @@ fn request_navigation(
         *cell.borrow_mut() = Some(url);
     });
     Ok(JsValue::undefined())
+}
+
+fn serialize_css_identifier(ident: &str) -> String {
+    let chars: Vec<char> = ident.chars().collect();
+    let len = chars.len();
+    let mut result = String::new();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == '\0' {
+            result.push('\u{FFFD}');
+        } else if ('\u{0001}'..='\u{001F}').contains(&ch) || ch == '\u{007F}' {
+            result.push_str(&format!("\\{:x} ", ch as u32));
+        } else if ch.is_ascii_digit() {
+            if i == 0 || (i == 1 && chars[0] == '-') {
+                result.push_str(&format!("\\{:x} ", ch as u32));
+            } else {
+                result.push(ch);
+            }
+        } else if ch == '-' {
+            if len == 1 {
+                result.push_str("\\-");
+            } else {
+                result.push(ch);
+            }
+        } else if (ch as u32) < 0x0080 && ch != '_' && ch != '-' && !ch.is_ascii_alphanumeric() {
+            result.push('\\');
+            result.push(ch);
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn css_escape(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let input_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let input_str = input_val.to_string(context)?.to_std_string().map_err(|e| {
+        JsError::from(JsNativeError::typ().with_message(format!("Failed to convert string: {}", e)))
+    })?;
+    let escaped = serialize_css_identifier(&input_str);
+    Ok(JsValue::from(JsString::from(escaped)))
 }
 
 fn structured_clone_value(value: &JsValue, context: &mut Context) -> JsResult<JsValue> {
@@ -10187,6 +10241,40 @@ mod tests {
         assert!(
             host.eval(script).is_ok(),
             "Crypto API JS verification failed!"
+        );
+    }
+
+    #[test]
+    fn test_css_escape_api() {
+        let mut host = BoaHost::new();
+        let script = r#"
+            if (typeof CSS !== "object" || CSS === null) throw "CSS is not an object";
+            if (typeof CSS.escape !== "function") throw "CSS.escape is not a function";
+
+            // Basic test
+            if (CSS.escape(".foo#bar") !== "\\.foo\\#bar") throw "failed .foo#bar, got: " + CSS.escape(".foo#bar");
+
+            // Digit tests
+            if (CSS.escape("0") !== "\\30 ") throw "failed '0'";
+            if (CSS.escape("-") !== "\\-") throw "failed '-'";
+            if (CSS.escape("--a") !== "--a") throw "failed '--a'";
+            if (CSS.escape("-1") !== "-\\31 ") throw "failed '-1', got: " + CSS.escape("-1");
+
+            // Control characters
+            if (CSS.escape("\u0000") !== "\uFFFD") throw "failed '\\0'";
+            if (CSS.escape("\u0001") !== "\\1 ") throw "failed '\\u0001'";
+            if (CSS.escape("\u001f") !== "\\1f ") throw "failed '\\u001f'";
+
+            // Non-ASCII and emojis (should be emitted as-is)
+            if (CSS.escape("あ") !== "あ") throw "failed non-ASCII";
+            if (CSS.escape("😀") !== "😀") throw "failed emoji";
+
+            // Omitted argument defaults to undefined converted to string "undefined"
+            if (CSS.escape() !== "undefined") throw "failed omitted argument, got: " + CSS.escape();
+        "#;
+        assert!(
+            host.eval(script).is_ok(),
+            "CSS.escape API JS verification failed!"
         );
     }
 
