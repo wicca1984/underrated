@@ -255,6 +255,12 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // therefore no element is ever considered the target and :target always returns false.
                         false
                     }
+                    "autofill" => {
+                        // TODO(spec): Real :autofill matching requires an autofill mechanism,
+                        // which is intentionally out of scope and not implemented in this engine.
+                        // Thus, :autofill always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3044,6 +3050,22 @@ mod tests {
         });
         dom.append_child(doc, div_with_id);
         assert!(!matches(&sel_target, &dom, div_with_id));
+
+        // Matches :autofill (should never match since we have no autofill mechanism)
+        let sel_autofill = parse_selector_list(":autofill").unwrap();
+        assert!(!matches(&sel_autofill, &dom, a_with_href));
+        assert!(!matches(&sel_autofill, &dom, area_with_href));
+        assert!(!matches(&sel_autofill, &dom, link_with_href));
+        assert!(!matches(&sel_autofill, &dom, a_no_href));
+        assert!(!matches(&sel_autofill, &dom, div_with_href));
+
+        // Ensure <input> (and other elements) also never match :autofill
+        let input_elem = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_elem);
+        assert!(!matches(&sel_autofill, &dom, input_elem));
     }
 
     #[test]
