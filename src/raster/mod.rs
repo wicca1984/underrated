@@ -80,7 +80,12 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                     }
                 }
             }
-            DisplayItem::Text { rect, text, color } => {
+            DisplayItem::Text {
+                rect,
+                text,
+                color,
+                letter_spacing,
+            } => {
                 let font = crate::font::BitmapFont::builtin();
                 let (r_f, g_f, b_f, a_f) = match color {
                     Color::Rgba(r, g, b, a) => (*r, *g, *b, *a),
@@ -93,7 +98,9 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                 let cursor_y = rect.origin.y;
 
                 FONT_STACK_8.with(|stack| {
-                    for c in text.chars() {
+                    let chars: Vec<char> = text.chars().collect();
+                    let len = chars.len();
+                    for (i, &c) in chars.iter().enumerate() {
                         if c.is_ascii() {
                             let coverage = font.glyph_coverage(c);
                             let (gw, gh) = font.glyph_size();
@@ -157,6 +164,13 @@ pub fn rasterize(list: &DisplayList, width: u32, height: u32) -> Canvas {
                             }
                         }
                         cursor_x += font.glyph_width(c) as f32;
+                        if i + 1 < len {
+                            // TODO(spec): Per CSS spec, letter-spacing is added after each character (including the final one,
+                            // potentially affecting the box width or overflow). However, to be consistent with the simple
+                            // inter-character spacing requirement, we only apply letter_spacing between characters and do not
+                            // append it after the final character.
+                            cursor_x += *letter_spacing;
+                        }
                     }
                 });
             }
@@ -1178,6 +1192,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 20.0, 20.0),
             text: "A".into(),
             color: Color::Rgba(255, 0, 0, 255), // Red
+            letter_spacing: 0.0,
         }];
         let list = DisplayList(items);
         let canvas = rasterize(&list, 20, 20);
@@ -1202,6 +1217,7 @@ mod tests {
             rect: Rect::new(18.0, 18.0, 10.0, 10.0),
             text: "A".into(),
             color: Color::Rgba(255, 0, 0, 255),
+            letter_spacing: 0.0,
         }];
         let list = DisplayList(items);
         // Canvas is 20x20. Text starts at (18, 18).
@@ -1216,6 +1232,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 16.0, 16.0),
             text: "A".into(),
             color: Color::Rgba(0, 0, 0, 255), // Black
+            letter_spacing: 0.0,
         }];
         let list = DisplayList(items);
         let canvas = rasterize(&list, 16, 16);
@@ -1240,6 +1257,7 @@ mod tests {
             rect: Rect::new(2.0, 2.0, 28.0, 28.0),
             text: "あ".into(),
             color: Color::Rgba(0, 0, 0, 255), // Black
+            letter_spacing: 0.0,
         }];
         let list = DisplayList(items);
         let canvas = rasterize(&list, 32, 32);
@@ -1267,12 +1285,78 @@ mod tests {
             rect: Rect::new(1.0, 1.0, 2.0, 2.0),
             text: "\u{0001}\u{E000}".into(), // control + private use area
             color: Color::Rgba(0, 0, 0, 255),
+            letter_spacing: 0.0,
         }];
         let list = DisplayList(items);
         // Canvas is tiny (e.g. 2x2), should not panic and should stay in bounds.
         let canvas = rasterize(&list, 2, 2);
         assert_eq!(canvas.width, 2);
         assert_eq!(canvas.height, 2);
+    }
+
+    #[test]
+    fn test_letter_spacing_rasterization() {
+        // Test drawing "AB" with 0.0 letter spacing
+        let items_0 = vec![DisplayItem::Text {
+            rect: Rect::new(0.0, 0.0, 100.0, 20.0),
+            text: "AB".into(),
+            color: Color::Rgba(0, 0, 0, 255), // Black
+            letter_spacing: 0.0,
+        }];
+        let list_0 = DisplayList(items_0);
+        let canvas_0 = rasterize(&list_0, 100, 20);
+
+        // Test drawing "AB" with 10.0 letter spacing
+        let items_10 = vec![DisplayItem::Text {
+            rect: Rect::new(0.0, 0.0, 100.0, 20.0),
+            text: "AB".into(),
+            color: Color::Rgba(0, 0, 0, 255), // Black
+            letter_spacing: 10.0,
+        }];
+        let list_10 = DisplayList(items_10);
+        let canvas_10 = rasterize(&list_10, 100, 20);
+
+        // Find the rightmost non-background pixel (not white 0xFFFFFFFF) in both canvases
+        let mut max_x_0 = 0;
+        let mut found_0 = false;
+        for y in 0..20 {
+            for x in 0..100 {
+                if canvas_0.pixel(x, y) != 0xFFFFFFFF {
+                    max_x_0 = max_x_0.max(x);
+                    found_0 = true;
+                }
+            }
+        }
+
+        let mut max_x_10 = 0;
+        let mut found_10 = false;
+        for y in 0..20 {
+            for x in 0..100 {
+                if canvas_10.pixel(x, y) != 0xFFFFFFFF {
+                    max_x_10 = max_x_10.max(x);
+                    found_10 = true;
+                }
+            }
+        }
+
+        assert!(found_0, "Should have drawn some pixels for 0.0 spacing");
+        assert!(found_10, "Should have drawn some pixels for 10.0 spacing");
+
+        // The text run with positive letter-spacing must be wider, hence its rightmost pixel is further right.
+        assert!(
+            max_x_10 > max_x_0,
+            "Wider spacing (max_x: {}) should extend further right than default spacing (max_x: {})",
+            max_x_10,
+            max_x_0
+        );
+
+        // Verify that the actual pixel offset difference matches the expected spacing (roughly 10px shift)
+        let diff = max_x_10 as i32 - max_x_0 as i32;
+        assert!(
+            diff >= 8,
+            "Expected rightmost pixel shift of at least 8px, got {}",
+            diff
+        );
     }
 
     #[test]
