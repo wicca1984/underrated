@@ -40,6 +40,7 @@ pub struct InheritedText {
     pub tab_size: u32,
     pub hyphens: String,
     pub text_rendering: String,
+    pub image_rendering: String,
     pub text_shadow: Option<crate::css::values::CssValue>,
 }
 
@@ -71,6 +72,7 @@ impl Default for InheritedText {
             tab_size: 8,
             hyphens: "manual".to_string(),
             text_rendering: "auto".to_string(),
+            image_rendering: "auto".to_string(),
             text_shadow: None,
         }
     }
@@ -807,6 +809,9 @@ impl CategorizedComputedStyle {
             "text-rendering" => {
                 Arc::make_mut(&mut self.inherited_text).text_rendering = css_value_to_string(value)
             }
+            "image-rendering" => {
+                Arc::make_mut(&mut self.inherited_text).image_rendering = css_value_to_string(value)
+            }
             "text-shadow" => {
                 Arc::make_mut(&mut self.inherited_text).text_shadow = Some(value.clone())
             }
@@ -1475,6 +1480,7 @@ impl CategorizedComputedStyle {
             "tab-size" => Some(self.inherited_text.tab_size.to_string()),
             "hyphens" => Some(self.inherited_text.hyphens.clone()),
             "text-rendering" => Some(self.inherited_text.text_rendering.clone()),
+            "image-rendering" => Some(self.inherited_text.image_rendering.clone()),
             "text-shadow" => self
                 .inherited_text
                 .text_shadow
@@ -2052,6 +2058,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         },
         CssValue::Hyphens(h) => h.as_str().to_string(),
         CssValue::TextRendering(tr) => tr.as_str().to_string(),
+        CssValue::ImageRendering(ir) => ir.as_str().to_string(),
     }
 }
 
@@ -2538,6 +2545,60 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::EmptyCells(EmptyCellsValue::Hide)),
             "hide".to_string()
+        );
+    }
+
+    #[test]
+    fn test_image_rendering_style_categorization() {
+        use crate::css::values::{CssValue, ImageRenderingValue};
+
+        let mut style = CategorizedComputedStyle::initial();
+        // Check initial default is auto
+        assert_eq!(
+            style.get_property_as_string("image-rendering"),
+            Some("auto".to_string())
+        );
+
+        // Set to pixelated and read back
+        style.set_property(
+            "image-rendering",
+            &CssValue::ImageRendering(ImageRenderingValue::Pixelated),
+        );
+        assert_eq!(
+            style.get_property_as_string("image-rendering"),
+            Some("pixelated".to_string())
+        );
+
+        // Set to crisp-edges and read back
+        style.set_property(
+            "image-rendering",
+            &CssValue::ImageRendering(ImageRenderingValue::CrispEdges),
+        );
+        assert_eq!(
+            style.get_property_as_string("image-rendering"),
+            Some("crisp-edges".to_string())
+        );
+
+        // Test css_value_to_string serialization directly
+        assert_eq!(
+            css_value_to_string(&CssValue::ImageRendering(ImageRenderingValue::Auto)),
+            "auto".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::ImageRendering(ImageRenderingValue::CrispEdges)),
+            "crisp-edges".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::ImageRendering(ImageRenderingValue::Pixelated)),
+            "pixelated".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::ImageRendering(ImageRenderingValue::Smooth)),
+            "smooth".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::ImageRendering(ImageRenderingValue::HighQuality)),
+            "high-quality".to_string()
         );
     }
 }
