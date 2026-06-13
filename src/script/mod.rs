@@ -246,6 +246,11 @@ impl BoaHost {
                 3,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_insert_adjacent_text),
+                JsString::from("insertAdjacentText"),
+                3,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_set_attribute),
                 JsString::from("setAttribute"),
                 3,
@@ -1312,8 +1317,7 @@ impl BoaHost {
                             if (pos !== "beforebegin" && pos !== "afterbegin" && pos !== "beforeend" && pos !== "afterend") {
                                 throw new DOMException("SyntaxError: The position provided is not one of the allowed values.", "SyntaxError");
                             }
-                            const textNode = document.createTextNode(String(data));
-                            bridge.insertAdjacentElement(this.__key__, pos, textNode.__key__);
+                            bridge.insertAdjacentText(this.__key__, pos, String(data));
                         },
                         click() {
                             if (this.nodeType !== 1) return;
@@ -4165,6 +4169,70 @@ fn bridge_insert_adjacent_html(
                     }
                     _ => {}
                 }
+            }
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_insert_adjacent_text(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let ref_node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let position_str = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let text_val = if let Some(arg) = args.get(2) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let position = position_str.trim().to_lowercase();
+
+    with_dom(|dom, key_to_node| {
+        if let Some(&ref_id) = key_to_node.get(&ref_node_key) {
+            let text_node_id = dom.create_node(NodeData::Text(text_val));
+            let k = format!("{:?}", text_node_id);
+            key_to_node.insert(k, text_node_id);
+
+            match position.as_str() {
+                "beforebegin" => {
+                    if let Some(parent_id) = dom.parent(ref_id) {
+                        dom.insert_before(parent_id, text_node_id, Some(ref_id));
+                    }
+                }
+                "afterbegin" => {
+                    let original_first_child = dom.children(ref_id).first().copied();
+                    dom.insert_before(ref_id, text_node_id, original_first_child);
+                }
+                "beforeend" => {
+                    dom.insert_before(ref_id, text_node_id, None);
+                }
+                "afterend" => {
+                    if let Some(parent_id) = dom.parent(ref_id) {
+                        let parent_children = dom.children(parent_id);
+                        let original_next_sibling =
+                            if let Some(pos) = parent_children.iter().position(|&c| c == ref_id) {
+                                parent_children.get(pos + 1).copied()
+                            } else {
+                                None
+                            };
+                        dom.insert_before(parent_id, text_node_id, original_next_sibling);
+                    }
+                }
+                _ => {}
             }
         }
     })?;
@@ -8627,11 +8695,18 @@ mod tests {
                 }
             }
 
-            [textContent1, String(threwSyntaxError)].join('|');
+            // 7. Test literal markup insertion
+            a.insertAdjacentText('beforeend', '<b>markup</b>');
+            let innerHTML1 = L.innerHTML;
+
+            [textContent1, String(threwSyntaxError), innerHTML1].join('|');
         "#;
 
         let res = host.eval_with_dom(setup_script, &mut dom).unwrap();
-        assert_eq!(res, "zpreapostbcase|true");
+        assert_eq!(
+            res,
+            "zpreapostbcase|true|zpre<span id=\"a\">a&lt;b&gt;markup&lt;/b&gt;</span>postbcase"
+        );
     }
 
     #[test]
