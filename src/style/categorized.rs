@@ -1637,6 +1637,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             PositionValue::Relative => "relative".to_string(),
             PositionValue::Absolute => "absolute".to_string(),
             PositionValue::Fixed => "fixed".to_string(),
+            PositionValue::Sticky => "sticky".to_string(),
         },
         CssValue::Overflow(ov) => match ov {
             OverflowValue::Visible => "visible".to_string(),

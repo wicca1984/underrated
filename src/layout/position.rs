@@ -74,7 +74,7 @@ pub fn resolve_relative_positions(
     }
 
     if let Some(style) = layout_box.node.and_then(|node_id| styles.get(&node_id))
-        && style.reset_box.position == "relative"
+        && (style.reset_box.position == "relative" || style.reset_box.position == "sticky")
     {
         let dx = if style.reset_surround.left == -1 {
             0.0
@@ -86,6 +86,9 @@ pub fn resolve_relative_positions(
         } else {
             style.reset_surround.top as f32
         };
+        if style.reset_box.position == "sticky" {
+            // TODO(spec): true scroll-threshold sticky behavior is deferred (no scroll context yet).
+        }
         shift_layout_box(layout_box, styles, dx, dy, depth);
     }
 }
@@ -224,5 +227,71 @@ pub fn layout_absolute_and_fixed_elements(
             // Find nearest ancestor in the layout tree and append to its children
             insert_into_nearest_ancestor_layout_box(dom, root_box, node, child_box);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::css::parser::parse_stylesheet;
+    use crate::dom::{Dom, NodeData};
+    use crate::layout::layout_document;
+    use crate::style::compute_styles;
+
+    #[test]
+    fn test_sticky_position_offset_static_render() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let sibling = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, sibling);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                height: 50px;
+            }
+            body > div:first-child {
+                position: sticky;
+                top: 15px;
+                left: 25px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+
+        // First div (sticky)
+        let div_box = &body_box.children[0];
+        assert_eq!(div_box.node, Some(div));
+        // Static layout position would be (0, 0)
+        // With sticky top:15px; left:25px, it should behave like relative and offset to (25, 15)
+        assert_eq!(div_box.rect.origin.x, 25.0);
+        assert_eq!(div_box.rect.origin.y, 15.0);
+
+        // Second div (sibling)
+        let sibling_box = &body_box.children[1];
+        assert_eq!(sibling_box.node, Some(sibling));
+        // Sibling position should not be affected by first div's sticky offset
+        // Static height of first div is 50px. Sibling should start at (0, 50).
+        assert_eq!(sibling_box.rect.origin.x, 0.0);
+        assert_eq!(sibling_box.rect.origin.y, 50.0);
     }
 }
