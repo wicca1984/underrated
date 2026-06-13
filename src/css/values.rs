@@ -586,6 +586,65 @@ impl TryFrom<&CssValue> for EmptyCellsValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy, Eq, Default)]
+pub enum TextAlignLastValue {
+    #[default]
+    Auto,
+    Start,
+    End,
+    Left,
+    Right,
+    Center,
+    Justify,
+}
+
+impl TextAlignLastValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "start" => Some(Self::Start),
+            "end" => Some(Self::End),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "center" => Some(Self::Center),
+            "justify" => Some(Self::Justify),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Start => "start",
+            Self::End => "end",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Center => "center",
+            Self::Justify => "justify",
+        }
+    }
+}
+
+impl std::str::FromStr for TextAlignLastValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for TextAlignLastValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::TextAlignLast(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum HyphensValue {
     None,
@@ -1335,6 +1394,7 @@ pub enum CssValue {
     Resize(ResizeValue),
     BackfaceVisibility(BackfaceVisibilityValue),
     EmptyCells(EmptyCellsValue),
+    TextAlignLast(TextAlignLastValue),
     Hyphens(HyphensValue),
     TextRendering(TextRenderingValue),
     ImageRendering(ImageRenderingValue),
@@ -1438,6 +1498,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "resize"
             | "backface-visibility"
             | "empty-cells"
+            | "text-align-last"
             | "hyphens"
             | "text-rendering"
             | "overscroll-behavior"
@@ -1571,6 +1632,11 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "show" | "hide")
             }
             CssValue::EmptyCells(_) => true,
+            _ => false,
+        },
+        "text-align-last" => match value {
+            CssValue::Keyword(kw) => TextAlignLastValue::parse(kw).is_some(),
+            CssValue::TextAlignLast(_) => true,
             _ => false,
         },
         "hyphens" => match value {
@@ -2243,6 +2309,27 @@ fn parse_empty_cells(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::EmptyCells(kw))
 }
 
+fn parse_text_align_last(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for text-align-last recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = TextAlignLastValue::parse(&idents[0])?;
+    Some(CssValue::TextAlignLast(kw))
+}
+
 fn parse_hyphens(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2377,6 +2464,9 @@ pub fn parse_property_value(
     }
     if name_lower == "empty-cells" {
         return parse_empty_cells(components);
+    }
+    if name_lower == "text-align-last" {
+        return parse_text_align_last(components);
     }
     if name_lower == "hyphens" {
         return parse_hyphens(components);
@@ -4613,6 +4703,111 @@ mod tests {
             Ok(EmptyCellsValue::Hide)
         );
         assert_eq!(EmptyCellsValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
+    fn test_text_align_last_value() {
+        // Test parsing keyword strings to TextAlignLastValue
+        assert_eq!(
+            TextAlignLastValue::parse("auto"),
+            Some(TextAlignLastValue::Auto)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("start"),
+            Some(TextAlignLastValue::Start)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("end"),
+            Some(TextAlignLastValue::End)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("left"),
+            Some(TextAlignLastValue::Left)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("right"),
+            Some(TextAlignLastValue::Right)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("center"),
+            Some(TextAlignLastValue::Center)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("justify"),
+            Some(TextAlignLastValue::Justify)
+        );
+
+        // Parsing is case-insensitive
+        assert_eq!(
+            TextAlignLastValue::parse("AUTO"),
+            Some(TextAlignLastValue::Auto)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("Start"),
+            Some(TextAlignLastValue::Start)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("END"),
+            Some(TextAlignLastValue::End)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("Left"),
+            Some(TextAlignLastValue::Left)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("RIGHT"),
+            Some(TextAlignLastValue::Right)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("Center"),
+            Some(TextAlignLastValue::Center)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("JUSTIFY"),
+            Some(TextAlignLastValue::Justify)
+        );
+
+        // Unknown keyword is rejected
+        assert_eq!(TextAlignLastValue::parse("invalid"), None);
+        assert_eq!(TextAlignLastValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "auto".parse::<TextAlignLastValue>(),
+            Ok(TextAlignLastValue::Auto)
+        );
+        assert_eq!(
+            "justify".parse::<TextAlignLastValue>(),
+            Ok(TextAlignLastValue::Justify)
+        );
+        assert_eq!("BOGUS".parse::<TextAlignLastValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(TextAlignLastValue::Auto.as_str(), "auto");
+        assert_eq!(TextAlignLastValue::Start.as_str(), "start");
+        assert_eq!(TextAlignLastValue::End.as_str(), "end");
+        assert_eq!(TextAlignLastValue::Left.as_str(), "left");
+        assert_eq!(TextAlignLastValue::Right.as_str(), "right");
+        assert_eq!(TextAlignLastValue::Center.as_str(), "center");
+        assert_eq!(TextAlignLastValue::Justify.as_str(), "justify");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            TextAlignLastValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(TextAlignLastValue::Auto)
+        );
+        assert_eq!(
+            TextAlignLastValue::try_from(&CssValue::Keyword("JUSTIFY".to_string())),
+            Ok(TextAlignLastValue::Justify)
+        );
+        assert_eq!(
+            TextAlignLastValue::try_from(&CssValue::TextAlignLast(TextAlignLastValue::Start)),
+            Ok(TextAlignLastValue::Start)
+        );
+        assert_eq!(
+            TextAlignLastValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
     }
 
     #[test]
@@ -7137,5 +7332,68 @@ mod tests {
         assert_eq!(EmptyCellsValue::parse("hide"), Some(EmptyCellsValue::Hide));
         assert_eq!(EmptyCellsValue::parse("banana"), None);
         assert_eq!(EmptyCellsValue::parse("SHOW"), Some(EmptyCellsValue::Show));
+    }
+
+    #[test]
+    fn test_text_align_last_parsing_and_recognition() {
+        // Test text-align-last: auto
+        assert_eq!(
+            parse_property_value(
+                "text-align-last",
+                &[token(CssToken::Ident("auto".to_string()))]
+            ),
+            Some(CssValue::TextAlignLast(TextAlignLastValue::Auto))
+        );
+
+        // Test text-align-last: justify
+        assert_eq!(
+            parse_property_value(
+                "text-align-last",
+                &[token(CssToken::Ident("justify".to_string()))]
+            ),
+            Some(CssValue::TextAlignLast(TextAlignLastValue::Justify))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value(
+                "text-align-last",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("text-align-last"));
+        assert!(is_known_layout_property("Text-Align-Last"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "text-align-last",
+            &CssValue::TextAlignLast(TextAlignLastValue::Auto)
+        ));
+        assert!(is_valid_property_value(
+            "text-align-last",
+            &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "text-align-last",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test TextAlignLastValue::parse directly
+        assert_eq!(
+            TextAlignLastValue::parse("auto"),
+            Some(TextAlignLastValue::Auto)
+        );
+        assert_eq!(
+            TextAlignLastValue::parse("justify"),
+            Some(TextAlignLastValue::Justify)
+        );
+        assert_eq!(TextAlignLastValue::parse("banana"), None);
+        assert_eq!(
+            TextAlignLastValue::parse("JUSTIFY"),
+            Some(TextAlignLastValue::Justify)
+        );
     }
 }
