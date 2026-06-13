@@ -2634,6 +2634,51 @@ mod tests {
     }
 
     #[test]
+    fn test_percentage_height_resolves_to_auto() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        // Put some text inside div so it has a non-zero content-derived height
+        let text = dom.create_node(NodeData::Text("Hello".into()));
+        dom.append_child(div, text);
+
+        let stylesheet = parse_stylesheet("div { display: block; height: 100%; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Check style storage (it should be stored as -1 for auto height)
+        let div_style = styles.get(&div).unwrap();
+        assert_eq!(div_style.reset_box.height, -1);
+
+        // Let's also verify 50% works the same
+        let stylesheet_50 = parse_stylesheet("div { display: block; height: 50%; }");
+        let styles_50 = compute_styles(&dom, &stylesheet_50);
+        let div_style_50 = styles_50.get(&div).unwrap();
+        assert_eq!(div_style_50.reset_box.height, -1);
+
+        // Layout the document and verify the height is content-derived (not 100.0 or 50.0 px)
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let body_box = &layout_tree.children[0];
+        let div_box = &body_box.children[0];
+
+        let line_height = crate::font::BitmapFont::builtin().line_height() as f32;
+        // The div height should be exactly the line-height, NOT 100.0 or 50.0 px
+        assert!(approx_eq(div_box.rect.size.height, line_height));
+        assert_ne!(div_box.rect.size.height, 100.0);
+        assert_ne!(div_box.rect.size.height, 50.0);
+    }
+
+    #[test]
     fn test_unitless_zero_dimensions() {
         let mut dom = Dom::new();
         let doc = dom.document();
