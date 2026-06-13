@@ -867,6 +867,13 @@ mod tests {
             components[2],
             Component::PseudoElement("before".to_string())
         );
+
+        let list_scope = parse_selector_list(":scope").unwrap();
+        let components_scope = &list_scope.0[0].parts[0].1.components;
+        assert_eq!(
+            components_scope[0],
+            Component::PseudoClass("scope".to_string())
+        );
     }
 
     #[test]
