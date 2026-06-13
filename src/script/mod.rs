@@ -1762,6 +1762,7 @@ impl BoaHost {
                     });
 
                     Object.defineProperty(node, 'className', {
+                        // className DOM binding (getter and setter) reflecting the 'class' content attribute (t0610)
                         get() {
                             return this.getAttribute('class') || '';
                         },
