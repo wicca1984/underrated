@@ -150,6 +150,11 @@ fn test4() {
 }
 
 #[test]
+fn escape_flag() {
+    run_test_file("tests/html5lib-tests/tokenizer/escapeFlag.test");
+}
+
+#[test]
 fn entities() {
     // This will likely be mostly skipped, but let's see.
     run_test_file("tests/html5lib-tests/tokenizer/entities.test");
