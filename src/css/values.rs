@@ -593,6 +593,50 @@ impl TryFrom<&CssValue> for MaskTypeValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ScrollBehaviorValue {
+    #[default]
+    Auto,
+    Smooth,
+}
+
+impl ScrollBehaviorValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "smooth" => Some(Self::Smooth),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Smooth => "smooth",
+        }
+    }
+}
+
+impl std::str::FromStr for ScrollBehaviorValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ScrollBehaviorValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::ScrollBehavior(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FontVariantPositionValue {
     #[default]
     Normal,
@@ -1697,6 +1741,7 @@ pub enum CssValue {
     FontOpticalSizing(FontOpticalSizingValue),
     BoxDecorationBreak(BoxDecorationBreakValue),
     MaskType(MaskTypeValue),
+    ScrollBehavior(ScrollBehaviorValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -2127,6 +2172,7 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "smooth")
             }
+            CssValue::ScrollBehavior(_) => true,
             _ => false,
         },
         "image-rendering" => match value {
@@ -2807,6 +2853,26 @@ fn parse_mask_type(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::MaskType(kw))
 }
 
+fn parse_scroll_behavior(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for scroll-behavior recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = ScrollBehaviorValue::parse(&idents[0])?;
+    Some(CssValue::ScrollBehavior(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2981,6 +3047,9 @@ pub fn parse_property_value(
     }
     if name_lower == "mask-type" {
         return parse_mask_type(components);
+    }
+    if name_lower == "scroll-behavior" {
+        return parse_scroll_behavior(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -3165,16 +3234,6 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "fixed" => Some(val),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        }
-        "scroll-behavior" => {
-            if let CssValue::Keyword(kw) = &val {
-                match kw.to_ascii_lowercase().as_str() {
-                    "auto" | "smooth" => Some(val),
                     _ => None,
                 }
             } else {
@@ -7070,14 +7129,14 @@ mod tests {
                 "scroll-behavior",
                 &[token(CssToken::Ident("smooth".to_string()))]
             ),
-            Some(CssValue::Keyword("smooth".to_string()))
+            Some(CssValue::ScrollBehavior(ScrollBehaviorValue::Smooth))
         );
         assert_eq!(
             parse_property_value(
                 "scroll-behavior",
                 &[token(CssToken::Ident("auto".to_string()))]
             ),
-            Some(CssValue::Keyword("auto".to_string()))
+            Some(CssValue::ScrollBehavior(ScrollBehaviorValue::Auto))
         );
         assert_eq!(
             parse_property_value(
@@ -7095,6 +7154,14 @@ mod tests {
         assert!(is_valid_property_value(
             "scroll-behavior",
             &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "scroll-behavior",
+            &CssValue::ScrollBehavior(ScrollBehaviorValue::Smooth)
+        ));
+        assert!(is_valid_property_value(
+            "scroll-behavior",
+            &CssValue::ScrollBehavior(ScrollBehaviorValue::Auto)
         ));
         assert!(!is_valid_property_value(
             "scroll-behavior",
