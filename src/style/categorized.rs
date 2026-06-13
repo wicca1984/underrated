@@ -391,6 +391,7 @@ pub struct ResetEffects {
     pub text_overflow: String,
     pub box_shadow: Option<crate::css::values::CssValue>,
     pub transform: Vec<crate::css::values::TransformFn>,
+    pub mask_type: String,
 }
 
 impl Default for ResetEffects {
@@ -418,6 +419,7 @@ impl Default for ResetEffects {
             text_overflow: "clip".to_string(),
             box_shadow: None,
             transform: Vec::new(),
+            mask_type: "luminance".to_string(),
         }
     }
 }
@@ -1228,6 +1230,9 @@ impl CategorizedComputedStyle {
                 Arc::make_mut(&mut self.reset_effects).text_decoration_style =
                     css_value_to_string(value)
             }
+            "mask-type" => {
+                Arc::make_mut(&mut self.reset_effects).mask_type = css_value_to_string(value);
+            }
             "text-decoration" => {
                 let val_str = css_value_to_string(value);
                 Arc::make_mut(&mut self.reset_effects).text_decoration_line = val_str;
@@ -1807,6 +1812,7 @@ impl CategorizedComputedStyle {
                 })
             }
             "text-overflow" => Some(self.reset_effects.text_overflow.clone()),
+            "mask-type" => Some(self.reset_effects.mask_type.clone()),
             "box-shadow" => self
                 .reset_effects
                 .box_shadow
@@ -2092,6 +2098,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         // TODO(spec): unicode-bidi fully plumbing to style and layout is a future task
         CssValue::UnicodeBidi(ub) => ub.as_str().to_string(),
         CssValue::BoxDecorationBreak(bdb) => bdb.as_str().to_string(),
+        CssValue::MaskType(mt) => mt.as_str().to_string(),
     }
 }
 
@@ -2854,6 +2861,46 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::FontOpticalSizing(FontOpticalSizingValue::None)),
             "none".to_string()
+        );
+    }
+
+    #[test]
+    fn test_mask_type_style_categorization() {
+        use crate::css::values::{CssValue, MaskTypeValue};
+
+        let mut style = CategorizedComputedStyle::initial();
+
+        // Check default
+        assert_eq!(style.reset_effects.mask_type, "luminance");
+        assert_eq!(
+            style.get_property_as_string("mask-type"),
+            Some("luminance".to_string())
+        );
+
+        // Set to alpha via CssValue::MaskType
+        style.set_property("mask-type", &CssValue::MaskType(MaskTypeValue::Alpha));
+        assert_eq!(style.reset_effects.mask_type, "alpha");
+        assert_eq!(
+            style.get_property_as_string("mask-type"),
+            Some("alpha".to_string())
+        );
+
+        // Set to luminance via CssValue::Keyword
+        style.set_property("mask-type", &CssValue::Keyword("luminance".to_string()));
+        assert_eq!(style.reset_effects.mask_type, "luminance");
+        assert_eq!(
+            style.get_property_as_string("mask-type"),
+            Some("luminance".to_string())
+        );
+
+        // css_value_to_string serialization tests
+        assert_eq!(
+            css_value_to_string(&CssValue::MaskType(MaskTypeValue::Luminance)),
+            "luminance".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::MaskType(MaskTypeValue::Alpha)),
+            "alpha".to_string()
         );
     }
 }

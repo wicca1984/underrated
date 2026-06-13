@@ -549,6 +549,50 @@ impl TryFrom<&CssValue> for BoxDecorationBreakValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum MaskTypeValue {
+    #[default]
+    Luminance,
+    Alpha,
+}
+
+impl MaskTypeValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "luminance" => Some(Self::Luminance),
+            "alpha" => Some(Self::Alpha),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Luminance => "luminance",
+            Self::Alpha => "alpha",
+        }
+    }
+}
+
+impl std::str::FromStr for MaskTypeValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for MaskTypeValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::MaskType(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FontVariantPositionValue {
     #[default]
     Normal,
@@ -1652,6 +1696,7 @@ pub enum CssValue {
     FontStretch(FontStretchValue),
     FontOpticalSizing(FontOpticalSizingValue),
     BoxDecorationBreak(BoxDecorationBreakValue),
+    MaskType(MaskTypeValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1777,6 +1822,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "line-break"
             | "text-orientation"
             | "box-decoration-break"
+            | "mask-type"
             | "overflow-wrap"
             | "word-wrap"
             | "object-fit"
@@ -1934,6 +1980,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "slice" | "clone")
             }
             CssValue::BoxDecorationBreak(_) => true,
+            _ => false,
+        },
+        "mask-type" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "luminance" | "alpha")
+            }
+            CssValue::MaskType(_) => true,
             _ => false,
         },
         "text-rendering" => match value {
@@ -2734,6 +2787,26 @@ fn parse_box_decoration_break(components: &[ComponentValue]) -> Option<CssValue>
     Some(CssValue::BoxDecorationBreak(kw))
 }
 
+fn parse_mask_type(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for mask-type recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = MaskTypeValue::parse(&idents[0])?;
+    Some(CssValue::MaskType(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2905,6 +2978,9 @@ pub fn parse_property_value(
     }
     if name_lower == "box-decoration-break" {
         return parse_box_decoration_break(components);
+    }
+    if name_lower == "mask-type" {
+        return parse_mask_type(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -5141,6 +5217,56 @@ mod tests {
             BoxDecorationBreakValue::default(),
             BoxDecorationBreakValue::Slice
         );
+    }
+
+    #[test]
+    fn test_mask_type_value() {
+        // Test parsing keyword strings to MaskTypeValue
+        assert_eq!(
+            MaskTypeValue::parse("luminance"),
+            Some(MaskTypeValue::Luminance)
+        );
+        assert_eq!(MaskTypeValue::parse("alpha"), Some(MaskTypeValue::Alpha));
+        assert_eq!(
+            MaskTypeValue::parse("LUMINANCE"),
+            Some(MaskTypeValue::Luminance)
+        );
+        assert_eq!(MaskTypeValue::parse("Alpha"), Some(MaskTypeValue::Alpha));
+        assert_eq!(MaskTypeValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "luminance".parse::<MaskTypeValue>(),
+            Ok(MaskTypeValue::Luminance)
+        );
+        assert_eq!("alpha".parse::<MaskTypeValue>(), Ok(MaskTypeValue::Alpha));
+        assert_eq!("invalid".parse::<MaskTypeValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(MaskTypeValue::Luminance.as_str(), "luminance");
+        assert_eq!(MaskTypeValue::Alpha.as_str(), "alpha");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            MaskTypeValue::try_from(&CssValue::Keyword("alpha".to_string())),
+            Ok(MaskTypeValue::Alpha)
+        );
+        assert_eq!(
+            MaskTypeValue::try_from(&CssValue::Keyword("LUMINANCE".to_string())),
+            Ok(MaskTypeValue::Luminance)
+        );
+        assert_eq!(
+            MaskTypeValue::try_from(&CssValue::MaskType(MaskTypeValue::Alpha)),
+            Ok(MaskTypeValue::Alpha)
+        );
+        assert_eq!(
+            MaskTypeValue::try_from(&CssValue::Keyword("invalid".to_string())),
+            Err(())
+        );
+        assert_eq!(MaskTypeValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation
+        assert_eq!(MaskTypeValue::default(), MaskTypeValue::Luminance);
     }
 
     #[test]
@@ -7501,6 +7627,44 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "box-decoration-break",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for mask-type
+        assert!(is_known_layout_property("mask-type"));
+        assert!(is_known_layout_property("Mask-Type"));
+
+        for (val, expected_variant) in &[
+            ("luminance", MaskTypeValue::Luminance),
+            ("alpha", MaskTypeValue::Alpha),
+            ("LUMINANCE", MaskTypeValue::Luminance),
+            ("Alpha", MaskTypeValue::Alpha),
+        ] {
+            assert_eq!(
+                parse_property_value("mask-type", &[token(CssToken::Ident((*val).to_string()))]),
+                Some(CssValue::MaskType(*expected_variant))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "mask-type",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &["luminance", "alpha", "LUMINANCE", "Alpha"] {
+            assert!(is_valid_property_value(
+                "mask-type",
+                &CssValue::Keyword((*val).to_string())
+            ));
+            assert!(is_valid_property_value(
+                "mask-type",
+                &CssValue::MaskType(MaskTypeValue::Luminance)
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "mask-type",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
