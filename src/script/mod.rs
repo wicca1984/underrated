@@ -1945,6 +1945,21 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'inert', {
+                        get() {
+                            return this.hasAttribute('inert');
+                        },
+                        set(val) {
+                            if (val) {
+                                this.setAttribute('inert', '');
+                            } else {
+                                this.removeAttribute('inert');
+                            }
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     // TODO(spec): input.value dirty-value-flag / live IDL value vs content attribute (see HTML spec)
                     Object.defineProperty(node, 'value', {
                         get() {
@@ -12930,6 +12945,32 @@ mod tests {
             let af3_prop = div.autofocus; // false
 
             [af1, af2_attr, af2_val, af2_prop, af3_attr, af3_prop].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("false|true||true|false|false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_inert() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            let in1 = div.inert; // absent default is false
+            
+            div.inert = true;
+            let in2_attr = div.hasAttribute('inert'); // true
+            let in2_val = div.getAttribute('inert'); // ''
+            let in2_prop = div.inert; // true
+
+            div.inert = false;
+            let in3_attr = div.hasAttribute('inert'); // false
+            let in3_prop = div.inert; // false
+
+            [in1, in2_attr, in2_val, in2_prop, in3_attr, in3_prop].join('|');
         ";
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
