@@ -341,7 +341,596 @@ pub fn decode_webp(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, or WebP) into a DecodedImage by sniffing the format.
+struct SvgElement {
+    name: String,
+    attrs: std::collections::HashMap<String, String>,
+}
+
+fn parse_attributes(mut s: &str) -> std::collections::HashMap<String, String> {
+    let mut attrs = std::collections::HashMap::new();
+    loop {
+        s = s.trim_start();
+        if s.is_empty() || s.starts_with('>') || s.starts_with("/>") {
+            break;
+        }
+        let key_end = s
+            .find(|c: char| c == '=' || c.is_whitespace() || c == '>' || c == '/')
+            .unwrap_or(s.len());
+        if key_end == 0 {
+            break;
+        }
+        let key = s[..key_end].to_string();
+        s = &s[key_end..];
+        s = s.trim_start();
+        if s.starts_with('=') {
+            s = &s[1..];
+            s = s.trim_start();
+            if s.starts_with('"') {
+                s = &s[1..];
+                if let Some(val_end) = s.find('"') {
+                    let val = s[..val_end].to_string();
+                    attrs.insert(key, val);
+                    s = &s[val_end + 1..];
+                } else {
+                    break;
+                }
+            } else if s.starts_with('\'') {
+                s = &s[1..];
+                if let Some(val_end) = s.find('\'') {
+                    let val = s[..val_end].to_string();
+                    attrs.insert(key, val);
+                    s = &s[val_end + 1..];
+                } else {
+                    break;
+                }
+            } else {
+                let val_end = s
+                    .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                    .unwrap_or(s.len());
+                let val = s[..val_end].to_string();
+                attrs.insert(key, val);
+                s = &s[val_end..];
+            }
+        } else {
+            attrs.insert(key, String::new());
+        }
+    }
+    attrs
+}
+
+fn extract_elements(mut s: &str) -> Vec<SvgElement> {
+    let mut elements = Vec::new();
+    loop {
+        s = s.trim_start();
+        if s.is_empty() {
+            break;
+        }
+
+        if s.starts_with("<!--") {
+            if let Some(end_idx) = s.find("-->") {
+                s = &s[end_idx + 3..];
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if s.starts_with("<?") {
+            if let Some(end_idx) = s.find("?>") {
+                s = &s[end_idx + 2..];
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if s.starts_with("<!") {
+            if let Some(end_idx) = s.find('>') {
+                s = &s[end_idx + 1..];
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if s.starts_with('<') {
+            s = &s[1..];
+            if s.starts_with('/') {
+                s = &s[1..];
+                if let Some(end_idx) = s.find('>') {
+                    let name = s[..end_idx].trim().to_ascii_lowercase();
+                    elements.push(SvgElement {
+                        name: format!("/{}", name),
+                        attrs: std::collections::HashMap::new(),
+                    });
+                    s = &s[end_idx + 1..];
+                } else {
+                    break;
+                }
+            } else {
+                let name_end = s
+                    .find(|c: char| c.is_whitespace() || c == '/' || c == '>')
+                    .unwrap_or(s.len());
+                let name = s[..name_end].to_ascii_lowercase();
+                s = &s[name_end..];
+
+                let attrs = parse_attributes(s);
+                if let Some(tag_end) = s.find('>') {
+                    let tag_content = &s[..tag_end];
+                    let is_self_closing = tag_content.trim_end().ends_with('/');
+                    elements.push(SvgElement {
+                        name: name.clone(),
+                        attrs,
+                    });
+                    if is_self_closing {
+                        elements.push(SvgElement {
+                            name: format!("/{}", name),
+                            attrs: std::collections::HashMap::new(),
+                        });
+                    }
+                    s = &s[tag_end + 1..];
+                } else {
+                    break;
+                }
+            }
+        } else {
+            if let Some(next_lt) = s.find('<') {
+                s = &s[next_lt..];
+            } else {
+                break;
+            }
+        }
+    }
+    elements
+}
+
+fn parse_length(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.ends_with('%') {
+        return None;
+    }
+    let s_clean = s.strip_suffix("px").unwrap_or(s);
+    s_clean.trim().parse::<f64>().ok()
+}
+
+fn parse_viewbox(s: &str) -> Option<(f64, f64, f64, f64)> {
+    let mut parts = Vec::new();
+    for part in s.split(|c: char| c == ',' || c.is_whitespace()) {
+        let part = part.trim();
+        if !part.is_empty() {
+            parts.push(part.parse::<f64>().ok()?);
+        }
+    }
+    if parts.len() == 4 {
+        Some((parts[0], parts[1], parts[2], parts[3]))
+    } else {
+        None
+    }
+}
+
+fn parse_color(s: &str) -> Option<[u8; 4]> {
+    let s = s.trim().to_ascii_lowercase();
+    if s == "none" {
+        return Some([0, 0, 0, 0]);
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 3 {
+            let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+            let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+            let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+            return Some([r * 17, g * 17, b * 17, 255]);
+        } else if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some([r, g, b, 255]);
+        }
+    }
+    match s.as_str() {
+        "black" => Some([0, 0, 0, 255]),
+        "white" => Some([255, 255, 255, 255]),
+        "red" => Some([255, 0, 0, 255]),
+        "green" => Some([0, 128, 0, 255]),
+        "lime" => Some([0, 255, 0, 255]),
+        "blue" => Some([0, 0, 255, 255]),
+        "yellow" => Some([255, 255, 0, 255]),
+        "cyan" => Some([0, 255, 255, 255]),
+        "magenta" => Some([255, 0, 255, 255]),
+        "gray" | "grey" => Some([128, 128, 128, 255]),
+        "silver" => Some([192, 192, 192, 255]),
+        "orange" => Some([255, 165, 0, 255]),
+        "purple" => Some([128, 0, 128, 255]),
+        "maroon" => Some([128, 0, 0, 255]),
+        "navy" => Some([0, 0, 128, 255]),
+        "teal" => Some([0, 128, 128, 255]),
+        "olive" => Some([128, 128, 0, 255]),
+        _ => None,
+    }
+}
+
+fn blend_pixel(dst: &mut [u8], src: [u8; 4]) {
+    let src_a = src[3] as f64 / 255.0;
+    if src_a <= 0.0 {
+        return;
+    }
+    if src_a >= 1.0 {
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        dst[3] = src[3];
+        return;
+    }
+    let dst_a = dst[3] as f64 / 255.0;
+    let out_a = src_a + dst_a * (1.0 - src_a);
+    if out_a > 0.0 {
+        let out_r =
+            ((src[0] as f64 * src_a + dst[0] as f64 * dst_a * (1.0 - src_a)) / out_a).round() as u8;
+        let out_g =
+            ((src[1] as f64 * src_a + dst[1] as f64 * dst_a * (1.0 - src_a)) / out_a).round() as u8;
+        let out_b =
+            ((src[2] as f64 * src_a + dst[2] as f64 * dst_a * (1.0 - src_a)) / out_a).round() as u8;
+        dst[0] = out_r;
+        dst[1] = out_g;
+        dst[2] = out_b;
+        dst[3] = (out_a * 255.0).round() as u8;
+    }
+}
+
+fn skip_metadata(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        if s.starts_with("<?") {
+            let end_idx = s.find("?>");
+            if let Some(end) = end_idx {
+                s = &s[end + 2..];
+                continue;
+            }
+        }
+        if s.starts_with("<!--") {
+            let end_idx = s.find("-->");
+            if let Some(end) = end_idx {
+                s = &s[end + 3..];
+                continue;
+            }
+        }
+        if s.starts_with("<!") {
+            let end_idx = s.find('>');
+            if let Some(end) = end_idx {
+                s = &s[end + 1..];
+                continue;
+            }
+        }
+        break;
+    }
+    s
+}
+
+fn is_svg_sniff(bytes: &[u8]) -> Option<bool> {
+    let mut data = bytes;
+    if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        data = &data[3..];
+    }
+    let s = std::str::from_utf8(data).ok()?;
+    let s = skip_metadata(s);
+    Some(s.starts_with("<svg"))
+}
+
+/// Decodes an SVG byte stream into a DecodedImage.
+pub fn decode_svg(bytes: &[u8]) -> Option<DecodedImage> {
+    let mut data = bytes;
+    if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        data = &data[3..];
+    }
+    let s = std::str::from_utf8(data).ok()?;
+    let elements = extract_elements(s);
+
+    let svg_elem = elements.iter().find(|e| e.name == "svg")?;
+
+    let explicit_w = svg_elem.attrs.get("width").and_then(|w| parse_length(w));
+    let explicit_h = svg_elem.attrs.get("height").and_then(|h| parse_length(h));
+
+    let vb = svg_elem.attrs.get("viewBox").and_then(|s| parse_viewbox(s));
+
+    let final_w = if let Some(w) = explicit_w {
+        w
+    } else if let Some((_, _, vb_w, _)) = vb {
+        vb_w
+    } else {
+        16.0
+    };
+
+    let final_h = if let Some(h) = explicit_h {
+        h
+    } else if let Some((_, _, _, vb_h)) = vb {
+        vb_h
+    } else {
+        16.0
+    };
+
+    if final_w <= 0.0 || final_h <= 0.0 {
+        return None;
+    }
+
+    let out_w = (final_w.round() as i32).clamp(1, 1024) as u32;
+    let out_h = (final_h.round() as i32).clamp(1, 1024) as u32;
+
+    let (vb_min_x, vb_min_y, vb_w, vb_h) = if let Some((vx, vy, vw, vh)) = vb {
+        if vw > 0.0 && vh > 0.0 {
+            (vx, vy, vw, vh)
+        } else {
+            (0.0, 0.0, final_w, final_h)
+        }
+    } else {
+        (0.0, 0.0, final_w, final_h)
+    };
+
+    let scale_x = out_w as f64 / vb_w;
+    let scale_y = out_h as f64 / vb_h;
+
+    let transform_x = |x: f64| -> f64 { (x - vb_min_x) * scale_x };
+    let transform_y = |y: f64| -> f64 { (y - vb_min_y) * scale_y };
+
+    let mut rgba = vec![0u8; (out_w as usize) * (out_h as usize) * 4];
+
+    let mut in_defs = false;
+    let mut depth = 0;
+
+    for elem in &elements {
+        if elem.name == "defs" {
+            in_defs = true;
+            depth += 1;
+            continue;
+        } else if elem.name == "/defs" {
+            depth -= 1;
+            if depth <= 0 {
+                in_defs = false;
+                depth = 0;
+            }
+            continue;
+        } else if elem.name.starts_with('/') {
+            continue;
+        }
+
+        if in_defs {
+            continue;
+        }
+
+        match elem.name.as_str() {
+            "rect" => {
+                let x = elem
+                    .attrs
+                    .get("x")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let y = elem
+                    .attrs
+                    .get("y")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let w = match elem.attrs.get("width").and_then(|v| v.parse::<f64>().ok()) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let h = match elem.attrs.get("height").and_then(|v| v.parse::<f64>().ok()) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                if w <= 0.0 || h <= 0.0 {
+                    continue;
+                }
+
+                let fill_str = elem
+                    .attrs
+                    .get("fill")
+                    .map(|s| s.as_str())
+                    .unwrap_or("black");
+                let Some(mut fill_color) = parse_color(fill_str) else {
+                    continue;
+                };
+
+                let opacity = elem
+                    .attrs
+                    .get("fill-opacity")
+                    .and_then(|o| o.parse::<f64>().ok())
+                    .unwrap_or(1.0);
+                fill_color[3] = (fill_color[3] as f64 * opacity).round().clamp(0.0, 255.0) as u8;
+
+                let px_x1 = transform_x(x);
+                let px_y1 = transform_y(y);
+                let px_x2 = transform_x(x + w);
+                let px_y2 = transform_y(y + h);
+
+                let x_start = px_x1.min(px_x2);
+                let x_end = px_x1.max(px_x2);
+                let y_start = px_y1.min(px_y2);
+                let y_end = px_y1.max(px_y2);
+
+                let min_px = (x_start.floor() as i32).max(0).min(out_w as i32) as u32;
+                let max_px = (x_end.ceil() as i32).max(0).min(out_w as i32) as u32;
+                let min_py = (y_start.floor() as i32).max(0).min(out_h as i32) as u32;
+                let max_py = (y_end.ceil() as i32).max(0).min(out_h as i32) as u32;
+
+                for py in min_py..max_py {
+                    let cy = py as f64 + 0.5;
+                    if cy >= y_start && cy <= y_end {
+                        for px in min_px..max_px {
+                            let cx = px as f64 + 0.5;
+                            if cx >= x_start && cx <= x_end {
+                                let idx = ((py * out_w + px) * 4) as usize;
+                                if let Some(slice) = rgba.get_mut(idx..idx + 4) {
+                                    blend_pixel(slice, fill_color);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "circle" => {
+                let cx_val = elem
+                    .attrs
+                    .get("cx")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let cy_val = elem
+                    .attrs
+                    .get("cy")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let r_val = match elem.attrs.get("r").and_then(|v| v.parse::<f64>().ok()) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                if r_val <= 0.0 {
+                    continue;
+                }
+
+                let rx = r_val * scale_x;
+                let ry = r_val * scale_y;
+                if rx <= 0.0 || ry <= 0.0 {
+                    continue;
+                }
+
+                let fill_str = elem
+                    .attrs
+                    .get("fill")
+                    .map(|s| s.as_str())
+                    .unwrap_or("black");
+                let Some(mut fill_color) = parse_color(fill_str) else {
+                    continue;
+                };
+
+                let opacity = elem
+                    .attrs
+                    .get("fill-opacity")
+                    .and_then(|o| o.parse::<f64>().ok())
+                    .unwrap_or(1.0);
+                fill_color[3] = (fill_color[3] as f64 * opacity).round().clamp(0.0, 255.0) as u8;
+
+                let px_cx = transform_x(cx_val);
+                let px_cy = transform_y(cy_val);
+
+                let x_start = px_cx - rx;
+                let x_end = px_cx + rx;
+                let y_start = px_cy - ry;
+                let y_end = px_cy + ry;
+
+                let min_px = (x_start.floor() as i32).max(0).min(out_w as i32) as u32;
+                let max_px = (x_end.ceil() as i32).max(0).min(out_w as i32) as u32;
+                let min_py = (y_start.floor() as i32).max(0).min(out_h as i32) as u32;
+                let max_py = (y_end.ceil() as i32).max(0).min(out_h as i32) as u32;
+
+                for py in min_py..max_py {
+                    let cy = py as f64 + 0.5;
+                    let dy = (cy - px_cy) / ry;
+                    let dy_sq = dy * dy;
+                    if dy_sq <= 1.0 {
+                        for px in min_px..max_px {
+                            let cx = px as f64 + 0.5;
+                            let dx = (cx - px_cx) / rx;
+                            if dx * dx + dy_sq <= 1.0 {
+                                let idx = ((py * out_w + px) * 4) as usize;
+                                if let Some(slice) = rgba.get_mut(idx..idx + 4) {
+                                    blend_pixel(slice, fill_color);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "ellipse" => {
+                let cx_val = elem
+                    .attrs
+                    .get("cx")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let cy_val = elem
+                    .attrs
+                    .get("cy")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let rx_val = match elem.attrs.get("rx").and_then(|v| v.parse::<f64>().ok()) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let ry_val = match elem.attrs.get("ry").and_then(|v| v.parse::<f64>().ok()) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                if rx_val <= 0.0 || ry_val <= 0.0 {
+                    continue;
+                }
+
+                let rx = rx_val * scale_x;
+                let ry = ry_val * scale_y;
+                if rx <= 0.0 || ry <= 0.0 {
+                    continue;
+                }
+
+                let fill_str = elem
+                    .attrs
+                    .get("fill")
+                    .map(|s| s.as_str())
+                    .unwrap_or("black");
+                let Some(mut fill_color) = parse_color(fill_str) else {
+                    continue;
+                };
+
+                let opacity = elem
+                    .attrs
+                    .get("fill-opacity")
+                    .and_then(|o| o.parse::<f64>().ok())
+                    .unwrap_or(1.0);
+                fill_color[3] = (fill_color[3] as f64 * opacity).round().clamp(0.0, 255.0) as u8;
+
+                let px_cx = transform_x(cx_val);
+                let px_cy = transform_y(cy_val);
+
+                let x_start = px_cx - rx;
+                let x_end = px_cx + rx;
+                let y_start = px_cy - ry;
+                let y_end = px_cy + ry;
+
+                let min_px = (x_start.floor() as i32).max(0).min(out_w as i32) as u32;
+                let max_px = (x_end.ceil() as i32).max(0).min(out_w as i32) as u32;
+                let min_py = (y_start.floor() as i32).max(0).min(out_h as i32) as u32;
+                let max_py = (y_end.ceil() as i32).max(0).min(out_h as i32) as u32;
+
+                for py in min_py..max_py {
+                    let cy = py as f64 + 0.5;
+                    let dy = (cy - px_cy) / ry;
+                    let dy_sq = dy * dy;
+                    if dy_sq <= 1.0 {
+                        for px in min_px..max_px {
+                            let cx = px as f64 + 0.5;
+                            let dx = (cx - px_cx) / rx;
+                            if dx * dx + dy_sq <= 1.0 {
+                                let idx = ((py * out_w + px) * 4) as usize;
+                                if let Some(slice) = rgba.get_mut(idx..idx + 4) {
+                                    blend_pixel(slice, fill_color);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "path" => {
+                // TODO(spec): SVG <path> bezier rasterization is a separate wave
+            }
+            _ => {}
+        }
+    }
+
+    Some(DecodedImage {
+        width: out_w,
+        height: out_h,
+        rgba,
+    })
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, or SVG) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -353,6 +942,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_bmp(bytes)
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         decode_webp(bytes)
+    } else if let Some(true) = is_svg_sniff(bytes) {
+        decode_svg(bytes)
     } else {
         None
     }
@@ -731,5 +1322,98 @@ mod tests {
             1, 0, 24, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
         assert!(decode_bmp(&bad_dim).is_none());
+    }
+
+    #[test]
+    fn test_svg_decode_rect() {
+        let svg = r##"
+            <svg width="4" height="4">
+                <rect x="0" y="0" width="4" height="4" fill="#ff0000" />
+            </svg>
+        "##;
+        let decoded = decode_svg(svg.as_bytes()).expect("Should decode successfully");
+        assert_eq!(decoded.width, 4);
+        assert_eq!(decoded.height, 4);
+        assert_eq!(decoded.rgba.len(), 4 * 4 * 4);
+        for i in 0..16 {
+            assert_eq!(&decoded.rgba[i * 4..(i + 1) * 4], &[255, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn test_svg_decode_viewbox_only() {
+        let svg = r#"
+            <svg viewBox="0 0 8 8">
+                <rect x="0" y="0" width="8" height="8" fill="blue" />
+            </svg>
+        "#;
+        let decoded = decode_svg(svg.as_bytes()).expect("Should decode successfully");
+        assert_eq!(decoded.width, 8);
+        assert_eq!(decoded.height, 8);
+        assert_eq!(decoded.rgba.len(), 8 * 8 * 4);
+        assert_eq!(&decoded.rgba[0..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn test_svg_decode_circle() {
+        let svg = r#"
+            <svg width="3" height="3" viewBox="0 0 3 3">
+                <circle cx="1.5" cy="1.5" r="1.0" fill="green" />
+            </svg>
+        "#;
+        let decoded = decode_svg(svg.as_bytes()).expect("Should decode successfully");
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 3);
+
+        let idx_center = (3 + 1) * 4;
+        assert_eq!(&decoded.rgba[idx_center..idx_center + 4], &[0, 128, 0, 255]);
+
+        let idx_corner = 0;
+        assert_eq!(&decoded.rgba[idx_corner..idx_corner + 4], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_svg_decode_ellipse() {
+        let svg = r#"
+            <svg width="5" height="5" viewBox="0 0 5 5">
+                <ellipse cx="2.5" cy="2.5" rx="2.0" ry="1.0" fill="yellow" />
+            </svg>
+        "#;
+        let decoded = decode_svg(svg.as_bytes()).expect("Should decode successfully");
+        assert_eq!(decoded.width, 5);
+        assert_eq!(decoded.height, 5);
+
+        let idx_center = (2 * 5 + 2) * 4;
+        assert_eq!(
+            &decoded.rgba[idx_center..idx_center + 4],
+            &[255, 255, 0, 255]
+        );
+    }
+
+    #[test]
+    fn test_svg_sniff_and_prolog() {
+        let svg_with_prolog = r#"<?xml version="1.0" encoding="utf-8"?>
+            <!-- SVG comments here -->
+            <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+            <svg width="2" height="2">
+                <rect width="2" height="2" fill="white" />
+            </svg>
+        "#;
+        let decoded =
+            decode_image(svg_with_prolog.as_bytes()).expect("Should sniff and decode SVG");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(&decoded.rgba[0..4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_svg_invalid_rejected() {
+        let bad_svg1 = r#"<rect width="10" height="10" fill="red" />"#;
+        assert!(decode_image(bad_svg1.as_bytes()).is_none());
+
+        let bad_svg2 = "not an xml at all";
+        assert!(decode_image(bad_svg2.as_bytes()).is_none());
+
+        assert!(decode_image(&[]).is_none());
     }
 }
