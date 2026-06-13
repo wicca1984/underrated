@@ -505,6 +505,50 @@ impl TryFrom<&CssValue> for TextOrientationValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum BoxDecorationBreakValue {
+    #[default]
+    Slice,
+    Clone,
+}
+
+impl BoxDecorationBreakValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "slice" => Some(Self::Slice),
+            "clone" => Some(Self::Clone),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Slice => "slice",
+            Self::Clone => "clone",
+        }
+    }
+}
+
+impl std::str::FromStr for BoxDecorationBreakValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for BoxDecorationBreakValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::BoxDecorationBreak(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FontVariantPositionValue {
     #[default]
     Normal,
@@ -1607,6 +1651,7 @@ pub enum CssValue {
     FontVariantPosition(FontVariantPositionValue),
     FontStretch(FontStretchValue),
     FontOpticalSizing(FontOpticalSizingValue),
+    BoxDecorationBreak(BoxDecorationBreakValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1731,6 +1776,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "word-break"
             | "line-break"
             | "text-orientation"
+            | "box-decoration-break"
             | "overflow-wrap"
             | "word-wrap"
             | "object-fit"
@@ -1881,6 +1927,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::TextOrientation(_) => true,
+            _ => false,
+        },
+        "box-decoration-break" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "slice" | "clone")
+            }
+            CssValue::BoxDecorationBreak(_) => true,
             _ => false,
         },
         "text-rendering" => match value {
@@ -2661,6 +2714,26 @@ fn parse_text_orientation(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::TextOrientation(kw))
 }
 
+fn parse_box_decoration_break(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for box-decoration-break recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = BoxDecorationBreakValue::parse(&idents[0])?;
+    Some(CssValue::BoxDecorationBreak(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2829,6 +2902,9 @@ pub fn parse_property_value(
     }
     if name_lower == "text-orientation" {
         return parse_text_orientation(components);
+    }
+    if name_lower == "box-decoration-break" {
+        return parse_box_decoration_break(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -4998,6 +5074,73 @@ mod tests {
 
         // Test Default implementation
         assert_eq!(TextOrientationValue::default(), TextOrientationValue::Mixed);
+    }
+
+    #[test]
+    fn test_box_decoration_break_value() {
+        // Test parsing keyword strings to BoxDecorationBreakValue
+        assert_eq!(
+            BoxDecorationBreakValue::parse("slice"),
+            Some(BoxDecorationBreakValue::Slice)
+        );
+        assert_eq!(
+            BoxDecorationBreakValue::parse("clone"),
+            Some(BoxDecorationBreakValue::Clone)
+        );
+        assert_eq!(
+            BoxDecorationBreakValue::parse("SLICE"),
+            Some(BoxDecorationBreakValue::Slice)
+        );
+        assert_eq!(
+            BoxDecorationBreakValue::parse("Clone"),
+            Some(BoxDecorationBreakValue::Clone)
+        );
+        assert_eq!(BoxDecorationBreakValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "slice".parse::<BoxDecorationBreakValue>(),
+            Ok(BoxDecorationBreakValue::Slice)
+        );
+        assert_eq!(
+            "clone".parse::<BoxDecorationBreakValue>(),
+            Ok(BoxDecorationBreakValue::Clone)
+        );
+        assert_eq!("invalid".parse::<BoxDecorationBreakValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(BoxDecorationBreakValue::Slice.as_str(), "slice");
+        assert_eq!(BoxDecorationBreakValue::Clone.as_str(), "clone");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            BoxDecorationBreakValue::try_from(&CssValue::Keyword("clone".to_string())),
+            Ok(BoxDecorationBreakValue::Clone)
+        );
+        assert_eq!(
+            BoxDecorationBreakValue::try_from(&CssValue::Keyword("SLICE".to_string())),
+            Ok(BoxDecorationBreakValue::Slice)
+        );
+        assert_eq!(
+            BoxDecorationBreakValue::try_from(&CssValue::BoxDecorationBreak(
+                BoxDecorationBreakValue::Clone
+            )),
+            Ok(BoxDecorationBreakValue::Clone)
+        );
+        assert_eq!(
+            BoxDecorationBreakValue::try_from(&CssValue::Keyword("invalid".to_string())),
+            Err(())
+        );
+        assert_eq!(
+            BoxDecorationBreakValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+
+        // Test Default implementation
+        assert_eq!(
+            BoxDecorationBreakValue::default(),
+            BoxDecorationBreakValue::Slice
+        );
     }
 
     #[test]
@@ -7317,6 +7460,47 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "text-orientation",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for box-decoration-break
+        assert!(is_known_layout_property("box-decoration-break"));
+        assert!(is_known_layout_property("Box-Decoration-Break"));
+
+        for (val, expected_variant) in &[
+            ("slice", BoxDecorationBreakValue::Slice),
+            ("clone", BoxDecorationBreakValue::Clone),
+            ("SLICE", BoxDecorationBreakValue::Slice),
+            ("Clone", BoxDecorationBreakValue::Clone),
+        ] {
+            assert_eq!(
+                parse_property_value(
+                    "box-decoration-break",
+                    &[token(CssToken::Ident((*val).to_string()))]
+                ),
+                Some(CssValue::BoxDecorationBreak(*expected_variant))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "box-decoration-break",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &["slice", "clone", "SLICE", "Clone"] {
+            assert!(is_valid_property_value(
+                "box-decoration-break",
+                &CssValue::Keyword((*val).to_string())
+            ));
+            assert!(is_valid_property_value(
+                "box-decoration-break",
+                &CssValue::BoxDecorationBreak(BoxDecorationBreakValue::Slice)
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "box-decoration-break",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
