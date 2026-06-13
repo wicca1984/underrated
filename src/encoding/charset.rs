@@ -19,6 +19,7 @@ pub enum Charset {
     Iso8859_2,
     Iso8859_3,
     Iso8859_4,
+    Iso8859_5,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -69,6 +70,10 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "iso-8859-4" | "iso8859-4" | "iso88594" | "iso_8859-4" | "iso-ir-110"
             | "iso_8859-4:1988" | "csisolatin4" | "latin4" | "l4" => {
                 return Charset::Iso8859_4;
+            }
+            "iso-8859-5" | "iso8859-5" | "iso88595" | "iso_8859-5" | "iso-ir-144"
+            | "iso_8859-5:1988" | "csisolatincyrillic" | "cyrillic" => {
+                return Charset::Iso8859_5;
             }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
@@ -127,6 +132,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "iso-8859-2" => return Some(Charset::Iso8859_2),
                 "iso-8859-3" => return Some(Charset::Iso8859_3),
                 "iso-8859-4" => return Some(Charset::Iso8859_4),
+                "iso-8859-5" => return Some(Charset::Iso8859_5),
                 _ => {}
             }
         }
@@ -152,6 +158,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_2 => decode_iso8859_2(bytes),
         Charset::Iso8859_3 => decode_iso8859_3(bytes),
         Charset::Iso8859_4 => decode_iso8859_4(bytes),
+        Charset::Iso8859_5 => decode_iso8859_5(bytes),
     }
 }
 
@@ -858,6 +865,113 @@ fn decode_iso8859_4(bytes: &[u8]) -> String {
             0xFD => '\u{0169}', // LATIN SMALL LETTER U WITH TILDE
             0xFE => '\u{016B}', // LATIN SMALL LETTER U WITH MACRON
             0xFF => '\u{02D9}', // DOT ABOVE
+            _ => char::from(b),
+        };
+        result.push(c);
+    }
+    result
+}
+
+fn decode_iso8859_5(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        let c = match b {
+            0xA0 => '\u{00A0}', // NO-BREAK SPACE
+            0xA1 => '\u{0401}', // CYRILLIC CAPITAL LETTER IO
+            0xA2 => '\u{0402}', // CYRILLIC CAPITAL LETTER DJE
+            0xA3 => '\u{0403}', // CYRILLIC CAPITAL LETTER GJE
+            0xA4 => '\u{0404}', // CYRILLIC CAPITAL LETTER UKRAINIAN IE
+            0xA5 => '\u{0405}', // CYRILLIC CAPITAL LETTER DZE
+            0xA6 => '\u{0406}', // CYRILLIC CAPITAL LETTER BYELORUSSIAN-UKRAINIAN I
+            0xA7 => '\u{0407}', // CYRILLIC CAPITAL LETTER YI
+            0xA8 => '\u{0408}', // CYRILLIC CAPITAL LETTER JE
+            0xA9 => '\u{0409}', // CYRILLIC CAPITAL LETTER LJE
+            0xAA => '\u{040A}', // CYRILLIC CAPITAL LETTER NJE
+            0xAB => '\u{040B}', // CYRILLIC CAPITAL LETTER TSHE
+            0xAC => '\u{040C}', // CYRILLIC CAPITAL LETTER KJE
+            0xAD => '\u{00AD}', // SOFT HYPHEN
+            0xAE => '\u{040E}', // CYRILLIC CAPITAL LETTER SHORT U
+            0xAF => '\u{040F}', // CYRILLIC CAPITAL LETTER DZHE
+            0xB0 => '\u{0410}', // CYRILLIC CAPITAL LETTER A
+            0xB1 => '\u{0411}', // CYRILLIC CAPITAL LETTER BE
+            0xB2 => '\u{0412}', // CYRILLIC CAPITAL LETTER VE
+            0xB3 => '\u{0413}', // CYRILLIC CAPITAL LETTER GHE
+            0xB4 => '\u{0414}', // CYRILLIC CAPITAL LETTER DE
+            0xB5 => '\u{0415}', // CYRILLIC CAPITAL LETTER IE
+            0xB6 => '\u{0416}', // CYRILLIC CAPITAL LETTER ZHE
+            0xB7 => '\u{0417}', // CYRILLIC CAPITAL LETTER ZE
+            0xB8 => '\u{0418}', // CYRILLIC CAPITAL LETTER I
+            0xB9 => '\u{0419}', // CYRILLIC CAPITAL LETTER SHORT I
+            0xBA => '\u{041A}', // CYRILLIC CAPITAL LETTER KA
+            0xBB => '\u{041B}', // CYRILLIC CAPITAL LETTER EL
+            0xBC => '\u{041C}', // CYRILLIC CAPITAL LETTER EM
+            0xBD => '\u{041D}', // CYRILLIC CAPITAL LETTER EN
+            0xBE => '\u{041E}', // CYRILLIC CAPITAL LETTER O
+            0xBF => '\u{041F}', // CYRILLIC CAPITAL LETTER PE
+            0xC0 => '\u{0420}', // CYRILLIC CAPITAL LETTER ER
+            0xC1 => '\u{0421}', // CYRILLIC CAPITAL LETTER ES
+            0xC2 => '\u{0422}', // CYRILLIC CAPITAL LETTER TE
+            0xC3 => '\u{0423}', // CYRILLIC CAPITAL LETTER U
+            0xC4 => '\u{0424}', // CYRILLIC CAPITAL LETTER EF
+            0xC5 => '\u{0425}', // CYRILLIC CAPITAL LETTER HA
+            0xC6 => '\u{0426}', // CYRILLIC CAPITAL LETTER TSE
+            0xC7 => '\u{0427}', // CYRILLIC CAPITAL LETTER CHE
+            0xC8 => '\u{0428}', // CYRILLIC CAPITAL LETTER SHA
+            0xC9 => '\u{0429}', // CYRILLIC CAPITAL LETTER SHCHA
+            0xCA => '\u{042A}', // CYRILLIC CAPITAL LETTER HARD SIGN
+            0xCB => '\u{042B}', // CYRILLIC CAPITAL LETTER YERU
+            0xCC => '\u{042C}', // CYRILLIC CAPITAL LETTER SOFT SIGN
+            0xCD => '\u{042D}', // CYRILLIC CAPITAL LETTER E
+            0xCE => '\u{042E}', // CYRILLIC CAPITAL LETTER YU
+            0xCF => '\u{042F}', // CYRILLIC CAPITAL LETTER YA
+            0xD0 => '\u{0430}', // CYRILLIC SMALL LETTER A
+            0xD1 => '\u{0431}', // CYRILLIC SMALL LETTER BE
+            0xD2 => '\u{0432}', // CYRILLIC SMALL LETTER VE
+            0xD3 => '\u{0433}', // CYRILLIC SMALL LETTER GHE
+            0xD4 => '\u{0434}', // CYRILLIC SMALL LETTER DE
+            0xD5 => '\u{0435}', // CYRILLIC SMALL LETTER IE
+            0xD6 => '\u{0436}', // CYRILLIC SMALL LETTER ZHE
+            0xD7 => '\u{0437}', // CYRILLIC SMALL LETTER ZE
+            0xD8 => '\u{0438}', // CYRILLIC SMALL LETTER I
+            0xD9 => '\u{0439}', // CYRILLIC SMALL LETTER SHORT I
+            0xDA => '\u{043A}', // CYRILLIC SMALL LETTER KA
+            0xDB => '\u{043B}', // CYRILLIC SMALL LETTER EL
+            0xDC => '\u{043C}', // CYRILLIC SMALL LETTER EM
+            0xDD => '\u{043D}', // CYRILLIC SMALL LETTER EN
+            0xDE => '\u{043E}', // CYRILLIC SMALL LETTER O
+            0xDF => '\u{043F}', // CYRILLIC SMALL LETTER PE
+            0xE0 => '\u{0440}', // CYRILLIC SMALL LETTER ER
+            0xE1 => '\u{0441}', // CYRILLIC SMALL LETTER ES
+            0xE2 => '\u{0442}', // CYRILLIC SMALL LETTER TE
+            0xE3 => '\u{0443}', // CYRILLIC SMALL LETTER U
+            0xE4 => '\u{0444}', // CYRILLIC SMALL LETTER EF
+            0xE5 => '\u{0445}', // CYRILLIC SMALL LETTER HA
+            0xE6 => '\u{0446}', // CYRILLIC SMALL LETTER TSE
+            0xE7 => '\u{0447}', // CYRILLIC SMALL LETTER CHE
+            0xE8 => '\u{0448}', // CYRILLIC SMALL LETTER SHA
+            0xE9 => '\u{0449}', // CYRILLIC SMALL LETTER SHCHA
+            0xEA => '\u{044A}', // CYRILLIC SMALL LETTER HARD SIGN
+            0xEB => '\u{044B}', // CYRILLIC SMALL LETTER YERU
+            0xEC => '\u{044C}', // CYRILLIC SMALL LETTER SOFT SIGN
+            0xED => '\u{044D}', // CYRILLIC SMALL LETTER E
+            0xEE => '\u{044E}', // CYRILLIC SMALL LETTER YU
+            0xEF => '\u{044F}', // CYRILLIC SMALL LETTER YA
+            0xF0 => '\u{2116}', // NUMERO SIGN
+            0xF1 => '\u{0451}', // CYRILLIC SMALL LETTER IO
+            0xF2 => '\u{0452}', // CYRILLIC SMALL LETTER DJE
+            0xF3 => '\u{0453}', // CYRILLIC SMALL LETTER GJE
+            0xF4 => '\u{0454}', // CYRILLIC SMALL LETTER UKRAINIAN IE
+            0xF5 => '\u{0455}', // CYRILLIC SMALL LETTER DZE
+            0xF6 => '\u{0456}', // CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I
+            0xF7 => '\u{0457}', // CYRILLIC SMALL LETTER YI
+            0xF8 => '\u{0458}', // CYRILLIC SMALL LETTER JE
+            0xF9 => '\u{0459}', // CYRILLIC SMALL LETTER LJE
+            0xFA => '\u{045A}', // CYRILLIC SMALL LETTER NJE
+            0xFB => '\u{045B}', // CYRILLIC SMALL LETTER TSHE
+            0xFC => '\u{045C}', // CYRILLIC SMALL LETTER KJE
+            0xFD => '\u{00A7}', // SECTION SIGN
+            0xFE => '\u{045E}', // CYRILLIC SMALL LETTER SHORT U
+            0xFF => '\u{045F}', // CYRILLIC SMALL LETTER DZHE
             _ => char::from(b),
         };
         result.push(c);
@@ -1952,6 +2066,49 @@ mod tests {
         // Meta prescan check
         let html_meta = b"<html><head><meta charset=\"iso-8859-4\"></head></html>";
         assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_4);
+    }
+
+    #[test]
+    fn test_iso8859_5_decode() {
+        // ASCII passthrough
+        assert_eq!(decode(b"abc 123", Charset::Iso8859_5), "abc 123");
+
+        // Representative high-byte mappings
+        assert_eq!(decode(&[0xA0], Charset::Iso8859_5), "\u{00A0}"); // NBSP
+        assert_eq!(decode(&[0xA1], Charset::Iso8859_5), "\u{0401}"); // Ё
+        assert_eq!(decode(&[0xB0], Charset::Iso8859_5), "\u{0410}"); // А
+        assert_eq!(decode(&[0xDF], Charset::Iso8859_5), "\u{043F}"); // п
+        assert_eq!(decode(&[0xF0], Charset::Iso8859_5), "\u{2116}"); // №
+        assert_eq!(decode(&[0xFD], Charset::Iso8859_5), "\u{00A7}"); // §
+        assert_eq!(decode(&[0xFF], Charset::Iso8859_5), "\u{045F}"); // џ
+
+        // Check a full Cyrillic sentence: "Привет" (using ISO-8859-5 mappings)
+        // П: 0xBF (U+041F)
+        // р: 0xE0 (U+0440)
+        // и: 0xD8 (U+0438)
+        // в: 0xD2 (U+0432)
+        // е: 0xD5 (U+0435)
+        // т: 0xE2 (U+0442)
+        let bytes = &[0xBF, 0xE0, 0xD8, 0xD2, 0xD5, 0xE2];
+        assert_eq!(decode(bytes, Charset::Iso8859_5), "Привет");
+    }
+
+    #[test]
+    fn test_iso8859_5_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-8859-5")),
+            Charset::Iso8859_5
+        );
+        assert_eq!(sniff_charset(b"abc", Some("cyrillic")), Charset::Iso8859_5);
+        assert_eq!(sniff_charset(b"abc", Some("iso8859-5")), Charset::Iso8859_5);
+        assert_eq!(
+            sniff_charset(b"abc", Some("csisolatincyrillic")),
+            Charset::Iso8859_5
+        );
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"iso-8859-5\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_5);
     }
 
     #[test]
