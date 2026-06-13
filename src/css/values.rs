@@ -241,6 +241,37 @@ impl std::str::FromStr for IsolationValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BackfaceVisibilityValue {
+    Visible,
+    Hidden,
+}
+
+impl BackfaceVisibilityValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "visible" => Some(Self::Visible),
+            "hidden" => Some(Self::Hidden),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Visible => "visible",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
+impl std::str::FromStr for BackfaceVisibilityValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ResizeValue {
     None,
     Both,
@@ -1035,6 +1066,7 @@ pub enum CssValue {
     BackgroundBlendMode(BackgroundBlendModeValue),
     Isolation(IsolationValue),
     Resize(ResizeValue),
+    BackfaceVisibility(BackfaceVisibilityValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1131,6 +1163,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "background-blend-mode"
             | "isolation"
             | "resize"
+            | "backface-visibility"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -1246,6 +1279,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::Resize(_) => true,
+            _ => false,
+        },
+        "backface-visibility" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "visible" | "hidden")
+            }
+            CssValue::BackfaceVisibility(_) => true,
             _ => false,
         },
         "position" => match value {
@@ -1837,6 +1877,27 @@ fn parse_resize(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::Resize(kw))
 }
 
+fn parse_backface_visibility(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for backface-visibility recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = BackfaceVisibilityValue::parse(&idents[0])?;
+    Some(CssValue::BackfaceVisibility(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -1863,6 +1924,9 @@ pub fn parse_property_value(
     }
     if name_lower == "resize" {
         return parse_resize(components);
+    }
+    if name_lower == "backface-visibility" {
+        return parse_backface_visibility(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -6130,5 +6194,71 @@ mod tests {
         assert_eq!(ResizeValue::parse("vertical"), Some(ResizeValue::Vertical));
         assert_eq!(ResizeValue::parse("banana"), None);
         assert_eq!(ResizeValue::parse("BOTH"), Some(ResizeValue::Both));
+    }
+
+    #[test]
+    fn test_backface_visibility_parsing_and_recognition() {
+        // Test backface-visibility: visible
+        assert_eq!(
+            parse_property_value(
+                "backface-visibility",
+                &[token(CssToken::Ident("visible".to_string()))]
+            ),
+            Some(CssValue::BackfaceVisibility(
+                BackfaceVisibilityValue::Visible
+            ))
+        );
+
+        // Test backface-visibility: hidden
+        assert_eq!(
+            parse_property_value(
+                "backface-visibility",
+                &[token(CssToken::Ident("hidden".to_string()))]
+            ),
+            Some(CssValue::BackfaceVisibility(
+                BackfaceVisibilityValue::Hidden
+            ))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value(
+                "backface-visibility",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("backface-visibility"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "backface-visibility",
+            &CssValue::BackfaceVisibility(BackfaceVisibilityValue::Visible)
+        ));
+        assert!(is_valid_property_value(
+            "backface-visibility",
+            &CssValue::Keyword("visible".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "backface-visibility",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test BackfaceVisibilityValue::parse directly
+        assert_eq!(
+            BackfaceVisibilityValue::parse("visible"),
+            Some(BackfaceVisibilityValue::Visible)
+        );
+        assert_eq!(
+            BackfaceVisibilityValue::parse("hidden"),
+            Some(BackfaceVisibilityValue::Hidden)
+        );
+        assert_eq!(BackfaceVisibilityValue::parse("banana"), None);
+        assert_eq!(
+            BackfaceVisibilityValue::parse("VISIBLE"),
+            Some(BackfaceVisibilityValue::Visible)
+        );
     }
 }

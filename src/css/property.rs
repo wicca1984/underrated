@@ -340,6 +340,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "none",
     },
     PropertyMetadata {
+        name: "backface-visibility",
+        inherited: false,
+        initial: "visible",
+    },
+    PropertyMetadata {
         name: "clip",
         inherited: false,
         initial: "auto",
@@ -1063,6 +1068,13 @@ mod tests {
         assert_eq!(resize.name, "resize");
         assert!(!resize.inherited);
         assert_eq!(resize.initial, "none");
+
+        let backface_visibility = lookup("backface-visibility");
+        assert!(backface_visibility.is_some());
+        let backface_visibility = backface_visibility.unwrap();
+        assert_eq!(backface_visibility.name, "backface-visibility");
+        assert!(!backface_visibility.inherited);
+        assert_eq!(backface_visibility.initial, "visible");
     }
 
     #[test]

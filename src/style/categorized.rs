@@ -1794,9 +1794,9 @@ impl CategorizedComputedStyle {
 // Private value conversion helpers for CategorizedComputedStyle
 fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     use crate::css::values::{
-        AlignItemsValue, BackgroundBlendModeValue, BoxSizingValue, Color, CssValue, DisplayValue,
-        FlexDirectionValue, IsolationValue, JustifyContentValue, LengthUnit, MixBlendModeValue,
-        OverflowValue, PositionValue, ResizeValue, ZIndex,
+        AlignItemsValue, BackfaceVisibilityValue, BackgroundBlendModeValue, BoxSizingValue, Color,
+        CssValue, DisplayValue, FlexDirectionValue, IsolationValue, JustifyContentValue,
+        LengthUnit, MixBlendModeValue, OverflowValue, PositionValue, ResizeValue, ZIndex,
     };
     match val {
         CssValue::Keyword(s) => s.clone(),
@@ -2034,6 +2034,10 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             ResizeValue::Both => "both".to_string(),
             ResizeValue::Horizontal => "horizontal".to_string(),
             ResizeValue::Vertical => "vertical".to_string(),
+        },
+        CssValue::BackfaceVisibility(bv) => match bv {
+            BackfaceVisibilityValue::Visible => "visible".to_string(),
+            BackfaceVisibilityValue::Hidden => "hidden".to_string(),
         },
     }
 }
@@ -2489,6 +2493,24 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::Resize(ResizeValue::Vertical)),
             "vertical".to_string()
+        );
+    }
+
+    #[test]
+    fn test_backface_visibility_serialization() {
+        use crate::css::values::{BackfaceVisibilityValue, CssValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::BackfaceVisibility(
+                BackfaceVisibilityValue::Visible
+            )),
+            "visible".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::BackfaceVisibility(
+                BackfaceVisibilityValue::Hidden
+            )),
+            "hidden".to_string()
         );
     }
 }
