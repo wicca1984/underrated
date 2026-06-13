@@ -6638,6 +6638,11 @@ impl Class for UrlObject {
                 JsString::from("canParse"),
                 1,
                 NativeFunction::from_fn_ptr(url_can_parse),
+            )
+            .static_method(
+                JsString::from("parse"),
+                1,
+                NativeFunction::from_fn_ptr(url_parse),
             );
 
         Ok(())
@@ -6829,6 +6834,62 @@ pub fn url_can_parse(
     };
 
     Ok(JsValue::from(has_base))
+}
+
+pub fn url_parse(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let url_str = if let Some(url_val) = args.first() {
+        url_val
+            .to_string(context)?
+            .to_std_string()
+            .unwrap_or_default()
+    } else {
+        "undefined".to_string()
+    };
+
+    let mut is_valid = false;
+    let mut parsed_base = None;
+
+    if let Some(base_val) = args.get(1) {
+        if !base_val.is_undefined() && !base_val.is_null() {
+            let base_str = base_val
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if let Ok(base_url) = crate::url::Url::parse(&base_str)
+                && crate::url::Url::parse_with_base(&url_str, &base_url).is_ok()
+            {
+                is_valid = true;
+                parsed_base = Some(base_str);
+            }
+        } else {
+            is_valid = crate::url::Url::parse(&url_str).is_ok();
+        }
+    } else {
+        is_valid = crate::url::Url::parse(&url_str).is_ok();
+    }
+
+    if !is_valid {
+        return Ok(JsValue::null());
+    }
+
+    let url_constructor = context
+        .global_object()
+        .get(JsString::from("URL"), context)?;
+    let url_obj = url_constructor.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("URL constructor not found"))
+    })?;
+
+    let construct_args = if let Some(base_str) = parsed_base {
+        vec![
+            JsValue::from(JsString::from(url_str)),
+            JsValue::from(JsString::from(base_str)),
+        ]
+    } else {
+        vec![JsValue::from(JsString::from(url_str))]
+    };
+
+    let url_inst = url_obj.construct(&construct_args, None, context)?;
+    Ok(JsValue::from(url_inst))
 }
 
 /// Implementation of WHATWG URL `URLSearchParams` interface.
@@ -10076,6 +10137,65 @@ mod tests {
             let threw_symbol = false;
             try {
                 URL.canParse(Symbol("foo"));
+            } catch (e) {
+                threw_symbol = true;
+            }
+            if (!threw_symbol) throw "coercing Symbol should throw";
+        }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_url_parse() {
+        let mut host = BoaHost::new();
+
+        host.eval(
+            r#"{
+            if (typeof URL.parse !== "function") throw "URL.parse is not a function";
+            
+            // Valid URLs
+            let u1 = URL.parse("https://example.com/");
+            if (u1 === null) throw "should not return null for valid absolute URL";
+            if (u1.href !== "https://example.com/") throw "should have correct href";
+
+            let u2 = URL.parse("http://foo.com/bar?baz=1#frag");
+            if (u2 === null) throw "should not return null for valid HTTP URL";
+            if (u2.protocol !== "http:") throw "should have correct protocol";
+            if (u2.hostname !== "foo.com") throw "should have correct hostname";
+            if (u2.search !== "?baz=1") throw "should have correct search";
+            if (u2.hash !== '#frag') throw "should have correct hash";
+
+            // Invalid URLs
+            if (URL.parse("not a url") !== null) throw "should return null for invalid URL";
+            if (URL.parse("::::not a url") !== null) throw "should return null for invalid URL with colons";
+
+            // With base URL
+            let u3 = URL.parse("/path", "https://example.com");
+            if (u3 === null) throw "should parse relative URL with base";
+            if (u3.href !== "https://example.com/path") throw "should resolve relative URL with base correctly";
+
+            if (URL.parse("/path", "invalid base") !== null) throw "should return null with invalid base URL";
+            if (URL.parse("/path") !== null) throw "should return null with relative URL and no base";
+
+            // Optional base argument null/undefined
+            let u4 = URL.parse("https://example.com/", null);
+            if (u4 === null) throw "should parse with null base";
+            if (u4.href !== "https://example.com/") throw "should parse with null base correctly";
+
+            let u5 = URL.parse("https://example.com/", undefined);
+            if (u5 === null) throw "should parse with undefined base";
+            if (u5.href !== "https://example.com/") throw "should parse with undefined base correctly";
+
+            if (URL.parse("/path", null) !== null) throw "should not parse relative with null base";
+
+            // Argument coercion (no throw on parse failure)
+            if (URL.parse() !== null) throw "should return null on omitted argument (undefined)";
+            
+            // Symbol coercion should throw standard error (does not return null)
+            let threw_symbol = false;
+            try {
+                URL.parse(Symbol("foo"));
             } catch (e) {
                 threw_symbol = true;
             }
