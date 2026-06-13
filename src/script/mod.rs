@@ -22,6 +22,7 @@ use std::collections::HashMap;
 pub mod crypto;
 pub mod event;
 pub mod formdata;
+pub mod headers;
 pub mod navigator;
 pub mod performance;
 
@@ -160,6 +161,23 @@ impl BoaHost {
         let _ = context.register_global_class::<URLSearchParams>();
         let _ = context.register_global_class::<UrlObject>();
         let _ = context.register_global_class::<formdata::FormData>();
+        let _ = context.register_global_class::<headers::Headers>();
+        if let Ok(headers_constructor) = context
+            .global_object()
+            .get(JsString::from("Headers"), context)
+            && let Some(headers_constructor_obj) = headers_constructor.as_object()
+            && let Ok(prototype) = headers_constructor_obj.get(JsString::from("prototype"), context)
+            && let Some(proto_obj) = prototype.as_object()
+            && let Ok(entries_fn) = proto_obj.get(JsString::from("entries"), context)
+            && let Ok(symbol_obj) = context
+                .global_object()
+                .get(JsString::from("Symbol"), context)
+            && let Some(sym_obj) = symbol_obj.as_object()
+            && let Ok(iterator_symbol) = sym_obj.get(JsString::from("iterator"), context)
+            && let Ok(iterator_symbol_key) = iterator_symbol.to_property_key(context)
+        {
+            let _ = proto_obj.set(iterator_symbol_key, entries_fn, false, context);
+        }
         let _ = context.register_global_class::<AbortSignal>();
         let _ = context.register_global_class::<AbortController>();
         let _ = context.register_global_class::<DOMParser>();
