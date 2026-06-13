@@ -1805,6 +1805,50 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'accessKey', {
+                        get() {
+                            return this.getAttribute('accesskey') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('accesskey', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'autocapitalize', {
+                        get() {
+                            return this.getAttribute('autocapitalize') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('autocapitalize', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'enterKeyHint', {
+                        get() {
+                            return this.getAttribute('enterkeyhint') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('enterkeyhint', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'inputMode', {
+                        get() {
+                            return this.getAttribute('inputmode') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('inputmode', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'hidden', {
                         get() {
                             return this.hasAttribute('hidden');
@@ -12757,6 +12801,52 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|rtl|ltr||en|fr|false|true||true|false|false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_new_reflected_properties() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. accessKey string reflected attribute (reflects lowercase 'accesskey')
+            let div_ak = document.createElement('div');
+            let ak1 = div_ak.accessKey; // absent default
+            div_ak.accessKey = 'a';
+            let ak2 = div_ak.getAttribute('accesskey'); // setter wrote content attribute
+            div_ak.setAttribute('accesskey', 'b');
+            let ak3 = div_ak.accessKey; // getter reads content attribute
+
+            // 2. autocapitalize string reflected attribute (reflects lowercase 'autocapitalize')
+            let div_ac = document.createElement('div');
+            let ac1 = div_ac.autocapitalize; // absent default
+            div_ac.autocapitalize = 'words';
+            let ac2 = div_ac.getAttribute('autocapitalize'); // setter wrote content attribute
+            div_ac.setAttribute('autocapitalize', 'sentences');
+            let ac3 = div_ac.autocapitalize; // getter reads content attribute
+
+            // 3. enterKeyHint string reflected attribute (reflects lowercase 'enterkeyhint')
+            let div_ek = document.createElement('div');
+            let ek1 = div_ek.enterKeyHint; // absent default
+            div_ek.enterKeyHint = 'search';
+            let ek2 = div_ek.getAttribute('enterkeyhint'); // setter wrote content attribute
+            div_ek.setAttribute('enterkeyhint', 'done');
+            let ek3 = div_ek.enterKeyHint; // getter reads content attribute
+
+            // 4. inputMode string reflected attribute (reflects lowercase 'inputmode')
+            let div_im = document.createElement('div');
+            let im1 = div_im.inputMode; // absent default
+            div_im.inputMode = 'numeric';
+            let im2 = div_im.getAttribute('inputmode'); // setter wrote content attribute
+            div_im.setAttribute('inputmode', 'url');
+            let im3 = div_im.inputMode; // getter reads content attribute
+
+            [ak1, ak2, ak3, ac1, ac2, ac3, ek1, ek2, ek3, im1, im2, im3].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|a|b||words|sentences||search|done||numeric|url".to_string())
         );
     }
 
