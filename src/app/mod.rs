@@ -182,6 +182,7 @@ impl BrowserSession {
                 }
             }
         }
+        let _ = self.flush_pending_layout();
     }
 
     /// If the DOM has pending mutations, recompute styles, re-layout via
@@ -993,5 +994,98 @@ mod tests {
                 .expect("Could not find updated box rect");
         assert_eq!(updated_rect.size.width, 200.0);
         assert_eq!(updated_rect.size.height, 120.0);
+    }
+
+    #[test]
+    fn test_handle_input_event_automatic_layout_flush() {
+        let html = r#"
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <style>
+              input { display: block; width: 200px; height: 40px; }
+            </style>
+            </head>
+            <body>
+              <input name="q" id="search-input">
+            </body>
+            </html>
+        "#;
+
+        let base_url = Url::parse("https://example.com/").unwrap();
+        let loader = TestMockLoader {
+            responses: HashMap::new(),
+        };
+
+        let page = render_page(html, &base_url, &loader, 800.0);
+        let browsing_context = BrowsingContext::new(page);
+        let input_manager = ShellInputManager::new();
+        let form_state = FormState::new();
+
+        let mut session = BrowserSession::new(
+            browsing_context,
+            input_manager,
+            form_state,
+            base_url,
+            800,
+            600,
+        );
+
+        // Find the input element "q"
+        let doc = session.browsing_context.page.dom.document();
+        let mut input_id = None;
+        for node_id in session.browsing_context.page.dom.descendants(doc) {
+            if let Some(NodeData::Element { name, .. }) =
+                session.browsing_context.page.dom.data(node_id)
+                && name.eq_ignore_ascii_case("input")
+            {
+                input_id = Some(node_id);
+                break;
+            }
+        }
+        let input_id = input_id.expect("Could not find input element");
+
+        // Click on the input element to focus it.
+        let input_rect =
+            crate::layout::find_box_rect(&session.browsing_context.page.layout, input_id)
+                .expect("Could not find input layout rect");
+        let click_x = input_rect.origin.x + 10.0;
+        let click_y = input_rect.origin.y + 10.0;
+
+        session.handle_input_event(
+            InputEvent::Click {
+                x: click_x as f64,
+                y: click_y as f64,
+            },
+            &loader,
+        );
+
+        // Clear initial dirty state from rendering and clicking
+        session.browsing_context.page.dom.clear_dirty();
+        assert!(!session.browsing_context.page.dom.has_dirty());
+
+        // Type characters: "a"
+        session.handle_input_event(
+            InputEvent::Key {
+                key: "a".to_string(),
+            },
+            &loader,
+        );
+
+        // After typing, dirty state should have been automatically flushed and consumed.
+        assert!(!session.browsing_context.page.dom.has_dirty());
+
+        // Verify the value attribute in the DOM is set to "a"
+        if let Some(NodeData::Element { attrs, .. }) =
+            session.browsing_context.page.dom.data(input_id)
+        {
+            let val_attr = attrs
+                .iter()
+                .find(|(k, _)| k == "value")
+                .map(|(_, v)| v.as_str());
+            assert_eq!(val_attr, Some("a"));
+        } else {
+            panic!("input node should be an element");
+        }
     }
 }
