@@ -23,6 +23,7 @@ pub enum PositionValue {
     Relative,
     Absolute,
     Fixed,
+    Sticky,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -335,7 +336,7 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
-                    "static" | "relative" | "absolute" | "fixed"
+                    "static" | "relative" | "absolute" | "fixed" | "sticky"
                 )
             }
             CssValue::Position(_) => true,
@@ -532,6 +533,7 @@ pub fn parse_property_value(
                     "relative" => PositionValue::Relative,
                     "absolute" => PositionValue::Absolute,
                     "fixed" => PositionValue::Fixed,
+                    "sticky" => PositionValue::Sticky,
                     _ => return None,
                 };
                 Some(CssValue::Position(typed))
@@ -1606,6 +1608,10 @@ mod tests {
             Some(CssValue::Position(PositionValue::Fixed))
         );
         assert_eq!(
+            parse_property_value("position", &[token(CssToken::Ident("sticky".to_string()))]),
+            Some(CssValue::Position(PositionValue::Sticky))
+        );
+        assert_eq!(
             parse_property_value(
                 "position",
                 &[token(CssToken::Ident("invalid-pos".to_string()))]
@@ -1641,6 +1647,19 @@ mod tests {
         // Test overflow-x and overflow-y
         assert!(is_known_layout_property("overflow-x"));
         assert!(is_known_layout_property("overflow-y"));
+
+        assert!(is_valid_property_value(
+            "position",
+            &CssValue::Position(PositionValue::Sticky)
+        ));
+        assert!(is_valid_property_value(
+            "position",
+            &CssValue::Keyword("sticky".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "position",
+            &CssValue::Keyword("invalid-pos".to_string())
+        ));
 
         assert!(is_valid_property_value(
             "overflow-x",
