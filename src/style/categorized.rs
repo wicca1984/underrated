@@ -1795,8 +1795,9 @@ impl CategorizedComputedStyle {
 fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     use crate::css::values::{
         AlignItemsValue, BackfaceVisibilityValue, BackgroundBlendModeValue, BoxSizingValue, Color,
-        CssValue, DisplayValue, FlexDirectionValue, IsolationValue, JustifyContentValue,
-        LengthUnit, MixBlendModeValue, OverflowValue, PositionValue, ResizeValue, ZIndex,
+        CssValue, DisplayValue, EmptyCellsValue, FlexDirectionValue, IsolationValue,
+        JustifyContentValue, LengthUnit, MixBlendModeValue, OverflowValue, PositionValue,
+        ResizeValue, ZIndex,
     };
     match val {
         CssValue::Keyword(s) => s.clone(),
@@ -2038,6 +2039,10 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::BackfaceVisibility(bv) => match bv {
             BackfaceVisibilityValue::Visible => "visible".to_string(),
             BackfaceVisibilityValue::Hidden => "hidden".to_string(),
+        },
+        CssValue::EmptyCells(ec) => match ec {
+            EmptyCellsValue::Show => "show".to_string(),
+            EmptyCellsValue::Hide => "hide".to_string(),
         },
     }
 }
@@ -2511,6 +2516,20 @@ mod tests {
                 BackfaceVisibilityValue::Hidden
             )),
             "hidden".to_string()
+        );
+    }
+
+    #[test]
+    fn test_empty_cells_serialization() {
+        use crate::css::values::{CssValue, EmptyCellsValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::EmptyCells(EmptyCellsValue::Show)),
+            "show".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::EmptyCells(EmptyCellsValue::Hide)),
+            "hide".to_string()
         );
     }
 }

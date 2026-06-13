@@ -1067,6 +1067,7 @@ pub enum CssValue {
     Isolation(IsolationValue),
     Resize(ResizeValue),
     BackfaceVisibility(BackfaceVisibilityValue),
+    EmptyCells(EmptyCellsValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1164,6 +1165,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "isolation"
             | "resize"
             | "backface-visibility"
+            | "empty-cells"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -1286,6 +1288,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "visible" | "hidden")
             }
             CssValue::BackfaceVisibility(_) => true,
+            _ => false,
+        },
+        "empty-cells" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "show" | "hide")
+            }
+            CssValue::EmptyCells(_) => true,
             _ => false,
         },
         "position" => match value {
@@ -1898,6 +1907,27 @@ fn parse_backface_visibility(components: &[ComponentValue]) -> Option<CssValue> 
     Some(CssValue::BackfaceVisibility(kw))
 }
 
+fn parse_empty_cells(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for empty-cells recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = EmptyCellsValue::parse(&idents[0])?;
+    Some(CssValue::EmptyCells(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -1927,6 +1957,9 @@ pub fn parse_property_value(
     }
     if name_lower == "backface-visibility" {
         return parse_backface_visibility(components);
+    }
+    if name_lower == "empty-cells" {
+        return parse_empty_cells(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -6260,5 +6293,52 @@ mod tests {
             BackfaceVisibilityValue::parse("VISIBLE"),
             Some(BackfaceVisibilityValue::Visible)
         );
+    }
+
+    #[test]
+    fn test_empty_cells_parsing_and_recognition() {
+        // Test empty-cells: show
+        assert_eq!(
+            parse_property_value("empty-cells", &[token(CssToken::Ident("show".to_string()))]),
+            Some(CssValue::EmptyCells(EmptyCellsValue::Show))
+        );
+
+        // Test empty-cells: hide
+        assert_eq!(
+            parse_property_value("empty-cells", &[token(CssToken::Ident("hide".to_string()))]),
+            Some(CssValue::EmptyCells(EmptyCellsValue::Hide))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value(
+                "empty-cells",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("empty-cells"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "empty-cells",
+            &CssValue::EmptyCells(EmptyCellsValue::Show)
+        ));
+        assert!(is_valid_property_value(
+            "empty-cells",
+            &CssValue::Keyword("show".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "empty-cells",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test EmptyCellsValue::parse directly
+        assert_eq!(EmptyCellsValue::parse("show"), Some(EmptyCellsValue::Show));
+        assert_eq!(EmptyCellsValue::parse("hide"), Some(EmptyCellsValue::Hide));
+        assert_eq!(EmptyCellsValue::parse("banana"), None);
+        assert_eq!(EmptyCellsValue::parse("SHOW"), Some(EmptyCellsValue::Show));
     }
 }
