@@ -160,6 +160,7 @@ pub struct ResetBox {
     pub max_height: i32,
     pub vertical_align: i32,
     pub object_fit: String,
+    pub object_position: String,
     pub pointer_events: String,
     pub aspect_ratio: String,
 }
@@ -182,6 +183,7 @@ impl Default for ResetBox {
             max_height: -1,
             vertical_align: -1,
             object_fit: "fill".to_string(),
+            object_position: "50% 50%".to_string(),
             pointer_events: "auto".to_string(),
             aspect_ratio: "auto".to_string(),
         }
@@ -824,6 +826,9 @@ impl CategorizedComputedStyle {
             "object-fit" => {
                 Arc::make_mut(&mut self.reset_box).object_fit = css_value_to_string(value)
             }
+            "object-position" => {
+                Arc::make_mut(&mut self.reset_box).object_position = css_value_to_string(value)
+            }
             "pointer-events" => {
                 Arc::make_mut(&mut self.reset_box).pointer_events = css_value_to_string(value)
             }
@@ -1435,6 +1440,7 @@ impl CategorizedComputedStyle {
                 v => format!("{}px", v),
             }),
             "object-fit" => Some(self.reset_box.object_fit.clone()),
+            "object-position" => Some(self.reset_box.object_position.clone()),
             "pointer-events" => Some(self.reset_box.pointer_events.clone()),
             "aspect-ratio" => Some(self.reset_box.aspect_ratio.clone()),
 

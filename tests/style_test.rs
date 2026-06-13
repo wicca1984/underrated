@@ -225,3 +225,27 @@ fn test_box_model_resolutions() {
         Some(&CssValue::Keyword("border-box".to_string()))
     );
 }
+
+#[test]
+fn test_object_position_style() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+    let img = dom.create_node(NodeData::Element {
+        name: "img".into(),
+        attrs: vec![("style".into(), "object-position: center;".into())],
+    });
+    dom.append_child(doc, img);
+
+    let stylesheet = parse_stylesheet("img { object-fit: contain; }");
+    let styles = compute_styles_with_viewport(&dom, &stylesheet, 1024.0);
+
+    let img_style = styles.get(&img).unwrap();
+    assert_eq!(
+        img_style.get("object-position"),
+        Some(&CssValue::Keyword("center".to_string()))
+    );
+    assert_eq!(
+        img_style.get("object-fit"),
+        Some(&CssValue::Keyword("contain".to_string()))
+    );
+}

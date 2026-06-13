@@ -545,6 +545,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "fill",
     },
     PropertyMetadata {
+        name: "object-position",
+        inherited: false,
+        initial: "50% 50%",
+    },
+    PropertyMetadata {
         name: "pointer-events",
         inherited: false,
         initial: "auto",
@@ -758,6 +763,16 @@ mod tests {
         assert_eq!(mix_blend_mode.name, "mix-blend-mode");
         assert!(!mix_blend_mode.inherited);
         assert_eq!(mix_blend_mode.initial, "normal");
+    }
+
+    #[test]
+    fn test_additive_properties_t0471() {
+        let object_position = lookup("object-position");
+        assert!(object_position.is_some());
+        let object_position = object_position.unwrap();
+        assert_eq!(object_position.name, "object-position");
+        assert!(!object_position.inherited);
+        assert_eq!(object_position.initial, "50% 50%");
     }
 
     #[test]
