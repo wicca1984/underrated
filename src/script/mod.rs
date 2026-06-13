@@ -166,6 +166,7 @@ impl BoaHost {
         let _ = context.register_global_class::<MutationObserver>();
         let _ = context.register_global_class::<MutationRecord>();
         let _ = context.register_global_class::<IntersectionObserver>();
+        let _ = context.register_global_class::<ResizeObserver>();
         let _ = context.register_global_class::<Blob>();
 
         let bridge = ObjectInitializer::new(context)
@@ -8435,6 +8436,183 @@ pub fn intersection_observer_get_thresholds(
     Ok(JsValue::from(array))
 }
 
+/// An active observation setup on a target DOM Node for `ResizeObserver`.
+#[derive(Debug, Trace, Finalize, Clone)]
+pub struct ResizeObservation {
+    pub target: JsValue,
+    pub target_key: String,
+}
+
+/// Implementation of W3C `ResizeObserver` interface.
+/// Spec: <https://drafts.csswg.org/resize-observer/#resize-observer-interface>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct ResizeObserver {
+    pub(crate) callback: JsValue,
+    pub(crate) active_observations: GcRefCell<Vec<ResizeObservation>>,
+}
+
+impl Class for ResizeObserver {
+    const NAME: &'static str = "ResizeObserver";
+    const LENGTH: usize = 1;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+        if !callback.is_callable() {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "TypeError: ResizeObserver constructor requires a callback function",
+            )));
+        }
+
+        Ok(ResizeObserver {
+            callback,
+            active_observations: GcRefCell::new(Vec::new()),
+        })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        class
+            .method(
+                JsString::from("observe"),
+                1,
+                NativeFunction::from_fn_ptr(resize_observer_observe),
+            )
+            .method(
+                JsString::from("unobserve"),
+                1,
+                NativeFunction::from_fn_ptr(resize_observer_unobserve),
+            )
+            .method(
+                JsString::from("disconnect"),
+                0,
+                NativeFunction::from_fn_ptr(resize_observer_disconnect),
+            );
+
+        Ok(())
+    }
+}
+
+pub fn resize_observer_observe(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<ResizeObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-ResizeObserver object"),
+        )
+    })?;
+
+    let target = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: observe() requires target parameter"),
+        )
+    })?;
+
+    let target_obj = target.as_object().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: target must be a DOM Node (object)"),
+        )
+    })?;
+
+    let key_val = target_obj.get(JsString::from("__key__"), context)?;
+    if key_val.is_undefined() || key_val.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: target must be a DOM Node with a __key__",
+        )));
+    }
+    let target_key = key_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    // Check if duplicate target is being observed
+    let mut active = observer.active_observations.borrow_mut();
+    if !active.iter().any(|obs| obs.target_key == target_key) {
+        active.push(ResizeObservation {
+            target: target.clone(),
+            target_key,
+        });
+    }
+
+    // TODO(spec): real layout-driven size-change notifications (ResizeObserverEntry) are out of scope for now.
+
+    Ok(JsValue::undefined())
+}
+
+pub fn resize_observer_unobserve(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<ResizeObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-ResizeObserver object"),
+        )
+    })?;
+
+    let target = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: unobserve() requires target parameter"),
+        )
+    })?;
+
+    let target_obj = target.as_object().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: target must be a DOM Node (object)"),
+        )
+    })?;
+
+    let key_val = target_obj.get(JsString::from("__key__"), context)?;
+    if key_val.is_undefined() || key_val.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: target must be a DOM Node with a __key__",
+        )));
+    }
+    let target_key = key_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let mut active = observer.active_observations.borrow_mut();
+    if let Some(pos) = active.iter().position(|obs| obs.target_key == target_key) {
+        active.remove(pos);
+    }
+
+    Ok(JsValue::undefined())
+}
+
+pub fn resize_observer_disconnect(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<ResizeObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-ResizeObserver object"),
+        )
+    })?;
+
+    observer.active_observations.borrow_mut().clear();
+
+    Ok(JsValue::undefined())
+}
+
 /// Implementation of WHATWG DOM `CustomEvent` interface.
 /// Spec: <https://dom.spec.whatwg.org/#interface-customevent>
 #[derive(Debug, Trace, Finalize, JsData)]
@@ -9183,6 +9361,63 @@ mod tests {
             // takeRecords initially empty
             const initial = observer.takeRecords();
             if (initial.length !== 0) throw "takeRecords should be empty";
+
+            // observe targets
+            observer.observe(div1);
+            observer.observe(div2);
+
+            // unobserve
+            observer.unobserve(div1);
+
+            // disconnect
+            observer.disconnect();
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_resize_observer_t0567() {
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        // 1. Basic properties and constructor exist on global, and validation on constructor
+        host.eval_with_dom(
+            r#"{
+            if (typeof ResizeObserver === "undefined") throw "ResizeObserver undefined";
+
+            let thrown = false;
+            try {
+                new ResizeObserver();
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor without callback did not throw TypeError";
+
+            thrown = false;
+            try {
+                new ResizeObserver("not-a-function");
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor with string callback did not throw TypeError";
+
+            const observer = new ResizeObserver(() => {});
+            if (!observer.observe) throw "observe method missing";
+            if (!observer.unobserve) throw "unobserve method missing";
+            if (!observer.disconnect) throw "disconnect method missing";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+
+        // 2. Instance method calls
+        host.eval_with_dom(
+            r#"{
+            const div1 = document.createElement("div");
+            const div2 = document.createElement("div");
+            const observer = new ResizeObserver(() => {});
 
             // observe targets
             observer.observe(div1);
