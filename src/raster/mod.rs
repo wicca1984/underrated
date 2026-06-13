@@ -448,6 +448,190 @@ impl RadialGradient {
     }
 }
 
+/// Represents a color stop in a conic gradient.
+/// spec: S-40 conic-gradient
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConicColorStop {
+    pub color: Color,
+    pub position: Option<f32>, // fraction in 0.0..=1.0
+}
+
+/// Represents a conic gradient background.
+/// spec: S-40 conic-gradient
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConicGradient {
+    pub from_angle: f32, // degrees
+    pub stops: Vec<ConicColorStop>,
+}
+
+fn parse_conic_stop(part: &str) -> Option<ConicColorStop> {
+    let part = part.trim();
+    if let Some(last_space_idx) = part.rfind(' ') {
+        let (color_part, pos_part) = part.split_at(last_space_idx);
+        let pos_part = pos_part.trim();
+        let color_part = color_part.trim();
+
+        let position = if let Some(stripped) = pos_part.strip_suffix('%') {
+            let pct: f32 = stripped.trim().parse().ok()?;
+            Some(pct / 100.0)
+        } else if let Some(stripped) = pos_part.strip_suffix("deg") {
+            let deg: f32 = stripped.trim().parse().ok()?;
+            Some(deg / 360.0)
+        } else {
+            pos_part.parse::<f32>().ok()
+        };
+
+        if let (Some(pos), Some(color)) = (position, parse_color(color_part)) {
+            return Some(ConicColorStop {
+                color,
+                position: Some(pos),
+            });
+        }
+    }
+
+    let color = parse_color(part)?;
+    Some(ConicColorStop {
+        color,
+        position: None,
+    })
+}
+
+fn resolve_stop_positions(stops: &mut [ConicColorStop]) {
+    if stops.is_empty() {
+        return;
+    }
+
+    if stops[0].position.is_none() {
+        stops[0].position = Some(0.0);
+    }
+
+    let last_idx = stops.len() - 1;
+    if stops[last_idx].position.is_none() {
+        stops[last_idx].position = Some(1.0);
+    }
+
+    let mut i = 0;
+    while i < stops.len() {
+        if stops[i].position.is_none() {
+            let mut j = i + 1;
+            while j < stops.len() && stops[j].position.is_none() {
+                j += 1;
+            }
+            let start_pos = stops[i - 1].position.unwrap_or(0.0);
+            let end_pos = stops[j].position.unwrap_or(1.0);
+            let count = (j - i + 1) as f32;
+            for (step_idx, stop) in stops[i..j].iter_mut().enumerate() {
+                let step = (step_idx + 1) as f32;
+                stop.position = Some(start_pos + (end_pos - start_pos) * (step / count));
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut current_max = 0.0;
+    for stop in stops.iter_mut() {
+        let pos = stop.position.unwrap_or(current_max);
+        if pos < current_max {
+            stop.position = Some(current_max);
+        } else {
+            current_max = pos;
+        }
+    }
+}
+
+fn sample_conic_gradient(stops: &[ConicColorStop], t: f32) -> Color {
+    if stops.is_empty() {
+        return Color::Rgba(0, 0, 0, 255);
+    }
+    let t = t.clamp(0.0, 1.0);
+
+    let first_pos = stops[0].position.unwrap_or(0.0);
+    if t <= first_pos {
+        return stops[0].color.clone();
+    }
+
+    let last_pos = stops[stops.len() - 1].position.unwrap_or(1.0);
+    if t >= last_pos {
+        return stops[stops.len() - 1].color.clone();
+    }
+
+    for idx in 0..stops.len() - 1 {
+        let p1 = stops[idx].position.unwrap_or(0.0);
+        let p2 = stops[idx + 1].position.unwrap_or(1.0);
+        if t >= p1 && t <= p2 {
+            if (p2 - p1).abs() < 1e-5 {
+                return stops[idx + 1].color.clone();
+            }
+            let t_local = (t - p1) / (p2 - p1);
+            return interpolate_color(
+                stops[idx].color.clone(),
+                stops[idx + 1].color.clone(),
+                t_local,
+            );
+        }
+    }
+
+    stops[stops.len() - 1].color.clone()
+}
+
+impl ConicGradient {
+    /// Parses a CSS conic-gradient background string.
+    /// spec: S-40 conic-gradient
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        let content = s.strip_prefix("conic-gradient(")?.strip_suffix(')')?;
+        let parts = split_top_level_commas(content);
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        let mut from_angle = 0.0;
+        let stops_start_idx = if parse_conic_stop(&parts[0]).is_some() {
+            0
+        } else {
+            let config = parts[0].trim().to_ascii_lowercase();
+            if let Some(from_idx) = config.find("from ") {
+                let after_from = &config[from_idx + 5..];
+                let angle_token = after_from.split_whitespace().next()?;
+                if let Some(stripped) = angle_token.strip_suffix("deg") {
+                    from_angle = stripped.trim().parse::<f32>().ok()?;
+                } else if let Some(stripped) = angle_token.strip_suffix("turn") {
+                    let turn = stripped.trim().parse::<f32>().ok()?;
+                    from_angle = turn * 360.0;
+                } else if let Some(stripped) = angle_token.strip_suffix("rad") {
+                    let rad = stripped.trim().parse::<f32>().ok()?;
+                    from_angle = rad.to_degrees();
+                } else {
+                    return None;
+                }
+            }
+
+            if config.contains("at ") {
+                // // TODO(spec): Non-center positions at <position> are deferred to a later version.
+            }
+
+            1
+        };
+
+        let num_stops = parts.len() - stops_start_idx;
+        if num_stops < 2 {
+            return None;
+        }
+
+        let mut stops = Vec::with_capacity(num_stops);
+        for part in &parts[stops_start_idx..] {
+            let stop = parse_conic_stop(part)?;
+            stops.push(stop);
+        }
+
+        resolve_stop_positions(&mut stops);
+        Some(ConicGradient { from_angle, stops })
+    }
+}
+
 /// Splits a string on top-level commas, respecting nested parentheses.
 /// spec: S-40
 fn split_top_level_commas(s: &str) -> Vec<String> {
@@ -652,7 +836,7 @@ fn interpolate_color(c1: Color, c2: Color, t: f32) -> Color {
     Color::Rgba(r, g, b, a)
 }
 
-/// Draws a box's computed linear-gradient or radial-gradient background, with optional border-radius rounded-corner clipping.
+/// Draws a box's computed conic-gradient, linear-gradient or radial-gradient background, with optional border-radius rounded-corner clipping.
 /// spec: S-40
 pub fn rasterize_gradient_box(
     canvas: &mut Canvas,
@@ -661,7 +845,62 @@ pub fn rasterize_gradient_box(
     border_radius: Option<f32>,
 ) {
     let background = background.trim();
-    if background.starts_with("radial-gradient(") {
+    if background.starts_with("conic-gradient(") {
+        let gradient = match ConicGradient::parse(background) {
+            Some(g) => g,
+            None => return, // spec: Ignore invalid gradient formats (I-6)
+        };
+
+        // Clip rendering bounds to the canvas dimensions (prevent out of bounds index - I-6)
+        let x_start = (rect.origin.x.max(0.0).floor() as u32).min(canvas.width);
+        let y_start = (rect.origin.y.max(0.0).floor() as u32).min(canvas.height);
+        let x_end = (rect.max_x().max(0.0).ceil() as u32).min(canvas.width);
+        let y_end = (rect.max_y().max(0.0).ceil() as u32).min(canvas.height);
+
+        let w = rect.size.width;
+        let h = rect.size.height;
+        let cx = rect.origin.x + w / 2.0;
+        let cy = rect.origin.y + h / 2.0;
+
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+
+                // Check if the pixel center is inside the rounded rect
+                if border_radius.is_some_and(|r| !is_inside_rounded_rect(&rect, r, px, py)) {
+                    continue;
+                }
+
+                let dx = px - cx;
+                let dy = py - cy;
+
+                let angle_rad = dy.atan2(dx) + std::f32::consts::FRAC_PI_2;
+                let mut angle_deg = angle_rad.to_degrees();
+                if angle_deg < 0.0 {
+                    angle_deg += 360.0;
+                }
+
+                let mut final_angle = (angle_deg - gradient.from_angle) % 360.0;
+                if final_angle < 0.0 {
+                    final_angle += 360.0;
+                }
+
+                let t = final_angle / 360.0;
+
+                let interpolated = sample_conic_gradient(&gradient.stops, t);
+
+                let (r_s, g_s, b_s, a_s) = match interpolated {
+                    Color::Rgba(r, g, b, a) => (r, g, b, a),
+                };
+
+                let index = (y as usize) * (canvas.width as usize) + (x as usize);
+                if let Some(pixel) = canvas.pixels.get_mut(index) {
+                    *pixel = blend((r_s, g_s, b_s, a_s), *pixel);
+                }
+            }
+        }
+    } else if background.starts_with("radial-gradient(") {
         let gradient = match RadialGradient::parse(background) {
             Some(g) => g,
             None => return, // spec: Ignore invalid gradient formats (I-6)
@@ -1554,5 +1793,101 @@ mod tests {
         assert_eq!(canvas.pixel(2, 2), 0xFFFFFF00); // Yellow
 
         let _ = std::fs::remove_file(temp_filename);
+    }
+
+    #[test]
+    fn test_conic_gradient_parse() {
+        // Simple 2-stop
+        let g1 = ConicGradient::parse("conic-gradient(#ff0000, #0000ff)").unwrap();
+        assert_eq!(g1.from_angle, 0.0);
+        assert_eq!(g1.stops.len(), 2);
+        assert_eq!(g1.stops[0].color, Color::Rgba(255, 0, 0, 255));
+        assert_eq!(g1.stops[0].position, Some(0.0));
+        assert_eq!(g1.stops[1].color, Color::Rgba(0, 0, 255, 255));
+        assert_eq!(g1.stops[1].position, Some(1.0));
+
+        // Leading from 90deg
+        let g2 = ConicGradient::parse("conic-gradient(from 90deg, red, blue)").unwrap();
+        assert_eq!(g2.from_angle, 90.0);
+        assert_eq!(g2.stops.len(), 2);
+
+        // Leading from 0.5turn
+        let g3 = ConicGradient::parse("conic-gradient(from 0.5turn, #ff0000, #0000ff)").unwrap();
+        assert_eq!(g3.from_angle, 180.0);
+        assert_eq!(g3.stops.len(), 2);
+
+        // Custom stop positions
+        let g4 = ConicGradient::parse("conic-gradient(red 10%, green 50deg, blue 0.8)").unwrap();
+        assert_eq!(g4.stops.len(), 3);
+        assert_eq!(g4.stops[0].position, Some(0.1));
+        assert_eq!(g4.stops[1].position, Some(50.0 / 360.0));
+        assert_eq!(g4.stops[2].position, Some(0.8));
+    }
+
+    #[test]
+    fn test_conic_gradient_rendering() {
+        let mut canvas = Canvas::new(9, 9);
+        let rect = Rect::new(0.0, 0.0, 9.0, 9.0);
+
+        rasterize_gradient_box(&mut canvas, rect, "conic-gradient(#ff0000, #0000ff)", None);
+
+        // Near North (0deg, i.e., top-middle, e.g. pixel 4, 1): should be reddish (start of the turn)
+        let top_pixel = canvas.pixel(4, 1);
+        let top_r = (top_pixel >> 16) & 0xFF;
+        let top_b = top_pixel & 0xFF;
+        assert!(top_r > 200, "top_r was {}", top_r);
+        assert!(top_b < 60, "top_b was {}", top_b);
+
+        // Near North-Northwest (e.g. 340deg, i.e., pixel 3, 1): should be bluish (near the end of the turn)
+        let bottom_pixel = canvas.pixel(3, 1);
+        let bottom_r = (bottom_pixel >> 16) & 0xFF;
+        let bottom_b = bottom_pixel & 0xFF;
+        assert!(bottom_r < 60, "bottom_r was {}", bottom_r);
+        assert!(bottom_b > 200, "bottom_b was {}", bottom_b);
+
+        assert_ne!(top_pixel, bottom_pixel);
+    }
+
+    #[test]
+    fn test_conic_gradient_from_rotation() {
+        let mut canvas1 = Canvas::new(9, 9);
+        let mut canvas2 = Canvas::new(9, 9);
+        let rect = Rect::new(0.0, 0.0, 9.0, 9.0);
+
+        // Without from 90deg, East is 90deg / 0.25 (interpolated)
+        rasterize_gradient_box(&mut canvas1, rect, "conic-gradient(#ff0000, #0000ff)", None);
+
+        // With from 90deg, East becomes the starting position (0.0 -> Red)
+        rasterize_gradient_box(
+            &mut canvas2,
+            rect,
+            "conic-gradient(from 90deg, #ff0000, #0000ff)",
+            None,
+        );
+
+        let pixel_no_from = canvas1.pixel(7, 4);
+        let pixel_with_from = canvas2.pixel(7, 4);
+
+        // Without from, (7, 4) should be intermediate purple
+        let r_no = (pixel_no_from >> 16) & 0xFF;
+        let b_no = pixel_no_from & 0xFF;
+        assert!(r_no > 100 && r_no < 210, "r_no was {}", r_no);
+        assert!(b_no > 30 && b_no < 100, "b_no was {}", b_no);
+
+        // With from 90deg, (7, 4) is East, so it should be near starting Red
+        let r_with = (pixel_with_from >> 16) & 0xFF;
+        let b_with = pixel_with_from & 0xFF;
+        assert!(r_with > 220, "r_with was {}", r_with);
+        assert!(b_with < 35, "b_with was {}", b_with);
+
+        assert_ne!(pixel_no_from, pixel_with_from);
+    }
+
+    #[test]
+    fn test_conic_gradient_robustness() {
+        assert!(ConicGradient::parse("conic-gradient()").is_none());
+        assert!(ConicGradient::parse("conic-gradient(red)").is_none());
+        assert!(ConicGradient::parse("conic-gradient(from 90deg)").is_none());
+        assert!(ConicGradient::parse("conic-gradient(invalid_color, blue)").is_none());
     }
 }
