@@ -477,7 +477,7 @@ pub fn render_page(
         crate::style::compute_styles_with_viewport(&dom, &stylesheet, viewport_width);
 
     // 4. Run inline scripts with computed styles
-    dom = crate::script::run_inline_scripts(dom, &pre_script_styles);
+    dom = crate::script::run_scripts(dom, &pre_script_styles, base_url, loader);
 
     // 6. Compute styles again with viewport (since scripts might have mutated the DOM)
     let styles = crate::style::compute_styles_with_viewport(&dom, &stylesheet, viewport_width);
