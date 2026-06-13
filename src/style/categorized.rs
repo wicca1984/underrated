@@ -1958,6 +1958,36 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
+        CssValue::ScrollSnapType(sst) => match sst {
+            crate::css::values::ScrollSnapTypeValue::None => "none".to_string(),
+            crate::css::values::ScrollSnapTypeValue::Axis(axis, strictness) => {
+                let axis_str = match axis {
+                    crate::css::values::ScrollSnapAxis::X => "x",
+                    crate::css::values::ScrollSnapAxis::Y => "y",
+                    crate::css::values::ScrollSnapAxis::Block => "block",
+                    crate::css::values::ScrollSnapAxis::Inline => "inline",
+                    crate::css::values::ScrollSnapAxis::Both => "both",
+                };
+                let strict_str = match strictness {
+                    crate::css::values::ScrollSnapStrictness::Mandatory => "mandatory",
+                    crate::css::values::ScrollSnapStrictness::Proximity => "proximity",
+                };
+                format!("{} {}", axis_str, strict_str)
+            }
+        },
+        CssValue::ScrollSnapAlign(ssa) => {
+            let fmt_kw = |kw: crate::css::values::ScrollSnapAlignKeyword| match kw {
+                crate::css::values::ScrollSnapAlignKeyword::None => "none",
+                crate::css::values::ScrollSnapAlignKeyword::Start => "start",
+                crate::css::values::ScrollSnapAlignKeyword::End => "end",
+                crate::css::values::ScrollSnapAlignKeyword::Center => "center",
+            };
+            if ssa.block == ssa.inline {
+                fmt_kw(ssa.block).to_string()
+            } else {
+                format!("{} {}", fmt_kw(ssa.block), fmt_kw(ssa.inline))
+            }
+        }
     }
 }
 
