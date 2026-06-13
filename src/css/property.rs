@@ -544,6 +544,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "all",
     },
+    PropertyMetadata {
+        name: "column-count",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "column-width",
+        inherited: false,
+        initial: "auto",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -629,6 +639,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "place-self",
         longhands: &["align-self", "justify-self"],
+    },
+    ShorthandExpansion {
+        name: "columns",
+        longhands: &["column-width", "column-count"],
     },
 ];
 
