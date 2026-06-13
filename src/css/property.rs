@@ -878,6 +878,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         longhands: &["margin-top", "margin-right", "margin-bottom", "margin-left"],
     },
     ShorthandExpansion {
+        name: "margin-block",
+        longhands: &["margin-block-start", "margin-block-end"],
+    },
+    ShorthandExpansion {
+        name: "margin-inline",
+        longhands: &["margin-inline-start", "margin-inline-end"],
+    },
+    ShorthandExpansion {
         name: "outline",
         longhands: &["outline-width", "outline-style", "outline-color"],
     },
@@ -893,6 +901,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "padding-bottom",
             "padding-left",
         ],
+    },
+    ShorthandExpansion {
+        name: "padding-block",
+        longhands: &["padding-block-start", "padding-block-end"],
+    },
+    ShorthandExpansion {
+        name: "padding-inline",
+        longhands: &["padding-inline-start", "padding-inline-end"],
     },
     ShorthandExpansion {
         name: "place-content",
@@ -1286,6 +1302,22 @@ mod tests {
         assert_eq!(
             shorthand_longhands("margin"),
             Some(&["margin-top", "margin-right", "margin-bottom", "margin-left"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("margin-block"),
+            Some(&["margin-block-start", "margin-block-end"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("margin-inline"),
+            Some(&["margin-inline-start", "margin-inline-end"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("padding-block"),
+            Some(&["padding-block-start", "padding-block-end"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("padding-inline"),
+            Some(&["padding-inline-start", "padding-inline-end"][..])
         );
 
         let overflow = shorthand_longhands("OVERFLOW");
