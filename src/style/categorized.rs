@@ -36,6 +36,7 @@ pub struct InheritedText {
     pub text_indent: i32,
     pub word_break: String,
     pub line_break: String,
+    pub text_orientation: String,
     pub overflow_wrap: String,
     pub text_align_last: String,
     pub tab_size: u32,
@@ -70,6 +71,7 @@ impl Default for InheritedText {
             text_indent: -1,
             word_break: "normal".to_string(),
             line_break: "auto".to_string(),
+            text_orientation: "mixed".to_string(),
             overflow_wrap: "normal".to_string(),
             text_align_last: "auto".to_string(),
             tab_size: 8,
@@ -525,6 +527,7 @@ fn is_inherited_property_name(name: &str) -> bool {
             | "text-indent"
             | "word-break"
             | "line-break"
+            | "text-orientation"
             | "overflow-wrap"
             | "word-wrap"
             | "list-style-type"
@@ -801,6 +804,10 @@ impl CategorizedComputedStyle {
             }
             "line-break" => {
                 Arc::make_mut(&mut self.inherited_text).line_break = css_value_to_string(value)
+            }
+            "text-orientation" => {
+                Arc::make_mut(&mut self.inherited_text).text_orientation =
+                    css_value_to_string(value)
             }
             // `word-wrap` is the legacy alias of `overflow-wrap`; normalize both
             // into the same typed field (the raw alias was lost in the migration).
@@ -1488,6 +1495,7 @@ impl CategorizedComputedStyle {
             }),
             "word-break" => Some(self.inherited_text.word_break.clone()),
             "line-break" => Some(self.inherited_text.line_break.clone()),
+            "text-orientation" => Some(self.inherited_text.text_orientation.clone()),
             "overflow-wrap" => Some(self.inherited_text.overflow_wrap.clone()),
             "text-align-last" => Some(self.inherited_text.text_align_last.clone()),
             "tab-size" => Some(self.inherited_text.tab_size.to_string()),
@@ -2072,6 +2080,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         },
         CssValue::Hyphens(h) => h.as_str().to_string(),
         CssValue::LineBreak(lb) => lb.as_str().to_string(),
+        CssValue::TextOrientation(to) => to.as_str().to_string(),
         CssValue::TextRendering(tr) => tr.as_str().to_string(),
         CssValue::ImageRendering(ir) => ir.as_str().to_string(),
         CssValue::FontVariantCaps(fvc) => fvc.as_str().to_string(),
@@ -2668,6 +2677,52 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::LineBreak(LineBreakValue::Anywhere)),
             "anywhere".to_string()
+        );
+    }
+
+    #[test]
+    fn test_text_orientation_style_categorization() {
+        use crate::css::values::{CssValue, TextOrientationValue};
+
+        let mut style = CategorizedComputedStyle::initial();
+        // Check initial default is mixed
+        assert_eq!(
+            style.get_property_as_string("text-orientation"),
+            Some("mixed".to_string())
+        );
+
+        // Set to upright and read back
+        style.set_property(
+            "text-orientation",
+            &CssValue::TextOrientation(TextOrientationValue::Upright),
+        );
+        assert_eq!(
+            style.get_property_as_string("text-orientation"),
+            Some("upright".to_string())
+        );
+
+        // Set to sideways and read back
+        style.set_property(
+            "text-orientation",
+            &CssValue::TextOrientation(TextOrientationValue::Sideways),
+        );
+        assert_eq!(
+            style.get_property_as_string("text-orientation"),
+            Some("sideways".to_string())
+        );
+
+        // Test css_value_to_string serialization directly
+        assert_eq!(
+            css_value_to_string(&CssValue::TextOrientation(TextOrientationValue::Mixed)),
+            "mixed".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::TextOrientation(TextOrientationValue::Upright)),
+            "upright".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::TextOrientation(TextOrientationValue::Sideways)),
+            "sideways".to_string()
         );
     }
 

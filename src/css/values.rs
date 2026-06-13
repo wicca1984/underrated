@@ -457,8 +457,9 @@ impl TryFrom<&CssValue> for WritingModeValue {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum TextOrientationValue {
+    #[default]
     Mixed,
     Upright,
     Sideways,
@@ -469,7 +470,7 @@ impl TextOrientationValue {
         match s.to_ascii_lowercase().as_str() {
             "mixed" => Some(Self::Mixed),
             "upright" => Some(Self::Upright),
-            "sideways" | "sideways-right" => Some(Self::Sideways),
+            "sideways" => Some(Self::Sideways),
             _ => None,
         }
     }
@@ -497,6 +498,7 @@ impl TryFrom<&CssValue> for TextOrientationValue {
     fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
         match value {
             CssValue::Keyword(s) => s.parse(),
+            CssValue::TextOrientation(v) => Ok(*v),
             _ => Err(()),
         }
     }
@@ -1507,6 +1509,7 @@ pub enum CssValue {
     UnicodeBidi(UnicodeBidiValue),
     Hyphens(HyphensValue),
     LineBreak(LineBreakValue),
+    TextOrientation(TextOrientationValue),
     TextRendering(TextRenderingValue),
     ImageRendering(ImageRenderingValue),
     FontVariantCaps(FontVariantCapsValue),
@@ -1632,6 +1635,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "text-justify"
             | "word-break"
             | "line-break"
+            | "text-orientation"
             | "overflow-wrap"
             | "word-wrap"
             | "object-fit"
@@ -1772,6 +1776,16 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::LineBreak(_) => true,
+            _ => false,
+        },
+        "text-orientation" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "mixed" | "upright" | "sideways"
+                )
+            }
+            CssValue::TextOrientation(_) => true,
             _ => false,
         },
         "text-rendering" => match value {
@@ -2520,6 +2534,26 @@ fn parse_line_break(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::LineBreak(kw))
 }
 
+fn parse_text_orientation(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for text-orientation recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = TextOrientationValue::parse(&idents[0])?;
+    Some(CssValue::TextOrientation(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2645,6 +2679,9 @@ pub fn parse_property_value(
     }
     if name_lower == "line-break" {
         return parse_line_break(components);
+    }
+    if name_lower == "text-orientation" {
+        return parse_text_orientation(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -4751,10 +4788,6 @@ mod tests {
             Some(TextOrientationValue::Sideways)
         );
         assert_eq!(
-            TextOrientationValue::parse("sideways-right"),
-            Some(TextOrientationValue::Sideways)
-        );
-        assert_eq!(
             TextOrientationValue::parse("MIXED"),
             Some(TextOrientationValue::Mixed)
         );
@@ -4762,10 +4795,7 @@ mod tests {
             TextOrientationValue::parse("Upright"),
             Some(TextOrientationValue::Upright)
         );
-        assert_eq!(
-            TextOrientationValue::parse("Sideways-Right"),
-            Some(TextOrientationValue::Sideways)
-        );
+        assert_eq!(TextOrientationValue::parse("sideways-right"), None);
         assert_eq!(TextOrientationValue::parse("invalid"), None);
 
         // Test FromStr implementation
@@ -4781,10 +4811,7 @@ mod tests {
             "sideways".parse::<TextOrientationValue>(),
             Ok(TextOrientationValue::Sideways)
         );
-        assert_eq!(
-            "sideways-right".parse::<TextOrientationValue>(),
-            Ok(TextOrientationValue::Sideways)
-        );
+        assert_eq!("sideways-right".parse::<TextOrientationValue>(), Err(()));
         assert_eq!("BOGUS".parse::<TextOrientationValue>(), Err(()));
 
         // Test serialization to canonical CSS keywords
@@ -4802,13 +4829,22 @@ mod tests {
             Ok(TextOrientationValue::Mixed)
         );
         assert_eq!(
-            TextOrientationValue::try_from(&CssValue::Keyword("sideways-right".to_string())),
+            TextOrientationValue::try_from(&CssValue::TextOrientation(
+                TextOrientationValue::Sideways
+            )),
             Ok(TextOrientationValue::Sideways)
+        );
+        assert_eq!(
+            TextOrientationValue::try_from(&CssValue::Keyword("sideways-right".to_string())),
+            Err(())
         );
         assert_eq!(
             TextOrientationValue::try_from(&CssValue::Number(1.0)),
             Err(())
         );
+
+        // Test Default implementation
+        assert_eq!(TextOrientationValue::default(), TextOrientationValue::Mixed);
     }
 
     #[test]
@@ -6943,6 +6979,48 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "line-break",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for text-orientation
+        assert!(is_known_layout_property("text-orientation"));
+        assert!(is_known_layout_property("Text-Orientation"));
+
+        for (val, expected_variant) in &[
+            ("mixed", TextOrientationValue::Mixed),
+            ("upright", TextOrientationValue::Upright),
+            ("sideways", TextOrientationValue::Sideways),
+            ("MIXED", TextOrientationValue::Mixed),
+            ("Upright", TextOrientationValue::Upright),
+        ] {
+            assert_eq!(
+                parse_property_value(
+                    "text-orientation",
+                    &[token(CssToken::Ident((*val).to_string()))]
+                ),
+                Some(CssValue::TextOrientation(*expected_variant))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "text-orientation",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &["mixed", "upright", "sideways", "MIXED", "Upright"] {
+            assert!(is_valid_property_value(
+                "text-orientation",
+                &CssValue::Keyword((*val).to_string())
+            ));
+            assert!(is_valid_property_value(
+                "text-orientation",
+                &CssValue::TextOrientation(TextOrientationValue::Mixed)
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "text-orientation",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
