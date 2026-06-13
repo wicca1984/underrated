@@ -1491,7 +1491,259 @@ pub fn decode_pnm(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, or QOI) into a DecodedImage by sniffing the format.
+fn is_conservative_tga(bytes: &[u8]) -> bool {
+    if bytes.len() < 18 {
+        return false;
+    }
+    let color_map_type = bytes[1];
+    if color_map_type > 1 {
+        return false;
+    }
+    let image_type = bytes[2];
+    if image_type != 2 && image_type != 3 && image_type != 10 && image_type != 11 {
+        return false;
+    }
+    let width = u16::from_le_bytes([bytes[12], bytes[13]]) as u32;
+    let height = u16::from_le_bytes([bytes[14], bytes[15]]) as u32;
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return false;
+    }
+    let bpp = bytes[16];
+    if bpp != 8 && bpp != 24 && bpp != 32 {
+        return false;
+    }
+
+    let descriptor = bytes[17];
+    if (descriptor & 0xC0) != 0 {
+        return false;
+    }
+
+    true
+}
+
+/// Decodes a TGA (Truevision Targa) image byte stream into a DecodedImage.
+/// Supports uncompressed true-color (type 2) at 24bpp and 32bpp,
+/// uncompressed grayscale (type 3) at 8bpp, and RLE versions (types 10 and 11).
+pub fn decode_tga(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 18 {
+        return None;
+    }
+
+    let id_length = bytes[0] as usize;
+    let color_map_type = bytes[1];
+    if color_map_type > 1 {
+        return None;
+    }
+    let image_type = bytes[2];
+
+    if image_type != 2 && image_type != 3 && image_type != 10 && image_type != 11 {
+        return None;
+    }
+
+    let color_map_len = u16::from_le_bytes([*bytes.get(5)?, *bytes.get(6)?]) as usize;
+    let color_map_entry_size = *bytes.get(7)? as usize;
+
+    let color_map_bytes = if color_map_type == 1 {
+        color_map_len.checked_mul(color_map_entry_size.div_ceil(8))?
+    } else {
+        0
+    };
+
+    let data_offset = 18_usize
+        .checked_add(id_length)?
+        .checked_add(color_map_bytes)?;
+
+    if data_offset > bytes.len() {
+        return None;
+    }
+
+    let width = u16::from_le_bytes([*bytes.get(12)?, *bytes.get(13)?]) as u32;
+    let height = u16::from_le_bytes([*bytes.get(14)?, *bytes.get(15)?]) as u32;
+    let bpp = *bytes.get(16)?;
+    let descriptor = *bytes.get(17)?;
+
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    if (image_type == 2 || image_type == 10) && bpp != 24 && bpp != 32 {
+        return None;
+    }
+    if (image_type == 3 || image_type == 11) && bpp != 8 {
+        return None;
+    }
+
+    let has_alpha = bpp == 32 && (descriptor & 0x0F) == 8;
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+    let mut rgba = vec![0u8; total_pixels.checked_mul(4)?];
+
+    let mut p = data_offset;
+    let mut pixel_index = 0_usize;
+
+    if image_type == 2 || image_type == 3 {
+        let bytes_per_pixel = (bpp as usize) / 8;
+        let expected_bytes = total_pixels.checked_mul(bytes_per_pixel)?;
+        if bytes.len().checked_sub(data_offset)? < expected_bytes {
+            return None;
+        }
+
+        for _ in 0..total_pixels {
+            let col = pixel_index % (width as usize);
+            let row = pixel_index / (width as usize);
+
+            let dest_y = if (descriptor & 0x20) != 0 {
+                row
+            } else {
+                (height as usize) - 1 - row
+            };
+            let dest_x = if (descriptor & 0x10) != 0 {
+                (width as usize) - 1 - col
+            } else {
+                col
+            };
+
+            let dest_idx = (dest_y * (width as usize) + dest_x) * 4;
+
+            if bpp == 24 {
+                let b = *bytes.get(p)?;
+                let g = *bytes.get(p + 1)?;
+                let r = *bytes.get(p + 2)?;
+                p += 3;
+
+                rgba[dest_idx] = r;
+                rgba[dest_idx + 1] = g;
+                rgba[dest_idx + 2] = b;
+                rgba[dest_idx + 3] = 255;
+            } else if bpp == 32 {
+                let b = *bytes.get(p)?;
+                let g = *bytes.get(p + 1)?;
+                let r = *bytes.get(p + 2)?;
+                let a = *bytes.get(p + 3)?;
+                p += 4;
+
+                rgba[dest_idx] = r;
+                rgba[dest_idx + 1] = g;
+                rgba[dest_idx + 2] = b;
+                rgba[dest_idx + 3] = if has_alpha { a } else { 255 };
+            } else if bpp == 8 {
+                let g_val = *bytes.get(p)?;
+                p += 1;
+
+                rgba[dest_idx] = g_val;
+                rgba[dest_idx + 1] = g_val;
+                rgba[dest_idx + 2] = g_val;
+                rgba[dest_idx + 3] = 255;
+            }
+
+            pixel_index += 1;
+        }
+    } else if image_type == 10 || image_type == 11 {
+        let bytes_per_pixel = (bpp as usize) / 8;
+        while pixel_index < total_pixels {
+            let rle_header = *bytes.get(p)?;
+            p += 1;
+
+            let count = ((rle_header & 0x7F) as usize) + 1;
+            if pixel_index + count > total_pixels {
+                return None;
+            }
+
+            if (rle_header & 0x80) != 0 {
+                // RLE packet
+                let pixel_bytes = bytes.get(p..p + bytes_per_pixel)?;
+                p += bytes_per_pixel;
+
+                let (r, g, b, a) = if bpp == 8 {
+                    (pixel_bytes[0], pixel_bytes[0], pixel_bytes[0], 255)
+                } else if bpp == 24 {
+                    (pixel_bytes[2], pixel_bytes[1], pixel_bytes[0], 255)
+                } else {
+                    // bpp == 32
+                    (
+                        pixel_bytes[2],
+                        pixel_bytes[1],
+                        pixel_bytes[0],
+                        if has_alpha { pixel_bytes[3] } else { 255 },
+                    )
+                };
+
+                for _ in 0..count {
+                    let col = pixel_index % (width as usize);
+                    let row = pixel_index / (width as usize);
+
+                    let dest_y = if (descriptor & 0x20) != 0 {
+                        row
+                    } else {
+                        (height as usize) - 1 - row
+                    };
+                    let dest_x = if (descriptor & 0x10) != 0 {
+                        (width as usize) - 1 - col
+                    } else {
+                        col
+                    };
+
+                    let dest_idx = (dest_y * (width as usize) + dest_x) * 4;
+                    rgba[dest_idx] = r;
+                    rgba[dest_idx + 1] = g;
+                    rgba[dest_idx + 2] = b;
+                    rgba[dest_idx + 3] = a;
+
+                    pixel_index += 1;
+                }
+            } else {
+                // Raw packet
+                for _ in 0..count {
+                    let pixel_bytes = bytes.get(p..p + bytes_per_pixel)?;
+                    p += bytes_per_pixel;
+
+                    let (r, g, b, a) = if bpp == 8 {
+                        (pixel_bytes[0], pixel_bytes[0], pixel_bytes[0], 255)
+                    } else if bpp == 24 {
+                        (pixel_bytes[2], pixel_bytes[1], pixel_bytes[0], 255)
+                    } else {
+                        // bpp == 32
+                        (
+                            pixel_bytes[2],
+                            pixel_bytes[1],
+                            pixel_bytes[0],
+                            if has_alpha { pixel_bytes[3] } else { 255 },
+                        )
+                    };
+
+                    let col = pixel_index % (width as usize);
+                    let row = pixel_index / (width as usize);
+
+                    let dest_y = if (descriptor & 0x20) != 0 {
+                        row
+                    } else {
+                        (height as usize) - 1 - row
+                    };
+                    let dest_x = if (descriptor & 0x10) != 0 {
+                        (width as usize) - 1 - col
+                    } else {
+                        col
+                    };
+
+                    let dest_idx = (dest_y * (width as usize) + dest_x) * 4;
+                    rgba[dest_idx] = r;
+                    rgba[dest_idx + 1] = g;
+                    rgba[dest_idx + 2] = b;
+                    rgba[dest_idx + 3] = a;
+
+                    pixel_index += 1;
+                }
+            }
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, or TGA) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -1512,7 +1764,14 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
         decode_pnm(bytes)
     } else {
-        None
+        // Detect TGA as a last resort
+        let is_tga_footer =
+            bytes.len() >= 26 && bytes.get(bytes.len() - 18..) == Some(b"TRUEVISION-XFILE.\0");
+        if is_tga_footer || is_conservative_tga(bytes) {
+            decode_tga(bytes)
+        } else {
+            None
+        }
     }
 }
 
@@ -2310,5 +2569,228 @@ mod tests {
         assert!(decode_pnm(b"P6\n0 1\n255\n").is_none());
         assert!(decode_pnm(b"P6\n1 1\n0\n").is_none());
         assert!(decode_pnm(b"P6\n1 1\n65536\n").is_none());
+    }
+
+    #[test]
+    fn test_decode_tga_24bpp_bottom_up() {
+        // Uncompressed true-color (type 2), 2x2, 24bpp, descriptor=0 (bottom-up)
+        let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0];
+        // Bottom-up: Row 1 stored first, then Row 0.
+        // Row 1: col 0 = Blue, col 1 = White
+        // Row 0: col 0 = Red, col 1 = Green
+        // Pixels are BGR
+        tga.extend_from_slice(&[
+            255, 0, 0, // Blue: B=255, G=0, R=0
+            255, 255, 255, // White: B=255, G=255, R=255
+            0, 0, 255, // Red: B=0, G=0, R=255
+            0, 255, 0, // Green: B=0, G=255, R=0
+        ]);
+
+        let decoded = decode_tga(&tga).expect("Should decode TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 16);
+
+        // Decoded top-left (Row 0, col 0): Red
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        // Decoded top-right (Row 0, col 1): Green
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        // Decoded bottom-left (Row 1, col 0): Blue
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        // Decoded bottom-right (Row 1, col 1): White
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_decode_tga_24bpp_top_down() {
+        // Uncompressed true-color (type 2), 2x2, 24bpp, descriptor=0x20 (top-down)
+        let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0x20];
+        // Top-down: Row 0 stored first, then Row 1.
+        // Row 0: col 0 = Red, col 1 = Green
+        // Row 1: col 0 = Blue, col 1 = White
+        tga.extend_from_slice(&[
+            0, 0, 255, // Red: B=0, G=0, R=255
+            0, 255, 0, // Green: B=0, G=255, R=0
+            255, 0, 0, // Blue: B=255, G=0, R=0
+            255, 255, 255, // White: B=255, G=255, R=255
+        ]);
+
+        let decoded = decode_tga(&tga).expect("Should decode TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_decode_tga_32bpp_with_alpha() {
+        // Uncompressed true-color (type 2), 2x2, 32bpp, descriptor=8 (bottom-up, 8 alpha bits)
+        let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 8];
+        // Pixels are BGRA
+        // Row 1 (bottom): col 0 = Blue with alpha 128, col 1 = White with alpha 255
+        // Row 0 (top): col 0 = Red with alpha 64, col 1 = Green with alpha 192
+        tga.extend_from_slice(&[
+            255, 0, 0, 128, 255, 255, 255, 255, 0, 0, 255, 64, 0, 255, 0, 192,
+        ]);
+
+        let decoded = decode_tga(&tga).expect("Should decode TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        // Row 0
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 64]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 192]);
+        // Row 1
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 128]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_decode_tga_32bpp_no_alpha() {
+        // Uncompressed true-color (type 2), 2x2, 32bpp, descriptor=0 (bottom-up, 0 alpha bits -> treat A as 255)
+        let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 0];
+        tga.extend_from_slice(&[
+            255, 0, 0, 128, 255, 255, 255, 255, 0, 0, 255, 64, 0, 255, 0, 192,
+        ]);
+
+        let decoded = decode_tga(&tga).expect("Should decode TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        // All A must be 255
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_decode_tga_8bpp_grayscale() {
+        // Uncompressed black-and-white (type 3), 2x2, 8bpp, descriptor=0
+        let mut tga = vec![0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 8, 0];
+        // Bottom-up: Row 1 = [100, 200], Row 0 = [50, 150]
+        tga.extend_from_slice(&[100, 200, 50, 150]);
+
+        let decoded = decode_tga(&tga).expect("Should decode TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        assert_eq!(&decoded.rgba[0..4], &[50, 50, 50, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[150, 150, 150, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[100, 100, 100, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn test_decode_tga_rle_24bpp() {
+        // RLE true-color (type 10), 2x2, 24bpp, descriptor=0 (bottom-up)
+        let mut tga = vec![0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0];
+        // Raw packet of count 2: Red, Green
+        // RLE packet of count 2: Blue
+        tga.extend_from_slice(&[
+            0x01, // Raw, count 2
+            0, 0, 255, // Red
+            0, 255, 0,    // Green
+            0x81, // RLE, count 2
+            255, 0, 0, // Blue
+        ]);
+
+        let decoded = decode_tga(&tga).expect("Should decode RLE TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        // Row 0: Blue, Blue
+        assert_eq!(&decoded.rgba[0..4], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 0, 255, 255]);
+        // Row 1: Red, Green
+        assert_eq!(&decoded.rgba[8..12], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn test_decode_tga_rle_32bpp() {
+        // RLE true-color (type 10), 2x2, 32bpp, descriptor=8 (with alpha)
+        let mut tga = vec![0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 8];
+        // RLE packet of count 4: Red (alpha 128)
+        tga.extend_from_slice(&[
+            0x83, // RLE, count 4
+            0, 0, 255, 128, // Red (alpha 128)
+        ]);
+
+        let decoded = decode_tga(&tga).expect("Should decode RLE TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        for i in 0..4 {
+            assert_eq!(&decoded.rgba[i * 4..(i + 1) * 4], &[255, 0, 0, 128]);
+        }
+    }
+
+    #[test]
+    fn test_decode_tga_rle_8bpp_grayscale() {
+        // RLE grayscale (type 11), 2x2, 8bpp, descriptor=0
+        let mut tga = vec![0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 8, 0];
+        // RLE packet of count 4: Gray 128
+        tga.extend_from_slice(&[
+            0x83, // RLE, count 4
+            128,
+        ]);
+
+        let decoded = decode_tga(&tga).expect("Should decode RLE grayscale TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        for i in 0..4 {
+            assert_eq!(&decoded.rgba[i * 4..(i + 1) * 4], &[128, 128, 128, 255]);
+        }
+    }
+
+    #[test]
+    fn test_decode_tga_malformed() {
+        assert!(decode_tga(&[]).is_none());
+        assert!(decode_tga(&[0; 10]).is_none());
+
+        // Incorrect image type
+        let bad_type = vec![0, 0, 99, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0];
+        assert!(decode_tga(&bad_type).is_none());
+
+        // Zero width/height
+        let zero_width = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 24, 0];
+        assert!(decode_tga(&zero_width).is_none());
+
+        // Missing pixel bytes
+        let truncated = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0, 255, 0,
+            0, // only 1 pixel instead of 4
+        ];
+        assert!(decode_tga(&truncated).is_none());
+    }
+
+    #[test]
+    fn test_decode_image_routing_tga() {
+        // TGA with version 2.0 footer TRUEVISION-XFILE.\0
+        let mut tga = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0, 255, 0, 0, 255, 255, 255, 0, 0,
+            255, 0, 255, 0,
+        ];
+        // 26-byte TGA footer (last 18 bytes is TRUEVISION-XFILE.\0)
+        tga.extend_from_slice(&[0; 8]); // Extension and developer offsets
+        tga.extend_from_slice(b"TRUEVISION-XFILE.\0");
+
+        let decoded = decode_image(&tga).expect("Should route and decode TGA");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        // TGA without footer but matching conservatively
+        let tga_no_footer = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 24, 0, 255, 0, 0, 255, 255, 255, 0, 0,
+            255, 0, 255, 0,
+        ];
+        let decoded_no_footer =
+            decode_image(&tga_no_footer).expect("Should route and decode TGA without footer");
+        assert_eq!(decoded_no_footer.width, 2);
     }
 }
