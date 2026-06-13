@@ -445,6 +445,11 @@ impl BoaHost {
                 JsString::from("setScrollLeft"),
                 2,
             )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_scroll_into_view),
+                JsString::from("scrollIntoView"),
+                2,
+            )
             .build();
 
         let _ = context.register_global_property(
@@ -1530,6 +1535,51 @@ impl BoaHost {
                     node.getBoundingClientRect = function() {
                         if (this.nodeType !== 1) return null;
                         return bridge.getBoundingClientRect(this.__key__);
+                    };
+
+                    node.scrollIntoView = function(arg) {
+                        if (this.nodeType !== 1) return;
+                        // TODO(spec): record smooth-vs-auto behavior (e.g. from arg) rather than guessing
+
+                        // Locate appropriate scroll container
+                        let container = this.parentElement;
+                        while (container) {
+                            if (container === document.body || container === document.documentElement) {
+                                break;
+                            }
+                            const style = typeof window !== 'undefined' && window.getComputedStyle ? window.getComputedStyle(container) : null;
+                            if (style) {
+                                const overflow = style.getPropertyValue('overflow');
+                                const overflowY = style.getPropertyValue('overflow-y') || overflow;
+                                const overflowX = style.getPropertyValue('overflow-x') || overflow;
+                                if (overflowY === 'scroll' || overflowY === 'auto' || overflowX === 'scroll' || overflowX === 'auto') {
+                                    break;
+                                }
+                            }
+                            container = container.parentElement;
+                        }
+                        if (!container) {
+                            container = document.documentElement || document.body;
+                        }
+
+                        if (container) {
+                            const element_rect = this.getBoundingClientRect();
+                            if (element_rect) {
+                                let new_scrollTop = container.scrollTop + element_rect.top;
+                                let new_scrollLeft = container.scrollLeft + element_rect.left;
+                                if (container !== document.documentElement && container !== document.body) {
+                                    const container_rect = container.getBoundingClientRect();
+                                    if (container_rect) {
+                                        new_scrollTop = container.scrollTop + (element_rect.top - container_rect.top);
+                                        new_scrollLeft = container.scrollLeft + (element_rect.left - container_rect.left);
+                                    }
+                                }
+                                container.scrollTop = new_scrollTop;
+                                container.scrollLeft = new_scrollLeft;
+                            }
+                        }
+
+                        bridge.scrollIntoView(this.__key__, arg);
                     };
 
                     node.getClientRects = function() {
@@ -4984,6 +5034,15 @@ fn bridge_set_scroll_left(
         }
     })?;
 
+    Ok(JsValue::undefined())
+}
+
+fn bridge_scroll_into_view(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    // TODO(spec): record smooth-vs-auto behavior rather than guessing
     Ok(JsValue::undefined())
 }
 
@@ -8896,6 +8955,120 @@ mod tests {
             res,
             "true|true|true|true|true|true|true|true|true|true|true|true"
         );
+    }
+
+    #[test]
+    fn test_element_scroll_into_view() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let parent_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent-div".to_string())],
+        });
+        dom.append_child(document, parent_id);
+
+        let child_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "child-div".to_string())],
+        });
+        dom.append_child(parent_id, child_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const parent = document.getElementById('parent-div');
+            const child = document.getElementById('child-div');
+
+            const hasScrollIntoView = typeof child.scrollIntoView === 'function';
+
+            // Mock getComputedStyle to treat parent as a scroll container
+            window.getComputedStyle = (element) => {
+                if (element === parent) {
+                    return {
+                        getPropertyValue: (prop) => {
+                            if (prop === 'overflow' || prop === 'overflow-y') return 'scroll';
+                            return '';
+                        }
+                    };
+                }
+                return { getPropertyValue: () => '' };
+            };
+
+            // Default scrollTop / scrollLeft
+            const initialParentScrollTop = parent.scrollTop;
+            const initialParentScrollLeft = parent.scrollLeft;
+
+            // Mock getBoundingClientRect on both elements to simulate layout positions
+            parent.getBoundingClientRect = () => ({
+                x: 0,
+                y: 10,
+                width: 100,
+                height: 100,
+                top: 10,
+                left: 10,
+                bottom: 110,
+                right: 110
+            });
+
+            child.getBoundingClientRect = () => ({
+                x: 0,
+                y: 50,
+                width: 50,
+                height: 50,
+                top: 50,
+                left: 70,
+                bottom: 100,
+                right: 120
+            });
+
+            // Call scrollIntoView with no arguments
+            child.scrollIntoView();
+
+            const parentScrollTopAfterNoArgs = parent.scrollTop;
+            const parentScrollLeftAfterNoArgs = parent.scrollLeft;
+
+            // Reset scroll positions
+            parent.scrollTop = 0;
+            parent.scrollLeft = 0;
+
+            // Call scrollIntoView with boolean argument
+            child.scrollIntoView(true);
+
+            const parentScrollTopAfterBool = parent.scrollTop;
+
+            // Reset scroll positions
+            parent.scrollTop = 0;
+            parent.scrollLeft = 0;
+
+            // Call scrollIntoView with options object
+            child.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            const parentScrollTopAfterOptions = parent.scrollTop;
+
+            // Call scrollIntoView on non-element (Text node) - should do nothing and not throw
+            const textNode = document.createTextNode('hello');
+            let textNodeScrollIntoViewOk = true;
+            try {
+                textNode.scrollIntoView();
+            } catch (e) {
+                textNodeScrollIntoViewOk = false;
+            }
+
+            [
+                hasScrollIntoView,
+                initialParentScrollTop === 0,
+                initialParentScrollLeft === 0,
+                parentScrollTopAfterNoArgs === 40,   // parent.scrollTop + (child.top - parent.top) = 0 + (50 - 10)
+                parentScrollLeftAfterNoArgs === 60,  // parent.scrollLeft + (child.left - parent.left) = 0 + (70 - 10)
+                parentScrollTopAfterBool === 40,
+                parentScrollTopAfterOptions === 40,
+                textNodeScrollIntoViewOk
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "true|true|true|true|true|true|true|true");
     }
 
     #[test]
