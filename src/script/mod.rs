@@ -1408,6 +1408,26 @@ impl BoaHost {
                         return bridge.getBoundingClientRect(this.__key__);
                     };
 
+                    Object.defineProperty(node, 'offsetWidth', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return rect ? Math.round(rect.width) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'offsetHeight', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return rect ? Math.round(rect.height) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'childNodes', {
                         get() {
                             const keys = bridge.childNodes(this.__key__);
@@ -8075,6 +8095,54 @@ mod tests {
 
         let res = host.eval_with_dom(script, &mut dom).unwrap();
         assert_eq!(res, "true|true|true|true|true|true|true|true|true|true");
+    }
+
+    #[test]
+    fn test_element_offset_width_height() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "offset-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.getElementById('offset-div');
+            
+            // Check original types and rounded default values (original should be 0 because bounding client rect is 0)
+            const origWidthType = typeof el.offsetWidth;
+            const origHeightType = typeof el.offsetHeight;
+            const origWidth = el.offsetWidth;
+            const origHeight = el.offsetHeight;
+
+            // Mock getBoundingClientRect to test rounding behavior on elements
+            el.getBoundingClientRect = () => ({ width: 100.5, height: 50.1 });
+            const mockWidth = el.offsetWidth;
+            const mockHeight = el.offsetHeight;
+
+            // Non-element nodeType !== 1 (Text Node)
+            const textNode = document.createTextNode('hello');
+            const textWidth = textNode.offsetWidth;
+            const textHeight = textNode.offsetHeight;
+
+            [
+                origWidthType === 'number',
+                origHeightType === 'number',
+                origWidth === 0,
+                origHeight === 0,
+                mockWidth === 101,
+                mockHeight === 50,
+                textWidth === 0,
+                textHeight === 0
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "true|true|true|true|true|true|true|true");
     }
 
     #[test]
