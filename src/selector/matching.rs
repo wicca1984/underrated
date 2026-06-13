@@ -250,6 +250,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
         Component::NthLastOfType(a, b) => nth_last_of_type(dom, node, *a, *b),
         Component::Not(compound) => !matches_compound(compound, dom, node),
         Component::Is(list) | Component::Where(list) => matches(list, dom, node),
+        Component::Has(list) => matches_has(list, dom, node),
         Component::FirstChild => is_first_child(dom, node),
         Component::LastChild => is_last_child(dom, node),
     }
@@ -286,6 +287,50 @@ pub fn clear_node_states() {
     NODE_STATES.with(|states| {
         states.borrow_mut().clear();
     });
+}
+
+fn matches_has(list: &SelectorList, dom: &Dom, node: NodeId) -> bool {
+    // TODO(spec): sibling-relative :has(+ x) / :has(~ x) not yet supported
+    // TODO(spec): leading >, +, ~ relative combinators in :has() not yet distinguished
+    list.0.iter().any(|sel| {
+        if sel.parts.is_empty() {
+            return false;
+        }
+        let first_comb = sel.parts[0].0;
+        match first_comb {
+            Combinator::Child => {
+                // Restrict the check to direct children only.
+                if sel.parts.len() == 1 {
+                    let children = dom.children(node);
+                    children
+                        .iter()
+                        .any(|&child| matches_compound(&sel.parts[0].1, dom, child))
+                } else {
+                    let children = dom.children(node);
+                    children
+                        .iter()
+                        .any(|&child| matches_complex(sel, dom, child))
+                }
+            }
+            _ => {
+                // Descendant matching
+                any_descendant_matches(sel, dom, node)
+            }
+        }
+    })
+}
+
+fn any_descendant_matches(sel: &ComplexSelector, dom: &Dom, node: NodeId) -> bool {
+    let children = dom.children(node);
+    for &child in children {
+        if matches_complex(sel, dom, child) {
+            return true;
+        }
+        if any_descendant_matches(sel, dom, child) {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_first_child(dom: &Dom, node: NodeId) -> bool {
@@ -2378,5 +2423,79 @@ mod tests {
         assert!(matches(&sel_multi, &dom, p_fr));
         assert!(matches(&sel_multi, &dom, p_en_us));
         assert!(!matches(&sel_multi, &dom, div)); // div is EN, which is not fr or en-US (en-US is too specific)
+    }
+
+    #[test]
+    fn test_matches_has() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Build DOM structure:
+        // <div id="div1">
+        //   <span>
+        //     <img class="x">
+        //   </span>
+        // </div>
+        // <div id="div2">
+        //   <img>
+        // </div>
+        // <div id="div3">
+        // </div>
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div1".into())],
+        });
+        dom.append_child(doc, div1);
+
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div1, span1);
+
+        let img1 = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![("class".into(), "x".into())],
+        });
+        dom.append_child(span1, img1);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div2".into())],
+        });
+        dom.append_child(doc, div2);
+
+        let img2 = dom.create_node(NodeData::Element {
+            name: "img".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div2, img2);
+
+        let div3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div3".into())],
+        });
+        dom.append_child(doc, div3);
+
+        // 1. div:has(img) descendant matches div1 (contains img via span) and div2 (contains img directly)
+        let sel_has_img = parse_selector_list("div:has(img)").unwrap();
+        assert!(matches(&sel_has_img, &dom, div1));
+        assert!(matches(&sel_has_img, &dom, div2));
+
+        // div3 is empty (no img descendant), so it must NOT match div:has(img)
+        assert!(!matches(&sel_has_img, &dom, div3));
+
+        // 2. div:has(.x) matches div1 (has descendant class x) but NOT div2 (has img but no class x)
+        let sel_has_x = parse_selector_list("div:has(.x)").unwrap();
+        assert!(matches(&sel_has_x, &dom, div1));
+        assert!(!matches(&sel_has_x, &dom, div2));
+        assert!(!matches(&sel_has_x, &dom, div3));
+
+        // 3. Child combinator form: div:has(> img) matches div2 (where img is a direct child)
+        // but does NOT match div1 (where img is nested in span, not a direct child of div)
+        let sel_has_child_img = parse_selector_list("div:has(> img)").unwrap();
+        assert!(!matches(&sel_has_child_img, &dom, div1));
+        assert!(matches(&sel_has_child_img, &dom, div2));
+        assert!(!matches(&sel_has_child_img, &dom, div3));
     }
 }
