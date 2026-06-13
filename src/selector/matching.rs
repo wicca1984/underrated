@@ -247,6 +247,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "read-only" => is_read_only(dom, node),
                     "read-write" => is_read_write(dom, node),
                     "placeholder-shown" => is_placeholder_shown(dom, node),
+                    "indeterminate" => is_indeterminate(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -818,6 +819,83 @@ fn is_placeholder_shown(dom: &Dom, node: NodeId) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_indeterminate(dom: &Dom, node: NodeId) -> bool {
+    let data = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+    let (tag_name, attrs) = data;
+
+    if ascii::eq_ignore_ascii_case(tag_name, "progress") {
+        let has_value = attrs
+            .iter()
+            .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "value"));
+        return !has_value;
+    }
+
+    if ascii::eq_ignore_ascii_case(tag_name, "input") {
+        let input_type = attrs
+            .iter()
+            .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("text");
+
+        if ascii::eq_ignore_ascii_case(input_type, "radio") {
+            let radio_name = attrs
+                .iter()
+                .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "name"))
+                .map(|(_, v)| v.as_str());
+
+            match radio_name {
+                Some(name_val) if !name_val.is_empty() => {
+                    let mut root = node;
+                    while let Some(parent) = dom.parent(root) {
+                        root = parent;
+                    }
+
+                    let mut tree_nodes = vec![root];
+                    tree_nodes.extend(dom.descendants(root));
+
+                    let mut group_has_checked = false;
+                    for candidate_id in tree_nodes {
+                        let cand_data = match dom.data(candidate_id) {
+                            Some(NodeData::Element { name, attrs }) => (name, attrs),
+                            _ => continue,
+                        };
+                        let (cand_name, cand_attrs) = cand_data;
+                        if !ascii::eq_ignore_ascii_case(cand_name, "input") {
+                            continue;
+                        }
+                        let cand_type = cand_attrs
+                            .iter()
+                            .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "type"))
+                            .map(|(_, v)| v.as_str())
+                            .unwrap_or("text");
+                        if !ascii::eq_ignore_ascii_case(cand_type, "radio") {
+                            continue;
+                        }
+                        let cand_radio_name = cand_attrs
+                            .iter()
+                            .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "name"))
+                            .map(|(_, v)| v.as_str());
+                        if cand_radio_name == Some(name_val) && is_checked(dom, candidate_id) {
+                            group_has_checked = true;
+                            break;
+                        }
+                    }
+                    return !group_has_checked;
+                }
+                _ => {
+                    return !is_checked(dom, node);
+                }
+            }
+        }
+    }
+
+    // TODO(spec): checkbox indeterminate IDL flag is JS-only; not representable without scripting state
+    false
 }
 
 fn get_previous_element_sibling(dom: &Dom, node: NodeId) -> Option<NodeId> {
@@ -2861,5 +2939,100 @@ mod tests {
         // But it should NOT match unrelated or unfocused_btn
         assert!(!matches(&sel_focus_within, &dom, unrelated));
         assert!(!matches(&sel_focus_within, &dom, unfocused_btn));
+    }
+
+    #[test]
+    fn test_indeterminate_pseudo_class() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 1. <progress> with no value
+        let progress_no_val = dom.create_node(NodeData::Element {
+            name: "progress".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, progress_no_val);
+
+        // 2. <progress value="50">
+        let progress_val = dom.create_node(NodeData::Element {
+            name: "progress".into(),
+            attrs: vec![("value".into(), "50".into())],
+        });
+        dom.append_child(doc, progress_val);
+
+        // 3. Radio inputs with same name (group "g")
+        // radio_g1 with no checked attribute initially
+        let radio_g1 = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "radio".into()), ("name".into(), "g".into())],
+        });
+        dom.append_child(doc, radio_g1);
+
+        // radio_g2 with checked attribute
+        let radio_g2 = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "radio".into()),
+                ("name".into(), "g".into()),
+                ("checked".into(), "".into()),
+            ],
+        });
+        dom.append_child(doc, radio_g2);
+
+        // 4. Radio input with no name (group of itself, unchecked)
+        let radio_no_name = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "radio".into())],
+        });
+        dom.append_child(doc, radio_no_name);
+
+        // 5. Checkbox (never indeterminate here)
+        let checkbox = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "checkbox".into())],
+        });
+        dom.append_child(doc, checkbox);
+
+        // Selectors
+        let sel_indeterminate = parse_selector_list(":indeterminate").unwrap();
+
+        // Assert progress bar matches :indeterminate only when value is absent
+        assert!(matches(&sel_indeterminate, &dom, progress_no_val));
+        assert!(!matches(&sel_indeterminate, &dom, progress_val));
+
+        // Assert checkbox never matches :indeterminate
+        assert!(!matches(&sel_indeterminate, &dom, checkbox));
+
+        // Assert radio_no_name matches :indeterminate (since it is unchecked and has no name)
+        assert!(matches(&sel_indeterminate, &dom, radio_no_name));
+
+        // Assert radio_g2 (checked) does NOT match :indeterminate (it has a checked member in the group, which is itself)
+        assert!(!matches(&sel_indeterminate, &dom, radio_g2));
+
+        // Assert radio_g1 (unchecked, but in group "g" which has a checked member "radio_g2") does NOT match :indeterminate
+        assert!(!matches(&sel_indeterminate, &dom, radio_g1));
+
+        // 6. Separate radio group "g2" where NO member is checked
+        let radio_g2_1 = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "radio".into()),
+                ("name".into(), "g2".into()),
+            ],
+        });
+        dom.append_child(doc, radio_g2_1);
+
+        let radio_g2_2 = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "radio".into()),
+                ("name".into(), "g2".into()),
+            ],
+        });
+        dom.append_child(doc, radio_g2_2);
+
+        // Both should match :indeterminate since neither is checked
+        assert!(matches(&sel_indeterminate, &dom, radio_g2_1));
+        assert!(matches(&sel_indeterminate, &dom, radio_g2_2));
     }
 }
