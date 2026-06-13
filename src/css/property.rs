@@ -679,6 +679,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "counter-reset",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "counter-increment",
+        inherited: false,
+        initial: "none",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1049,6 +1059,23 @@ mod tests {
         assert_eq!(text_under_offset.name, "text-underline-offset");
         assert!(text_under_offset.inherited);
         assert_eq!(text_under_offset.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0530() {
+        let counter_reset = lookup("counter-reset");
+        assert!(counter_reset.is_some());
+        let counter_reset = counter_reset.unwrap();
+        assert_eq!(counter_reset.name, "counter-reset");
+        assert!(!counter_reset.inherited);
+        assert_eq!(counter_reset.initial, "none");
+
+        let counter_increment = lookup("counter-increment");
+        assert!(counter_increment.is_some());
+        let counter_increment = counter_increment.unwrap();
+        assert_eq!(counter_increment.name, "counter-increment");
+        assert!(!counter_increment.inherited);
+        assert_eq!(counter_increment.initial, "none");
     }
 
     #[test]
