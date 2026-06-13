@@ -930,14 +930,12 @@ pub fn decode_svg(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an ICO (Windows icon / favicon) byte stream into a DecodedImage.
-/// Supports both embedded PNG and uncompressed DIB (BMP) cases.
-/// spec: t0507
-pub fn decode_ico(bytes: &[u8]) -> Option<DecodedImage> {
+fn decode_ico_or_cur(bytes: &[u8], is_cur: bool) -> Option<DecodedImage> {
     if bytes.len() < 6 {
         return None;
     }
-    if bytes[0] != 0 || bytes[1] != 0 || bytes[2] != 1 || bytes[3] != 0 {
+    let expected_type = if is_cur { 2 } else { 1 };
+    if bytes[0] != 0 || bytes[1] != 0 || bytes[2] != expected_type || bytes[3] != 0 {
         return None;
     }
 
@@ -1028,6 +1026,20 @@ pub fn decode_ico(bytes: &[u8]) -> Option<DecodedImage> {
         // TODO(spec): ICO AND-mask transparency and palette (<=8bpp) not yet handled
         decode_bmp(&bmp_bytes)
     }
+}
+
+/// Decodes an ICO (Windows icon / favicon) byte stream into a DecodedImage.
+/// Supports both embedded PNG and uncompressed DIB (BMP) cases.
+/// spec: t0507
+pub fn decode_ico(bytes: &[u8]) -> Option<DecodedImage> {
+    decode_ico_or_cur(bytes, false)
+}
+
+/// Decodes a CUR (Windows cursor) byte stream into a DecodedImage.
+/// Supports both embedded PNG and uncompressed DIB (BMP) cases.
+/// spec: t0609
+pub fn decode_cur(bytes: &[u8]) -> Option<DecodedImage> {
+    decode_ico_or_cur(bytes, true)
 }
 
 /// Decodes a QOI (Quite OK Image) byte stream into a DecodedImage.
@@ -2754,8 +2766,22 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_bmp(bytes)
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         decode_webp(bytes)
-    } else if bytes.len() >= 6 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0 {
+    } else if bytes.len() >= 6
+        && bytes[0] == 0
+        && bytes[1] == 0
+        && bytes[2] == 1
+        && bytes[3] == 0
+        && u16::from_le_bytes([bytes[4], bytes[5]]) > 0
+    {
         decode_ico(bytes)
+    } else if bytes.len() >= 6
+        && bytes[0] == 0
+        && bytes[1] == 0
+        && bytes[2] == 2
+        && bytes[3] == 0
+        && u16::from_le_bytes([bytes[4], bytes[5]]) > 0
+    {
+        decode_cur(bytes)
     } else if bytes.starts_with(b"qoif") {
         decode_qoi(bytes)
     } else if bytes.starts_with(b"farbfeld") {
@@ -3393,6 +3419,133 @@ mod tests {
         assert!(decode_ico(&[]).is_none());
         assert!(decode_ico(&[0, 0, 1]).is_none());
         assert!(decode_ico(&[0, 0, 1, 0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn test_cur_png_embedded_t0609() {
+        let mut canvas = Canvas::new(2, 2);
+        canvas.pixels[0] = 0xFFFF0000; // Red
+        canvas.pixels[1] = 0xFF00FF00; // Green
+        canvas.pixels[2] = 0xFF0000FF; // Blue
+        canvas.pixels[3] = 0x80FFFFFF; // Semi-transparent White
+        let png_bytes = encode_png(&canvas);
+
+        let mut cur_bytes = Vec::new();
+        // ICONDIR for CUR
+        cur_bytes.extend_from_slice(&[0x00, 0x00]); // Reserved
+        cur_bytes.extend_from_slice(&[0x02, 0x00]); // Type (2 for CUR)
+        cur_bytes.extend_from_slice(&[0x01, 0x00]); // Image count (1)
+
+        // ICONDIRENTRY
+        cur_bytes.push(2); // Width
+        cur_bytes.push(2); // Height
+        cur_bytes.push(0); // Color count
+        cur_bytes.push(0); // Reserved
+        cur_bytes.extend_from_slice(&[0, 0]); // Hotspot X (0)
+        cur_bytes.extend_from_slice(&[0, 0]); // Hotspot Y (0)
+
+        let bytes_in_res = png_bytes.len() as u32;
+        cur_bytes.extend_from_slice(&bytes_in_res.to_le_bytes());
+
+        let image_offset = 22_u32;
+        cur_bytes.extend_from_slice(&image_offset.to_le_bytes());
+
+        // Append PNG bytes
+        cur_bytes.extend_from_slice(&png_bytes);
+
+        let decoded = decode_cur(&cur_bytes).expect("Should decode CUR PNG successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 128]);
+
+        // Test via decode_image dispatcher
+        let decoded_img = decode_image(&cur_bytes).expect("Should decode CUR via decode_image");
+        assert_eq!(decoded_img.width, 2);
+    }
+
+    #[test]
+    fn test_cur_bmp_embedded_t0609() {
+        let mut dib_bytes = Vec::new();
+        // biSize
+        dib_bytes.extend_from_slice(&[40, 0, 0, 0]);
+        // biWidth
+        dib_bytes.extend_from_slice(&[2, 0, 0, 0]);
+        // biHeight (doubled to 4)
+        dib_bytes.extend_from_slice(&[4, 0, 0, 0]);
+        // biPlanes
+        dib_bytes.extend_from_slice(&[1, 0]);
+        // biBitCount
+        dib_bytes.extend_from_slice(&[32, 0]);
+        // biCompression
+        dib_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        // biSizeImage
+        dib_bytes.extend_from_slice(&[16, 0, 0, 0]);
+        // biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant
+        dib_bytes.extend_from_slice(&[0u8; 16]);
+
+        // Pixel data: Bottom row first, then top row
+        // Bottom row: Blue [255, 0, 0, 255], White [255, 255, 255, 128]
+        dib_bytes.extend_from_slice(&[255, 0, 0, 255, 255, 255, 255, 128]);
+        // Top row: Red [0, 0, 255, 255], Green [0, 255, 0, 255]
+        dib_bytes.extend_from_slice(&[0, 0, 255, 255, 0, 255, 0, 255]);
+
+        // AND mask (e.g. 2 bytes)
+        dib_bytes.extend_from_slice(&[0, 0]);
+
+        let mut cur_bytes = Vec::new();
+        // ICONDIR
+        cur_bytes.extend_from_slice(&[0x00, 0x00]); // Reserved
+        cur_bytes.extend_from_slice(&[0x02, 0x00]); // Type (2 for CUR)
+        cur_bytes.extend_from_slice(&[0x01, 0x00]); // Image count (1)
+
+        // ICONDIRENTRY
+        cur_bytes.push(2); // Width
+        cur_bytes.push(2); // Height
+        cur_bytes.push(0); // Color count
+        cur_bytes.push(0); // Reserved
+        cur_bytes.extend_from_slice(&[0, 0]); // Hotspot X (0)
+        cur_bytes.extend_from_slice(&[0, 0]); // Hotspot Y (0)
+
+        let bytes_in_res = dib_bytes.len() as u32;
+        cur_bytes.extend_from_slice(&bytes_in_res.to_le_bytes());
+
+        let image_offset = 22_u32;
+        cur_bytes.extend_from_slice(&image_offset.to_le_bytes());
+
+        // Append DIB bytes
+        cur_bytes.extend_from_slice(&dib_bytes);
+
+        let decoded = decode_cur(&cur_bytes).expect("Should decode CUR DIB successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 16);
+        // RGBA
+        // Top-left: Red
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        // Top-right: Green
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        // Bottom-left: Blue
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        // Bottom-right: White (semi-transparent)
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 128]);
+
+        // Test via decode_image dispatcher
+        let decoded_img = decode_image(&cur_bytes).expect("Should decode CUR via decode_image");
+        assert_eq!(decoded_img.width, 2);
+    }
+
+    #[test]
+    fn test_cur_sniff_rejects_non_cur_t0609() {
+        assert!(decode_cur(&[]).is_none());
+        assert!(decode_cur(&[0, 0, 2]).is_none());
+        assert!(decode_cur(&[0, 0, 2, 0, 0, 0]).is_none());
+        // A correct ICO stream should be rejected by decode_cur because its type is 1
+        let mut ico_bytes = Vec::new();
+        ico_bytes.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x01, 0x00]);
+        assert!(decode_cur(&ico_bytes).is_none());
     }
 
     #[test]
