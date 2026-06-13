@@ -156,6 +156,8 @@ pub struct ResetBox {
     pub float: String,
     pub clear: String,
     pub overflow: String,
+    pub overflow_x: String,
+    pub overflow_y: String,
     pub z_index: i32,
     pub box_sizing: String,
     pub min_width: i32,
@@ -181,6 +183,8 @@ impl Default for ResetBox {
             float: "none".to_string(),
             clear: "none".to_string(),
             overflow: "visible".to_string(),
+            overflow_x: "visible".to_string(),
+            overflow_y: "visible".to_string(),
             z_index: 0,
             box_sizing: "content-box".to_string(),
             min_width: -1,
@@ -850,7 +854,19 @@ impl CategorizedComputedStyle {
             "position" => Arc::make_mut(&mut self.reset_box).position = css_value_to_string(value),
             "float" => Arc::make_mut(&mut self.reset_box).float = css_value_to_string(value),
             "clear" => Arc::make_mut(&mut self.reset_box).clear = css_value_to_string(value),
-            "overflow" => Arc::make_mut(&mut self.reset_box).overflow = css_value_to_string(value),
+            "overflow-x" => {
+                Arc::make_mut(&mut self.reset_box).overflow_x = css_value_to_string(value);
+            }
+            "overflow-y" => {
+                Arc::make_mut(&mut self.reset_box).overflow_y = css_value_to_string(value);
+            }
+            "overflow" => {
+                let s = css_value_to_string(value);
+                let box_mut = Arc::make_mut(&mut self.reset_box);
+                box_mut.overflow = s.clone();
+                box_mut.overflow_x = s.clone();
+                box_mut.overflow_y = s;
+            }
             "z-index" => {
                 let z = match value {
                     CssValue::ZIndex(ZIndex::Auto) => i32::MIN,
@@ -1486,6 +1502,8 @@ impl CategorizedComputedStyle {
             "float" => Some(self.reset_box.float.clone()),
             "clear" => Some(self.reset_box.clear.clone()),
             "overflow" => Some(self.reset_box.overflow.clone()),
+            "overflow-x" => Some(self.reset_box.overflow_x.clone()),
+            "overflow-y" => Some(self.reset_box.overflow_y.clone()),
             "z-index" => Some(if self.reset_box.z_index == i32::MIN {
                 "auto".to_string()
             } else {
@@ -2165,6 +2183,74 @@ mod tests {
         );
         assert_eq!(
             style.get_property_as_string("column-count"),
+            Some("auto".to_string())
+        );
+    }
+
+    #[test]
+    fn test_overflow_computed_t0499() {
+        use crate::css::values::{CssValue, OverflowValue};
+
+        let mut style = CategorizedComputedStyle::initial();
+
+        // Assert initial defaults
+        assert_eq!(style.reset_box.overflow, "visible");
+        assert_eq!(style.reset_box.overflow_x, "visible");
+        assert_eq!(style.reset_box.overflow_y, "visible");
+        assert_eq!(
+            style.get_property_as_string("overflow"),
+            Some("visible".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("overflow-x"),
+            Some("visible".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("overflow-y"),
+            Some("visible".to_string())
+        );
+
+        // Set overflow: hidden
+        style.set_property("overflow", &CssValue::Overflow(OverflowValue::Hidden));
+        assert_eq!(style.reset_box.overflow, "hidden");
+        assert_eq!(style.reset_box.overflow_x, "hidden");
+        assert_eq!(style.reset_box.overflow_y, "hidden");
+        assert_eq!(
+            style.get_property_as_string("overflow"),
+            Some("hidden".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("overflow-x"),
+            Some("hidden".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("overflow-y"),
+            Some("hidden".to_string())
+        );
+
+        // Set overflow-x: scroll
+        style.set_property("overflow-x", &CssValue::Overflow(OverflowValue::Scroll));
+        assert_eq!(style.reset_box.overflow_x, "scroll");
+        assert_eq!(style.reset_box.overflow_y, "hidden"); // unchanged
+        assert_eq!(
+            style.get_property_as_string("overflow-x"),
+            Some("scroll".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("overflow-y"),
+            Some("hidden".to_string())
+        );
+
+        // Set overflow-y: auto
+        style.set_property("overflow-y", &CssValue::Overflow(OverflowValue::Auto));
+        assert_eq!(style.reset_box.overflow_x, "scroll"); // unchanged
+        assert_eq!(style.reset_box.overflow_y, "auto");
+        assert_eq!(
+            style.get_property_as_string("overflow-x"),
+            Some("scroll".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("overflow-y"),
             Some("auto".to_string())
         );
     }
