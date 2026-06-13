@@ -41,6 +41,11 @@ pub enum DisplayItem {
         decoded: Option<crate::image::DecodedImage>,
         object_fit: ObjectFit,
     },
+    Gradient {
+        rect: Rect,
+        css: String,
+        border_radius: Option<f32>,
+    },
 }
 
 /// A list of display items, representing the final visual output.
@@ -1239,162 +1244,180 @@ pub fn build_display_list_with_caret(
                 }
 
                 // Paint background-image (t0382)
-                let mut bg_img_src = None;
                 let kw = &style.reset_background.background_image;
-                if kw.starts_with("url(") && kw.ends_with(')') {
-                    let inner = &kw[4..kw.len() - 1];
-                    bg_img_src = Some(inner.trim_matches(|c| c == '"' || c == '\'').to_string());
-                } else if !kw.is_empty() && kw != "none" {
-                    bg_img_src = Some(kw.clone());
-                }
-
-                if let Some(src) = bg_img_src
-                    && let Some(decoded) = dom.get_image(&src)
-                {
-                    let box_rect = layout_box.rect;
-                    if box_rect.size.width > 0.0 && box_rect.size.height > 0.0 {
-                        // Extract repeat
-                        let repeat_val = style
-                            .reset_background
-                            .background_repeat
-                            .to_ascii_lowercase();
-
-                        let (repeat_x, repeat_y) = match repeat_val.as_str() {
-                            "no-repeat" => (false, false),
-                            "repeat-x" => (true, false),
-                            "repeat-y" => (false, true),
-                            _ => (true, true),
+                if kw.starts_with("linear-gradient(") || kw.starts_with("radial-gradient(") {
+                    if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
+                        let border_radius = if style.reset_surround.border_top_left_radius >= 0 {
+                            Some(style.reset_surround.border_top_left_radius as f32)
+                        } else {
+                            None
                         };
+                        items.push(DisplayItem::Gradient {
+                            rect: layout_box.rect,
+                            css: kw.clone(),
+                            border_radius,
+                        });
+                    }
+                } else {
+                    let mut bg_img_src = None;
+                    if kw.starts_with("url(") && kw.ends_with(')') {
+                        let inner = &kw[4..kw.len() - 1];
+                        bg_img_src =
+                            Some(inner.trim_matches(|c| c == '"' || c == '\'').to_string());
+                    } else if !kw.is_empty() && kw != "none" {
+                        bg_img_src = Some(kw.clone());
+                    }
 
-                        // Determine image dimensions.
-                        let mut img_w = decoded.width as f32;
-                        let mut img_h = decoded.height as f32;
+                    if let Some(src) = bg_img_src
+                        && let Some(decoded) = dom.get_image(&src)
+                    {
+                        let box_rect = layout_box.rect;
+                        if box_rect.size.width > 0.0 && box_rect.size.height > 0.0 {
+                            // Extract repeat
+                            let repeat_val = style
+                                .reset_background
+                                .background_repeat
+                                .to_ascii_lowercase();
 
-                        let size_val =
-                            parse_background_size(&style.reset_background.background_size);
-                        let (resolved_w, resolved_h) = resolve_bg_size(
-                            (box_rect.size.width, box_rect.size.height),
-                            (img_w, img_h),
-                            &size_val,
-                        );
-                        img_w = resolved_w;
-                        img_h = resolved_h;
+                            let (repeat_x, repeat_y) = match repeat_val.as_str() {
+                                "no-repeat" => (false, false),
+                                "repeat-x" => (true, false),
+                                "repeat-y" => (false, true),
+                                _ => (true, true),
+                            };
 
-                        if img_w > 0.0 && img_h > 0.0 {
-                            // Extract position
-                            let p_val = parse_background_position(
-                                &style.reset_background.background_position,
+                            // Determine image dimensions.
+                            let mut img_w = decoded.width as f32;
+                            let mut img_h = decoded.height as f32;
+
+                            let size_val =
+                                parse_background_size(&style.reset_background.background_size);
+                            let (resolved_w, resolved_h) = resolve_bg_size(
+                                (box_rect.size.width, box_rect.size.height),
+                                (img_w, img_h),
+                                &size_val,
                             );
-                            let (x_offset, y_offset) = get_background_position_offsets(
-                                &p_val,
-                                box_rect.size.width,
-                                box_rect.size.height,
-                                img_w,
-                                img_h,
-                            );
+                            img_w = resolved_w;
+                            img_h = resolved_h;
 
-                            // Calculate repeat indices
-                            let min_i = if repeat_x {
-                                ((-x_offset - img_w) / img_w).floor() as i32
-                            } else {
-                                0
-                            };
-                            let max_i = if repeat_x {
-                                ((box_rect.size.width - x_offset) / img_w).ceil() as i32
-                            } else {
-                                0
-                            };
+                            if img_w > 0.0 && img_h > 0.0 {
+                                // Extract position
+                                let p_val = parse_background_position(
+                                    &style.reset_background.background_position,
+                                );
+                                let (x_offset, y_offset) = get_background_position_offsets(
+                                    &p_val,
+                                    box_rect.size.width,
+                                    box_rect.size.height,
+                                    img_w,
+                                    img_h,
+                                );
 
-                            let min_j = if repeat_y {
-                                ((-y_offset - img_h) / img_h).floor() as i32
-                            } else {
-                                0
-                            };
-                            let max_j = if repeat_y {
-                                ((box_rect.size.height - y_offset) / img_h).ceil() as i32
-                            } else {
-                                0
-                            };
+                                // Calculate repeat indices
+                                let min_i = if repeat_x {
+                                    ((-x_offset - img_w) / img_w).floor() as i32
+                                } else {
+                                    0
+                                };
+                                let max_i = if repeat_x {
+                                    ((box_rect.size.width - x_offset) / img_w).ceil() as i32
+                                } else {
+                                    0
+                                };
 
-                            // Emit tiles
-                            for i in min_i..=max_i {
-                                for j in min_j..=max_j {
-                                    let tile_x = x_offset + i as f32 * img_w;
-                                    let tile_y = y_offset + j as f32 * img_h;
-                                    let tile_rect = Rect::new(
-                                        box_rect.origin.x + tile_x,
-                                        box_rect.origin.y + tile_y,
-                                        img_w,
-                                        img_h,
-                                    );
+                                let min_j = if repeat_y {
+                                    ((-y_offset - img_h) / img_h).floor() as i32
+                                } else {
+                                    0
+                                };
+                                let max_j = if repeat_y {
+                                    ((box_rect.size.height - y_offset) / img_h).ceil() as i32
+                                } else {
+                                    0
+                                };
 
-                                    if let Some(clipped_rect) = tile_rect.intersection(box_rect)
-                                        && clipped_rect.size.width > 0.0
-                                        && clipped_rect.size.height > 0.0
-                                    {
-                                        // Crop the decoded image to match the clipped_rect
-                                        let dx = clipped_rect.origin.x - tile_rect.origin.x;
-                                        let dy = clipped_rect.origin.y - tile_rect.origin.y;
+                                // Emit tiles
+                                for i in min_i..=max_i {
+                                    for j in min_j..=max_j {
+                                        let tile_x = x_offset + i as f32 * img_w;
+                                        let tile_y = y_offset + j as f32 * img_h;
+                                        let tile_rect = Rect::new(
+                                            box_rect.origin.x + tile_x,
+                                            box_rect.origin.y + tile_y,
+                                            img_w,
+                                            img_h,
+                                        );
 
-                                        // Map destination px to source image pixels.
-                                        let scale_x = decoded.width as f32 / img_w;
-                                        let scale_y = decoded.height as f32 / img_h;
+                                        if let Some(clipped_rect) = tile_rect.intersection(box_rect)
+                                            && clipped_rect.size.width > 0.0
+                                            && clipped_rect.size.height > 0.0
+                                        {
+                                            // Crop the decoded image to match the clipped_rect
+                                            let dx = clipped_rect.origin.x - tile_rect.origin.x;
+                                            let dy = clipped_rect.origin.y - tile_rect.origin.y;
 
-                                        let start_x = (dx * scale_x).round() as u32;
-                                        let start_y = (dy * scale_y).round() as u32;
-                                        let clipped_w =
-                                            (clipped_rect.size.width * scale_x).round() as u32;
-                                        let clipped_h =
-                                            (clipped_rect.size.height * scale_y).round() as u32;
+                                            // Map destination px to source image pixels.
+                                            let scale_x = decoded.width as f32 / img_w;
+                                            let scale_y = decoded.height as f32 / img_h;
 
-                                        let start_x = start_x.min(decoded.width);
-                                        let start_y = start_y.min(decoded.height);
-                                        let clipped_w = clipped_w.min(decoded.width - start_x);
-                                        let clipped_h = clipped_h.min(decoded.height - start_y);
+                                            let start_x = (dx * scale_x).round() as u32;
+                                            let start_y = (dy * scale_y).round() as u32;
+                                            let clipped_w =
+                                                (clipped_rect.size.width * scale_x).round() as u32;
+                                            let clipped_h =
+                                                (clipped_rect.size.height * scale_y).round() as u32;
 
-                                        if clipped_w > 0 && clipped_h > 0 {
-                                            let mut cropped_rgba = Vec::with_capacity(
-                                                (clipped_w * clipped_h * 4) as usize,
-                                            );
-                                            for sy in start_y..(start_y + clipped_h) {
-                                                let src_row_start =
-                                                    ((sy * decoded.width + start_x) * 4) as usize;
-                                                let src_row_end = (src_row_start
-                                                    + (clipped_w * 4) as usize)
-                                                    .min(decoded.rgba.len());
-                                                cropped_rgba.extend_from_slice(
-                                                    &decoded.rgba[src_row_start..src_row_end],
+                                            let start_x = start_x.min(decoded.width);
+                                            let start_y = start_y.min(decoded.height);
+                                            let clipped_w = clipped_w.min(decoded.width - start_x);
+                                            let clipped_h = clipped_h.min(decoded.height - start_y);
+
+                                            if clipped_w > 0 && clipped_h > 0 {
+                                                let mut cropped_rgba = Vec::with_capacity(
+                                                    (clipped_w * clipped_h * 4) as usize,
                                                 );
-                                            }
-
-                                            let cropped_img = crate::image::DecodedImage {
-                                                width: clipped_w,
-                                                height: clipped_h,
-                                                rgba: cropped_rgba,
-                                            };
-
-                                            // Retrieve base URL if any
-                                            let mut base_url = None;
-                                            for n_id in dom.descendants(dom.document()) {
-                                                if let Some(NodeData::Element {
-                                                    name: el_name, ..
-                                                }) = dom.data(n_id)
-                                                    && el_name.eq_ignore_ascii_case("base")
-                                                    && let Some(href) =
-                                                        dom.get_attribute(n_id, "href")
-                                                {
-                                                    base_url = Some(href.to_string());
-                                                    break;
+                                                for sy in start_y..(start_y + clipped_h) {
+                                                    let src_row_start =
+                                                        ((sy * decoded.width + start_x) * 4)
+                                                            as usize;
+                                                    let src_row_end = (src_row_start
+                                                        + (clipped_w * 4) as usize)
+                                                        .min(decoded.rgba.len());
+                                                    cropped_rgba.extend_from_slice(
+                                                        &decoded.rgba[src_row_start..src_row_end],
+                                                    );
                                                 }
-                                            }
 
-                                            items.push(DisplayItem::Image {
-                                                rect: clipped_rect,
-                                                src: src.clone(),
-                                                base_url,
-                                                decoded: Some(cropped_img),
-                                                object_fit: ObjectFit::Fill,
-                                            });
+                                                let cropped_img = crate::image::DecodedImage {
+                                                    width: clipped_w,
+                                                    height: clipped_h,
+                                                    rgba: cropped_rgba,
+                                                };
+
+                                                // Retrieve base URL if any
+                                                let mut base_url = None;
+                                                for n_id in dom.descendants(dom.document()) {
+                                                    if let Some(NodeData::Element {
+                                                        name: el_name,
+                                                        ..
+                                                    }) = dom.data(n_id)
+                                                        && el_name.eq_ignore_ascii_case("base")
+                                                        && let Some(href) =
+                                                            dom.get_attribute(n_id, "href")
+                                                    {
+                                                        base_url = Some(href.to_string());
+                                                        break;
+                                                    }
+                                                }
+
+                                                items.push(DisplayItem::Image {
+                                                    rect: clipped_rect,
+                                                    src: src.clone(),
+                                                    base_url,
+                                                    decoded: Some(cropped_img),
+                                                    object_fit: ObjectFit::Fill,
+                                                });
+                                            }
                                         }
                                     }
                                 }
@@ -3166,6 +3189,82 @@ mod tests {
             assert_eq!(src, "test.png");
         } else {
             panic!("Expected DisplayItem::Image");
+        }
+    }
+
+    #[test]
+    fn test_paint_linear_gradient() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                background-image: linear-gradient(to bottom, #ff0000, #0000ff);
+                width: 100px;
+                height: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let gradient_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Gradient { .. }))
+            .collect();
+
+        assert_eq!(gradient_items.len(), 1);
+        if let DisplayItem::Gradient { css, .. } = gradient_items[0] {
+            assert_eq!(css, "linear-gradient(to bottom, #ff0000, #0000ff)");
+        } else {
+            panic!("Expected DisplayItem::Gradient");
+        }
+    }
+
+    #[test]
+    fn test_paint_radial_gradient() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            div {
+                background-image: radial-gradient(circle, #ff0000, #0000ff);
+                width: 100px;
+                height: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout = layout_document(&dom, &styles, 800.0);
+
+        let display_list = build_display_list(&layout, &dom, &styles);
+        let items = display_list.0;
+
+        let gradient_items: Vec<&DisplayItem> = items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Gradient { .. }))
+            .collect();
+
+        assert_eq!(gradient_items.len(), 1);
+        if let DisplayItem::Gradient { css, .. } = gradient_items[0] {
+            assert_eq!(css, "radial-gradient(circle, #ff0000, #0000ff)");
+        } else {
+            panic!("Expected DisplayItem::Gradient");
         }
     }
 

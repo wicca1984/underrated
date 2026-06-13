@@ -928,6 +928,60 @@ pub fn parse_property_value(
     }
 }
 
+fn serialize_component_value(cv: &ComponentValue) -> String {
+    match cv {
+        ComponentValue::Token(token) => match token {
+            CssToken::Ident(s) => s.clone(),
+            CssToken::Function(s) => format!("{}(", s),
+            CssToken::AtKeyword(s) => format!("@{}", s),
+            CssToken::Hash(s) => format!("#{}", s),
+            CssToken::String(s) => format!("\"{}\"", s),
+            CssToken::Number(v) => v.to_string(),
+            CssToken::Percentage(v) => format!("{}%", v),
+            CssToken::Dimension { value, unit } => format!("{}{}", value, unit),
+            CssToken::Delim(c) => c.to_string(),
+            CssToken::Whitespace => " ".to_string(),
+            CssToken::Colon => ":".to_string(),
+            CssToken::Semicolon => ";".to_string(),
+            CssToken::Comma => ",".to_string(),
+            CssToken::LeftBrace => "{".to_string(),
+            CssToken::RightBrace => "}".to_string(),
+            CssToken::LeftParen => "(".to_string(),
+            CssToken::RightParen => ")".to_string(),
+            CssToken::LeftBracket => "[".to_string(),
+            CssToken::RightBracket => "]".to_string(),
+            CssToken::Cdo => "<!--".to_string(),
+            CssToken::Cdc => "-->".to_string(),
+            CssToken::BadString => "".to_string(),
+            CssToken::BadUrl => "".to_string(),
+            CssToken::Url(s) => format!("url({})", s),
+            CssToken::Eof => "".to_string(),
+        },
+        ComponentValue::Function { name, value } => {
+            let mut s = format!("{}(", name);
+            for val in value {
+                s.push_str(&serialize_component_value(val));
+            }
+            s.push(')');
+            s
+        }
+        ComponentValue::SimpleBlock { associated, value } => {
+            let (open, close) = match associated {
+                '{' => ("{", "}"),
+                '[' => ("[", "]"),
+                '(' => ("(", ")"),
+                _ => ("", ""),
+            };
+            let mut s = open.to_string();
+            for val in value {
+                s.push_str(&serialize_component_value(val));
+            }
+            s.push_str(close);
+            s
+        }
+    }
+}
+
 fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
     if components.len() != 1 {
         // TODO(spec): Support complex single values (e.g. 1px/2px)
@@ -988,6 +1042,11 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                     }
                 }
                 return url_str.map(|s| CssValue::Keyword(format!("url({})", s)));
+            }
+            if name.eq_ignore_ascii_case("linear-gradient")
+                || name.eq_ignore_ascii_case("radial-gradient")
+            {
+                return Some(CssValue::Keyword(serialize_component_value(components[0])));
             }
             None // TODO(spec): other functions
         }
