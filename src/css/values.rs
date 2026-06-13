@@ -719,6 +719,58 @@ impl TryFrom<&CssValue> for PointerEventsValue {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum TextDecorationStyleValue {
+    #[default]
+    Solid,
+    Double,
+    Dotted,
+    Dashed,
+    Wavy,
+}
+
+impl TextDecorationStyleValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "solid" => Some(Self::Solid),
+            "double" => Some(Self::Double),
+            "dotted" => Some(Self::Dotted),
+            "dashed" => Some(Self::Dashed),
+            "wavy" => Some(Self::Wavy),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Solid => "solid",
+            Self::Double => "double",
+            Self::Dotted => "dotted",
+            Self::Dashed => "dashed",
+            Self::Wavy => "wavy",
+        }
+    }
+}
+
+impl std::str::FromStr for TextDecorationStyleValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for TextDecorationStyleValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -3930,6 +3982,114 @@ mod tests {
 
         // Test Default implementation
         assert_eq!(OverflowWrapValue::default(), OverflowWrapValue::Normal);
+    }
+
+    #[test]
+    fn test_text_decoration_style_value() {
+        // Test default value
+        assert_eq!(
+            TextDecorationStyleValue::default(),
+            TextDecorationStyleValue::Solid
+        );
+
+        // Test parsing keyword strings to TextDecorationStyleValue
+        assert_eq!(
+            TextDecorationStyleValue::parse("solid"),
+            Some(TextDecorationStyleValue::Solid)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("double"),
+            Some(TextDecorationStyleValue::Double)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("dotted"),
+            Some(TextDecorationStyleValue::Dotted)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("dashed"),
+            Some(TextDecorationStyleValue::Dashed)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("wavy"),
+            Some(TextDecorationStyleValue::Wavy)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("SOLID"),
+            Some(TextDecorationStyleValue::Solid)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("Double"),
+            Some(TextDecorationStyleValue::Double)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("Dotted"),
+            Some(TextDecorationStyleValue::Dotted)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("DASHED"),
+            Some(TextDecorationStyleValue::Dashed)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::parse("Wavy"),
+            Some(TextDecorationStyleValue::Wavy)
+        );
+        assert_eq!(TextDecorationStyleValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "solid".parse::<TextDecorationStyleValue>(),
+            Ok(TextDecorationStyleValue::Solid)
+        );
+        assert_eq!(
+            "double".parse::<TextDecorationStyleValue>(),
+            Ok(TextDecorationStyleValue::Double)
+        );
+        assert_eq!(
+            "dotted".parse::<TextDecorationStyleValue>(),
+            Ok(TextDecorationStyleValue::Dotted)
+        );
+        assert_eq!(
+            "dashed".parse::<TextDecorationStyleValue>(),
+            Ok(TextDecorationStyleValue::Dashed)
+        );
+        assert_eq!(
+            "wavy".parse::<TextDecorationStyleValue>(),
+            Ok(TextDecorationStyleValue::Wavy)
+        );
+        assert_eq!("BOGUS".parse::<TextDecorationStyleValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(TextDecorationStyleValue::Solid.as_str(), "solid");
+        assert_eq!(TextDecorationStyleValue::Double.as_str(), "double");
+        assert_eq!(TextDecorationStyleValue::Dotted.as_str(), "dotted");
+        assert_eq!(TextDecorationStyleValue::Dashed.as_str(), "dashed");
+        assert_eq!(TextDecorationStyleValue::Wavy.as_str(), "wavy");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            TextDecorationStyleValue::try_from(&CssValue::Keyword("solid".to_string())),
+            Ok(TextDecorationStyleValue::Solid)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::try_from(&CssValue::Keyword("DOUBLE".to_string())),
+            Ok(TextDecorationStyleValue::Double)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::try_from(&CssValue::Keyword("dotted".to_string())),
+            Ok(TextDecorationStyleValue::Dotted)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::try_from(&CssValue::Keyword("dashed".to_string())),
+            Ok(TextDecorationStyleValue::Dashed)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::try_from(&CssValue::Keyword("wavy".to_string())),
+            Ok(TextDecorationStyleValue::Wavy)
+        );
+        assert_eq!(
+            TextDecorationStyleValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
     }
 
     #[test]
