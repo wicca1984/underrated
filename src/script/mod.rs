@@ -1813,6 +1813,14 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'ownerDocument', {
+                        get() {
+                            return document;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     node.contains = function(otherNode) {
                         return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
                     };
@@ -2480,6 +2488,14 @@ impl BoaHost {
                 Object.defineProperty(Document.prototype, 'isConnected', {
                     get() {
                         return bridge.isConnected(this.__key__);
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(Document.prototype, 'ownerDocument', {
+                    get() {
+                        return null;
                     },
                     enumerable: true,
                     configurable: true
@@ -11538,6 +11554,42 @@ mod tests {
         assert_eq!(
             res,
             Ok(r#"{"documentIsConnected":true,"detachedIsConnected":false,"attachedIsConnected":true}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_dom_node_owner_document() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let html = dom.create_node(NodeData::Element {
+            name: "html".to_string(),
+            attrs: vec![],
+        });
+        let body = dom.create_node(NodeData::Element {
+            name: "body".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(html, body);
+        dom.append_child(document, html);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const createdDiv = document.createElement('div');
+            
+            const verification = {
+                documentOwnerDocumentIsNull: document.ownerDocument === null,
+                bodyOwnerDocumentIsDocument: document.body.ownerDocument === document,
+                createdDivOwnerDocumentIsDocument: createdDiv.ownerDocument === document
+            };
+            JSON.stringify(verification);
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok(r#"{"documentOwnerDocumentIsNull":true,"bodyOwnerDocumentIsDocument":true,"createdDivOwnerDocumentIsDocument":true}"#.to_string())
         );
     }
 
