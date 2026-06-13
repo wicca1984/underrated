@@ -220,6 +220,10 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                 match name.to_ascii_lowercase().as_str() {
                     "hover" => get_node_state(node).hover,
                     "focus" => get_node_state(node).focus,
+                    "focus-visible" => {
+                        // TODO(spec): :focus-visible currently mirrors :focus (no keyboard-vs-pointer focus heuristic)
+                        get_node_state(node).focus
+                    }
                     "focus-within" => matches_focus_within(dom, node),
                     "active" => get_node_state(node).active,
                     "first-child" => is_first_child(dom, node),
@@ -1650,6 +1654,11 @@ mod tests {
             el
         ));
         assert!(!matches(
+            &parse_selector_list("button:focus-visible").unwrap(),
+            &dom,
+            el
+        ));
+        assert!(!matches(
             &parse_selector_list("button:active").unwrap(),
             &dom,
             el
@@ -1674,6 +1683,11 @@ mod tests {
             &dom,
             el
         ));
+        assert!(!matches(
+            &parse_selector_list("button:focus-visible").unwrap(),
+            &dom,
+            el
+        ));
 
         // Set focus
         set_node_state(
@@ -1694,6 +1708,11 @@ mod tests {
             &dom,
             el
         ));
+        assert!(matches(
+            &parse_selector_list("button:focus-visible").unwrap(),
+            &dom,
+            el
+        ));
 
         // Set active
         set_node_state(
@@ -1706,6 +1725,11 @@ mod tests {
         );
         assert!(!matches(
             &parse_selector_list("button:hover").unwrap(),
+            &dom,
+            el
+        ));
+        assert!(!matches(
+            &parse_selector_list("button:focus-visible").unwrap(),
             &dom,
             el
         ));
