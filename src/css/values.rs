@@ -504,6 +504,53 @@ impl TryFrom<&CssValue> for TextOrientationValue {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum FontVariantPositionValue {
+    #[default]
+    Normal,
+    Sub,
+    Super,
+}
+
+impl FontVariantPositionValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "sub" => Some(Self::Sub),
+            "super" => Some(Self::Super),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Sub => "sub",
+            Self::Super => "super",
+        }
+    }
+}
+
+impl std::str::FromStr for FontVariantPositionValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for FontVariantPositionValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::FontVariantPosition(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum CaptionSideValue {
     Top,
@@ -1513,6 +1560,7 @@ pub enum CssValue {
     TextRendering(TextRenderingValue),
     ImageRendering(ImageRenderingValue),
     FontVariantCaps(FontVariantCapsValue),
+    FontVariantPosition(FontVariantPositionValue),
     FontStretch(FontStretchValue),
 }
 
@@ -1630,6 +1678,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "grid-template-rows"
             | "image-rendering"
             | "font-variant-caps"
+            | "font-variant-position"
             | "font-stretch"
             | "font-kerning"
             | "text-justify"
@@ -1952,6 +2001,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::FontVariantCaps(_) => true,
+            _ => false,
+        },
+        "font-variant-position" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "normal" | "sub" | "super")
+            }
+            CssValue::FontVariantPosition(_) => true,
             _ => false,
         },
         "font-stretch" => match value {
@@ -2615,6 +2671,26 @@ fn parse_font_variant_caps(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::FontVariantCaps(kw))
 }
 
+fn parse_font_variant_position(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for font-variant-position recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = FontVariantPositionValue::parse(&idents[0])?;
+    Some(CssValue::FontVariantPosition(kw))
+}
+
 fn parse_font_stretch(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2691,6 +2767,9 @@ pub fn parse_property_value(
     }
     if name_lower == "font-variant-caps" {
         return parse_font_variant_caps(components);
+    }
+    if name_lower == "font-variant-position" {
+        return parse_font_variant_position(components);
     }
     if name_lower == "font-stretch" {
         return parse_font_stretch(components);
@@ -4845,6 +4924,82 @@ mod tests {
 
         // Test Default implementation
         assert_eq!(TextOrientationValue::default(), TextOrientationValue::Mixed);
+    }
+
+    #[test]
+    fn test_font_variant_position_value() {
+        // Test parsing keyword strings to FontVariantPositionValue
+        assert_eq!(
+            FontVariantPositionValue::parse("normal"),
+            Some(FontVariantPositionValue::Normal)
+        );
+        assert_eq!(
+            FontVariantPositionValue::parse("sub"),
+            Some(FontVariantPositionValue::Sub)
+        );
+        assert_eq!(
+            FontVariantPositionValue::parse("super"),
+            Some(FontVariantPositionValue::Super)
+        );
+        assert_eq!(
+            FontVariantPositionValue::parse("NORMAL"),
+            Some(FontVariantPositionValue::Normal)
+        );
+        assert_eq!(
+            FontVariantPositionValue::parse("Sub"),
+            Some(FontVariantPositionValue::Sub)
+        );
+        assert_eq!(FontVariantPositionValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "normal".parse::<FontVariantPositionValue>(),
+            Ok(FontVariantPositionValue::Normal)
+        );
+        assert_eq!(
+            "sub".parse::<FontVariantPositionValue>(),
+            Ok(FontVariantPositionValue::Sub)
+        );
+        assert_eq!(
+            "super".parse::<FontVariantPositionValue>(),
+            Ok(FontVariantPositionValue::Super)
+        );
+        assert_eq!("BOGUS".parse::<FontVariantPositionValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(FontVariantPositionValue::Normal.as_str(), "normal");
+        assert_eq!(FontVariantPositionValue::Sub.as_str(), "sub");
+        assert_eq!(FontVariantPositionValue::Super.as_str(), "super");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            FontVariantPositionValue::try_from(&CssValue::Keyword("sub".to_string())),
+            Ok(FontVariantPositionValue::Sub)
+        );
+        assert_eq!(
+            FontVariantPositionValue::try_from(&CssValue::Keyword("NORMAL".to_string())),
+            Ok(FontVariantPositionValue::Normal)
+        );
+        assert_eq!(
+            FontVariantPositionValue::try_from(&CssValue::FontVariantPosition(
+                FontVariantPositionValue::Super
+            )),
+            Ok(FontVariantPositionValue::Super)
+        );
+        assert_eq!(
+            FontVariantPositionValue::try_from(&CssValue::Keyword("invalid-kw".to_string())),
+            Err(())
+        );
+        assert_eq!(
+            FontVariantPositionValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+
+        // Test Default implementation
+        assert_eq!(
+            FontVariantPositionValue::default(),
+            FontVariantPositionValue::Normal
+        );
     }
 
     #[test]
@@ -7021,6 +7176,48 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "text-orientation",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for font-variant-position
+        assert!(is_known_layout_property("font-variant-position"));
+        assert!(is_known_layout_property("Font-Variant-Position"));
+
+        for (val, expected_variant) in &[
+            ("normal", FontVariantPositionValue::Normal),
+            ("sub", FontVariantPositionValue::Sub),
+            ("super", FontVariantPositionValue::Super),
+            ("NORMAL", FontVariantPositionValue::Normal),
+            ("Sub", FontVariantPositionValue::Sub),
+        ] {
+            assert_eq!(
+                parse_property_value(
+                    "font-variant-position",
+                    &[token(CssToken::Ident((*val).to_string()))]
+                ),
+                Some(CssValue::FontVariantPosition(*expected_variant))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "font-variant-position",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &["normal", "sub", "super", "NORMAL", "Sub"] {
+            assert!(is_valid_property_value(
+                "font-variant-position",
+                &CssValue::Keyword((*val).to_string())
+            ));
+            assert!(is_valid_property_value(
+                "font-variant-position",
+                &CssValue::FontVariantPosition(FontVariantPositionValue::Normal)
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "font-variant-position",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 

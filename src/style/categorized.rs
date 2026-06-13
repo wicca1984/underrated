@@ -2084,6 +2084,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::TextRendering(tr) => tr.as_str().to_string(),
         CssValue::ImageRendering(ir) => ir.as_str().to_string(),
         CssValue::FontVariantCaps(fvc) => fvc.as_str().to_string(),
+        CssValue::FontVariantPosition(fvp) => fvp.as_str().to_string(),
         CssValue::FontStretch(fs) => fs.as_str().to_string(),
         // TODO(spec): text-align-last fully plumbing to style and layout is a future task
         CssValue::TextAlignLast(tal) => tal.as_str().to_string(),
