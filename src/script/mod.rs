@@ -165,6 +165,7 @@ impl BoaHost {
         let _ = context.register_global_class::<DOMParser>();
         let _ = context.register_global_class::<MutationObserver>();
         let _ = context.register_global_class::<MutationRecord>();
+        let _ = context.register_global_class::<IntersectionObserver>();
         let _ = context.register_global_class::<Blob>();
 
         let bridge = ObjectInitializer::new(context)
@@ -8035,6 +8036,405 @@ pub fn mutation_record_get_old_value(
     Ok(record.old_value.clone())
 }
 
+/// Options dictionary/object for `IntersectionObserver`.
+/// Spec: <https://w3c.github.io/IntersectionObserver/#dictdef-intersectionobserverinit>
+#[derive(Debug, Clone, Trace, Finalize)]
+pub struct IntersectionObserverOptions {
+    pub root: Option<JsValue>,
+    pub root_margin: String,
+    pub thresholds: Vec<f64>,
+}
+
+/// Helper function to parse `IntersectionObserverInit` dictionary/options object.
+fn parse_intersection_observer_options(
+    options_val: &JsValue,
+    context: &mut Context,
+) -> JsResult<IntersectionObserverOptions> {
+    if options_val.is_undefined() || options_val.is_null() {
+        return Ok(IntersectionObserverOptions {
+            root: None,
+            root_margin: "0px".to_string(),
+            thresholds: vec![0.0],
+        });
+    }
+
+    let options_obj =
+        options_val.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message(
+                "TypeError: IntersectionObserver constructor options must be an object",
+            ))
+        })?;
+
+    // root
+    let root_val = options_obj.get(JsString::from("root"), context)?;
+    let root = if root_val.is_undefined() || root_val.is_null() {
+        None
+    } else {
+        Some(root_val)
+    };
+
+    // rootMargin
+    let root_margin_val = options_obj.get(JsString::from("rootMargin"), context)?;
+    let root_margin = if root_margin_val.is_undefined() {
+        "0px".to_string()
+    } else {
+        root_margin_val
+            .to_string(context)?
+            .to_std_string()
+            .unwrap_or_else(|_| "0px".to_string())
+    };
+
+    // threshold
+    let threshold_val = options_obj.get(JsString::from("threshold"), context)?;
+    let mut thresholds = if threshold_val.is_undefined() {
+        vec![0.0]
+    } else if threshold_val.is_object() {
+        if let Some(arr_obj) = threshold_val.as_object() {
+            if arr_obj.is_array() {
+                let len_val = arr_obj.get(JsString::from("length"), context)?;
+                let len = len_val.to_number(context)? as usize;
+                let mut vals = Vec::with_capacity(len);
+                for i in 0..len {
+                    let item = arr_obj.get(i, context)?;
+                    vals.push(item.to_number(context)?);
+                }
+                if vals.is_empty() {
+                    return Err(JsError::from(
+                        JsNativeError::typ()
+                            .with_message("TypeError: threshold list must not be empty"),
+                    ));
+                }
+                vals
+            } else {
+                let single = threshold_val.to_number(context)?;
+                vec![single]
+            }
+        } else {
+            let single = threshold_val.to_number(context)?;
+            vec![single]
+        }
+    } else {
+        let single = threshold_val.to_number(context)?;
+        vec![single]
+    };
+
+    // Range checking
+    for &t in &thresholds {
+        if !(0.0..=1.0).contains(&t) {
+            return Err(JsError::from(JsNativeError::range().with_message(
+                "RangeError: Threshold values must be between 0.0 and 1.0 inclusive",
+            )));
+        }
+    }
+
+    // Sort thresholds in increasing numeric order
+    thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(IntersectionObserverOptions {
+        root,
+        root_margin,
+        thresholds,
+    })
+}
+
+/// An active observation setup on a target DOM Node.
+#[derive(Debug, Trace, Finalize, Clone)]
+pub struct IntersectionObservation {
+    pub target: JsValue,
+    pub target_key: String,
+}
+
+/// Implementation of W3C `IntersectionObserver` interface.
+/// Spec: <https://w3c.github.io/IntersectionObserver/#intersection-observer-interface>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct IntersectionObserver {
+    pub(crate) callback: JsValue,
+    pub(crate) options: IntersectionObserverOptions,
+    pub(crate) active_observations: GcRefCell<Vec<IntersectionObservation>>,
+}
+
+impl Class for IntersectionObserver {
+    const NAME: &'static str = "IntersectionObserver";
+    const LENGTH: usize = 1;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+        if !callback.is_callable() {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "TypeError: IntersectionObserver constructor requires a callback function",
+            )));
+        }
+
+        let options_val = args.get(1).cloned().unwrap_or(JsValue::undefined());
+        let options = parse_intersection_observer_options(&options_val, context)?;
+
+        Ok(IntersectionObserver {
+            callback,
+            options,
+            active_observations: GcRefCell::new(Vec::new()),
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        // Instance methods
+        class
+            .method(
+                JsString::from("observe"),
+                1,
+                NativeFunction::from_fn_ptr(intersection_observer_observe),
+            )
+            .method(
+                JsString::from("unobserve"),
+                1,
+                NativeFunction::from_fn_ptr(intersection_observer_unobserve),
+            )
+            .method(
+                JsString::from("disconnect"),
+                0,
+                NativeFunction::from_fn_ptr(intersection_observer_disconnect),
+            )
+            .method(
+                JsString::from("takeRecords"),
+                0,
+                NativeFunction::from_fn_ptr(intersection_observer_take_records),
+            );
+
+        // Read-only accessors: root, rootMargin, thresholds
+        let getters: &[(
+            &str,
+            fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+        )] = &[
+            ("root", intersection_observer_get_root),
+            ("rootMargin", intersection_observer_get_root_margin),
+            ("thresholds", intersection_observer_get_thresholds),
+        ];
+
+        for &(name, func) in getters {
+            let getter_fn = boa_engine::object::FunctionObjectBuilder::new(
+                &realm,
+                NativeFunction::from_fn_ptr(func),
+            )
+            .name(format!("get {}", name))
+            .build();
+
+            class.accessor(
+                JsString::from(name),
+                Some(getter_fn),
+                None,
+                Attribute::all(),
+            );
+        }
+
+        Ok(())
+    }
+}
+
+pub fn intersection_observer_observe(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<IntersectionObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-IntersectionObserver object"),
+        )
+    })?;
+
+    let target = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: observe() requires target parameter"),
+        )
+    })?;
+
+    let target_obj = target.as_object().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: target must be a DOM Node (object)"),
+        )
+    })?;
+
+    let key_val = target_obj.get(JsString::from("__key__"), context)?;
+    if key_val.is_undefined() || key_val.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: target must be a DOM Node with a __key__",
+        )));
+    }
+    let target_key = key_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    // Check if duplicate target is being observed
+    let mut active = observer.active_observations.borrow_mut();
+    if !active.iter().any(|obs| obs.target_key == target_key) {
+        active.push(IntersectionObservation {
+            target: target.clone(),
+            target_key,
+        });
+    }
+
+    // TODO(spec): real layout-driven intersection notifications are out of scope for now.
+
+    Ok(JsValue::undefined())
+}
+
+pub fn intersection_observer_unobserve(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<IntersectionObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-IntersectionObserver object"),
+        )
+    })?;
+
+    let target = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: unobserve() requires target parameter"),
+        )
+    })?;
+
+    let target_obj = target.as_object().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: target must be a DOM Node (object)"),
+        )
+    })?;
+
+    let key_val = target_obj.get(JsString::from("__key__"), context)?;
+    if key_val.is_undefined() || key_val.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: target must be a DOM Node with a __key__",
+        )));
+    }
+    let target_key = key_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let mut active = observer.active_observations.borrow_mut();
+    if let Some(pos) = active.iter().position(|obs| obs.target_key == target_key) {
+        active.remove(pos);
+    }
+
+    Ok(JsValue::undefined())
+}
+
+pub fn intersection_observer_disconnect(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<IntersectionObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-IntersectionObserver object"),
+        )
+    })?;
+
+    observer.active_observations.borrow_mut().clear();
+
+    Ok(JsValue::undefined())
+}
+
+pub fn intersection_observer_take_records(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let _observer = obj.downcast_ref::<IntersectionObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-IntersectionObserver object"),
+        )
+    })?;
+
+    // TODO(spec): real records require layout intersection computation.
+    let elements: Vec<JsValue> = Vec::new();
+    let array = boa_engine::object::builtins::JsArray::from_iter(elements, context);
+    Ok(JsValue::from(array))
+}
+
+pub fn intersection_observer_get_root(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<IntersectionObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-IntersectionObserver object"),
+        )
+    })?;
+    Ok(observer.options.root.clone().unwrap_or(JsValue::null()))
+}
+
+pub fn intersection_observer_get_root_margin(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<IntersectionObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-IntersectionObserver object"),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(
+        observer.options.root_margin.clone(),
+    )))
+}
+
+pub fn intersection_observer_get_thresholds(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<IntersectionObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-IntersectionObserver object"),
+        )
+    })?;
+    let elements: Vec<JsValue> = observer
+        .options
+        .thresholds
+        .iter()
+        .map(|&t| JsValue::new(t))
+        .collect();
+    let array = boa_engine::object::builtins::JsArray::from_iter(elements, context);
+    Ok(JsValue::from(array))
+}
+
 /// Implementation of WHATWG DOM `CustomEvent` interface.
 /// Spec: <https://dom.spec.whatwg.org/#interface-customevent>
 #[derive(Debug, Trace, Finalize, JsData)]
@@ -8690,6 +9090,109 @@ mod tests {
 
             const records = observer.takeRecords();
             if (records.length !== 0) throw "records not cleared by disconnect";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_intersection_observer_t0563() {
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        // 1. Basic properties and constructor exist on global, and validation on constructor
+        host.eval_with_dom(
+            r#"{
+            if (typeof IntersectionObserver === "undefined") throw "IntersectionObserver undefined";
+
+            let thrown = false;
+            try {
+                new IntersectionObserver();
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor without callback did not throw TypeError";
+
+            thrown = false;
+            try {
+                new IntersectionObserver("not-a-function");
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor with string callback did not throw TypeError";
+
+            const observer = new IntersectionObserver(() => {});
+            if (observer.root !== null) throw "default root should be null";
+            if (observer.rootMargin !== "0px") throw "default rootMargin should be '0px'";
+            if (observer.thresholds.length !== 1 || observer.thresholds[0] !== 0) throw "default thresholds mismatch";
+
+            if (!observer.observe) throw "observe method missing";
+            if (!observer.unobserve) throw "unobserve method missing";
+            if (!observer.disconnect) throw "disconnect method missing";
+            if (!observer.takeRecords) throw "takeRecords method missing";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+
+        // 2. Options validation for constructor
+        host.eval_with_dom(
+            r#"{
+            const div = document.createElement("div");
+            
+            // Single threshold
+            const obs1 = new IntersectionObserver(() => {}, { threshold: 0.5 });
+            if (obs1.thresholds.length !== 1 || obs1.thresholds[0] !== 0.5) throw "single threshold parsing mismatch";
+
+            // Sorted thresholds
+            const obs2 = new IntersectionObserver(() => {}, { threshold: [0.9, 0.1, 0.5] });
+            if (obs2.thresholds.length !== 3 || obs2.thresholds[0] !== 0.1 || obs2.thresholds[1] !== 0.5 || obs2.thresholds[2] !== 0.9) {
+                throw "threshold sorting/parsing mismatch";
+            }
+
+            // Invalid threshold range
+            let thrown = false;
+            try {
+                new IntersectionObserver(() => {}, { threshold: [0.5, 1.5] });
+            } catch (e) {
+                if (e.name === "RangeError") thrown = true;
+            }
+            if (!thrown) throw "threshold > 1 did not throw RangeError";
+
+            // Empty threshold list
+            thrown = false;
+            try {
+                new IntersectionObserver(() => {}, { threshold: [] });
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "empty threshold array did not throw TypeError";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+
+        // 3. Instance method calls
+        host.eval_with_dom(
+            r#"{
+            const div1 = document.createElement("div");
+            const div2 = document.createElement("div");
+            const observer = new IntersectionObserver(() => {});
+
+            // takeRecords initially empty
+            const initial = observer.takeRecords();
+            if (initial.length !== 0) throw "takeRecords should be empty";
+
+            // observe targets
+            observer.observe(div1);
+            observer.observe(div2);
+
+            // unobserve
+            observer.unobserve(div1);
+
+            // disconnect
+            observer.disconnect();
         }"#,
             &mut dom,
         )
