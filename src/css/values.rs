@@ -551,6 +551,50 @@ impl TryFrom<&CssValue> for FontVariantPositionValue {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum FontOpticalSizingValue {
+    #[default]
+    Auto,
+    None,
+}
+
+impl FontOpticalSizingValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+        }
+    }
+}
+
+impl std::str::FromStr for FontOpticalSizingValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for FontOpticalSizingValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::FontOpticalSizing(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum CaptionSideValue {
     Top,
@@ -1562,6 +1606,7 @@ pub enum CssValue {
     FontVariantCaps(FontVariantCapsValue),
     FontVariantPosition(FontVariantPositionValue),
     FontStretch(FontStretchValue),
+    FontOpticalSizing(FontOpticalSizingValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1681,6 +1726,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "font-variant-position"
             | "font-stretch"
             | "font-kerning"
+            | "font-optical-sizing"
             | "text-justify"
             | "word-break"
             | "line-break"
@@ -2013,6 +2059,11 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "font-stretch" => match value {
             CssValue::Keyword(kw) => FontStretchValue::parse(kw).is_some(),
             CssValue::FontStretch(_) => true,
+            _ => false,
+        },
+        "font-optical-sizing" => match value {
+            CssValue::Keyword(kw) => FontOpticalSizingValue::parse(kw).is_some(),
+            CssValue::FontOpticalSizing(_) => true,
             _ => false,
         },
         "font-kerning" => match value {
@@ -2691,6 +2742,26 @@ fn parse_font_variant_position(components: &[ComponentValue]) -> Option<CssValue
     Some(CssValue::FontVariantPosition(kw))
 }
 
+fn parse_font_optical_sizing(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_string());
+            }
+            _ => return None, // invalid token for font-optical-sizing recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = FontOpticalSizingValue::parse(&idents[0])?;
+    Some(CssValue::FontOpticalSizing(kw))
+}
+
 fn parse_font_stretch(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -2770,6 +2841,9 @@ pub fn parse_property_value(
     }
     if name_lower == "font-variant-position" {
         return parse_font_variant_position(components);
+    }
+    if name_lower == "font-optical-sizing" {
+        return parse_font_optical_sizing(components);
     }
     if name_lower == "font-stretch" {
         return parse_font_stretch(components);
@@ -5003,6 +5077,73 @@ mod tests {
     }
 
     #[test]
+    fn test_font_optical_sizing_value() {
+        // Test parsing keyword strings to FontOpticalSizingValue
+        assert_eq!(
+            FontOpticalSizingValue::parse("auto"),
+            Some(FontOpticalSizingValue::Auto)
+        );
+        assert_eq!(
+            FontOpticalSizingValue::parse("none"),
+            Some(FontOpticalSizingValue::None)
+        );
+        assert_eq!(
+            FontOpticalSizingValue::parse("AUTO"),
+            Some(FontOpticalSizingValue::Auto)
+        );
+        assert_eq!(
+            FontOpticalSizingValue::parse("None"),
+            Some(FontOpticalSizingValue::None)
+        );
+        assert_eq!(FontOpticalSizingValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "auto".parse::<FontOpticalSizingValue>(),
+            Ok(FontOpticalSizingValue::Auto)
+        );
+        assert_eq!(
+            "none".parse::<FontOpticalSizingValue>(),
+            Ok(FontOpticalSizingValue::None)
+        );
+        assert_eq!("BOGUS".parse::<FontOpticalSizingValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(FontOpticalSizingValue::Auto.as_str(), "auto");
+        assert_eq!(FontOpticalSizingValue::None.as_str(), "none");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            FontOpticalSizingValue::try_from(&CssValue::Keyword("none".to_string())),
+            Ok(FontOpticalSizingValue::None)
+        );
+        assert_eq!(
+            FontOpticalSizingValue::try_from(&CssValue::Keyword("AUTO".to_string())),
+            Ok(FontOpticalSizingValue::Auto)
+        );
+        assert_eq!(
+            FontOpticalSizingValue::try_from(&CssValue::FontOpticalSizing(
+                FontOpticalSizingValue::None
+            )),
+            Ok(FontOpticalSizingValue::None)
+        );
+        assert_eq!(
+            FontOpticalSizingValue::try_from(&CssValue::Keyword("invalid-kw".to_string())),
+            Err(())
+        );
+        assert_eq!(
+            FontOpticalSizingValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+
+        // Test Default implementation
+        assert_eq!(
+            FontOpticalSizingValue::default(),
+            FontOpticalSizingValue::Auto
+        );
+    }
+
+    #[test]
     fn test_caption_side_value() {
         // Test parsing keyword strings to CaptionSideValue
         assert_eq!(CaptionSideValue::parse("top"), Some(CaptionSideValue::Top));
@@ -7218,6 +7359,47 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "font-variant-position",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for font-optical-sizing
+        assert!(is_known_layout_property("font-optical-sizing"));
+        assert!(is_known_layout_property("Font-Optical-Sizing"));
+
+        for (val, expected_variant) in &[
+            ("auto", FontOpticalSizingValue::Auto),
+            ("none", FontOpticalSizingValue::None),
+            ("AUTO", FontOpticalSizingValue::Auto),
+            ("None", FontOpticalSizingValue::None),
+        ] {
+            assert_eq!(
+                parse_property_value(
+                    "font-optical-sizing",
+                    &[token(CssToken::Ident((*val).to_string()))]
+                ),
+                Some(CssValue::FontOpticalSizing(*expected_variant))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "font-optical-sizing",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &["auto", "none", "AUTO", "None"] {
+            assert!(is_valid_property_value(
+                "font-optical-sizing",
+                &CssValue::Keyword((*val).to_string())
+            ));
+            assert!(is_valid_property_value(
+                "font-optical-sizing",
+                &CssValue::FontOpticalSizing(FontOpticalSizingValue::Auto)
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "font-optical-sizing",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
