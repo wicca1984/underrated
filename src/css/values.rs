@@ -788,6 +788,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "font-kerning"
             | "text-justify"
             | "object-fit"
+            | "caption-side"
     )
 }
 
@@ -992,6 +993,12 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                     kw.to_ascii_lowercase().as_str(),
                     "auto" | "inter-word" | "inter-character" | "none"
                 )
+            }
+            _ => false,
+        },
+        "caption-side" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "top" | "bottom")
             }
             _ => false,
         },
@@ -1548,6 +1555,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "inter-word" | "inter-character" | "none" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "caption-side" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "top" | "bottom" => Some(val),
                     _ => None,
                 }
             } else {
@@ -4352,6 +4369,35 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "text-justify",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for caption-side (t0549)
+        assert!(is_known_layout_property("caption-side"));
+        assert!(is_known_layout_property("Caption-Side"));
+
+        for val in &["top", "bottom", "TOP", "Bottom"] {
+            assert_eq!(
+                parse_property_value("caption-side", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "caption-side",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &["top", "bottom", "TOP", "Bottom"] {
+            assert!(is_valid_property_value(
+                "caption-side",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "caption-side",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
