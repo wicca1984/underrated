@@ -3,6 +3,7 @@
 //! This module implements the `ScriptHost` port, allowing the browser engine
 //! to execute scripts. The current implementation uses the `boa_engine` crate.
 
+pub mod encoding;
 pub mod storage;
 pub mod timer;
 pub mod xhr;
@@ -127,6 +128,9 @@ impl BoaHost {
 
         // Setup timer built-ins (setTimeout, clearTimeout, setInterval, clearInterval)
         let _ = timer::register_timer_builtins(&mut context);
+
+        // Setup Encoding API built-ins (t0505)
+        let _ = encoding::register_encoding_builtins(&mut context);
 
         // Register XMLHttpRequest stub (t0242)
         if let Err(e) = xhr::register_xhr(&mut context) {
