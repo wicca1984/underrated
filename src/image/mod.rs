@@ -1743,7 +1743,156 @@ pub fn decode_tga(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, or TGA) into a DecodedImage by sniffing the format.
+/// Decodes a PCX (ZSoft Paintbrush) image byte stream into a DecodedImage.
+/// Supports 24-bit RGB (8 bits/plane x 3 planes) and 256-color indexed (8 bits/plane x 1 plane with VGA palette).
+pub fn decode_pcx(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 128 {
+        return None;
+    }
+
+    let manufacturer = bytes[0];
+    if manufacturer != 0x0A {
+        return None;
+    }
+
+    let _version = bytes[1];
+    let encoding = bytes[2];
+    if encoding != 1 {
+        return None;
+    }
+
+    let bits_per_pixel = bytes[3];
+    if bits_per_pixel != 8 {
+        return None;
+    }
+
+    let xmin = u16::from_le_bytes([*bytes.get(4)?, *bytes.get(5)?]);
+    let ymin = u16::from_le_bytes([*bytes.get(6)?, *bytes.get(7)?]);
+    let xmax = u16::from_le_bytes([*bytes.get(8)?, *bytes.get(9)?]);
+    let ymax = u16::from_le_bytes([*bytes.get(10)?, *bytes.get(11)?]);
+
+    if xmax < xmin || ymax < ymin {
+        return None;
+    }
+
+    let width = (xmax as u32) - (xmin as u32) + 1;
+    let height = (ymax as u32) - (ymin as u32) + 1;
+
+    let nplanes = bytes[65];
+    if nplanes != 1 && nplanes != 3 {
+        return None;
+    }
+
+    let bytes_per_line = u16::from_le_bytes([*bytes.get(66)?, *bytes.get(67)?]) as usize;
+    if bytes_per_line < width as usize {
+        return None;
+    }
+
+    let total_scanline_bytes = (nplanes as usize) * bytes_per_line;
+
+    let rle_limit = if nplanes == 1 {
+        if bytes.len() < 128 + 769 {
+            return None;
+        }
+        let pal_start = bytes.len() - 769;
+        if bytes[pal_start] != 0x0C {
+            return None;
+        }
+        pal_start
+    } else {
+        bytes.len()
+    };
+
+    let palette = if nplanes == 1 {
+        let pal_start = bytes.len() - 769;
+        &bytes[pal_start + 1..]
+    } else {
+        &[]
+    };
+
+    struct RleDecoder<'a> {
+        bytes: &'a [u8],
+        offset: usize,
+        run_count: usize,
+        run_val: u8,
+    }
+
+    impl<'a> RleDecoder<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            Self {
+                bytes,
+                offset: 128,
+                run_count: 0,
+                run_val: 0,
+            }
+        }
+
+        fn next_byte(&mut self) -> Option<u8> {
+            if self.run_count > 0 {
+                self.run_count -= 1;
+                return Some(self.run_val);
+            }
+            let b = *self.bytes.get(self.offset)?;
+            self.offset += 1;
+            if (b & 0xC0) == 0xC0 {
+                let count = (b & 0x3F) as usize;
+                let val = *self.bytes.get(self.offset)?;
+                self.offset += 1;
+                if count == 0 {
+                    return None;
+                }
+                self.run_count = count - 1;
+                self.run_val = val;
+                Some(val)
+            } else {
+                Some(b)
+            }
+        }
+    }
+
+    let mut rle_decoder = RleDecoder::new(&bytes[..rle_limit]);
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+
+    for y in 0..height {
+        let mut scanline_buf = vec![0u8; total_scanline_bytes];
+        for b in &mut scanline_buf {
+            *b = rle_decoder.next_byte()?;
+        }
+
+        if nplanes == 3 {
+            for (x, &r) in scanline_buf.iter().enumerate().take(width as usize) {
+                let g = scanline_buf[bytes_per_line + x];
+                let b = scanline_buf[2 * bytes_per_line + x];
+                let dest_idx = (y as usize * width as usize + x) * 4;
+                rgba[dest_idx] = r;
+                rgba[dest_idx + 1] = g;
+                rgba[dest_idx + 2] = b;
+                rgba[dest_idx + 3] = 255;
+            }
+        } else {
+            // nplanes == 1
+            for (x, &index_val) in scanline_buf.iter().enumerate().take(width as usize) {
+                let index = index_val as usize;
+                let r = *palette.get(index * 3)?;
+                let g = *palette.get(index * 3 + 1)?;
+                let b = *palette.get(index * 3 + 2)?;
+                let dest_idx = (y as usize * width as usize + x) * 4;
+                rgba[dest_idx] = r;
+                rgba[dest_idx + 1] = g;
+                rgba[dest_idx + 2] = b;
+                rgba[dest_idx + 3] = 255;
+            }
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, or TGA) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -1763,6 +1912,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_svg(bytes)
     } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
         decode_pnm(bytes)
+    } else if bytes.first() == Some(&0x0A) && bytes.get(2) == Some(&1) {
+        decode_pcx(bytes)
     } else {
         // Detect TGA as a last resort
         let is_tga_footer =
@@ -2792,5 +2943,86 @@ mod tests {
         let decoded_no_footer =
             decode_image(&tga_no_footer).expect("Should route and decode TGA without footer");
         assert_eq!(decoded_no_footer.width, 2);
+    }
+
+    #[test]
+    fn test_decode_pcx_24bit_rle() {
+        let mut pcx = vec![0u8; 128];
+        pcx[0] = 0x0A; // Manufacturer
+        pcx[1] = 5; // Version
+        pcx[2] = 1; // Encoding
+        pcx[3] = 8; // BitsPerPixel
+        pcx[4..12].copy_from_slice(&[0, 0, 0, 0, 1, 0, 1, 0]); // Xmin, Ymin, Xmax, Ymax
+        pcx[65] = 3; // NPlanes
+        pcx[66..68].copy_from_slice(&[2, 0]); // BytesPerLine (2)
+
+        // RLE stream
+        // Row 0: R plane run of 2 val 100, G plane run of 2 val 150, B plane run of 2 val 200
+        pcx.extend_from_slice(&[0xC2, 100, 0xC2, 150, 0xC2, 200]);
+        // Row 1: R plane [10, 20], G plane [30, 40], B plane [50, 60] (literals)
+        pcx.extend_from_slice(&[10, 20, 30, 40, 50, 60]);
+
+        let decoded = decode_pcx(&pcx).expect("Should decode 24-bit PCX");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 16);
+
+        // Row 0
+        assert_eq!(&decoded.rgba[0..4], &[100, 150, 200, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[100, 150, 200, 255]);
+        // Row 1
+        assert_eq!(&decoded.rgba[8..12], &[10, 30, 50, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[20, 40, 60, 255]);
+
+        // Test routing in decode_image
+        let routed = decode_image(&pcx).expect("Should route and decode 24-bit PCX");
+        assert_eq!(routed.width, 2);
+        assert_eq!(routed.rgba, decoded.rgba);
+    }
+
+    #[test]
+    fn test_decode_pcx_indexed_palette() {
+        let mut pcx = vec![0u8; 128];
+        pcx[0] = 0x0A; // Manufacturer
+        pcx[1] = 5; // Version
+        pcx[2] = 1; // Encoding
+        pcx[3] = 8; // BitsPerPixel
+        pcx[4..12].copy_from_slice(&[0, 0, 0, 0, 1, 0, 1, 0]); // Xmin, Ymin, Xmax, Ymax
+        pcx[65] = 1; // NPlanes
+        pcx[66..68].copy_from_slice(&[2, 0]); // BytesPerLine (2)
+
+        // RLE stream
+        // Row 0: literals [1, 2]
+        pcx.extend_from_slice(&[1, 2]);
+        // Row 1: RLE run of 1 val 3, literal 4
+        pcx.extend_from_slice(&[0xC1, 3, 4]);
+
+        // Palette marker
+        pcx.push(0x0C);
+
+        // 256 RGB triples (768 bytes)
+        let mut palette = vec![0u8; 768];
+        palette[3..6].copy_from_slice(&[255, 0, 0]);
+        palette[6..9].copy_from_slice(&[0, 255, 0]);
+        palette[9..12].copy_from_slice(&[0, 0, 255]);
+        palette[12..15].copy_from_slice(&[255, 255, 0]);
+        pcx.extend_from_slice(&palette);
+
+        let decoded = decode_pcx(&pcx).expect("Should decode indexed PCX");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 16);
+
+        // Row 0
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        // Row 1
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 0, 255]);
+
+        // Test routing in decode_image
+        let routed = decode_image(&pcx).expect("Should route and decode indexed PCX");
+        assert_eq!(routed.width, 2);
+        assert_eq!(routed.rgba, decoded.rgba);
     }
 }
