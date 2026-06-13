@@ -543,33 +543,98 @@ impl<'a> SelectorParser<'a> {
                     _ => Ok(Component::PseudoClass(name.to_ascii_lowercase())),
                 },
                 CssToken::Function(name) => match name.to_ascii_lowercase().as_str() {
-                    "nth-child" => {
-                        let (a, b) = self.parse_nth()?;
-                        if !matches!(self.consume(), CssToken::RightParen) {
-                            return Err(SelectorParseError::InvalidSelector);
+                    "nth-child" | "nth-last-child" | "nth-of-type" | "nth-last-of-type" => {
+                        let mut s = String::new();
+                        let mut depth = 0;
+                        let mut closed = false;
+                        loop {
+                            match self.peek() {
+                                CssToken::RightParen if depth == 0 => {
+                                    self.consume(); // consume RightParen
+                                    closed = true;
+                                    break;
+                                }
+                                CssToken::RightParen => {
+                                    depth -= 1;
+                                    s.push(')');
+                                    self.consume();
+                                }
+                                CssToken::LeftParen => {
+                                    depth += 1;
+                                    s.push('(');
+                                    self.consume();
+                                }
+                                CssToken::Eof => {
+                                    break;
+                                }
+                                t => {
+                                    match t {
+                                        CssToken::Ident(v) => s.push_str(v),
+                                        CssToken::Function(v) => {
+                                            depth += 1;
+                                            s.push_str(v);
+                                            s.push('(');
+                                        }
+                                        CssToken::AtKeyword(v) => {
+                                            s.push('@');
+                                            s.push_str(v);
+                                        }
+                                        CssToken::Hash(v) => {
+                                            s.push('#');
+                                            s.push_str(v);
+                                        }
+                                        CssToken::String(v) => {
+                                            s.push('"');
+                                            s.push_str(v);
+                                            s.push('"');
+                                        }
+                                        CssToken::Number(v) => s.push_str(&v.to_string()),
+                                        CssToken::Percentage(v) => {
+                                            s.push_str(&v.to_string());
+                                            s.push('%');
+                                        }
+                                        CssToken::Dimension { value, unit } => {
+                                            s.push_str(&value.to_string());
+                                            s.push_str(unit);
+                                        }
+                                        CssToken::Delim(c) => s.push(*c),
+                                        CssToken::Whitespace => s.push(' '),
+                                        CssToken::Colon => s.push(':'),
+                                        CssToken::Semicolon => s.push(';'),
+                                        CssToken::Comma => s.push(','),
+                                        CssToken::LeftBrace => s.push('{'),
+                                        CssToken::RightBrace => s.push('}'),
+                                        CssToken::LeftBracket => s.push('['),
+                                        CssToken::RightBracket => s.push(']'),
+                                        CssToken::Cdo => s.push_str("<!--"),
+                                        CssToken::Cdc => s.push_str("-->"),
+                                        CssToken::Url(v) => {
+                                            s.push_str("url(");
+                                            s.push_str(v);
+                                            s.push(')');
+                                        }
+                                        _ => {}
+                                    }
+                                    self.consume();
+                                }
+                            }
                         }
-                        Ok(Component::NthChild(a, b))
-                    }
-                    "nth-of-type" => {
-                        let (a, b) = self.parse_nth()?;
-                        if !matches!(self.consume(), CssToken::RightParen) {
-                            return Err(SelectorParseError::InvalidSelector);
+
+                        if !closed {
+                            return Err(SelectorParseError::UnexpectedEof);
                         }
-                        Ok(Component::NthOfType(a, b))
-                    }
-                    "nth-last-child" => {
-                        let (a, b) = self.parse_nth()?;
-                        if !matches!(self.consume(), CssToken::RightParen) {
-                            return Err(SelectorParseError::InvalidSelector);
+
+                        if let Some((a, b)) = parse_an_plus_b(&s) {
+                            match name.to_ascii_lowercase().as_str() {
+                                "nth-child" => Ok(Component::NthChild(a, b)),
+                                "nth-last-child" => Ok(Component::NthLastChild(a, b)),
+                                "nth-of-type" => Ok(Component::NthOfType(a, b)),
+                                "nth-last-of-type" => Ok(Component::NthLastOfType(a, b)),
+                                _ => unreachable!(),
+                            }
+                        } else {
+                            Ok(Component::PseudoClass(name))
                         }
-                        Ok(Component::NthLastChild(a, b))
-                    }
-                    "nth-last-of-type" => {
-                        let (a, b) = self.parse_nth()?;
-                        if !matches!(self.consume(), CssToken::RightParen) {
-                            return Err(SelectorParseError::InvalidSelector);
-                        }
-                        Ok(Component::NthLastOfType(a, b))
                     }
                     "is" => {
                         let list = self.parse_forgiving_selector_list()?;
@@ -646,110 +711,52 @@ impl<'a> SelectorParser<'a> {
             }
         }
     }
+}
 
-    fn consume_nth_b(&mut self, a: i32) -> Result<(i32, i32), SelectorParseError> {
-        self.skip_whitespace();
-        let b = match self.peek() {
-            CssToken::Number(n) => {
-                let val = *n as i32;
-                self.consume();
-                val
-            }
-            CssToken::Delim('+') | CssToken::Delim('-') => {
-                let sign = if matches!(self.consume(), CssToken::Delim('+')) {
-                    1
-                } else {
-                    -1
-                };
-                self.skip_whitespace();
-                if let CssToken::Number(n) = self.consume() {
-                    sign * n as i32
-                } else {
-                    return Err(SelectorParseError::InvalidSelector);
-                }
-            }
-            _ => 0,
-        };
-        Ok((a, b))
+fn parse_an_plus_b(s: &str) -> Option<(i32, i32)> {
+    let s: String = s.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let s = s.to_ascii_lowercase();
+
+    if s == "odd" {
+        return Some((2, 1));
+    }
+    if s == "even" {
+        return Some((2, 0));
     }
 
-    fn parse_nth(&mut self) -> Result<(i32, i32), SelectorParseError> {
-        self.skip_whitespace();
-        match self.peek().clone() {
-            CssToken::Ident(s) if s.eq_ignore_ascii_case("odd") => {
-                self.consume();
-                Ok((2, 1))
-            }
-            CssToken::Ident(s) if s.eq_ignore_ascii_case("even") => {
-                self.consume();
-                Ok((2, 0))
-            }
-            _ => {
-                let mut sign = 1;
-                if matches!(self.peek(), CssToken::Delim('+') | CssToken::Delim('-')) {
-                    if matches!(self.consume(), CssToken::Delim('-')) {
-                        sign = -1;
-                    }
-                    self.skip_whitespace();
-                }
-
-                match self.peek().clone() {
-                    CssToken::Number(n) => {
-                        self.consume();
-                        Ok((0, sign * n as i32))
-                    }
-                    CssToken::Dimension { value, unit } if unit.eq_ignore_ascii_case("n") => {
-                        self.consume();
-                        self.consume_nth_b(sign * value as i32)
-                    }
-                    CssToken::Ident(s) => {
-                        let s_lower = s.to_lowercase();
-                        if s_lower == "n" {
-                            self.consume();
-                            self.consume_nth_b(sign)
-                        } else if s_lower == "-n" && sign == 1 {
-                            self.consume();
-                            self.consume_nth_b(-1)
-                        } else if s_lower == "n-" {
-                            self.consume();
-                            self.skip_whitespace();
-                            if let CssToken::Number(n) = self.consume() {
-                                Ok((sign, -(n as i32)))
-                            } else {
-                                Err(SelectorParseError::InvalidSelector)
-                            }
-                        } else if s_lower == "-n-" && sign == 1 {
-                            self.consume();
-                            self.skip_whitespace();
-                            if let CssToken::Number(n) = self.consume() {
-                                Ok((-1, -(n as i32)))
-                            } else {
-                                Err(SelectorParseError::InvalidSelector)
-                            }
-                        } else if let Some(rest) = s_lower.strip_prefix("n-") {
-                            if let Ok(b) = rest.parse::<i32>() {
-                                self.consume();
-                                Ok((sign, -b))
-                            } else {
-                                Err(SelectorParseError::InvalidSelector)
-                            }
-                        } else if sign == 1 && s_lower.starts_with("-n-") {
-                            let rest = &s_lower[3..];
-                            if let Ok(b) = rest.parse::<i32>() {
-                                self.consume();
-                                Ok((-1, -b))
-                            } else {
-                                Err(SelectorParseError::InvalidSelector)
-                            }
-                        } else {
-                            Err(SelectorParseError::InvalidSelector)
-                        }
-                    }
-                    _ => Err(SelectorParseError::InvalidSelector),
-                }
-            }
+    if !s.contains('n') {
+        if let Ok(b) = s.parse::<i32>() {
+            return Some((0, b));
         }
+        return None;
     }
+
+    let parts: Vec<&str> = s.split('n').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let part_a = parts[0];
+    let part_b = parts[1];
+
+    let a = if part_a.is_empty() || part_a == "+" {
+        1
+    } else if part_a == "-" {
+        -1
+    } else if let Ok(val) = part_a.parse::<i32>() {
+        val
+    } else {
+        return None;
+    };
+
+    let b = if part_b.is_empty() {
+        0
+    } else if let Ok(val) = part_b.parse::<i32>() {
+        val
+    } else {
+        return None;
+    };
+
+    Some((a, b))
 }
 
 #[cfg(test)]
@@ -1042,6 +1049,80 @@ mod tests {
         assert_eq!(list.0[0].parts[0].1.components[0], Component::FirstChild);
         let list = parse_selector_list(":last-child").unwrap();
         assert_eq!(list.0[0].parts[0].1.components[0], Component::LastChild);
+    }
+
+    #[test]
+    fn test_parse_an_plus_b_direct_and_nth_child() {
+        // Direct parse_an_plus_b unit tests
+        assert_eq!(parse_an_plus_b("odd"), Some((2, 1)));
+        assert_eq!(parse_an_plus_b("even"), Some((2, 0)));
+        assert_eq!(parse_an_plus_b("3"), Some((0, 3)));
+        assert_eq!(parse_an_plus_b("-2"), Some((0, -2)));
+        assert_eq!(parse_an_plus_b("n"), Some((1, 0)));
+        assert_eq!(parse_an_plus_b("-n"), Some((-1, 0)));
+        assert_eq!(parse_an_plus_b("2n"), Some((2, 0)));
+        assert_eq!(parse_an_plus_b("-3n"), Some((-3, 0)));
+        assert_eq!(parse_an_plus_b("2n+1"), Some((2, 1)));
+        assert_eq!(parse_an_plus_b("3n-2"), Some((3, -2)));
+        assert_eq!(parse_an_plus_b("-n+3"), Some((-1, 3)));
+        assert_eq!(parse_an_plus_b("  2n  +  1  "), Some((2, 1)));
+        assert_eq!(parse_an_plus_b("garbage"), None);
+        assert_eq!(parse_an_plus_b("2n+garbage"), None);
+        assert_eq!(parse_an_plus_b(""), None);
+
+        // Selector parsing tests
+        // li:nth-child(2n+1) -> NthChild(2,1)
+        let list = parse_selector_list("li:nth-child(2n+1)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::Type("li".to_string())
+        );
+        assert_eq!(
+            list.0[0].parts[0].1.components[1],
+            Component::NthChild(2, 1)
+        );
+
+        // :nth-child(odd) -> NthChild(2,1)
+        let list = parse_selector_list(":nth-child(odd)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(2, 1)
+        );
+
+        // :nth-child(even) -> NthChild(2,0)
+        let list = parse_selector_list(":nth-child(even)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(2, 0)
+        );
+
+        // :nth-child(3) -> NthChild(0,3)
+        let list = parse_selector_list(":nth-child(3)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(0, 3)
+        );
+
+        // :nth-child(-n+3) -> NthChild(-1,3)
+        let list = parse_selector_list(":nth-child(-n+3)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthChild(-1, 3)
+        );
+
+        // :nth-of-type(2n) -> NthOfType(2,0)
+        let list = parse_selector_list(":nth-of-type(2n)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthOfType(2, 0)
+        );
+
+        // :nth-last-child(1) -> NthLastChild(0,1)
+        let list = parse_selector_list(":nth-last-child(1)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthLastChild(0, 1)
+        );
     }
 
     #[test]
