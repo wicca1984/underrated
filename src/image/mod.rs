@@ -1904,6 +1904,54 @@ pub fn decode_pcx(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
+/// Decodes a farbfeld image byte stream into a DecodedImage.
+/// farbfeld format: 8-byte magic "farbfeld" (ASCII), then u32 big-endian width, u32 big-endian height,
+/// then width*height pixels, each pixel = 4 channels (R,G,B,A) of u16 big-endian.
+pub fn decode_farbfeld(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 16 {
+        return None;
+    }
+
+    if bytes.get(0..8)? != b"farbfeld" {
+        return None;
+    }
+
+    let width = u32::from_be_bytes(bytes.get(8..12)?.try_into().ok()?);
+    let height = u32::from_be_bytes(bytes.get(12..16)?.try_into().ok()?);
+
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+    let total_bytes_needed = total_pixels.checked_mul(8)?;
+    let total_input_needed = 16_usize.checked_add(total_bytes_needed)?;
+
+    if bytes.len() < total_input_needed {
+        return None;
+    }
+
+    let out_bytes = total_pixels.checked_mul(4)?;
+    let mut rgba = vec![0u8; out_bytes];
+
+    // Downconvert each 16-bit channel to 8-bit by taking the high byte (first byte of big-endian u16)
+    let pixel_data = &bytes[16..total_input_needed];
+    for i in 0..total_pixels {
+        let in_idx = i * 8;
+        let out_idx = i * 4;
+        rgba[out_idx] = pixel_data[in_idx]; // R high byte
+        rgba[out_idx + 1] = pixel_data[in_idx + 2]; // G high byte
+        rgba[out_idx + 2] = pixel_data[in_idx + 4]; // B high byte
+        rgba[out_idx + 3] = pixel_data[in_idx + 6]; // A high byte
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, or TGA) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
@@ -1920,6 +1968,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_ico(bytes)
     } else if bytes.starts_with(b"qoif") {
         decode_qoi(bytes)
+    } else if bytes.starts_with(b"farbfeld") {
+        decode_farbfeld(bytes)
     } else if let Some(true) = is_svg_sniff(bytes) {
         decode_svg(bytes)
     } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
@@ -3039,5 +3089,84 @@ mod tests {
         let routed = decode_image(&pcx).expect("Should route and decode indexed PCX");
         assert_eq!(routed.width, 2);
         assert_eq!(routed.rgba, decoded.rgba);
+    }
+
+    #[test]
+    fn test_decode_farbfeld_1x1() {
+        let mut ff = Vec::new();
+        ff.extend_from_slice(b"farbfeld");
+        ff.extend_from_slice(&1u32.to_be_bytes()); // width
+        ff.extend_from_slice(&1u32.to_be_bytes()); // height
+        // Pixel: R=0x1234, G=0x5678, B=0x9ABC, A=0xDEF0
+        ff.extend_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);
+
+        let decoded = decode_farbfeld(&ff).expect("Should decode 1x1 farbfeld");
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.rgba, vec![0x12, 0x56, 0x9A, 0xDE]);
+
+        // Test routing
+        let routed = decode_image(&ff).expect("Should route and decode 1x1 farbfeld");
+        assert_eq!(routed.width, 1);
+        assert_eq!(routed.height, 1);
+        assert_eq!(routed.rgba, decoded.rgba);
+    }
+
+    #[test]
+    fn test_decode_farbfeld_2x1() {
+        let mut ff = Vec::new();
+        ff.extend_from_slice(b"farbfeld");
+        ff.extend_from_slice(&2u32.to_be_bytes()); // width
+        ff.extend_from_slice(&1u32.to_be_bytes()); // height
+        // Pixel 1: R=0x1111, G=0x2222, B=0x3333, A=0x4444
+        ff.extend_from_slice(&[0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x44, 0x44]);
+        // Pixel 2: R=0x5555, G=0x6666, B=0x7777, A=0x8888
+        ff.extend_from_slice(&[0x55, 0x55, 0x66, 0x66, 0x77, 0x77, 0x88, 0x88]);
+
+        let decoded = decode_farbfeld(&ff).expect("Should decode 2x1 farbfeld");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(
+            decoded.rgba,
+            vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+        );
+
+        // Test routing
+        let routed = decode_image(&ff).expect("Should route and decode 2x1 farbfeld");
+        assert_eq!(routed.width, 2);
+        assert_eq!(routed.height, 1);
+        assert_eq!(routed.rgba, decoded.rgba);
+    }
+
+    #[test]
+    fn test_decode_farbfeld_failures() {
+        // Too short input
+        assert!(decode_farbfeld(&[]).is_none());
+        assert!(decode_farbfeld(b"farb").is_none());
+        assert!(decode_farbfeld(b"farbfeld").is_none());
+        assert!(decode_farbfeld(b"farbfeld\x00\x00\x00\x01\x00\x00\x00").is_none());
+
+        // Wrong magic
+        let bad_magic =
+            b"farbfele\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        assert!(decode_farbfeld(&bad_magic).is_none());
+
+        // Zero width/height
+        let zero_width =
+            b"farbfeld\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        assert!(decode_farbfeld(&zero_width).is_none());
+
+        let zero_height =
+            b"farbfeld\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        assert!(decode_farbfeld(&zero_height).is_none());
+
+        // Truncated pixel data
+        let truncated =
+            b"farbfeld\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        assert!(decode_farbfeld(&truncated).is_none());
+
+        // Hostile dimensions check (> 16384)
+        let hostile_width = b"farbfeld\x00\x00\x40\x01\x00\x00\x00\x01".to_vec(); // width = 16385
+        assert!(decode_farbfeld(&hostile_width).is_none());
     }
 }
