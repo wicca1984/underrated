@@ -150,6 +150,7 @@ pub enum TransformFn {
     ScaleX(f32),
     ScaleY(f32),
     Rotate(AngleDeg),
+    Matrix([f32; 6]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1364,6 +1365,19 @@ fn parse_transform_function(name: &str, value: &[ComponentValue]) -> Option<Tran
                 None
             }
         }
+        "matrix" => {
+            if args.len() == 6 {
+                let a = parse_number(args[0])?;
+                let b = parse_number(args[1])?;
+                let c = parse_number(args[2])?;
+                let d = parse_number(args[3])?;
+                let e = parse_number(args[4])?;
+                let f = parse_number(args[5])?;
+                Some(TransformFn::Matrix([a, b, c, d, e, f]))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -2306,6 +2320,25 @@ mod tests {
         assert!(parse("scale(10px)").is_none());
         assert!(parse("rotate(45)").is_none()); // unitless non-zero angle is invalid
         assert!(parse("translate(10)").is_none()); // unitless non-zero length is invalid
+    }
+
+    #[test]
+    fn test_parse_matrix_t0508() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_transform(&components)
+        };
+
+        // matrix(1, 0, 0, 1, 10, 20)
+        let val = parse("matrix(1, 0, 0, 1, 10, 20)").unwrap();
+        assert_eq!(
+            val,
+            CssValue::Transform(vec![TransformFn::Matrix([1.0, 0.0, 0.0, 1.0, 10.0, 20.0])])
+        );
+
+        // wrong arg count matrix(1, 2, 3)
+        assert!(parse("matrix(1, 2, 3)").is_none());
+        assert!(parse("matrix(1, 2, 3, 4, 5, 6, 7)").is_none());
     }
 
     #[test]

@@ -960,7 +960,8 @@ pub fn build_display_list_with_caret(
                     crate::css::values::TransformFn::Scale { .. }
                     | crate::css::values::TransformFn::ScaleX(_)
                     | crate::css::values::TransformFn::ScaleY(_)
-                    | crate::css::values::TransformFn::Rotate(_) => {
+                    | crate::css::values::TransformFn::Rotate(_)
+                    | crate::css::values::TransformFn::Matrix(_) => {
                         // TODO(spec): scale/rotate require a raster transform matrix
                     }
                 }

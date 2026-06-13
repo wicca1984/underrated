@@ -1932,6 +1932,12 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
                 crate::css::values::TransformFn::Rotate(crate::css::values::AngleDeg(deg)) => {
                     format!("rotate({}deg)", deg)
                 }
+                crate::css::values::TransformFn::Matrix(m) => {
+                    format!(
+                        "matrix({}, {}, {}, {}, {}, {})",
+                        m[0], m[1], m[2], m[3], m[4], m[5]
+                    )
+                }
             })
             .collect::<Vec<_>>()
             .join(" "),
