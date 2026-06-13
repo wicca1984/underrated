@@ -234,6 +234,57 @@ impl TryFrom<&CssValue> for ObjectFitValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum WritingModeValue {
+    HorizontalTb,
+    VerticalRl,
+    VerticalLr,
+    SidewaysRl,
+    SidewaysLr,
+}
+
+impl WritingModeValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "horizontal-tb" => Some(Self::HorizontalTb),
+            "vertical-rl" => Some(Self::VerticalRl),
+            "vertical-lr" => Some(Self::VerticalLr),
+            "sideways-rl" => Some(Self::SidewaysRl),
+            "sideways-lr" => Some(Self::SidewaysLr),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::HorizontalTb => "horizontal-tb",
+            Self::VerticalRl => "vertical-rl",
+            Self::VerticalLr => "vertical-lr",
+            Self::SidewaysRl => "sideways-rl",
+            Self::SidewaysLr => "sideways-lr",
+        }
+    }
+}
+
+impl std::str::FromStr for WritingModeValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for WritingModeValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -2588,6 +2639,81 @@ mod tests {
             Ok(ObjectFitValue::ScaleDown)
         );
         assert_eq!(ObjectFitValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
+    fn test_writing_mode_value() {
+        // Test parsing keyword strings to WritingModeValue
+        assert_eq!(
+            WritingModeValue::parse("horizontal-tb"),
+            Some(WritingModeValue::HorizontalTb)
+        );
+        assert_eq!(
+            WritingModeValue::parse("vertical-rl"),
+            Some(WritingModeValue::VerticalRl)
+        );
+        assert_eq!(
+            WritingModeValue::parse("vertical-lr"),
+            Some(WritingModeValue::VerticalLr)
+        );
+        assert_eq!(
+            WritingModeValue::parse("sideways-rl"),
+            Some(WritingModeValue::SidewaysRl)
+        );
+        assert_eq!(
+            WritingModeValue::parse("sideways-lr"),
+            Some(WritingModeValue::SidewaysLr)
+        );
+        assert_eq!(
+            WritingModeValue::parse("HORIZONTAL-TB"),
+            Some(WritingModeValue::HorizontalTb)
+        );
+        assert_eq!(
+            WritingModeValue::parse("Vertical-Rl"),
+            Some(WritingModeValue::VerticalRl)
+        );
+        assert_eq!(WritingModeValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "horizontal-tb".parse::<WritingModeValue>(),
+            Ok(WritingModeValue::HorizontalTb)
+        );
+        assert_eq!(
+            "vertical-rl".parse::<WritingModeValue>(),
+            Ok(WritingModeValue::VerticalRl)
+        );
+        assert_eq!(
+            "vertical-lr".parse::<WritingModeValue>(),
+            Ok(WritingModeValue::VerticalLr)
+        );
+        assert_eq!(
+            "sideways-rl".parse::<WritingModeValue>(),
+            Ok(WritingModeValue::SidewaysRl)
+        );
+        assert_eq!(
+            "sideways-lr".parse::<WritingModeValue>(),
+            Ok(WritingModeValue::SidewaysLr)
+        );
+        assert_eq!("BOGUS".parse::<WritingModeValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(WritingModeValue::HorizontalTb.as_str(), "horizontal-tb");
+        assert_eq!(WritingModeValue::VerticalRl.as_str(), "vertical-rl");
+        assert_eq!(WritingModeValue::VerticalLr.as_str(), "vertical-lr");
+        assert_eq!(WritingModeValue::SidewaysRl.as_str(), "sideways-rl");
+        assert_eq!(WritingModeValue::SidewaysLr.as_str(), "sideways-lr");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            WritingModeValue::try_from(&CssValue::Keyword("vertical-rl".to_string())),
+            Ok(WritingModeValue::VerticalRl)
+        );
+        assert_eq!(
+            WritingModeValue::try_from(&CssValue::Keyword("HORIZONTAL-TB".to_string())),
+            Ok(WritingModeValue::HorizontalTb)
+        );
+        assert_eq!(WritingModeValue::try_from(&CssValue::Number(1.0)), Err(()));
     }
 
     #[test]
