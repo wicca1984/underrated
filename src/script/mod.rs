@@ -236,6 +236,21 @@ impl BoaHost {
                 0,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_before),
+                JsString::from("before"),
+                0,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_after),
+                JsString::from("after"),
+                0,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_replace_with),
+                JsString::from("replaceWith"),
+                0,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_remove_child),
                 JsString::from("removeChild"),
                 2,
@@ -1840,13 +1855,18 @@ impl BoaHost {
                     });
 
                     Object.defineProperty(node, 'before', {
-                        value: function(newNode) {
-                            // TODO(spec): ChildNode.before/after — DOMString args and variadic nodes not yet supported
+                        value: function(...args) {
                             if (!this.parentNode) return;
-                            if (!newNode || !newNode.__key__) {
-                                throw new TypeError("newNode must be a Node");
+                            const bridgeArgs = [this.__key__];
+                            for (let i = 0; i < args.length; i++) {
+                                let arg = args[i];
+                                if (arg && arg.__key__) {
+                                    bridgeArgs.push("node", arg.__key__);
+                                } else {
+                                    bridgeArgs.push("text", String(arg));
+                                }
                             }
-                            this.parentNode.insertBefore(newNode, this);
+                            bridge.before(...bridgeArgs);
                         },
                         enumerable: false,
                         configurable: true,
@@ -1854,13 +1874,18 @@ impl BoaHost {
                     });
 
                     Object.defineProperty(node, 'after', {
-                        value: function(newNode) {
-                            // TODO(spec): ChildNode.before/after — DOMString args and variadic nodes not yet supported
+                        value: function(...args) {
                             if (!this.parentNode) return;
-                            if (!newNode || !newNode.__key__) {
-                                throw new TypeError("newNode must be a Node");
+                            const bridgeArgs = [this.__key__];
+                            for (let i = 0; i < args.length; i++) {
+                                let arg = args[i];
+                                if (arg && arg.__key__) {
+                                    bridgeArgs.push("node", arg.__key__);
+                                } else {
+                                    bridgeArgs.push("text", String(arg));
+                                }
                             }
-                            this.parentNode.insertBefore(newNode, this.nextSibling);
+                            bridge.after(...bridgeArgs);
                         },
                         enumerable: false,
                         configurable: true,
@@ -1944,15 +1969,18 @@ impl BoaHost {
                     });
 
                     Object.defineProperty(node, 'replaceWith', {
-                        value: function(newNode) {
-                            // TODO(spec): ChildNode.replaceWith() v1 — single Node arg only; variadic nodes and DOMString
-                            // arguments are out of scope (same limitation as before()/after()).
+                        value: function(...args) {
                             if (!this.parentNode) return;
-                            if (!newNode || !newNode.__key__) {
-                                throw new TypeError("newNode must be a Node");
+                            const bridgeArgs = [this.__key__];
+                            for (let i = 0; i < args.length; i++) {
+                                let arg = args[i];
+                                if (arg && arg.__key__) {
+                                    bridgeArgs.push("node", arg.__key__);
+                                } else {
+                                    bridgeArgs.push("text", String(arg));
+                                }
                             }
-                            this.parentNode.insertBefore(newNode, this);
-                            this.parentNode.removeChild(this);
+                            bridge.replaceWith(...bridgeArgs);
                         },
                         enumerable: false,
                         configurable: true,
@@ -3470,6 +3498,190 @@ fn bridge_prepend(
                 dom.insert_before(p_id, c_id, original_first_child);
                 // TODO(spec): Re-layout on mutation
             }
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_before(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let child_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let mut args_parsed = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if let Some(type_arg) = args.get(i) {
+            let type_str = type_arg
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if let Some(val_arg) = args.get(i + 1) {
+                let val_str = val_arg
+                    .to_string(context)?
+                    .to_std_string()
+                    .unwrap_or_default();
+                args_parsed.push((type_str, val_str));
+            }
+        }
+        i += 2;
+    }
+
+    with_dom(|dom, key_to_node| {
+        let child_id = key_to_node.get(&child_key).copied();
+        if let Some(c_id) = child_id
+            && let Some(p_id) = dom.parent(c_id)
+        {
+            let mut nodes_to_insert = Vec::new();
+            for (type_str, val_str) in args_parsed {
+                if type_str == "text" {
+                    let text_node_id = dom.create_node(NodeData::Text(val_str));
+                    let k = format!("{:?}", text_node_id);
+                    key_to_node.insert(k, text_node_id);
+                    nodes_to_insert.push(text_node_id);
+                } else if type_str == "node"
+                    && let Some(&node_id) = key_to_node.get(&val_str)
+                {
+                    nodes_to_insert.push(node_id);
+                }
+            }
+
+            for node_id in nodes_to_insert {
+                dom.insert_before(p_id, node_id, Some(c_id));
+                // TODO(spec): Re-layout on mutation
+            }
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_after(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let child_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let mut args_parsed = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if let Some(type_arg) = args.get(i) {
+            let type_str = type_arg
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if let Some(val_arg) = args.get(i + 1) {
+                let val_str = val_arg
+                    .to_string(context)?
+                    .to_std_string()
+                    .unwrap_or_default();
+                args_parsed.push((type_str, val_str));
+            }
+        }
+        i += 2;
+    }
+
+    with_dom(|dom, key_to_node| {
+        let child_id = key_to_node.get(&child_key).copied();
+        if let Some(c_id) = child_id
+            && let Some(p_id) = dom.parent(c_id)
+        {
+            let mut nodes_to_insert = Vec::new();
+            for (type_str, val_str) in args_parsed {
+                if type_str == "text" {
+                    let text_node_id = dom.create_node(NodeData::Text(val_str));
+                    let k = format!("{:?}", text_node_id);
+                    key_to_node.insert(k, text_node_id);
+                    nodes_to_insert.push(text_node_id);
+                } else if type_str == "node"
+                    && let Some(&node_id) = key_to_node.get(&val_str)
+                {
+                    nodes_to_insert.push(node_id);
+                }
+            }
+
+            // Find child_id's position in parent's children
+            let pos = dom.children(p_id).iter().position(|&id| id == c_id);
+            let next_sibling_id = pos.and_then(|idx| dom.children(p_id).get(idx + 1).copied());
+
+            for node_id in nodes_to_insert {
+                dom.insert_before(p_id, node_id, next_sibling_id);
+                // TODO(spec): Re-layout on mutation
+            }
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_replace_with(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let child_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let mut args_parsed = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if let Some(type_arg) = args.get(i) {
+            let type_str = type_arg
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if let Some(val_arg) = args.get(i + 1) {
+                let val_str = val_arg
+                    .to_string(context)?
+                    .to_std_string()
+                    .unwrap_or_default();
+                args_parsed.push((type_str, val_str));
+            }
+        }
+        i += 2;
+    }
+
+    with_dom(|dom, key_to_node| {
+        let child_id = key_to_node.get(&child_key).copied();
+        if let Some(c_id) = child_id
+            && let Some(p_id) = dom.parent(c_id)
+        {
+            let mut nodes_to_insert = Vec::new();
+            for (type_str, val_str) in args_parsed {
+                if type_str == "text" {
+                    let text_node_id = dom.create_node(NodeData::Text(val_str));
+                    let k = format!("{:?}", text_node_id);
+                    key_to_node.insert(k, text_node_id);
+                    nodes_to_insert.push(text_node_id);
+                } else if type_str == "node"
+                    && let Some(&node_id) = key_to_node.get(&val_str)
+                {
+                    nodes_to_insert.push(node_id);
+                }
+            }
+
+            for node_id in nodes_to_insert {
+                dom.insert_before(p_id, node_id, Some(c_id));
+                // TODO(spec): Re-layout on mutation
+            }
+
+            dom.remove_child(p_id, c_id);
+            // TODO(spec): Re-layout on mutation
         }
     })?;
 
@@ -7521,22 +7733,21 @@ mod tests {
             refNode.textContent = 'ref';
             parent.appendChild(refNode);
 
-            // 1. before: insert a node before refNode
-            let beforeNode = document.createElement('span');
-            beforeNode.textContent = 'before';
-            refNode.before(beforeNode);
+            // 1. before: insert multiple nodes and strings before refNode
+            let beforeNode1 = document.createElement('span');
+            beforeNode1.textContent = 'before1';
+            let beforeNode2 = document.createElement('span');
+            beforeNode2.textContent = 'before2';
+            refNode.before(beforeNode1, 'before_text', beforeNode2);
 
-            // 2. after (with next sibling): insert a node after refNode but before any subsequent node
-            let afterNode = document.createElement('span');
-            afterNode.textContent = 'after';
-            refNode.after(afterNode);
+            // 2. after: insert multiple nodes and strings after refNode
+            let afterNode1 = document.createElement('span');
+            afterNode1.textContent = 'after1';
+            let afterNode2 = document.createElement('span');
+            afterNode2.textContent = 'after2';
+            refNode.after(afterNode1, 'after_text', afterNode2);
 
-            // 3. after (when refNode's next sibling is now 'afterNode', and we target 'afterNode' which is the last child)
-            let lastNode = document.createElement('span');
-            lastNode.textContent = 'last';
-            afterNode.after(lastNode);
-
-            // 4. before / after on a node with null parentNode is a no-op (should not throw)
+            // 3. before / after on a node with null parentNode is a no-op (should not throw)
             let detached = document.createElement('span');
             let dummy = document.createElement('span');
             detached.before(dummy);
@@ -7550,12 +7761,15 @@ mod tests {
         let parent_id = doc_children[0];
         let parent_children = dom.children(parent_id);
 
-        // Order should be: before, ref, after, last
-        assert_eq!(parent_children.len(), 4);
-        assert_eq!(dom.text_content(parent_children[0]), "before");
-        assert_eq!(dom.text_content(parent_children[1]), "ref");
-        assert_eq!(dom.text_content(parent_children[2]), "after");
-        assert_eq!(dom.text_content(parent_children[3]), "last");
+        // Order should be: before1, before_text, before2, ref, after1, after_text, after2
+        assert_eq!(parent_children.len(), 7);
+        assert_eq!(dom.text_content(parent_children[0]), "before1");
+        assert_eq!(dom.text_content(parent_children[1]), "before_text");
+        assert_eq!(dom.text_content(parent_children[2]), "before2");
+        assert_eq!(dom.text_content(parent_children[3]), "ref");
+        assert_eq!(dom.text_content(parent_children[4]), "after1");
+        assert_eq!(dom.text_content(parent_children[5]), "after_text");
+        assert_eq!(dom.text_content(parent_children[6]), "after2");
     }
 
     #[test]
@@ -7726,11 +7940,13 @@ mod tests {
             c.textContent = 'c';
             parent.appendChild(c);
 
-            let x = document.createElement('span');
-            x.textContent = 'x';
+            let x1 = document.createElement('span');
+            x1.textContent = 'x1';
+            let x2 = document.createElement('span');
+            x2.textContent = 'x2';
 
-            // Replaces b with x:
-            b.replaceWith(x);
+            // Replaces b with x1, a text node, and x2:
+            b.replaceWith(x1, 'replaced_text', x2);
 
             // Calling replaceWith() on a node with no parent is a silent no-op:
             let detached = document.createElement('span');
@@ -7745,11 +7961,13 @@ mod tests {
         let parent_id = doc_children[0];
         let parent_children = dom.children(parent_id);
 
-        // Order should be exactly: a, x, c
-        assert_eq!(parent_children.len(), 3);
+        // Order should be exactly: a, x1, replaced_text, x2, c
+        assert_eq!(parent_children.len(), 5);
         assert_eq!(dom.text_content(parent_children[0]), "a");
-        assert_eq!(dom.text_content(parent_children[1]), "x");
-        assert_eq!(dom.text_content(parent_children[2]), "c");
+        assert_eq!(dom.text_content(parent_children[1]), "x1");
+        assert_eq!(dom.text_content(parent_children[2]), "replaced_text");
+        assert_eq!(dom.text_content(parent_children[3]), "x2");
+        assert_eq!(dom.text_content(parent_children[4]), "c");
     }
 
     #[test]
