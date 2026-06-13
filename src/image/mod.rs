@@ -930,7 +930,107 @@ pub fn decode_svg(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, or SVG) into a DecodedImage by sniffing the format.
+/// Decodes an ICO (Windows icon / favicon) byte stream into a DecodedImage.
+/// Supports both embedded PNG and uncompressed DIB (BMP) cases.
+/// spec: t0507
+pub fn decode_ico(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 6 {
+        return None;
+    }
+    if bytes[0] != 0 || bytes[1] != 0 || bytes[2] != 1 || bytes[3] != 0 {
+        return None;
+    }
+
+    let image_count = u16::from_le_bytes(bytes.get(4..6)?.try_into().ok()?);
+    if image_count == 0 {
+        return None;
+    }
+
+    let entries_end = 6_usize.checked_add((image_count as usize).checked_mul(16)?)?;
+    if bytes.len() < entries_end {
+        return None;
+    }
+
+    let mut best_entry: Option<(u32, u32, usize, usize)> = None; // (width, height, bytes_in_res, image_offset)
+    for i in 0..image_count {
+        let entry_start = 6_usize.checked_add((i as usize).checked_mul(16)?)?;
+        let entry_bytes = bytes.get(entry_start..entry_start + 16)?;
+
+        let raw_w = entry_bytes[0];
+        let raw_h = entry_bytes[1];
+        let w = if raw_w == 0 { 256 } else { raw_w as u32 };
+        let h = if raw_h == 0 { 256 } else { raw_h as u32 };
+
+        let bytes_in_res = u32::from_le_bytes(entry_bytes.get(8..12)?.try_into().ok()?) as usize;
+        let image_offset = u32::from_le_bytes(entry_bytes.get(12..16)?.try_into().ok()?) as usize;
+
+        let is_better = match best_entry {
+            None => true,
+            Some((best_w, best_h, _, _)) => {
+                let area = w.checked_mul(h)?;
+                let best_area = best_w.checked_mul(best_h)?;
+                area > best_area
+            }
+        };
+        if is_better {
+            best_entry = Some((w, h, bytes_in_res, image_offset));
+        }
+    }
+
+    let (_, _, bytes_in_res, image_offset) = best_entry?;
+    let end_offset = image_offset.checked_add(bytes_in_res)?;
+    let embedded = bytes.get(image_offset..end_offset)?;
+
+    if embedded.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        decode_png(embedded)
+    } else {
+        // Handle BMP DIB
+        if embedded.len() < 40 {
+            return None;
+        }
+
+        let dib_header_size = u32::from_le_bytes(embedded.get(0..4)?.try_into().ok()?) as usize;
+        if dib_header_size < 40 {
+            return None;
+        }
+
+        let bi_width = i32::from_le_bytes(embedded.get(4..8)?.try_into().ok()?);
+        let bi_height = i32::from_le_bytes(embedded.get(8..12)?.try_into().ok()?);
+
+        if bi_width <= 0 || bi_height == 0 {
+            return None;
+        }
+
+        // In an ICO, the DIB's biHeight is DOUBLE the real height
+        let real_height = bi_height.checked_div(2)?;
+
+        let mut modified_dib = embedded.to_vec();
+        let real_height_bytes = real_height.to_le_bytes();
+        modified_dib
+            .get_mut(8..12)?
+            .copy_from_slice(&real_height_bytes);
+
+        // Prepend 14-byte BMP file header
+        let mut bmp_bytes = Vec::with_capacity(14 + modified_dib.len());
+        bmp_bytes.extend_from_slice(b"BM");
+
+        let file_size = (14_usize.checked_add(modified_dib.len())?) as u32;
+        bmp_bytes.extend_from_slice(&file_size.to_le_bytes());
+
+        // Reserved fields (4 bytes of 0)
+        bmp_bytes.extend_from_slice(&[0u8; 4]);
+
+        let pixel_offset = (14_usize.checked_add(dib_header_size)?) as u32;
+        bmp_bytes.extend_from_slice(&pixel_offset.to_le_bytes());
+
+        bmp_bytes.extend_from_slice(&modified_dib);
+
+        // TODO(spec): ICO AND-mask transparency and palette (<=8bpp) not yet handled
+        decode_bmp(&bmp_bytes)
+    }
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, or ICO) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -942,6 +1042,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_bmp(bytes)
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         decode_webp(bytes)
+    } else if bytes.len() >= 6 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 1 && bytes[3] == 0 {
+        decode_ico(bytes)
     } else if let Some(true) = is_svg_sniff(bytes) {
         decode_svg(bytes)
     } else {
@@ -1415,5 +1517,140 @@ mod tests {
         assert!(decode_image(bad_svg2.as_bytes()).is_none());
 
         assert!(decode_image(&[]).is_none());
+    }
+
+    #[test]
+    fn test_ico_png_embedded_t0507() {
+        let mut canvas = Canvas::new(2, 2);
+        canvas.pixels[0] = 0xFFFF0000; // Red
+        canvas.pixels[1] = 0xFF00FF00; // Green
+        canvas.pixels[2] = 0xFF0000FF; // Blue
+        canvas.pixels[3] = 0x80FFFFFF; // Semi-transparent White
+        let png_bytes = encode_png(&canvas);
+
+        let mut ico_bytes = Vec::new();
+        // ICONDIR
+        ico_bytes.extend_from_slice(&[0x00, 0x00]); // Reserved
+        ico_bytes.extend_from_slice(&[0x01, 0x00]); // Type (1)
+        ico_bytes.extend_from_slice(&[0x01, 0x00]); // Image count (1)
+
+        // ICONDIRENTRY
+        ico_bytes.push(2); // Width
+        ico_bytes.push(2); // Height
+        ico_bytes.push(0); // Color count
+        ico_bytes.push(0); // Reserved
+        ico_bytes.extend_from_slice(&[1, 0]); // Planes (1)
+        ico_bytes.extend_from_slice(&[32, 0]); // Bit count (32)
+
+        let bytes_in_res = png_bytes.len() as u32;
+        ico_bytes.extend_from_slice(&bytes_in_res.to_le_bytes());
+
+        let image_offset = 22_u32;
+        ico_bytes.extend_from_slice(&image_offset.to_le_bytes());
+
+        // Append PNG bytes
+        ico_bytes.extend_from_slice(&png_bytes);
+
+        let decoded = decode_ico(&ico_bytes).expect("Should decode ICO PNG successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 128]);
+
+        // Test via decode_image dispatcher
+        let decoded_img = decode_image(&ico_bytes).expect("Should decode via decode_image");
+        assert_eq!(decoded_img.width, 2);
+    }
+
+    #[test]
+    fn test_ico_bmp_embedded_t0507() {
+        let mut dib_bytes = Vec::new();
+        // biSize
+        dib_bytes.extend_from_slice(&[40, 0, 0, 0]);
+        // biWidth
+        dib_bytes.extend_from_slice(&[2, 0, 0, 0]);
+        // biHeight (doubled to 4)
+        dib_bytes.extend_from_slice(&[4, 0, 0, 0]);
+        // biPlanes
+        dib_bytes.extend_from_slice(&[1, 0]);
+        // biBitCount
+        dib_bytes.extend_from_slice(&[32, 0]);
+        // biCompression
+        dib_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        // biSizeImage
+        dib_bytes.extend_from_slice(&[16, 0, 0, 0]);
+        // biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant
+        dib_bytes.extend_from_slice(&[0u8; 16]);
+
+        // Pixel data: Bottom row first, then top row
+        // Bottom row: Blue [255, 0, 0, 255], White [255, 255, 255, 128]
+        dib_bytes.extend_from_slice(&[255, 0, 0, 255, 255, 255, 255, 128]);
+        // Top row: Red [0, 0, 255, 255], Green [0, 255, 0, 255]
+        dib_bytes.extend_from_slice(&[0, 0, 255, 255, 0, 255, 0, 255]);
+
+        // AND mask (e.g. 2 bytes)
+        dib_bytes.extend_from_slice(&[0, 0]);
+
+        let mut ico_bytes = Vec::new();
+        // ICONDIR
+        ico_bytes.extend_from_slice(&[0x00, 0x00]); // Reserved
+        ico_bytes.extend_from_slice(&[0x01, 0x00]); // Type (1)
+        ico_bytes.extend_from_slice(&[0x01, 0x00]); // Image count (1)
+
+        // ICONDIRENTRY
+        ico_bytes.push(2); // Width
+        ico_bytes.push(2); // Height
+        ico_bytes.push(0); // Color count
+        ico_bytes.push(0); // Reserved
+        ico_bytes.extend_from_slice(&[1, 0]); // Planes (1)
+        ico_bytes.extend_from_slice(&[32, 0]); // Bit count (32)
+
+        let bytes_in_res = dib_bytes.len() as u32;
+        ico_bytes.extend_from_slice(&bytes_in_res.to_le_bytes());
+
+        let image_offset = 22_u32;
+        ico_bytes.extend_from_slice(&image_offset.to_le_bytes());
+
+        // Append DIB bytes
+        ico_bytes.extend_from_slice(&dib_bytes);
+
+        let decoded = decode_ico(&ico_bytes).expect("Should decode ICO DIB successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 16);
+        // RGBA
+        // Top-left: Red
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        // Top-right: Green
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        // Bottom-left: Blue
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        // Bottom-right: White (semi-transparent)
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 128]);
+
+        // Test via decode_image dispatcher
+        let decoded_img = decode_image(&ico_bytes).expect("Should decode via decode_image");
+        assert_eq!(decoded_img.width, 2);
+    }
+
+    #[test]
+    fn test_ico_sniff_rejects_non_ico_t0507() {
+        // Assert decode_image still routes PNG, BMP, etc. to their own decoders.
+        let mut canvas = Canvas::new(1, 1);
+        canvas.pixels[0] = 0xFFFF0000;
+        let png_bytes = encode_png(&canvas);
+        let decoded_png = decode_image(&png_bytes).expect("Should decode PNG via decode_image");
+        assert_eq!(decoded_png.width, 1);
+
+        // Assert random/short bytes return None without panicking
+        assert!(decode_image(&[]).is_none());
+        assert!(decode_image(&[0, 0, 1]).is_none());
+        assert!(decode_image(&[0, 0, 1, 0]).is_none());
+        assert!(decode_image(&[0, 0, 1, 0, 0, 0]).is_none());
+        assert!(decode_ico(&[]).is_none());
+        assert!(decode_ico(&[0, 0, 1]).is_none());
+        assert!(decode_ico(&[0, 0, 1, 0, 0, 0]).is_none());
     }
 }
