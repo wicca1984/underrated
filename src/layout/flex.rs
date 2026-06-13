@@ -102,7 +102,7 @@ pub fn layout_flex_container(
 
     // 1. Layout children to determine their base sizes.
     // For now, we layout them as blocks to get their natural height/width.
-    let mut children = Vec::new();
+    let mut temp_children = Vec::new();
     let inner_x = border_box_x + border_left + padding_left;
     let inner_y = border_box_y + border_top + padding_top;
 
@@ -119,9 +119,18 @@ pub fn layout_flex_container(
             inner_y,
             depth + 1,
         ) {
-            children.push(child_box);
+            let order = styles.get(&child).map(|s| s.reset_flex.order).unwrap_or(0);
+            temp_children.push((order, child_box));
         }
     }
+
+    // Sort stably by order ascending so that items with equal order retain source order.
+    temp_children.sort_by_key(|a| a.0);
+
+    let children: Vec<LayoutBox> = temp_children
+        .into_iter()
+        .map(|(_, child_box)| child_box)
+        .collect();
 
     // 2. Distribute free space along the main axis.
     let (main_size, _cross_size) = match flex_direction {
@@ -2349,5 +2358,110 @@ mod tests {
         assert_eq!(container_box.children.len(), 2);
         assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
         assert!(approx_eq(container_box.children[1].rect.origin.x, 100.0));
+    }
+
+    #[test]
+    fn test_flex_order_sequencing() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        // child1: order 2
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        // child2: order 0
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        // child3: order 1
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        // child4: order -1 (negative order)
+        let child4 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child4".into())],
+        });
+        // child5: order 0 (equal order to child2, should be stable, meaning child2 comes before child5)
+        let child5 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child5".into())],
+        });
+
+        // Append in order of DOM: child1, child2, child3, child4, child5
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+        dom.append_child(container, child3);
+        dom.append_child(container, child4);
+        dom.append_child(container, child5);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 500px;
+            }
+            div {
+                width: 100px;
+                height: 50px;
+            }
+            #child1 {
+                order: 2;
+            }
+            #child2 {
+                order: 0;
+            }
+            #child3 {
+                order: 1;
+            }
+            #child4 {
+                order: -1;
+            }
+            #child5 {
+                order: 0;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 5);
+
+        // Expected sorted order:
+        // 1. child4 (order -1)
+        // 2. child2 (order 0)
+        // 3. child5 (order 0, stable after child2)
+        // 4. child3 (order 1)
+        // 5. child1 (order 2)
+
+        // Check node mappings
+        assert_eq!(container_box.children[0].node, Some(child4));
+        assert_eq!(container_box.children[1].node, Some(child2));
+        assert_eq!(container_box.children[2].node, Some(child5));
+        assert_eq!(container_box.children[3].node, Some(child3));
+        assert_eq!(container_box.children[4].node, Some(child1));
+
+        // Check positions: width is 100.0, so:
+        // child4 (0th): x = 0.0
+        // child2 (1st): x = 100.0
+        // child5 (2nd): x = 200.0
+        // child3 (3rd): x = 300.0
+        // child1 (4th): x = 400.0
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 100.0));
+        assert!(approx_eq(container_box.children[2].rect.origin.x, 200.0));
+        assert!(approx_eq(container_box.children[3].rect.origin.x, 300.0));
+        assert!(approx_eq(container_box.children[4].rect.origin.x, 400.0));
     }
 }
