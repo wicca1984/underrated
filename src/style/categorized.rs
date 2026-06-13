@@ -1795,8 +1795,8 @@ impl CategorizedComputedStyle {
 fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     use crate::css::values::{
         AlignItemsValue, BackgroundBlendModeValue, BoxSizingValue, Color, CssValue, DisplayValue,
-        FlexDirectionValue, JustifyContentValue, LengthUnit, MixBlendModeValue, OverflowValue,
-        PositionValue, ZIndex,
+        FlexDirectionValue, IsolationValue, JustifyContentValue, LengthUnit, MixBlendModeValue,
+        OverflowValue, PositionValue, ZIndex,
     };
     match val {
         CssValue::Keyword(s) => s.clone(),
@@ -2024,6 +2024,10 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             BackgroundBlendModeValue::Saturation => "saturation".to_string(),
             BackgroundBlendModeValue::Color => "color".to_string(),
             BackgroundBlendModeValue::Luminosity => "luminosity".to_string(),
+        },
+        CssValue::Isolation(iso) => match iso {
+            IsolationValue::Auto => "auto".to_string(),
+            IsolationValue::Isolate => "isolate".to_string(),
         },
     }
 }
@@ -2443,6 +2447,20 @@ mod tests {
                 BackgroundBlendModeValue::Normal
             )),
             "normal".to_string()
+        );
+    }
+
+    #[test]
+    fn test_isolation_serialization() {
+        use crate::css::values::{CssValue, IsolationValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::Isolation(IsolationValue::Auto)),
+            "auto".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::Isolation(IsolationValue::Isolate)),
+            "isolate".to_string()
         );
     }
 }

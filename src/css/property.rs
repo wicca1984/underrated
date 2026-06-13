@@ -330,6 +330,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "normal",
     },
     PropertyMetadata {
+        name: "isolation",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "clip",
         inherited: false,
         initial: "auto",
@@ -1039,6 +1044,13 @@ mod tests {
         assert_eq!(mix_blend_mode.name, "mix-blend-mode");
         assert!(!mix_blend_mode.inherited);
         assert_eq!(mix_blend_mode.initial, "normal");
+
+        let isolation = lookup("isolation");
+        assert!(isolation.is_some());
+        let isolation = isolation.unwrap();
+        assert_eq!(isolation.name, "isolation");
+        assert!(!isolation.inherited);
+        assert_eq!(isolation.initial, "auto");
     }
 
     #[test]
