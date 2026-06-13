@@ -3104,6 +3104,206 @@ pub fn decode_sun_raster(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
+/// Helper function to read a line (ending in LF) from a byte slice at a given offset,
+/// stripping any trailing CR character.
+fn read_line<'a>(bytes: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
+    let start = *offset;
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'\n' {
+            let line_end = i;
+            *offset = i + 1;
+            let mut line = &bytes[start..line_end];
+            if let Some(&b'\r') = line.last() {
+                line = &line[..line.len() - 1];
+            }
+            return Some(line);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Decodes a Radiance HDR (RGBE) byte stream into a DecodedImage.
+/// Supports both flat RGBE and new-style adaptive RLE scanlines.
+/// Handles the -Y h +X w resolution orientation.
+/// spec: S-19
+pub fn decode_hdr(bytes: &[u8]) -> Option<DecodedImage> {
+    let mut offset = 0;
+
+    // Read and verify the signature line
+    let sig = read_line(bytes, &mut offset)?;
+    if !sig.starts_with(b"#?RADIANCE") && !sig.starts_with(b"#?RGBE") {
+        return None;
+    }
+
+    // Parse the header lines up to the empty line
+    let mut format_is_rgbe = true;
+    loop {
+        let line = read_line(bytes, &mut offset)?;
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with(b"#") {
+            continue;
+        }
+        if line.starts_with(b"FORMAT=") {
+            let val = &line[7..];
+            if val != b"32-bit_rle_rgbe" {
+                format_is_rgbe = false;
+            }
+        }
+    }
+
+    if !format_is_rgbe {
+        return None;
+    }
+
+    // Read the resolution line
+    let res_line = read_line(bytes, &mut offset)?;
+    let res_str = std::str::from_utf8(res_line).ok()?;
+    let tokens: Vec<&str> = res_str.split_whitespace().collect();
+
+    // We only support the standard orientation: -Y <height> +X <width>
+    // Other orientations (such as +Y, -X etc.) are rare and not supported.
+    if tokens.len() != 4 {
+        return None;
+    }
+    if tokens[0] != "-Y" || tokens[2] != "+X" {
+        return None;
+    }
+
+    let height: u32 = tokens[1].parse().ok()?;
+    let width: u32 = tokens[3].parse().ok()?;
+
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+
+    let mut rgba = vec![0u8; total_pixels * 4];
+    let mut input_idx = offset;
+
+    for y in 0..height {
+        // Check for adaptive RLE scanline header
+        let is_rle = if (8..=32767).contains(&width) && input_idx + 4 <= bytes.len() {
+            bytes[input_idx] == 0x02
+                && bytes[input_idx + 1] == 0x02
+                && (((bytes[input_idx + 2] as u16) << 8) | (bytes[input_idx + 3] as u16))
+                    == width as u16
+        } else {
+            false
+        };
+
+        let mut scanline_rgbe = vec![[0u8; 4]; width as usize];
+
+        if is_rle {
+            input_idx += 4; // Skip RLE header
+
+            let mut channels = vec![vec![0u8; width as usize]; 4];
+            for channel in &mut channels {
+                let mut write_idx = 0;
+                while write_idx < width as usize {
+                    if input_idx >= bytes.len() {
+                        return None;
+                    }
+                    let cnt = bytes[input_idx];
+                    input_idx += 1;
+
+                    if cnt > 128 {
+                        let run_len = (cnt - 128) as usize;
+                        if write_idx + run_len > width as usize {
+                            return None;
+                        }
+                        if input_idx >= bytes.len() {
+                            return None;
+                        }
+                        let val = bytes[input_idx];
+                        input_idx += 1;
+
+                        for _ in 0..run_len {
+                            channel[write_idx] = val;
+                            write_idx += 1;
+                        }
+                    } else {
+                        let lit_len = cnt as usize;
+                        if lit_len == 0 {
+                            return None;
+                        }
+                        if write_idx + lit_len > width as usize {
+                            return None;
+                        }
+                        if input_idx + lit_len > bytes.len() {
+                            return None;
+                        }
+                        for _ in 0..lit_len {
+                            channel[write_idx] = bytes[input_idx];
+                            input_idx += 1;
+                            write_idx += 1;
+                        }
+                    }
+                }
+            }
+
+            for (x, pixel) in scanline_rgbe.iter_mut().enumerate() {
+                pixel[0] = channels[0][x];
+                pixel[1] = channels[1][x];
+                pixel[2] = channels[2][x];
+                pixel[3] = channels[3][x];
+            }
+        } else {
+            // Flat RGBE encoding
+            for pixel in &mut scanline_rgbe {
+                if input_idx + 4 > bytes.len() {
+                    return None;
+                }
+                pixel[0] = bytes[input_idx];
+                pixel[1] = bytes[input_idx + 1];
+                pixel[2] = bytes[input_idx + 2];
+                pixel[3] = bytes[input_idx + 3];
+                input_idx += 4;
+            }
+        }
+
+        // Convert the RGBE scanline to 8-bit sRGB RGBA
+        for (x, rgbe_px) in scanline_rgbe.iter().enumerate() {
+            let r = rgbe_px[0];
+            let g = rgbe_px[1];
+            let b = rgbe_px[2];
+            let e = rgbe_px[3];
+
+            // Convert RGBE to linear float values:
+            // Value = Mantissa * 2^(E - 128 - 8)
+            // If E is 0, the linear value is 0.0.
+            let (r_lin, g_lin, b_lin) = if e == 0 {
+                (0.0f32, 0.0f32, 0.0f32)
+            } else {
+                let factor = (2.0f32).powi((e as i32) - 128 - 8);
+                (r as f32 * factor, g as f32 * factor, b as f32 * factor)
+            };
+
+            // Tone mapping and gamma correction to 8-bit sRGB:
+            // srgb = (clamp(linear, 0, 1)).powf(1.0/2.2) * 255.
+            let r_srgb = (r_lin.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8;
+            let g_srgb = (g_lin.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8;
+            let b_srgb = (b_lin.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8;
+
+            let out_idx = (y as usize * width as usize + x) * 4;
+            rgba[out_idx] = r_srgb;
+            rgba[out_idx + 1] = g_srgb;
+            rgba[out_idx + 2] = b_srgb;
+            rgba[out_idx + 3] = 255;
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, TIFF, or XBM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
@@ -3156,6 +3356,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
             || (bytes[0] == 0x4D && bytes[1] == 0x4D && bytes[2] == 0x00 && bytes[3] == 0x2A))
     {
         decode_tiff(bytes)
+    } else if bytes.starts_with(b"#?RADIANCE") || bytes.starts_with(b"#?RGBE") {
+        decode_hdr(bytes)
     } else {
         // Detect TGA as a last resort
         let is_tga_footer =
@@ -3177,6 +3379,93 @@ mod tests {
     const JPEG_BASE64_1: &str = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
     const JPEG_BASE64_2: &str = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
     const GIF_BASE64: &str = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+    #[test]
+    fn test_hdr_decode_flat() {
+        let mut flat_hdr = Vec::new();
+        flat_hdr.extend_from_slice(b"#?RADIANCE\n");
+        flat_hdr.extend_from_slice(b"FORMAT=32-bit_rle_rgbe\n");
+        flat_hdr.extend_from_slice(b"\n");
+        flat_hdr.extend_from_slice(b"-Y 2 +X 2\n");
+        // Pixels: (0,0)=Red, (1,0)=Green, (0,1)=Blue, (1,1)=Black
+        flat_hdr.extend_from_slice(&[128, 0, 0, 129]);
+        flat_hdr.extend_from_slice(&[0, 128, 0, 129]);
+        flat_hdr.extend_from_slice(&[0, 0, 128, 129]);
+        flat_hdr.extend_from_slice(&[0, 0, 0, 0]);
+
+        // Direct decode
+        let decoded = decode_hdr(&flat_hdr).expect("Should decode successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba.len(), 16);
+
+        // Verify pixel values (RGBA8)
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 255, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[0, 0, 0, 255]);
+
+        // Sniffing and routing via decode_image
+        let decoded2 =
+            decode_image(&flat_hdr).expect("Should decode successfully via decode_image");
+        assert_eq!(decoded2.width, 2);
+        assert_eq!(decoded2.height, 2);
+        assert_eq!(decoded2.rgba, decoded.rgba);
+    }
+
+    #[test]
+    fn test_hdr_decode_rle() {
+        let mut rle_hdr = Vec::new();
+        rle_hdr.extend_from_slice(b"#?RGBE\n");
+        rle_hdr.extend_from_slice(b"FORMAT=32-bit_rle_rgbe\n");
+        rle_hdr.extend_from_slice(b"\n");
+        rle_hdr.extend_from_slice(b"-Y 1 +X 8\n");
+
+        // Scanline header (0x02 0x02 0x00 0x08)
+        rle_hdr.extend_from_slice(&[0x02, 0x02, 0x00, 0x08]);
+        // R channel: run of 8 copies of 128
+        rle_hdr.extend_from_slice(&[136, 128]);
+        // G channel: literal of 8 copies of 0
+        rle_hdr.extend_from_slice(&[8, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // B channel: run of 8 copies of 0
+        rle_hdr.extend_from_slice(&[136, 0]);
+        // E channel: run of 8 copies of 129
+        rle_hdr.extend_from_slice(&[136, 129]);
+
+        let decoded = decode_hdr(&rle_hdr).expect("Should decode successfully");
+        assert_eq!(decoded.width, 8);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.rgba.len(), 8 * 4);
+
+        // All 8 pixels should be Red
+        for chunk in decoded.rgba.chunks_exact(4) {
+            assert_eq!(chunk, &[255, 0, 0, 255]);
+        }
+    }
+
+    #[test]
+    fn test_hdr_decode_malformed() {
+        // Empty buffer
+        assert_eq!(decode_hdr(&[]), None);
+
+        // Missing signature
+        let bad_sig = b"NOT_HDR\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 2\n";
+        assert_eq!(decode_hdr(bad_sig), None);
+
+        // Wrong format
+        let bad_fmt = b"#?RADIANCE\nFORMAT=32-bit_rle_xyze\n\n-Y 2 +X 2\n";
+        assert_eq!(decode_hdr(bad_fmt), None);
+
+        // Wrong orientation
+        let bad_orient = b"#?RADIANCE\n\n+Y 2 -X 2\n";
+        assert_eq!(decode_hdr(bad_orient), None);
+
+        // Truncated pixel data
+        let mut trunc_hdr = Vec::new();
+        trunc_hdr.extend_from_slice(b"#?RADIANCE\n\n-Y 2 +X 2\n");
+        trunc_hdr.extend_from_slice(&[128, 0, 0, 129]); // only 1 pixel instead of 4
+        assert_eq!(decode_hdr(&trunc_hdr), None);
+    }
 
     #[test]
     fn test_round_trip() {
