@@ -9,6 +9,7 @@ pub enum Charset {
     Windows1252,
     Windows1251,
     Windows1250,
+    Windows1253,
     Iso8859_15,
 }
 
@@ -40,6 +41,7 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             | "x-cp1252" => return Charset::Windows1252,
             "windows-1251" | "cp1251" | "x-cp1251" => return Charset::Windows1251,
             "windows-1250" | "cp1250" | "x-cp1250" => return Charset::Windows1250,
+            "windows-1253" | "cp1253" | "x-cp1253" => return Charset::Windows1253,
             "csisolatin9" | "iso-8859-15" | "iso8859-15" | "iso885915" | "iso_8859-15" | "l9" => {
                 return Charset::Iso8859_15;
             }
@@ -90,6 +92,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "windows-1252" => return Some(Charset::Windows1252),
                 "windows-1251" => return Some(Charset::Windows1251),
                 "windows-1250" => return Some(Charset::Windows1250),
+                "windows-1253" => return Some(Charset::Windows1253),
                 "iso-8859-15" => return Some(Charset::Iso8859_15),
                 _ => {}
             }
@@ -106,6 +109,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Windows1252 => decode_windows1252(bytes),
         Charset::Windows1251 => decode_windows1251(bytes),
         Charset::Windows1250 => decode_windows1250(bytes),
+        Charset::Windows1253 => decode_windows1253(bytes),
         Charset::Iso8859_15 => decode_iso8859_15(bytes),
     }
 }
@@ -499,6 +503,149 @@ fn decode_iso8859_15(bytes: &[u8]) -> String {
     result
 }
 
+const WINDOWS_1253_MAP: [char; 128] = [
+    '\u{20AC}', // 0x80
+    '\u{0081}', // 0x81
+    '\u{201A}', // 0x82
+    '\u{0192}', // 0x83
+    '\u{201E}', // 0x84
+    '\u{2026}', // 0x85
+    '\u{2020}', // 0x86
+    '\u{2021}', // 0x87
+    '\u{0088}', // 0x88
+    '\u{2030}', // 0x89
+    '\u{008A}', // 0x8A
+    '\u{2039}', // 0x8B
+    '\u{008C}', // 0x8C
+    '\u{008D}', // 0x8D
+    '\u{008E}', // 0x8E
+    '\u{008F}', // 0x8F
+    '\u{0090}', // 0x90
+    '\u{2018}', // 0x91
+    '\u{2019}', // 0x92
+    '\u{201C}', // 0x93
+    '\u{201D}', // 0x94
+    '\u{2022}', // 0x95
+    '\u{2013}', // 0x96
+    '\u{2014}', // 0x97
+    '\u{0098}', // 0x98
+    '\u{2122}', // 0x99
+    '\u{009A}', // 0x9A
+    '\u{203A}', // 0x9B
+    '\u{009C}', // 0x9C
+    '\u{009D}', // 0x9D
+    '\u{009E}', // 0x9E
+    '\u{009F}', // 0x9F
+    '\u{00A0}', // 0xA0
+    '\u{0385}', // 0xA1
+    '\u{0386}', // 0xA2
+    '\u{00A3}', // 0xA3
+    '\u{00A4}', // 0xA4
+    '\u{00A5}', // 0xA5
+    '\u{00A6}', // 0xA6
+    '\u{00A7}', // 0xA7
+    '\u{00A8}', // 0xA8
+    '\u{00A9}', // 0xA9
+    '\u{FFFD}', // 0xAA
+    '\u{00AB}', // 0xAB
+    '\u{00AC}', // 0xAC
+    '\u{00AD}', // 0xAD
+    '\u{00AE}', // 0xAE
+    '\u{2015}', // 0xAF
+    '\u{00B0}', // 0xB0
+    '\u{00B1}', // 0xB1
+    '\u{00B2}', // 0xB2
+    '\u{00B3}', // 0xB3
+    '\u{0384}', // 0xB4
+    '\u{00B5}', // 0xB5
+    '\u{00B6}', // 0xB6
+    '\u{00B7}', // 0xB7
+    '\u{0388}', // 0xB8
+    '\u{0389}', // 0xB9
+    '\u{038A}', // 0xBA
+    '\u{00BB}', // 0xBB
+    '\u{038C}', // 0xBC
+    '\u{00BD}', // 0xBD
+    '\u{038E}', // 0xBE
+    '\u{038F}', // 0xBF
+    '\u{0390}', // 0xC0
+    '\u{0391}', // 0xC1
+    '\u{0392}', // 0xC2
+    '\u{0393}', // 0xC3
+    '\u{0394}', // 0xC4
+    '\u{0395}', // 0xC5
+    '\u{0396}', // 0xC6
+    '\u{0397}', // 0xC7
+    '\u{0398}', // 0xC8
+    '\u{0399}', // 0xC9
+    '\u{039A}', // 0xCA
+    '\u{039B}', // 0xCB
+    '\u{039C}', // 0xCC
+    '\u{039D}', // 0xCD
+    '\u{039E}', // 0xCE
+    '\u{039F}', // 0xCF
+    '\u{03A0}', // 0xD0
+    '\u{03A1}', // 0xD1
+    '\u{FFFD}', // 0xD2
+    '\u{03A3}', // 0xD3
+    '\u{03A4}', // 0xD4
+    '\u{03A5}', // 0xD5
+    '\u{03A6}', // 0xD6
+    '\u{03A7}', // 0xD7
+    '\u{03A8}', // 0xD8
+    '\u{03A9}', // 0xD9
+    '\u{03AA}', // 0xDA
+    '\u{03AB}', // 0xDB
+    '\u{03AC}', // 0xDC
+    '\u{03AD}', // 0xDD
+    '\u{03AE}', // 0xDE
+    '\u{03AF}', // 0xDF
+    '\u{03B0}', // 0xE0
+    '\u{03B1}', // 0xE1
+    '\u{03B2}', // 0xE2
+    '\u{03B3}', // 0xE3
+    '\u{03B4}', // 0xE4
+    '\u{03B5}', // 0xE5
+    '\u{03B6}', // 0xE6
+    '\u{03B7}', // 0xE7
+    '\u{03B8}', // 0xE8
+    '\u{03B9}', // 0xE9
+    '\u{03BA}', // 0xEA
+    '\u{03BB}', // 0xEB
+    '\u{03BC}', // 0xEC
+    '\u{03BD}', // 0xED
+    '\u{03BE}', // 0xEE
+    '\u{03BF}', // 0xEF
+    '\u{03C0}', // 0xF0
+    '\u{03C1}', // 0xF1
+    '\u{03C2}', // 0xF2
+    '\u{03C3}', // 0xF3
+    '\u{03C4}', // 0xF4
+    '\u{03C5}', // 0xF5
+    '\u{03C6}', // 0xF6
+    '\u{03C7}', // 0xF7
+    '\u{03C8}', // 0xF8
+    '\u{03C9}', // 0xF9
+    '\u{03CA}', // 0xFA
+    '\u{03CB}', // 0xFB
+    '\u{03CC}', // 0xFC
+    '\u{03CD}', // 0xFD
+    '\u{03CE}', // 0xFE
+    '\u{FFFD}', // 0xFF
+];
+
+fn decode_windows1253(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(WINDOWS_1253_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,5 +877,49 @@ mod tests {
         assert_eq!(decode(&[0xA3], Charset::Windows1250), "Ł");
         // 0xB3 -> ł (U+0142)
         assert_eq!(decode(&[0xB3], Charset::Windows1250), "ł");
+    }
+
+    #[test]
+    fn test_windows1253_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("windows-1253")),
+            Charset::Windows1253
+        );
+        assert_eq!(sniff_charset(b"abc", Some("cp1253")), Charset::Windows1253);
+        assert_eq!(
+            sniff_charset(b"abc", Some("x-cp1253")),
+            Charset::Windows1253
+        );
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"windows-1253\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Windows1253);
+    }
+
+    #[test]
+    fn test_windows1253_decode() {
+        // Pure-ASCII round-trip (ASCII passthrough)
+        assert_eq!(decode(b"abc 123", Charset::Windows1253), "abc 123");
+
+        // Greek specific bytes:
+        // 0xC1 -> "Α" (U+0391, Greek Capital Letter Alpha)
+        assert_eq!(decode(&[0xC1], Charset::Windows1253), "Α");
+        // 0xE1 -> "α" (U+03B1, Greek Small Letter Alpha)
+        assert_eq!(decode(&[0xE1], Charset::Windows1253), "α");
+        // 0xDC -> "ά" (U+03AC, Greek Small Letter Alpha with Tonos)
+        assert_eq!(decode(&[0xDC], Charset::Windows1253), "ά");
+        // 0x80 -> "€" (U+20AC, Euro Sign)
+        assert_eq!(decode(&[0x80], Charset::Windows1253), "€");
+
+        // Undefined bytes (map to replacement character U+FFFD)
+        assert_eq!(decode(&[0xAA], Charset::Windows1253), "\u{FFFD}");
+        assert_eq!(decode(&[0xD2], Charset::Windows1253), "\u{FFFD}");
+        assert_eq!(decode(&[0xFF], Charset::Windows1253), "\u{FFFD}");
+
+        // Control characters checking:
+        // 0x81 -> control char U+0081
+        assert_eq!(decode(&[0x81], Charset::Windows1253), "\u{0081}");
+        // 0x88 -> control char U+0088
+        assert_eq!(decode(&[0x88], Charset::Windows1253), "\u{0088}");
     }
 }
