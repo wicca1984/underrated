@@ -22,6 +22,7 @@ pub enum Charset {
     Iso8859_5,
     Iso8859_7,
     Iso8859_13,
+    Iso8859_10,
     Koi8R,
     Koi8U,
 }
@@ -87,6 +88,10 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "iso-8859-13" | "iso8859-13" | "iso885913" | "iso_8859-13" | "iso_8859_13" | "l7"
             | "latin7" => {
                 return Charset::Iso8859_13;
+            }
+            "iso-8859-10" | "iso8859-10" | "iso885910" | "iso_8859-10" | "iso_8859_10" | "l6"
+            | "latin6" | "iso-ir-157" | "csisolatin6" => {
+                return Charset::Iso8859_10;
             }
             "koi8-r" | "koi8_r" | "cskoi8r" => {
                 return Charset::Koi8R;
@@ -154,6 +159,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "iso-8859-5" => return Some(Charset::Iso8859_5),
                 "iso-8859-7" => return Some(Charset::Iso8859_7),
                 "iso-8859-13" => return Some(Charset::Iso8859_13),
+                "iso-8859-10" => return Some(Charset::Iso8859_10),
                 "koi8-r" => return Some(Charset::Koi8R),
                 "koi8-u" => return Some(Charset::Koi8U),
                 _ => {}
@@ -184,6 +190,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_5 => decode_iso8859_5(bytes),
         Charset::Iso8859_7 => decode_iso8859_7(bytes),
         Charset::Iso8859_13 => decode_iso8859_13(bytes),
+        Charset::Iso8859_10 => decode_iso8859_10(bytes),
         Charset::Koi8R => decode_koi8r(bytes),
         Charset::Koi8U => decode_koi8u(bytes),
     }
@@ -2381,6 +2388,128 @@ fn decode_iso8859_13(bytes: &[u8]) -> String {
     result
 }
 
+const ISO_8859_10_MAP: [char; 128] = [
+    // 0x80..=0x9F (C1 control range, identity mapping)
+    '\u{0080}', '\u{0081}', '\u{0082}', '\u{0083}', '\u{0084}', '\u{0085}', '\u{0086}', '\u{0087}',
+    '\u{0088}', '\u{0089}', '\u{008A}', '\u{008B}', '\u{008C}', '\u{008D}', '\u{008E}', '\u{008F}',
+    '\u{0090}', '\u{0091}', '\u{0092}', '\u{0093}', '\u{0094}', '\u{0095}', '\u{0096}', '\u{0097}',
+    '\u{0098}', '\u{0099}', '\u{009A}', '\u{009B}', '\u{009C}', '\u{009D}', '\u{009E}', '\u{009F}',
+    // 0xA0..=0xAF
+    '\u{00A0}', // 0xA0  NO-BREAK SPACE
+    '\u{0104}', // 0xA1  LATIN CAPITAL LETTER A WITH OGONEK
+    '\u{0112}', // 0xA2  LATIN CAPITAL LETTER E WITH MACRON
+    '\u{0122}', // 0xA3  LATIN CAPITAL LETTER G WITH CEDILLA
+    '\u{012A}', // 0xA4  LATIN CAPITAL LETTER I WITH MACRON
+    '\u{0128}', // 0xA5  LATIN CAPITAL LETTER I WITH TILDE
+    '\u{0136}', // 0xA6  LATIN CAPITAL LETTER K WITH CEDILLA
+    '\u{00A7}', // 0xA7  SECTION SIGN
+    '\u{013B}', // 0xA8  LATIN CAPITAL LETTER L WITH CEDILLA
+    '\u{0110}', // 0xA9  LATIN CAPITAL LETTER D WITH STROKE / LATIN CAPITAL LETTER ETH
+    '\u{0160}', // 0xAA  LATIN CAPITAL LETTER S WITH CARON
+    '\u{0166}', // 0xAB  LATIN CAPITAL LETTER T WITH STROKE
+    '\u{017D}', // 0xAC  LATIN CAPITAL LETTER Z WITH CARON
+    '\u{00AD}', // 0xAD  SOFT HYPHEN
+    '\u{016A}', // 0xAE  LATIN CAPITAL LETTER U WITH MACRON
+    '\u{014A}', // 0xAF  LATIN CAPITAL LETTER ENG
+    // 0xB0..=0xBF
+    '\u{00B0}', // 0xB0  DEGREE SIGN
+    '\u{0105}', // 0xB1  LATIN SMALL LETTER A WITH OGONEK
+    '\u{0113}', // 0xB2  LATIN SMALL LETTER E WITH MACRON
+    '\u{0123}', // 0xB3  LATIN SMALL LETTER G WITH CEDILLA
+    '\u{012B}', // 0xB4  LATIN SMALL LETTER I WITH MACRON
+    '\u{0129}', // 0xB5  LATIN SMALL LETTER I WITH TILDE
+    '\u{0137}', // 0xB6  LATIN SMALL LETTER K WITH CEDILLA
+    '\u{00B7}', // 0xB7  MIDDLE DOT
+    '\u{013C}', // 0xB8  LATIN SMALL LETTER L WITH CEDILLA
+    '\u{0111}', // 0xB9  LATIN SMALL LETTER D WITH STROKE / LATIN SMALL LETTER ETH
+    '\u{0161}', // 0xBA  LATIN SMALL LETTER S WITH CARON
+    '\u{0167}', // 0xBB  LATIN SMALL LETTER T WITH STROKE
+    '\u{017E}', // 0xBC  LATIN SMALL LETTER Z WITH CARON
+    '\u{2015}', // 0xBD  HORIZONTAL BAR
+    '\u{016B}', // 0xBE  LATIN SMALL LETTER U WITH MACRON
+    '\u{014B}', // 0xBF  LATIN SMALL LETTER ENG
+    // 0xC0..=0xCF
+    '\u{0100}', // 0xC0  LATIN CAPITAL LETTER A WITH MACRON
+    '\u{00C1}', // 0xC1  LATIN CAPITAL LETTER A WITH ACUTE
+    '\u{00C2}', // 0xC2  LATIN CAPITAL LETTER A WITH CIRCUMFLEX
+    '\u{00C3}', // 0xC3  LATIN CAPITAL LETTER A WITH TILDE
+    '\u{00C4}', // 0xC4  LATIN CAPITAL LETTER A WITH DIAERESIS
+    '\u{00C5}', // 0xC5  LATIN CAPITAL LETTER A WITH RING ABOVE
+    '\u{00C6}', // 0xC6  LATIN CAPITAL LETTER AE
+    '\u{012E}', // 0xC7  LATIN CAPITAL LETTER I WITH OGONEK
+    '\u{010C}', // 0xC8  LATIN CAPITAL LETTER C WITH CARON
+    '\u{00C9}', // 0xC9  LATIN CAPITAL LETTER E WITH ACUTE
+    '\u{0118}', // 0xCA  LATIN CAPITAL LETTER E WITH OGONEK
+    '\u{00CB}', // 0xCB  LATIN CAPITAL LETTER E WITH DIAERESIS
+    '\u{0116}', // 0xCC  LATIN CAPITAL LETTER E WITH DOT ABOVE
+    '\u{00CD}', // 0xCD  LATIN CAPITAL LETTER I WITH ACUTE
+    '\u{00CE}', // 0xCE  LATIN CAPITAL LETTER I WITH CIRCUMFLEX
+    '\u{01CF}', // 0xCF  LATIN CAPITAL LETTER I WITH CARON
+    // 0xD0..=0xDF
+    '\u{00D0}', // 0xD0  LATIN CAPITAL LETTER ETH
+    '\u{0145}', // 0xD1  LATIN CAPITAL LETTER N WITH CEDILLA
+    '\u{014C}', // 0xD2  LATIN CAPITAL LETTER O WITH MACRON
+    '\u{00D3}', // 0xD3  LATIN CAPITAL LETTER O WITH ACUTE
+    '\u{00D4}', // 0xD4  LATIN CAPITAL LETTER O WITH CIRCUMFLEX
+    '\u{00D5}', // 0xD5  LATIN CAPITAL LETTER O WITH TILDE
+    '\u{00D6}', // 0xD6  LATIN CAPITAL LETTER O WITH DIAERESIS
+    '\u{0168}', // 0xD7  LATIN CAPITAL LETTER U WITH TILDE
+    '\u{00D8}', // 0xD8  LATIN CAPITAL LETTER O WITH STROKE
+    '\u{0172}', // 0xD9  LATIN CAPITAL LETTER U WITH OGONEK
+    '\u{00DA}', // 0xDA  LATIN CAPITAL LETTER U WITH ACUTE
+    '\u{00DB}', // 0xDB  LATIN CAPITAL LETTER U WITH CIRCUMFLEX
+    '\u{00DC}', // 0xDC  LATIN CAPITAL LETTER U WITH DIAERESIS
+    '\u{00DD}', // 0xDD  LATIN CAPITAL LETTER Y WITH ACUTE
+    '\u{00DE}', // 0xDE  LATIN CAPITAL LETTER THORN
+    '\u{00DF}', // 0xDF  LATIN SMALL LETTER SHARP S
+    // 0xE0..=0xEF
+    '\u{0101}', // 0xE0  LATIN SMALL LETTER A WITH MACRON
+    '\u{00E1}', // 0xE1  LATIN SMALL LETTER A WITH ACUTE
+    '\u{00E2}', // 0xE2  LATIN SMALL LETTER A WITH CIRCUMFLEX
+    '\u{00E3}', // 0xE3  LATIN SMALL LETTER A WITH TILDE
+    '\u{00E4}', // 0xE4  LATIN SMALL LETTER A WITH DIAERESIS
+    '\u{00E5}', // 0xE5  LATIN SMALL LETTER A WITH RING ABOVE
+    '\u{00E6}', // 0xE6  LATIN SMALL LETTER AE
+    '\u{012F}', // 0xE7  LATIN SMALL LETTER I WITH OGONEK
+    '\u{010D}', // 0xE8  LATIN SMALL LETTER C WITH CARON
+    '\u{00E9}', // 0xE9  LATIN SMALL LETTER E WITH ACUTE
+    '\u{0119}', // 0xEA  LATIN SMALL LETTER E WITH OGONEK
+    '\u{00EB}', // 0xEB  LATIN SMALL LETTER E WITH DIAERESIS
+    '\u{0117}', // 0xEC  LATIN SMALL LETTER E WITH DOT ABOVE
+    '\u{00ED}', // 0xED  LATIN SMALL LETTER I WITH ACUTE
+    '\u{00EE}', // 0xEE  LATIN SMALL LETTER I WITH CIRCUMFLEX
+    '\u{01D0}', // 0xEF  LATIN SMALL LETTER I WITH CARON
+    // 0xF0..=0xFF
+    '\u{00F0}', // 0xF0  LATIN SMALL LETTER ETH
+    '\u{0146}', // 0xF1  LATIN SMALL LETTER N WITH CEDILLA
+    '\u{014D}', // 0xF2  LATIN SMALL LETTER O WITH MACRON
+    '\u{00F3}', // 0xF3  LATIN SMALL LETTER O WITH ACUTE
+    '\u{00F4}', // 0xF4  LATIN SMALL LETTER O WITH CIRCUMFLEX
+    '\u{00F5}', // 0xF5  LATIN SMALL LETTER O WITH TILDE
+    '\u{00F6}', // 0xF6  LATIN SMALL LETTER O WITH DIAERESIS
+    '\u{0169}', // 0xF7  LATIN SMALL LETTER U WITH TILDE
+    '\u{00F8}', // 0xF8  LATIN SMALL LETTER O WITH STROKE
+    '\u{0173}', // 0xF9  LATIN SMALL LETTER U WITH OGONEK
+    '\u{00FA}', // 0xFA  LATIN SMALL LETTER U WITH ACUTE
+    '\u{00FB}', // 0xFB  LATIN SMALL LETTER U WITH CIRCUMFLEX
+    '\u{00FC}', // 0xFC  LATIN SMALL LETTER U WITH DIAERESIS
+    '\u{00FD}', // 0xFD  LATIN SMALL LETTER Y WITH ACUTE
+    '\u{00FE}', // 0xFE  LATIN SMALL LETTER THORN
+    '\u{0138}', // 0xFF  LATIN SMALL LETTER KRA
+];
+
+fn decode_iso8859_10(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(ISO_8859_10_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3199,5 +3328,43 @@ mod tests {
         // Control characters map to their identity code points (C1 range)
         assert_eq!(decode(&[0x80], Charset::Iso8859_13), "\u{0080}");
         assert_eq!(decode(&[0x9F], Charset::Iso8859_13), "\u{009F}");
+    }
+
+    #[test]
+    fn test_iso8859_10_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-8859-10")),
+            Charset::Iso8859_10
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso_8859_10")),
+            Charset::Iso8859_10
+        );
+        assert_eq!(sniff_charset(b"abc", Some("l6")), Charset::Iso8859_10);
+        assert_eq!(sniff_charset(b"abc", Some("latin6")), Charset::Iso8859_10);
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"iso-8859-10\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_10);
+    }
+
+    #[test]
+    fn test_iso8859_10_decode() {
+        // Pure-ASCII round-trip (ASCII passthrough)
+        assert_eq!(decode(b"abc 123", Charset::Iso8859_10), "abc 123");
+
+        // Verified ISO-8859-10 / Latin-6 high half checkpoints (anchors from prompt)
+        assert_eq!(decode(&[0xA0], Charset::Iso8859_10), "\u{00A0}"); // NBSP (U+00A0)
+        assert_eq!(decode(&[0xA1], Charset::Iso8859_10), "\u{0104}"); // Ą (U+0104)
+        assert_eq!(decode(&[0xA2], Charset::Iso8859_10), "\u{0112}"); // Ē (U+0112)
+        assert_eq!(decode(&[0xA3], Charset::Iso8859_10), "\u{0122}"); // Ģ (U+0122)
+        assert_eq!(decode(&[0xA4], Charset::Iso8859_10), "\u{012A}"); // Ī (U+012A)
+        assert_eq!(decode(&[0xC5], Charset::Iso8859_10), "\u{00C5}"); // Å (U+00C5)
+        assert_eq!(decode(&[0xF0], Charset::Iso8859_10), "\u{00F0}"); // ð (U+00F0)
+        assert_eq!(decode(&[0xFF], Charset::Iso8859_10), "\u{0138}"); // ĸ (U+0138)
+
+        // Control characters map to their identity code points (C1 range)
+        assert_eq!(decode(&[0x80], Charset::Iso8859_10), "\u{0080}");
+        assert_eq!(decode(&[0x9F], Charset::Iso8859_10), "\u{009F}");
     }
 }
