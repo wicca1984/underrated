@@ -117,6 +117,26 @@ pub struct ScrollSnapAlignValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum MixBlendModeValue {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum WhiteSpaceValue {
     Normal,
     Nowrap,
@@ -282,6 +302,7 @@ pub enum CssValue {
     GridTemplate(Vec<GridTrackSize>),
     ScrollSnapType(ScrollSnapTypeValue),
     ScrollSnapAlign(ScrollSnapAlignValue),
+    MixBlendMode(MixBlendModeValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -374,6 +395,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "scroll-behavior"
             | "scroll-snap-type"
             | "scroll-snap-align"
+            | "mix-blend-mode"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -413,6 +435,31 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::ScrollSnapAlign(_) => true,
+            _ => false,
+        },
+        "mix-blend-mode" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "normal"
+                        | "multiply"
+                        | "screen"
+                        | "overlay"
+                        | "darken"
+                        | "lighten"
+                        | "color-dodge"
+                        | "color-burn"
+                        | "hard-light"
+                        | "soft-light"
+                        | "difference"
+                        | "exclusion"
+                        | "hue"
+                        | "saturation"
+                        | "color"
+                        | "luminosity"
+                )
+            }
+            CssValue::MixBlendMode(_) => true,
             _ => false,
         },
         "position" => match value {
@@ -826,6 +873,46 @@ fn parse_scroll_snap_align(components: &[ComponentValue]) -> Option<CssValue> {
     None
 }
 
+fn parse_mix_blend_mode(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for mix-blend-mode recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = match idents[0].as_str() {
+        "normal" => MixBlendModeValue::Normal,
+        "multiply" => MixBlendModeValue::Multiply,
+        "screen" => MixBlendModeValue::Screen,
+        "overlay" => MixBlendModeValue::Overlay,
+        "darken" => MixBlendModeValue::Darken,
+        "lighten" => MixBlendModeValue::Lighten,
+        "color-dodge" => MixBlendModeValue::ColorDodge,
+        "color-burn" => MixBlendModeValue::ColorBurn,
+        "hard-light" => MixBlendModeValue::HardLight,
+        "soft-light" => MixBlendModeValue::SoftLight,
+        "difference" => MixBlendModeValue::Difference,
+        "exclusion" => MixBlendModeValue::Exclusion,
+        "hue" => MixBlendModeValue::Hue,
+        "saturation" => MixBlendModeValue::Saturation,
+        "color" => MixBlendModeValue::Color,
+        "luminosity" => MixBlendModeValue::Luminosity,
+        _ => return None,
+    };
+
+    Some(CssValue::MixBlendMode(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -840,6 +927,9 @@ pub fn parse_property_value(
     }
     if name_lower == "scroll-snap-align" {
         return parse_scroll_snap_align(components);
+    }
+    if name_lower == "mix-blend-mode" {
+        return parse_mix_blend_mode(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -3595,6 +3685,62 @@ mod tests {
                 block: ScrollSnapAlignKeyword::Start,
                 inline: ScrollSnapAlignKeyword::End,
             })
+        ));
+    }
+
+    #[test]
+    fn test_mix_blend_mode_parsing_and_recognition() {
+        // Test mix-blend-mode: multiply
+        assert_eq!(
+            parse_property_value(
+                "mix-blend-mode",
+                &[token(CssToken::Ident("multiply".to_string()))]
+            ),
+            Some(CssValue::MixBlendMode(MixBlendModeValue::Multiply))
+        );
+
+        // Test normal default
+        assert_eq!(
+            parse_property_value(
+                "mix-blend-mode",
+                &[token(CssToken::Ident("normal".to_string()))]
+            ),
+            Some(CssValue::MixBlendMode(MixBlendModeValue::Normal))
+        );
+
+        // Test color-dodge (hyphenated)
+        assert_eq!(
+            parse_property_value(
+                "mix-blend-mode",
+                &[token(CssToken::Ident("color-dodge".to_string()))]
+            ),
+            Some(CssValue::MixBlendMode(MixBlendModeValue::ColorDodge))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value(
+                "mix-blend-mode",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("mix-blend-mode"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "mix-blend-mode",
+            &CssValue::MixBlendMode(MixBlendModeValue::Multiply)
+        ));
+        assert!(is_valid_property_value(
+            "mix-blend-mode",
+            &CssValue::Keyword("multiply".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "mix-blend-mode",
+            &CssValue::Keyword("banana".to_string())
         ));
     }
 }
