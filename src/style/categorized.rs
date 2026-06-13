@@ -162,6 +162,7 @@ pub struct ResetBox {
     pub object_fit: String,
     pub object_position: String,
     pub scroll_behavior: String,
+    pub user_select: String,
     pub pointer_events: String,
     pub aspect_ratio: String,
 }
@@ -186,6 +187,7 @@ impl Default for ResetBox {
             object_fit: "fill".to_string(),
             object_position: "50% 50%".to_string(),
             scroll_behavior: "auto".to_string(),
+            user_select: "auto".to_string(),
             pointer_events: "auto".to_string(),
             aspect_ratio: "auto".to_string(),
         }
@@ -661,6 +663,21 @@ impl CategorizedComputedStyle {
             }
         }
 
+        if name == "user-select" {
+            let is_valid = match value {
+                CssValue::Keyword(kw) => {
+                    matches!(
+                        kw.to_ascii_lowercase().as_str(),
+                        "auto" | "text" | "none" | "contain" | "all"
+                    )
+                }
+                _ => false,
+            };
+            if !is_valid {
+                return;
+            }
+        }
+
         if self.extra_values.is_none() {
             self.extra_values = Some(Arc::new(HashMap::new()));
         }
@@ -845,6 +862,9 @@ impl CategorizedComputedStyle {
             }
             "scroll-behavior" => {
                 Arc::make_mut(&mut self.reset_box).scroll_behavior = css_value_to_string(value)
+            }
+            "user-select" => {
+                Arc::make_mut(&mut self.reset_box).user_select = css_value_to_string(value)
             }
             "pointer-events" => {
                 Arc::make_mut(&mut self.reset_box).pointer_events = css_value_to_string(value)
@@ -1459,6 +1479,7 @@ impl CategorizedComputedStyle {
             "object-fit" => Some(self.reset_box.object_fit.clone()),
             "object-position" => Some(self.reset_box.object_position.clone()),
             "scroll-behavior" => Some(self.reset_box.scroll_behavior.clone()),
+            "user-select" => Some(self.reset_box.user_select.clone()),
             "pointer-events" => Some(self.reset_box.pointer_events.clone()),
             "aspect-ratio" => Some(self.reset_box.aspect_ratio.clone()),
 

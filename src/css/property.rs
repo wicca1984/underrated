@@ -555,6 +555,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
     },
     PropertyMetadata {
+        name: "user-select",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "pointer-events",
         inherited: false,
         initial: "auto",
@@ -788,6 +793,16 @@ mod tests {
         assert_eq!(scroll_behavior.name, "scroll-behavior");
         assert!(!scroll_behavior.inherited);
         assert_eq!(scroll_behavior.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0475() {
+        let user_select = lookup("user-select");
+        assert!(user_select.is_some());
+        let user_select = user_select.unwrap();
+        assert_eq!(user_select.name, "user-select");
+        assert!(!user_select.inherited);
+        assert_eq!(user_select.initial, "auto");
     }
 
     #[test]
