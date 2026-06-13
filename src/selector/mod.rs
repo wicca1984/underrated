@@ -20,6 +20,9 @@ pub enum Component {
     PseudoClass(String),
     PseudoElement(String),
     NthChild(i32, i32),
+    NthLastChild(i32, i32),
+    NthOfType(i32, i32),
+    NthLastOfType(i32, i32),
     Not(Box<CompoundSelector>),
     Is(SelectorList),
     Where(SelectorList),
@@ -453,27 +456,21 @@ impl<'a> SelectorParser<'a> {
                         if !matches!(self.consume(), CssToken::RightParen) {
                             return Err(SelectorParseError::InvalidSelector);
                         }
-                        Ok(Component::PseudoClass(format!("nth-of-type({},{})", a, b)))
+                        Ok(Component::NthOfType(a, b))
                     }
                     "nth-last-child" => {
                         let (a, b) = self.parse_nth()?;
                         if !matches!(self.consume(), CssToken::RightParen) {
                             return Err(SelectorParseError::InvalidSelector);
                         }
-                        Ok(Component::PseudoClass(format!(
-                            "nth-last-child({},{})",
-                            a, b
-                        )))
+                        Ok(Component::NthLastChild(a, b))
                     }
                     "nth-last-of-type" => {
                         let (a, b) = self.parse_nth()?;
                         if !matches!(self.consume(), CssToken::RightParen) {
                             return Err(SelectorParseError::InvalidSelector);
                         }
-                        Ok(Component::PseudoClass(format!(
-                            "nth-last-of-type({},{})",
-                            a, b
-                        )))
+                        Ok(Component::NthLastOfType(a, b))
                     }
                     "is" => {
                         let list = self.parse_forgiving_selector_list()?;
@@ -805,6 +802,27 @@ mod tests {
         assert_eq!(
             list.0[0].parts[0].1.components[0],
             Component::NthChild(2, 1)
+        );
+
+        // :nth-of-type(2n+1)
+        let list = parse_selector_list(":nth-of-type(2n+1)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthOfType(2, 1)
+        );
+
+        // :nth-last-child(even)
+        let list = parse_selector_list(":nth-last-child(even)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthLastChild(2, 0)
+        );
+
+        // :nth-last-of-type(odd)
+        let list = parse_selector_list(":nth-last-of-type(odd)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::NthLastOfType(2, 1)
         );
 
         // :nth-child(even)

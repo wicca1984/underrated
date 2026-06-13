@@ -180,107 +180,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
             }
         }
         Component::PseudoClass(name) => {
-            if name.starts_with("nth-of-type(") && name.ends_with(')') {
-                let content = &name["nth-of-type(".len()..name.len() - 1];
-                let mut parts = content.split(',');
-                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
-                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
-                });
-                if let Some((a, b)) = parsed {
-                    if let Some(parent) = dom.parent(node) {
-                        let current_tag_name = match dom.data(node) {
-                            Some(NodeData::Element { name, .. }) => name,
-                            _ => return false,
-                        };
-                        let children = dom.children(parent);
-                        let mut element_index = 0;
-                        for &child in children {
-                            if child == node {
-                                let i = element_index + 1; // 1-indexed
-                                if a == 0 {
-                                    return i == b;
-                                }
-                                let diff = i - b;
-                                if a > 0 {
-                                    return diff >= 0 && diff % a == 0;
-                                } else {
-                                    return diff <= 0 && diff % a == 0;
-                                }
-                            }
-                            match dom.data(child) {
-                                Some(NodeData::Element { name, .. })
-                                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
-                                {
-                                    element_index += 1;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    return false;
-                }
-                false
-            } else if name.starts_with("nth-child(") && name.ends_with(')') {
-                let content = &name["nth-child(".len()..name.len() - 1];
-                let mut parts = content.split(',');
-                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
-                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
-                });
-                if let Some((a, b)) = parsed {
-                    return nth_child(dom, node, a, b);
-                }
-                false
-            } else if name.starts_with("nth-last-child(") && name.ends_with(')') {
-                let content = &name["nth-last-child(".len()..name.len() - 1];
-                let mut parts = content.split(',');
-                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
-                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
-                });
-                if let Some((a, b)) = parsed {
-                    return nth_last_child(dom, node, a, b);
-                }
-                false
-            } else if name.starts_with("nth-last-of-type(") && name.ends_with(')') {
-                let content = &name["nth-last-of-type(".len()..name.len() - 1];
-                let mut parts = content.split(',');
-                let parsed = parts.next().zip(parts.next()).and_then(|(a_str, b_str)| {
-                    a_str.parse::<i32>().ok().zip(b_str.parse::<i32>().ok())
-                });
-                if let Some((a, b)) = parsed {
-                    if let Some(parent) = dom.parent(node) {
-                        let current_tag_name = match dom.data(node) {
-                            Some(NodeData::Element { name, .. }) => name,
-                            _ => return false,
-                        };
-                        let children = dom.children(parent);
-                        let mut element_index = 0;
-                        for &child in children.iter().rev() {
-                            if child == node {
-                                let i = element_index + 1; // 1-indexed
-                                if a == 0 {
-                                    return i == b;
-                                }
-                                let diff = i - b;
-                                if a > 0 {
-                                    return diff >= 0 && diff % a == 0;
-                                } else {
-                                    return diff <= 0 && diff % a == 0;
-                                }
-                            }
-                            match dom.data(child) {
-                                Some(NodeData::Element { name, .. })
-                                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
-                                {
-                                    element_index += 1;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    return false;
-                }
-                false
-            } else if name.starts_with("lang(") && name.ends_with(')') {
+            if name.starts_with("lang(") && name.ends_with(')') {
                 let content = &name["lang(".len()..name.len() - 1];
                 let lang_ranges: Vec<&str> = content.split(',').collect();
 
@@ -345,6 +245,9 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
         }
         Component::PseudoElement(_) => true, // Match any pseudo-element by name for now.
         Component::NthChild(a, b) => nth_child(dom, node, *a, *b),
+        Component::NthLastChild(a, b) => nth_last_child(dom, node, *a, *b),
+        Component::NthOfType(a, b) => nth_of_type(dom, node, *a, *b),
+        Component::NthLastOfType(a, b) => nth_last_of_type(dom, node, *a, *b),
         Component::Not(compound) => !matches_compound(compound, dom, node),
         Component::Is(list) | Component::Where(list) => matches(list, dom, node),
         Component::FirstChild => is_first_child(dom, node),
@@ -417,6 +320,19 @@ fn is_last_child(dom: &Dom, node: NodeId) -> bool {
     false
 }
 
+fn matches_an_plus_b(index: i32, a: i32, b: i32) -> bool {
+    if a == 0 {
+        index == b
+    } else {
+        let diff = index - b;
+        if a > 0 {
+            diff >= 0 && diff % a == 0
+        } else {
+            diff <= 0 && diff % a == 0
+        }
+    }
+}
+
 fn nth_child(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
     match dom.data(node) {
         Some(NodeData::Element { .. }) => {}
@@ -428,15 +344,7 @@ fn nth_child(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
         for &child in children {
             if child == node {
                 let i = element_index + 1; // 1-indexed
-                if a == 0 {
-                    return i == b;
-                }
-                let diff = i - b;
-                if a > 0 {
-                    return diff >= 0 && diff % a == 0;
-                } else {
-                    return diff <= 0 && diff % a == 0;
-                }
+                return matches_an_plus_b(i, a, b);
             }
             if matches!(dom.data(child), Some(NodeData::Element { .. })) {
                 element_index += 1;
@@ -457,18 +365,62 @@ fn nth_last_child(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
         for &child in children.iter().rev() {
             if child == node {
                 let i = element_index + 1; // 1-indexed
-                if a == 0 {
-                    return i == b;
-                }
-                let diff = i - b;
-                if a > 0 {
-                    return diff >= 0 && diff % a == 0;
-                } else {
-                    return diff <= 0 && diff % a == 0;
-                }
+                return matches_an_plus_b(i, a, b);
             }
             if matches!(dom.data(child), Some(NodeData::Element { .. })) {
                 element_index += 1;
+            }
+        }
+    }
+    false
+}
+
+fn nth_of_type(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                return matches_an_plus_b(i, a, b);
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
+                {
+                    element_index += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn nth_last_of_type(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children.iter().rev() {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                return matches_an_plus_b(i, a, b);
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if ascii::eq_ignore_ascii_case(name, current_tag_name) =>
+                {
+                    element_index += 1;
+                }
+                _ => {}
             }
         }
     }

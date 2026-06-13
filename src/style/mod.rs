@@ -24,6 +24,9 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
                 | Component::Attribute { .. }
                 | Component::PseudoClass(_)
                 | Component::NthChild(_, _)
+                | Component::NthLastChild(_, _)
+                | Component::NthOfType(_, _)
+                | Component::NthLastOfType(_, _)
                 | Component::FirstChild
                 | Component::LastChild => class += 1,
                 Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
@@ -40,6 +43,9 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
                             | Component::Attribute { .. }
                             | Component::PseudoClass(_)
                             | Component::NthChild(_, _)
+                            | Component::NthLastChild(_, _)
+                            | Component::NthOfType(_, _)
+                            | Component::NthLastOfType(_, _)
                             | Component::FirstChild
                             | Component::LastChild => class += 1,
                             Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
