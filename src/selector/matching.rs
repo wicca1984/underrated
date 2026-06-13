@@ -229,6 +229,12 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "only-of-type" => is_only_of_type(dom, node),
                     "empty" => is_empty(dom, node),
                     "root" => is_root(dom, node),
+                    "scope" => {
+                        // TODO(spec): Per CSS Selectors Level 4, :scope matches the scoping root(s).
+                        // Since we do not have an explicit scoping root passed to the matching context,
+                        // :scope behaves identically to :root by falling back to the document root element.
+                        is_root(dom, node)
+                    }
                     "link" => is_link(dom, node),
                     "any-link" => is_link(dom, node),
                     "checked" => is_checked(dom, node),
@@ -2083,7 +2089,7 @@ mod tests {
             parent
         ));
 
-        // 5. Test :root
+        // 5. Test :root and :scope
         // parent is the first Element child of doc, so it is the document root element!
         assert!(matches(
             &parse_selector_list(":root").unwrap(),
@@ -2092,6 +2098,19 @@ mod tests {
         ));
         assert!(!matches(&parse_selector_list(":root").unwrap(), &dom, p1));
         assert!(!matches(&parse_selector_list("p:root").unwrap(), &dom, p1));
+
+        assert!(matches(
+            &parse_selector_list(":scope").unwrap(),
+            &dom,
+            parent
+        ));
+        assert!(!matches(&parse_selector_list(":scope").unwrap(), &dom, p1));
+        assert!(!matches(&parse_selector_list("p:scope").unwrap(), &dom, p1));
+        assert!(matches(
+            &parse_selector_list("div:scope").unwrap(),
+            &dom,
+            parent
+        ));
     }
 
     #[test]
