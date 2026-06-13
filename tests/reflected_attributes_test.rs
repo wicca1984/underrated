@@ -422,3 +422,90 @@ fn test_classname_round_trip() {
     let res = host.eval_with_dom(script, &mut dom).unwrap();
     assert_eq!(res, "round-trip");
 }
+
+#[test]
+fn test_popover_empty_by_default() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.popover;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "");
+}
+
+#[test]
+fn test_popover_reflect_set_attribute() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.setAttribute('popover', 'auto');
+        el.popover;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "auto");
+}
+
+#[test]
+fn test_popover_setter_updates_attribute() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.popover = 'manual';
+        el.getAttribute('popover');
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "manual");
+}
+
+#[test]
+fn test_popover_round_trip() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.popover = 'auto';
+        el.popover;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "auto");
+}

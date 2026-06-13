@@ -1860,6 +1860,18 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'popover', {
+                        get() {
+                            // TODO(spec): precise enumerated-keyword canonicalization (auto/manual) is out of scope for now, mirroring autocapitalize raw-string reflection.
+                            return this.getAttribute('popover') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('popover', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'enterKeyHint', {
                         get() {
                             return this.getAttribute('enterkeyhint') || '';
@@ -13016,11 +13028,19 @@ mod tests {
             div_im.setAttribute('inputmode', 'url');
             let im3 = div_im.inputMode; // getter reads content attribute
 
-            [ak1, ak2, ak3, ac1, ac2, ac3, ek1, ek2, ek3, im1, im2, im3].join('|');
+            // 5. popover string reflected attribute (reflects lowercase 'popover')
+            let div_po = document.createElement('div');
+            let po1 = div_po.popover; // absent default
+            div_po.popover = 'auto';
+            let po2 = div_po.getAttribute('popover'); // setter wrote content attribute
+            div_po.setAttribute('popover', 'manual');
+            let po3 = div_po.popover; // getter reads content attribute
+
+            [ak1, ak2, ak3, ac1, ac2, ac3, ek1, ek2, ek3, im1, im2, im3, po1, po2, po3].join('|');
         ";
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
-            Ok("|a|b||words|sentences||search|done||numeric|url".to_string())
+            Ok("|a|b||words|sentences||search|done||numeric|url||auto|manual".to_string())
         );
     }
 
