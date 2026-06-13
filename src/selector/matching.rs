@@ -239,6 +239,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "link" => is_link(dom, node),
                     "any-link" => is_link(dom, node),
                     "checked" => is_checked(dom, node),
+                    "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
                     "enabled" => is_enabled(dom, node),
                     "required" => is_required(dom, node),
@@ -651,6 +652,24 @@ fn is_checked(dom: &Dom, node: NodeId) -> bool {
                 && attrs
                     .iter()
                     .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "checked"))
+        }
+        _ => false,
+    }
+}
+
+fn is_default(dom: &Dom, node: NodeId) -> bool {
+    // TODO(spec): :default should also match the first submit button of a form
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let has_checked = attrs
+                .iter()
+                .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "checked"));
+            let is_option = ascii::eq_ignore_ascii_case(name, "option");
+            let has_selected = attrs
+                .iter()
+                .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "selected"));
+
+            has_checked || (is_option && has_selected)
         }
         _ => false,
     }
@@ -1959,6 +1978,112 @@ mod tests {
             &parse_selector_list(":read-write").unwrap(),
             &dom,
             input_mixed_readonly
+        ));
+    }
+
+    #[test]
+    fn test_default_pseudo_class() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <input checked>
+        let input_checked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("checked".into(), "".into())],
+        });
+        dom.append_child(doc, input_checked);
+
+        // <input> (unchecked)
+        let input_unchecked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_unchecked);
+
+        // <option selected>
+        let option_selected = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![("selected".into(), "".into())],
+        });
+        dom.append_child(doc, option_selected);
+
+        // <option> (unselected)
+        let option_unselected = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, option_unselected);
+
+        // <div checked> (any element with a 'checked' content attribute)
+        let div_checked = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("checked".into(), "".into())],
+        });
+        dom.append_child(doc, div_checked);
+
+        // <div selected> (div is not <option>, so should not match with selected attribute)
+        let div_selected = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("selected".into(), "".into())],
+        });
+        dom.append_child(doc, div_selected);
+
+        // Mixed-case tags and attributes
+        let input_mixed_checked = dom.create_node(NodeData::Element {
+            name: "InPuT".into(),
+            attrs: vec![("ChEcKeD".into(), "".into())],
+        });
+        dom.append_child(doc, input_mixed_checked);
+
+        let option_mixed_selected = dom.create_node(NodeData::Element {
+            name: "OpTiOn".into(),
+            attrs: vec![("SeLeCtEd".into(), "".into())],
+        });
+        dom.append_child(doc, option_mixed_selected);
+
+        // Verify :default matches
+        assert!(matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            input_checked
+        ));
+        assert!(!matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            input_unchecked
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            option_selected
+        ));
+        assert!(!matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            option_unselected
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            div_checked
+        ));
+        assert!(!matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            div_selected
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            input_mixed_checked
+        ));
+        assert!(matches(
+            &parse_selector_list(":default").unwrap(),
+            &dom,
+            option_mixed_selected
         ));
     }
 
