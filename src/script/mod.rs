@@ -1230,6 +1230,11 @@ impl BoaHost {
                             }
                             const textNode = document.createTextNode(String(data));
                             bridge.insertAdjacentElement(this.__key__, pos, textNode.__key__);
+                        },
+                        click() {
+                            if (this.nodeType !== 1) return;
+                            const event = new Event('click');
+                            this.dispatchEvent(event);
                         }
                     };
 
@@ -8070,5 +8075,51 @@ mod tests {
 
         let res = host.eval_with_dom(script, &mut dom).unwrap();
         assert_eq!(res, "true|true|true|true|true|true|true|true|true|true");
+    }
+
+    #[test]
+    fn test_element_click() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "clickable-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            let firedCount = 0;
+            const el = document.getElementById('clickable-div');
+            
+            el.addEventListener('click', () => {
+                firedCount++;
+            });
+
+            // Call click() and ensure listener runs
+            el.click();
+
+            // Calling click() on a non-element node should do nothing/not panic
+            const textNode = document.createTextNode('hello');
+            let textNodeOk = false;
+            try {
+                textNode.click(); // Should be undefined or do nothing since nodeType !== 1
+                textNodeOk = true;
+            } catch (e) {
+                textNodeOk = false;
+            }
+
+            [
+                firedCount === 1,
+                textNodeOk,
+                typeof el.click === 'function',
+                typeof textNode.click === 'function'
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "true|true|true|true");
     }
 }
