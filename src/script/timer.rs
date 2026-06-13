@@ -21,6 +21,7 @@ thread_local! {
     static TIMERS: RefCell<HashMap<i32, Timer>> = RefCell::new(HashMap::new());
     static NEXT_RAF_ID: RefCell<i32> = const { RefCell::new(1) };
     static ANIMATION_FRAMES: RefCell<HashMap<i32, AnimationFrame>> = RefCell::new(HashMap::new());
+    static MICROTASK_QUEUE: RefCell<std::collections::VecDeque<JsValue>> = const { RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// Clear all timers and reset the ID counter (mainly for test isolation).
@@ -35,6 +36,13 @@ pub fn clear_all_timers() {
         *cell.borrow_mut() = 1;
     });
     ANIMATION_FRAMES.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+}
+
+/// Clear all microtasks (mainly for test isolation).
+pub fn clear_all_microtasks() {
+    MICROTASK_QUEUE.with(|cell| {
         cell.borrow_mut().clear();
     });
 }
@@ -145,7 +153,7 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
         }
     }
 
-    if let Some(callback_obj) = callback.as_object() {
+    let res = if let Some(callback_obj) = callback.as_object() {
         let global_this = context.global_object().clone();
         callback_obj.call(&JsValue::from(global_this), &callback_args, context)
     } else if callback.is_string() {
@@ -156,7 +164,11 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
     } else {
         // No-op or ignore non-callable callbacks gracefully
         Ok(JsValue::undefined())
-    }
+    }?;
+
+    drain_microtasks(context)?;
+
+    Ok(res)
 }
 
 /// Trigger an animation frame callback manually (for testing or event loop MVP).
@@ -442,6 +454,45 @@ pub fn cancel_animation_frame(
     Ok(JsValue::undefined())
 }
 
+pub fn queue_microtask(
+    _this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+    if !callback.is_callable() {
+        return Err(JsError::from(
+            boa_engine::JsNativeError::typ()
+                .with_message("queueMicrotask callback must be a function"),
+        ));
+    }
+
+    MICROTASK_QUEUE.with(|cell| {
+        cell.borrow_mut().push_back(callback);
+    });
+
+    Ok(JsValue::undefined())
+}
+
+// TODO(spec): microtask checkpoint should also run after top-level script evaluation (requires a drain call in src/script/mod.rs run loop) — out of scope for this single-module task.
+/// Drain the microtask queue FIFO, calling each callback with undefined `this` and no args.
+/// Per the WHATWG microtask checkpoint, callbacks enqueued during the drain must also run in the same drain.
+pub fn drain_microtasks(context: &mut Context) -> Result<(), JsError> {
+    loop {
+        let next_callback = MICROTASK_QUEUE.with(|cell| cell.borrow_mut().pop_front());
+        match next_callback {
+            Some(callback) => {
+                if let Some(callback_obj) = callback.as_object() {
+                    let undefined_this = JsValue::undefined();
+                    callback_obj.call(&undefined_this, &[], context)?;
+                }
+            }
+            None => break,
+        }
+    }
+    Ok(())
+}
+
 pub fn register_timer_builtins(context: &mut Context) -> Result<(), JsError> {
     context.register_global_builtin_callable(
         JsString::from("setTimeout"),
@@ -472,6 +523,11 @@ pub fn register_timer_builtins(context: &mut Context) -> Result<(), JsError> {
         JsString::from("cancelAnimationFrame"),
         1,
         NativeFunction::from_fn_ptr(cancel_animation_frame),
+    )?;
+    context.register_global_builtin_callable(
+        JsString::from("queueMicrotask"),
+        1,
+        NativeFunction::from_fn_ptr(queue_microtask),
     )?;
     Ok(())
 }
@@ -694,5 +750,86 @@ mod tests {
 
         // Since it's requestAnimationFrame (one-shot), triggering it should remove it
         assert_eq!(get_animation_frame_count(), 0);
+    }
+
+    #[test]
+    fn test_queue_microtask_t0504() {
+        clear_all_timers();
+        clear_all_microtasks();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.__ran = false;
+            queueMicrotask(() => { globalThis.__ran = true; });
+            "#,
+            ))
+            .unwrap();
+
+        let ran_before = context
+            .eval(Source::from_bytes("globalThis.__ran"))
+            .unwrap();
+        assert!(!ran_before.as_boolean().unwrap());
+
+        drain_microtasks(&mut context).unwrap();
+
+        let ran_after = context
+            .eval(Source::from_bytes("globalThis.__ran"))
+            .unwrap();
+        assert!(ran_after.as_boolean().unwrap());
+    }
+
+    #[test]
+    fn test_queue_microtask_nested_t0504() {
+        clear_all_timers();
+        clear_all_microtasks();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.__order = [];
+            queueMicrotask(() => {
+                globalThis.__order.push(1);
+                queueMicrotask(() => {
+                    globalThis.__order.push(3);
+                });
+            });
+            queueMicrotask(() => {
+                globalThis.__order.push(2);
+            });
+            "#,
+            ))
+            .unwrap();
+
+        drain_microtasks(&mut context).unwrap();
+
+        let order_val = context
+            .eval(Source::from_bytes("globalThis.__order.toString()"))
+            .unwrap();
+        assert_eq!(
+            order_val
+                .to_string(&mut context)
+                .unwrap()
+                .to_std_string()
+                .unwrap(),
+            "1,2,3"
+        );
+    }
+
+    #[test]
+    fn test_queue_microtask_type_error_t0504() {
+        clear_all_timers();
+        clear_all_microtasks();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        let result = context.eval(Source::from_bytes("queueMicrotask(123)"));
+        assert!(result.is_err());
+        let err_str = result.err().unwrap().to_string();
+        assert!(err_str.contains("TypeError") || err_str.contains("must be a function"));
     }
 }
