@@ -728,6 +728,10 @@ pub struct ShorthandExpansion {
 /// Static table of shorthand properties and their corresponding ordered longhands.
 static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
+        name: "border",
+        longhands: &["border-width", "border-style", "border-color"],
+    },
+    ShorthandExpansion {
         name: "border-bottom",
         longhands: &[
             "border-bottom-width",
@@ -802,6 +806,17 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "flex-flow",
         longhands: &["flex-direction", "flex-wrap"],
+    },
+    ShorthandExpansion {
+        name: "font",
+        longhands: &[
+            "font-style",
+            "font-variant",
+            "font-weight",
+            "font-size",
+            "line-height",
+            "font-family",
+        ],
     },
     ShorthandExpansion {
         name: "gap",
@@ -1236,6 +1251,34 @@ mod tests {
         assert_eq!(
             shorthand_longhands("border-top"),
             Some(&["border-top-width", "border-top-style", "border-top-color"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("border"),
+            Some(&["border-width", "border-style", "border-color"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("border-style"),
+            Some(
+                &[
+                    "border-top-style",
+                    "border-right-style",
+                    "border-bottom-style",
+                    "border-left-style"
+                ][..]
+            )
+        );
+        assert_eq!(
+            shorthand_longhands("font"),
+            Some(
+                &[
+                    "font-style",
+                    "font-variant",
+                    "font-weight",
+                    "font-size",
+                    "line-height",
+                    "font-family"
+                ][..]
+            )
         );
         assert_eq!(
             shorthand_longhands("Flex"),
