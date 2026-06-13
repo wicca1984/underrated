@@ -31,7 +31,7 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
                 | Component::LastChild => class += 1,
                 Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
                 Component::Universal => {}
-                Component::Is(_) | Component::Where(_) => {
+                Component::Is(_) | Component::Where(_) | Component::Has(_) => {
                     // TODO(spec): :is() has specificity of its most specific argument, and :where() has 0 specificity.
                     // For now, specificity differences are out of scope for this task (t0178).
                 }
@@ -50,7 +50,7 @@ pub fn specificity(sel: &ComplexSelector) -> (u32, u32, u32, u32) {
                             | Component::LastChild => class += 1,
                             Component::Type(_) | Component::PseudoElement(_) => type_ += 1,
                             Component::Universal => {}
-                            Component::Is(_) | Component::Where(_) => {
+                            Component::Is(_) | Component::Where(_) | Component::Has(_) => {
                                 // TODO(spec): :is() has specificity of its most specific argument, and :where() has 0 specificity.
                                 // For now, specificity differences are out of scope for this task (t0178).
                             }

@@ -26,6 +26,7 @@ pub enum Component {
     Not(Box<CompoundSelector>),
     Is(SelectorList),
     Where(SelectorList),
+    Has(SelectorList),
     FirstChild,
     LastChild,
 }
@@ -159,6 +160,104 @@ impl<'a> SelectorParser<'a> {
             }
 
             match self.parse_complex_selector() {
+                Ok(selector) => {
+                    self.skip_whitespace();
+                    match self.peek() {
+                        CssToken::Comma => {
+                            self.consume();
+                            selectors.push(selector);
+                        }
+                        CssToken::RightParen => {
+                            selectors.push(selector);
+                        }
+                        _ => {
+                            if !self.skip_to_next_forgiving_item()? {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    if !self.skip_to_next_forgiving_item()? {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(SelectorList(selectors))
+    }
+
+    fn parse_relative_selector(&mut self) -> Result<ComplexSelector, SelectorParseError> {
+        let mut parts = Vec::new();
+        self.skip_whitespace();
+        let leading_comb = match self.peek() {
+            CssToken::Delim('>') => {
+                self.consume();
+                Some(Combinator::Child)
+            }
+            CssToken::Delim('+') => {
+                self.consume();
+                Some(Combinator::NextSibling)
+            }
+            CssToken::Delim('~') => {
+                self.consume();
+                Some(Combinator::SubsequentSibling)
+            }
+            _ => None,
+        };
+
+        self.skip_whitespace();
+        let first_compound = self.parse_compound_selector()?;
+        let first_comb = leading_comb.unwrap_or(Combinator::Descendant);
+        parts.push((first_comb, first_compound));
+
+        loop {
+            let mut has_whitespace = false;
+            while matches!(self.peek(), CssToken::Whitespace) {
+                self.consume();
+                has_whitespace = true;
+            }
+
+            match self.peek() {
+                CssToken::Comma | CssToken::Eof => break,
+                CssToken::Delim('>') | CssToken::Delim('+') | CssToken::Delim('~') => {
+                    let comb = match self.consume() {
+                        CssToken::Delim('>') => Combinator::Child,
+                        CssToken::Delim('+') => Combinator::NextSibling,
+                        CssToken::Delim('~') => Combinator::SubsequentSibling,
+                        _ => unreachable!(),
+                    };
+                    self.skip_whitespace();
+                    let compound = self.parse_compound_selector()?;
+                    parts.push((comb, compound));
+                }
+                _ => {
+                    if has_whitespace {
+                        if let Ok(compound) = self.parse_compound_selector() {
+                            parts.push((Combinator::Descendant, compound));
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(ComplexSelector { parts })
+    }
+
+    fn parse_relative_forgiving_selector_list(
+        &mut self,
+    ) -> Result<SelectorList, SelectorParseError> {
+        let mut selectors = Vec::new();
+        loop {
+            self.skip_whitespace();
+            if matches!(self.peek(), CssToken::RightParen) {
+                break;
+            }
+
+            match self.parse_relative_selector() {
                 Ok(selector) => {
                     self.skip_whitespace();
                     match self.peek() {
@@ -485,6 +584,13 @@ impl<'a> SelectorParser<'a> {
                             return Err(SelectorParseError::InvalidSelector);
                         }
                         Ok(Component::Where(list))
+                    }
+                    "has" => {
+                        let list = self.parse_relative_forgiving_selector_list()?;
+                        if !matches!(self.consume(), CssToken::RightParen) {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::Has(list))
                     }
                     "not" => {
                         let compound = self.parse_compound_selector()?;
@@ -1033,6 +1139,39 @@ mod tests {
             assert!(sub_list.0.is_empty());
         } else {
             panic!("Expected Where component");
+        }
+    }
+
+    #[test]
+    fn test_parse_has() {
+        // Simple :has(img)
+        let list = parse_selector_list("div:has(img)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::Type("div".to_string())
+        );
+        if let Component::Has(sub_list) = &list.0[0].parts[0].1.components[1] {
+            assert_eq!(sub_list.0.len(), 1);
+            assert_eq!(
+                sub_list.0[0].parts[0].1.components[0],
+                Component::Type("img".to_string())
+            );
+            assert_eq!(sub_list.0[0].parts[0].0, Combinator::Descendant);
+        } else {
+            panic!("Expected Has component");
+        }
+
+        // Relative child selector :has(> .foo)
+        let list = parse_selector_list("div:has(> .foo)").unwrap();
+        if let Component::Has(sub_list) = &list.0[0].parts[0].1.components[1] {
+            assert_eq!(sub_list.0.len(), 1);
+            assert_eq!(
+                sub_list.0[0].parts[0].1.components[0],
+                Component::Class("foo".to_string())
+            );
+            assert_eq!(sub_list.0[0].parts[0].0, Combinator::Child);
+        } else {
+            panic!("Expected Has component with Child combinator");
         }
     }
 
