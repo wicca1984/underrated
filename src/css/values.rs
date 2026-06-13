@@ -681,6 +681,50 @@ impl TryFrom<&CssValue> for PrintColorAdjustValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ForcedColorAdjustValue {
+    #[default]
+    Auto,
+    None,
+}
+
+impl ForcedColorAdjustValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+        }
+    }
+}
+
+impl std::str::FromStr for ForcedColorAdjustValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ForcedColorAdjustValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::ForcedColorAdjust(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FontVariantPositionValue {
     #[default]
     Normal,
@@ -1787,6 +1831,7 @@ pub enum CssValue {
     MaskType(MaskTypeValue),
     ScrollBehavior(ScrollBehaviorValue),
     PrintColorAdjust(PrintColorAdjustValue),
+    ForcedColorAdjust(ForcedColorAdjustValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1878,6 +1923,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "table-layout"
             | "scroll-behavior"
             | "print-color-adjust"
+            | "forced-color-adjust"
             | "scroll-snap-type"
             | "scroll-snap-align"
             | "mix-blend-mode"
@@ -2226,6 +2272,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "economy" | "exact")
             }
             CssValue::PrintColorAdjust(_) => true,
+            _ => false,
+        },
+        "forced-color-adjust" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "auto" | "none")
+            }
+            CssValue::ForcedColorAdjust(_) => true,
             _ => false,
         },
         "image-rendering" => match value {
@@ -2946,6 +2999,26 @@ fn parse_print_color_adjust(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::PrintColorAdjust(kw))
 }
 
+fn parse_forced_color_adjust(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for forced-color-adjust recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = ForcedColorAdjustValue::parse(&idents[0])?;
+    Some(CssValue::ForcedColorAdjust(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -3126,6 +3199,9 @@ pub fn parse_property_value(
     }
     if name_lower == "print-color-adjust" {
         return parse_print_color_adjust(components);
+    }
+    if name_lower == "forced-color-adjust" {
+        return parse_forced_color_adjust(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -7300,6 +7376,62 @@ mod tests {
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
+        // Test parse_property_value for forced-color-adjust (t0648)
+        assert_eq!(
+            parse_property_value(
+                "forced-color-adjust",
+                &[token(CssToken::Ident("auto".to_string()))]
+            ),
+            Some(CssValue::ForcedColorAdjust(ForcedColorAdjustValue::Auto))
+        );
+        assert_eq!(
+            parse_property_value(
+                "forced-color-adjust",
+                &[token(CssToken::Ident("none".to_string()))]
+            ),
+            Some(CssValue::ForcedColorAdjust(ForcedColorAdjustValue::None))
+        );
+        assert_eq!(
+            parse_property_value(
+                "forced-color-adjust",
+                &[token(CssToken::Ident("NONE".to_string()))]
+            ),
+            Some(CssValue::ForcedColorAdjust(ForcedColorAdjustValue::None))
+        );
+        assert_eq!(
+            parse_property_value(
+                "forced-color-adjust",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_valid_property_value for forced-color-adjust (t0648)
+        assert!(is_valid_property_value(
+            "forced-color-adjust",
+            &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "forced-color-adjust",
+            &CssValue::Keyword("none".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "forced-color-adjust",
+            &CssValue::Keyword("NONE".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "forced-color-adjust",
+            &CssValue::ForcedColorAdjust(ForcedColorAdjustValue::Auto)
+        ));
+        assert!(is_valid_property_value(
+            "forced-color-adjust",
+            &CssValue::ForcedColorAdjust(ForcedColorAdjustValue::None)
+        ));
+        assert!(!is_valid_property_value(
+            "forced-color-adjust",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
         // Test parse_property_value for user-select (t0475)
         for val in &["auto", "text", "none", "contain", "all", "AUTO", "None"] {
             assert_eq!(
@@ -8892,6 +9024,63 @@ mod tests {
         );
         assert_eq!(
             PrintColorAdjustValue::try_from(&CssValue::Keyword("banana".to_string())),
+            Err(())
+        );
+    }
+
+    #[test]
+    fn test_forced_color_adjust_direct() {
+        use std::str::FromStr;
+
+        // Default value
+        assert_eq!(
+            ForcedColorAdjustValue::default(),
+            ForcedColorAdjustValue::Auto
+        );
+
+        // Test ForcedColorAdjustValue::parse
+        assert_eq!(
+            ForcedColorAdjustValue::parse("auto"),
+            Some(ForcedColorAdjustValue::Auto)
+        );
+        assert_eq!(
+            ForcedColorAdjustValue::parse("none"),
+            Some(ForcedColorAdjustValue::None)
+        );
+        assert_eq!(
+            ForcedColorAdjustValue::parse("AUTO"),
+            Some(ForcedColorAdjustValue::Auto)
+        );
+        assert_eq!(ForcedColorAdjustValue::parse("banana"), None);
+
+        // Test as_str
+        assert_eq!(ForcedColorAdjustValue::Auto.as_str(), "auto");
+        assert_eq!(ForcedColorAdjustValue::None.as_str(), "none");
+
+        // Test FromStr
+        assert_eq!(
+            ForcedColorAdjustValue::from_str("auto"),
+            Ok(ForcedColorAdjustValue::Auto)
+        );
+        assert_eq!(
+            ForcedColorAdjustValue::from_str("none"),
+            Ok(ForcedColorAdjustValue::None)
+        );
+        assert_eq!(ForcedColorAdjustValue::from_str("banana"), Err(()));
+
+        // Test TryFrom<&CssValue>
+        assert_eq!(
+            ForcedColorAdjustValue::try_from(&CssValue::ForcedColorAdjust(
+                ForcedColorAdjustValue::None
+            )),
+            Ok(ForcedColorAdjustValue::None)
+        );
+        assert_eq!(
+            ForcedColorAdjustValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(ForcedColorAdjustValue::Auto)
+        );
+        assert_eq!(
+            ForcedColorAdjustValue::try_from(&CssValue::Keyword("banana".to_string())),
             Err(())
         );
     }

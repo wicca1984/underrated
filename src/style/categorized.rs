@@ -2101,6 +2101,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::MaskType(mt) => mt.as_str().to_string(),
         CssValue::ScrollBehavior(sb) => sb.as_str().to_string(),
         CssValue::PrintColorAdjust(pca) => pca.as_str().to_string(),
+        CssValue::ForcedColorAdjust(fca) => fca.as_str().to_string(),
     }
 }
 
