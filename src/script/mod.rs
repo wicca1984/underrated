@@ -139,6 +139,21 @@ impl BoaHost {
 
         let bridge = ObjectInitializer::new(context)
             .function(
+                NativeFunction::from_fn_ptr(bridge_active_element),
+                JsString::from("activeElement"),
+                0,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_focus),
+                JsString::from("focus"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_blur),
+                JsString::from("blur"),
+                0,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_create_element),
                 JsString::from("createElement"),
                 1,
@@ -539,6 +554,41 @@ impl BoaHost {
                     }
                     if (/[\t\n\r\f ]/.test(token)) {
                         throw new DOMException("The token provided contains whitespace", "InvalidCharacterError");
+                    }
+                }
+
+                function dispatchFocusEvent(target, type, bubbles) {
+                    const event = new Event(type);
+                    let currentTargetVal = target;
+                    Object.defineProperty(event, 'target', {
+                        get() { return target; },
+                        configurable: true
+                    });
+                    Object.defineProperty(event, 'currentTarget', {
+                        get() { return currentTargetVal; },
+                        configurable: true
+                    });
+                    let propagationStopped = false;
+                    const originalStopPropagation = event.stopPropagation;
+                    event.stopPropagation = function() {
+                        propagationStopped = true;
+                        if (originalStopPropagation) {
+                            originalStopPropagation.call(this);
+                        }
+                    };
+                    let curr = target;
+                    while (curr) {
+                        currentTargetVal = curr;
+                        curr.dispatchEvent(event);
+                        if (propagationStopped || !bubbles) {
+                            break;
+                        }
+                        if (curr === document) {
+                            currentTargetVal = window;
+                            window.dispatchEvent(event);
+                            break;
+                        }
+                        curr = curr.parentNode;
                     }
                 }
 
@@ -1235,6 +1285,31 @@ impl BoaHost {
                             if (this.nodeType !== 1) return;
                             const event = new Event('click');
                             this.dispatchEvent(event);
+                        },
+                        focus() {
+                            if (this.nodeType !== 1) return;
+                            const currentKey = bridge.activeElement();
+                            if (currentKey === this.__key__) return;
+
+                            const prev = currentKey ? getOrCreateNode(currentKey) : null;
+                            bridge.focus(this.__key__);
+
+                            if (prev) {
+                                dispatchFocusEvent(prev, 'focusout', true);
+                                dispatchFocusEvent(prev, 'blur', false);
+                            }
+                            dispatchFocusEvent(this, 'focus', false);
+                            dispatchFocusEvent(this, 'focusin', true);
+                        },
+                        blur() {
+                            if (this.nodeType !== 1) return;
+                            const currentKey = bridge.activeElement();
+                            if (currentKey !== this.__key__) return;
+
+                            bridge.blur();
+
+                            dispatchFocusEvent(this, 'focusout', true);
+                            dispatchFocusEvent(this, 'blur', false);
                         }
                     };
 
@@ -1850,6 +1925,18 @@ impl BoaHost {
                 Object.defineProperty(document, 'readyState', {
                     get() {
                         return this.__readyState__ || 'loading';
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'activeElement', {
+                    get() {
+                        const key = bridge.activeElement();
+                        if (key) {
+                            return getOrCreateNode(key);
+                        }
+                        return document.body;
                     },
                     enumerable: true,
                     configurable: true
@@ -2710,6 +2797,60 @@ fn request_navigation(
     PENDING_NAVIGATION.with(|cell| {
         *cell.borrow_mut() = Some(url);
     });
+    Ok(JsValue::undefined())
+}
+
+fn bridge_active_element(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let key_opt = with_dom(|dom, key_to_node| {
+        if let Some(node_id) = dom.focused_node() {
+            let k = format!("{:?}", node_id);
+            key_to_node.insert(k.clone(), node_id);
+            Some(k)
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(key) = key_opt {
+        Ok(JsValue::from(JsString::from(key)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_focus(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    with_dom(|dom, key_to_node| {
+        if let Some(node_id) = key_to_node.get(&key).copied() {
+            dom.focus(node_id);
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_blur(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    with_dom(|dom, _key_to_node| {
+        dom.blur();
+    })?;
+
     Ok(JsValue::undefined())
 }
 
@@ -8362,5 +8503,182 @@ mod tests {
 
         let res = host.eval_with_dom(script, &mut dom).unwrap();
         assert_eq!(res, "true|true|true|true|true");
+    }
+
+    #[test]
+    fn test_active_element_focus_blur() {
+        let mut dom = Dom::new();
+        let doc_id = dom.document();
+
+        let html_id = dom.create_node(NodeData::Element {
+            name: "html".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(doc_id, html_id);
+
+        let body_id = dom.create_node(NodeData::Element {
+            name: "body".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(html_id, body_id);
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "parent-div".to_string())],
+        });
+        dom.append_child(body_id, div_id);
+
+        let input1_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("id".to_string(), "input1".to_string())],
+        });
+        dom.append_child(div_id, input1_id);
+
+        let input2_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("id".to_string(), "input2".to_string())],
+        });
+        dom.append_child(div_id, input2_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const body = document.body;
+            const div = document.getElementById('parent-div');
+            const input1 = document.getElementById('input1');
+            const input2 = document.getElementById('input2');
+
+            let log = [];
+            function record(e) {
+                log.push(`${e.type} on ${e.currentTarget.id || e.currentTarget.tagName || 'window/document'} (target: ${e.target.id || e.target.tagName})`);
+            }
+
+            const targets = [window, document, div, input1, input2];
+            const eventTypes = ['focus', 'focusin', 'blur', 'focusout'];
+
+            for (const t of targets) {
+                for (const et of eventTypes) {
+                    t.addEventListener(et, record);
+                }
+            }
+
+            const initialActive = document.activeElement === body;
+
+            log = [];
+            input1.focus();
+            const focusedOnInput1 = document.activeElement === input1;
+            const focus1Log = [...log];
+
+            log = [];
+            input1.focus();
+            const focus1AgainLogSize = log.length;
+
+            log = [];
+            input2.focus();
+            const focusedOnInput2 = document.activeElement === input2;
+            const focus2Log = [...log];
+
+            log = [];
+            input2.blur();
+            const revertedToBody = document.activeElement === body;
+            const blurLog = [...log];
+
+            log = [];
+            let blurAgainOk = false;
+            try {
+                input2.blur();
+                blurAgainOk = true;
+            } catch(e) {
+                blurAgainOk = false;
+            }
+            const blurAgainLogSize = log.length;
+
+            [
+                initialActive,
+                focusedOnInput1,
+                focus1Log.join(','),
+                focus1AgainLogSize === 0,
+                focusedOnInput2,
+                focus2Log.join(','),
+                revertedToBody,
+                blurLog.join(','),
+                blurAgainOk,
+                blurAgainLogSize === 0
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        let parts: Vec<&str> = res.split('|').collect();
+
+        assert_eq!(parts[0], "true", "Initial activeElement must be body");
+        assert_eq!(parts[1], "true", "ActiveElement must update to input1");
+        assert!(
+            parts[2].contains("focus on input1"),
+            "focus event must be dispatched on input1"
+        );
+        assert!(
+            parts[2].contains("focusin on parent-div"),
+            "focusin event must bubble to parent-div"
+        );
+        assert!(
+            !parts[2].contains("focus on parent-div"),
+            "focus event must NOT bubble"
+        );
+
+        assert_eq!(
+            parts[3], "true",
+            "Focusing already-focused element must be a no-op"
+        );
+        assert_eq!(parts[4], "true", "ActiveElement must update to input2");
+
+        assert!(
+            parts[5].contains("blur on input1"),
+            "blur must be dispatched on input1"
+        );
+        assert!(
+            parts[5].contains("focusout on parent-div"),
+            "focusout must bubble to parent-div"
+        );
+        assert!(
+            parts[5].contains("focus on input2"),
+            "focus must be dispatched on input2"
+        );
+        assert!(
+            parts[5].contains("focusin on parent-div"),
+            "focusin must bubble to parent-div"
+        );
+
+        let blur_idx = parts[5].find("blur on input1").unwrap();
+        let focus_idx = parts[5].find("focus on input2").unwrap();
+        assert!(
+            blur_idx < focus_idx,
+            "Previously focused element must be blurred before new element is focused"
+        );
+
+        assert_eq!(
+            parts[6], "true",
+            "Blurring activeElement must revert activeElement to body"
+        );
+        assert!(
+            parts[7].contains("blur on input2"),
+            "blur must be dispatched on input2"
+        );
+        assert!(
+            parts[7].contains("focusout on parent-div"),
+            "focusout must bubble to parent-div"
+        );
+        assert!(
+            !parts[7].contains("focus on"),
+            "no focus/focusin should be dispatched during explicit blur()"
+        );
+
+        assert_eq!(
+            parts[8], "true",
+            "blurring unfocused element must not throw"
+        );
+        assert_eq!(
+            parts[9], "true",
+            "blurring unfocused element must be a no-op"
+        );
     }
 }
