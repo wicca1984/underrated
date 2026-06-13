@@ -167,6 +167,7 @@ impl BoaHost {
         let _ = context.register_global_class::<MutationRecord>();
         let _ = context.register_global_class::<IntersectionObserver>();
         let _ = context.register_global_class::<ResizeObserver>();
+        let _ = context.register_global_class::<PerformanceObserver>();
         let _ = context.register_global_class::<Blob>();
 
         let bridge = ObjectInitializer::new(context)
@@ -8613,6 +8614,112 @@ pub fn resize_observer_disconnect(
     Ok(JsValue::undefined())
 }
 
+/// Implementation of W3C `PerformanceObserver` interface.
+/// Spec: <https://w3c.github.io/performance-timeline/#dom-performanceobserver>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct PerformanceObserver {
+    pub(crate) callback: JsValue,
+}
+
+impl Class for PerformanceObserver {
+    const NAME: &'static str = "PerformanceObserver";
+    const LENGTH: usize = 1;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+        if !callback.is_callable() {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "TypeError: PerformanceObserver constructor requires a callback function",
+            )));
+        }
+
+        Ok(PerformanceObserver { callback })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        class
+            .method(
+                JsString::from("observe"),
+                1,
+                NativeFunction::from_fn_ptr(performance_observer_observe),
+            )
+            .method(
+                JsString::from("disconnect"),
+                0,
+                NativeFunction::from_fn_ptr(performance_observer_disconnect),
+            )
+            .method(
+                JsString::from("takeRecords"),
+                0,
+                NativeFunction::from_fn_ptr(performance_observer_take_records),
+            );
+
+        Ok(())
+    }
+}
+
+pub fn performance_observer_observe(
+    this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let _observer = obj.downcast_ref::<PerformanceObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-PerformanceObserver object"),
+        )
+    })?;
+
+    let _options = args.first().cloned().unwrap_or(JsValue::undefined());
+
+    Ok(JsValue::undefined())
+}
+
+pub fn performance_observer_disconnect(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let _observer = obj.downcast_ref::<PerformanceObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-PerformanceObserver object"),
+        )
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+pub fn performance_observer_take_records(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let _observer = obj.downcast_ref::<PerformanceObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-PerformanceObserver object"),
+        )
+    })?;
+
+    let elements: Vec<JsValue> = Vec::new();
+    let array = boa_engine::object::builtins::JsArray::from_iter(elements, context);
+    Ok(JsValue::from(array))
+}
+
 /// Implementation of WHATWG DOM `CustomEvent` interface.
 /// Spec: <https://dom.spec.whatwg.org/#interface-customevent>
 #[derive(Debug, Trace, Finalize, JsData)]
@@ -9425,6 +9532,61 @@ mod tests {
 
             // unobserve
             observer.unobserve(div1);
+
+            // disconnect
+            observer.disconnect();
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_performance_observer_t0571() {
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        // 1. Basic properties and constructor exist on global, and validation on constructor
+        host.eval_with_dom(
+            r#"{
+            if (typeof PerformanceObserver === "undefined") throw "PerformanceObserver undefined";
+
+            let thrown = false;
+            try {
+                new PerformanceObserver();
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor without callback did not throw TypeError";
+
+            thrown = false;
+            try {
+                new PerformanceObserver("not-a-function");
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor with string callback did not throw TypeError";
+
+            const observer = new PerformanceObserver(() => {});
+            if (!observer.observe) throw "observe method missing";
+            if (!observer.disconnect) throw "disconnect method missing";
+            if (!observer.takeRecords) throw "takeRecords method missing";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+
+        // 2. Instance method calls
+        host.eval_with_dom(
+            r#"{
+            const observer = new PerformanceObserver(() => {});
+
+            // takeRecords initially empty
+            const initial = observer.takeRecords();
+            if (initial.length !== 0) throw "takeRecords should be empty";
+
+            // observe options
+            observer.observe({ entryTypes: ["mark", "measure"] });
 
             // disconnect
             observer.disconnect();
