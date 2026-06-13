@@ -47,6 +47,8 @@ pub enum DisplayValue {
     InlineBlock,
     None,
     Flex,
+    Grid,
+    InlineGrid,
     Table,
     TableRow,
     TableCell,
@@ -218,6 +220,14 @@ impl std::str::FromStr for Opacity {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum GridTrackSize {
+    Px(f32),
+    Percent(f32),
+    Fr(f32),
+    Auto,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum CssValue {
     Keyword(String),
     Length(f32, LengthUnit),
@@ -234,6 +244,7 @@ pub enum CssValue {
     Transform(Vec<TransformFn>),
     ZIndex(ZIndex),
     Opacity(f32),
+    GridTemplate(Vec<GridTrackSize>),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -335,6 +346,8 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "caret-color"
             | "transition-timing-function"
             | "transition-delay"
+            | "grid-template-columns"
+            | "grid-template-rows"
     )
 }
 
@@ -342,6 +355,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
 pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
     let name_lower = name.to_ascii_lowercase();
     match name_lower.as_str() {
+        "grid-template-columns" | "grid-template-rows" => true,
         "position" => match value {
             CssValue::Keyword(kw) => {
                 matches!(
@@ -376,7 +390,7 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             CssValue::Keyword(kw) => {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
-                    "block" | "inline" | "inline-block" | "none" | "flex"
+                    "block" | "inline" | "inline-block" | "none" | "flex" | "grid" | "inline-grid"
                 )
             }
             CssValue::Display(_) => true,
@@ -606,13 +620,55 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
     }
 }
 
+fn parse_grid_template(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut tracks = Vec::new();
+
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {
+                // Skip whitespace
+            }
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let lower_unit = unit.to_ascii_lowercase();
+                match lower_unit.as_str() {
+                    "px" => tracks.push(GridTrackSize::Px(*value as f32)),
+                    "em" | "rem" | "pt" | "vw" | "vh" => {
+                        tracks.push(GridTrackSize::Px(*value as f32));
+                    }
+                    "fr" => tracks.push(GridTrackSize::Fr(*value as f32)),
+                    _ => {
+                        // TODO(spec): minmax(), repeat(), fit-content, named lines not yet supported
+                    }
+                }
+            }
+            ComponentValue::Token(CssToken::Percentage(v)) => {
+                tracks.push(GridTrackSize::Percent(*v as f32));
+            }
+            ComponentValue::Token(CssToken::Number(v)) if *v == 0.0 => {
+                tracks.push(GridTrackSize::Px(0.0));
+            }
+            ComponentValue::Token(CssToken::Ident(s)) if s.eq_ignore_ascii_case("auto") => {
+                tracks.push(GridTrackSize::Auto);
+            }
+            _ => {
+                // TODO(spec): minmax(), repeat(), fit-content, named lines not yet supported
+            }
+        }
+    }
+
+    Some(CssValue::GridTemplate(tracks))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
     components: &[ComponentValue],
 ) -> Option<CssValue> {
-    let val = parse_value(components)?;
     let name_lower = property_name.to_ascii_lowercase();
+    if name_lower == "grid-template-columns" || name_lower == "grid-template-rows" {
+        return parse_grid_template(components);
+    }
+    let val = parse_value(components)?;
     match name_lower.as_str() {
         "position" => {
             if let CssValue::Keyword(kw) = &val {
@@ -664,6 +720,8 @@ pub fn parse_property_value(
                     "inline-block" => DisplayValue::InlineBlock,
                     "none" => DisplayValue::None,
                     "flex" => DisplayValue::Flex,
+                    "grid" => DisplayValue::Grid,
+                    "inline-grid" => DisplayValue::InlineGrid,
                     "table" => DisplayValue::Table,
                     "table-row" => DisplayValue::TableRow,
                     "table-cell" => DisplayValue::TableCell,
@@ -999,7 +1057,7 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
         }
         ComponentValue::Token(CssToken::Dimension { value, unit }) => {
             let lower_unit = unit.to_ascii_lowercase();
-            if lower_unit == "s" || lower_unit == "ms" {
+            if lower_unit == "s" || lower_unit == "ms" || lower_unit == "fr" {
                 return Some(CssValue::Keyword(format!("{}{}", value, lower_unit)));
             }
             let unit_enum = match lower_unit.as_str() {
@@ -3195,6 +3253,78 @@ mod tests {
                 ]
             ),
             None
+        );
+    }
+
+    #[test]
+    fn test_grid_parsing_and_recognition() {
+        // 1. display: grid
+        assert_eq!(
+            parse_property_value("display", &[token(CssToken::Ident("grid".to_string()))]),
+            Some(CssValue::Display(DisplayValue::Grid))
+        );
+        // display: inline-grid
+        assert_eq!(
+            parse_property_value(
+                "display",
+                &[token(CssToken::Ident("inline-grid".to_string()))]
+            ),
+            Some(CssValue::Display(DisplayValue::InlineGrid))
+        );
+
+        // 2. grid-template-columns: 100px 1fr auto 25%
+        let components_cols = [
+            token(CssToken::Dimension {
+                value: 100.0,
+                unit: "px".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Dimension {
+                value: 1.0,
+                unit: "fr".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Ident("auto".to_string())),
+            token(CssToken::Whitespace),
+            token(CssToken::Percentage(25.0)),
+        ];
+        assert_eq!(
+            parse_property_value("grid-template-columns", &components_cols),
+            Some(CssValue::GridTemplate(vec![
+                GridTrackSize::Px(100.0),
+                GridTrackSize::Fr(1.0),
+                GridTrackSize::Auto,
+                GridTrackSize::Percent(25.0),
+            ]))
+        );
+
+        // 3. grid-template-rows: 1fr 1fr
+        let components_rows = [
+            token(CssToken::Dimension {
+                value: 1.0,
+                unit: "fr".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Dimension {
+                value: 1.0,
+                unit: "fr".to_string(),
+            }),
+        ];
+        assert_eq!(
+            parse_property_value("grid-template-rows", &components_rows),
+            Some(CssValue::GridTemplate(vec![
+                GridTrackSize::Fr(1.0),
+                GridTrackSize::Fr(1.0),
+            ]))
+        );
+
+        // 4. A single auto track parses to [Auto]
+        assert_eq!(
+            parse_property_value(
+                "grid-template-columns",
+                &[token(CssToken::Ident("auto".to_string()))]
+            ),
+            Some(CssValue::GridTemplate(vec![GridTrackSize::Auto]))
         );
     }
 }
