@@ -2754,6 +2754,197 @@ pub fn decode_wbmp(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
+/// Decodes a Sun Raster (.ras / .sun) image.
+/// spec: S-19
+pub fn decode_sun_raster(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 32 {
+        return None;
+    }
+
+    let magic = u32::from_be_bytes(bytes.get(0..4)?.try_into().ok()?);
+    if magic != 0x59A66A95 {
+        return None;
+    }
+
+    let width = u32::from_be_bytes(bytes.get(4..8)?.try_into().ok()?);
+    let height = u32::from_be_bytes(bytes.get(8..12)?.try_into().ok()?);
+    let depth = u32::from_be_bytes(bytes.get(12..16)?.try_into().ok()?);
+    let _length = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+    let ras_type = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+    let maptype = u32::from_be_bytes(bytes.get(24..28)?.try_into().ok()?);
+    let maplength = u32::from_be_bytes(bytes.get(28..32)?.try_into().ok()?);
+
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+
+    // Check maplength bounds
+    let colormap_end = 32_usize.checked_add(maplength as usize)?;
+    if bytes.len() < colormap_end {
+        return None;
+    }
+
+    let colormap = &bytes[32..colormap_end];
+
+    // TODO(spec): Support type 2 (RLE / byte-encoded)
+    if ras_type == 2 {
+        return None;
+    }
+
+    // Supported types are 0 (old), 1 (standard uncompressed), and 3 (RGB format)
+    if ras_type != 0 && ras_type != 1 && ras_type != 3 {
+        return None;
+    }
+
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+    let total_rgba_bytes = total_pixels.checked_mul(4)?;
+    let mut rgba = vec![0u8; total_rgba_bytes];
+
+    match depth {
+        1 => {
+            // TODO(spec): Support depth 1 (monochrome)
+            return None;
+        }
+        8 => {
+            if maptype != 1 || maplength == 0 || maplength % 3 != 0 {
+                return None;
+            }
+            let num_colors = (maplength / 3) as usize;
+
+            let padded_row_bytes = if width % 2 != 0 {
+                width as usize + 1
+            } else {
+                width as usize
+            };
+            let total_pixel_bytes = (height as usize).checked_mul(padded_row_bytes)?;
+            let total_needed = colormap_end.checked_add(total_pixel_bytes)?;
+            if bytes.len() < total_needed {
+                return None;
+            }
+
+            let pixel_data = &bytes[colormap_end..total_needed];
+
+            for y in 0..(height as usize) {
+                let row_start = y * padded_row_bytes;
+                for x in 0..(width as usize) {
+                    let idx = *pixel_data.get(row_start + x)?;
+                    let r = colormap.get(idx as usize).copied().unwrap_or(0);
+                    let g = colormap
+                        .get(num_colors + idx as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    let b = colormap
+                        .get(2 * num_colors + idx as usize)
+                        .copied()
+                        .unwrap_or(0);
+
+                    let out_idx = (y * (width as usize) + x) * 4;
+                    rgba[out_idx] = r;
+                    rgba[out_idx + 1] = g;
+                    rgba[out_idx + 2] = b;
+                    rgba[out_idx + 3] = 255;
+                }
+            }
+        }
+        24 => {
+            let row_bytes = (width as usize).checked_mul(3)?;
+            let padded_row_bytes = if row_bytes % 2 != 0 {
+                row_bytes + 1
+            } else {
+                row_bytes
+            };
+            let total_pixel_bytes = (height as usize).checked_mul(padded_row_bytes)?;
+            let total_needed = colormap_end.checked_add(total_pixel_bytes)?;
+            if bytes.len() < total_needed {
+                return None;
+            }
+
+            let pixel_data = &bytes[colormap_end..total_needed];
+
+            for y in 0..(height as usize) {
+                let row_start = y * padded_row_bytes;
+                for x in 0..(width as usize) {
+                    let px_offset = row_start + x * 3;
+                    let b0 = *pixel_data.get(px_offset)?;
+                    let b1 = *pixel_data.get(px_offset + 1)?;
+                    let b2 = *pixel_data.get(px_offset + 2)?;
+
+                    let (r, g, b) = if ras_type == 3 {
+                        // RGB order
+                        (b0, b1, b2)
+                    } else {
+                        // BGR order (type 0 or 1)
+                        (b2, b1, b0)
+                    };
+
+                    let out_idx = (y * (width as usize) + x) * 4;
+                    rgba[out_idx] = r;
+                    rgba[out_idx + 1] = g;
+                    rgba[out_idx + 2] = b;
+                    rgba[out_idx + 3] = 255;
+                }
+            }
+        }
+        32 => {
+            let row_bytes = (width as usize).checked_mul(4)?;
+            // depth 32 row size is always even, so padded_row_bytes == row_bytes
+            let padded_row_bytes = row_bytes;
+            let total_pixel_bytes = (height as usize).checked_mul(padded_row_bytes)?;
+            let total_needed = colormap_end.checked_add(total_pixel_bytes)?;
+            if bytes.len() < total_needed {
+                return None;
+            }
+
+            let pixel_data = &bytes[colormap_end..total_needed];
+            let mut has_non_zero_alpha = false;
+
+            for y in 0..(height as usize) {
+                let row_start = y * padded_row_bytes;
+                for x in 0..(width as usize) {
+                    let px_offset = row_start + x * 4;
+                    let b0 = *pixel_data.get(px_offset)?;
+                    let b1 = *pixel_data.get(px_offset + 1)?;
+                    let b2 = *pixel_data.get(px_offset + 2)?;
+                    let b3 = *pixel_data.get(px_offset + 3)?;
+
+                    let (r, g, b, a) = if ras_type == 3 {
+                        // RGBA order
+                        (b0, b1, b2, b3)
+                    } else {
+                        // ABGR order (type 0 or 1)
+                        (b3, b2, b1, b0)
+                    };
+
+                    if a > 0 {
+                        has_non_zero_alpha = true;
+                    }
+
+                    let out_idx = (y * (width as usize) + x) * 4;
+                    rgba[out_idx] = r;
+                    rgba[out_idx + 1] = g;
+                    rgba[out_idx + 2] = b;
+                    rgba[out_idx + 3] = a;
+                }
+            }
+
+            if !has_non_zero_alpha {
+                for chunk in rgba.chunks_exact_mut(4) {
+                    chunk[3] = 255;
+                }
+            }
+        }
+        _ => {
+            return None;
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, TIFF, or XBM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
@@ -2762,6 +2953,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_jpeg(bytes)
     } else if bytes.starts_with(b"GIF8") {
         decode_gif(bytes)
+    } else if bytes.starts_with(&[0x59, 0xA6, 0x6A, 0x95]) {
+        decode_sun_raster(bytes)
     } else if bytes.starts_with(b"BM") {
         decode_bmp(bytes)
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
@@ -4565,5 +4758,175 @@ mod tests {
         let routed = decode_image(&tiff_le).expect("decode_image should route TIFF");
         assert_eq!(routed.width, 2);
         assert_eq!(routed.rgba, decoded.rgba);
+    }
+
+    fn make_sun_raster(
+        width: u32,
+        height: u32,
+        depth: u32,
+        ras_type: u32,
+        maptype: u32,
+        colormap: &[u8],
+        pixels: &[u8],
+    ) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x59A66A95u32.to_be_bytes()); // magic
+        data.extend_from_slice(&width.to_be_bytes());
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&depth.to_be_bytes());
+        data.extend_from_slice(&(pixels.len() as u32).to_be_bytes()); // length
+        data.extend_from_slice(&ras_type.to_be_bytes());
+        data.extend_from_slice(&maptype.to_be_bytes());
+        data.extend_from_slice(&(colormap.len() as u32).to_be_bytes());
+        data.extend_from_slice(colormap);
+        data.extend_from_slice(pixels);
+        data
+    }
+
+    #[test]
+    fn test_decode_sun_raster_24bit_standard() {
+        // 3x2, depth 24, standard type 1
+        // row bytes raw = 3 * 3 = 9. padded row bytes = 10.
+        // row 0: P0=[10,20,30], P1=[40,50,60], P2=[70,80,90], Pad=0
+        // row 1: P0=[11,21,31], P1=[41,51,61], P2=[71,81,91], Pad=0
+        let pixels = vec![
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 0, 11, 21, 31, 41, 51, 61, 71, 81, 91, 0,
+        ];
+        let sun_data = make_sun_raster(3, 2, 24, 1, 0, &[], &pixels);
+
+        let decoded = decode_image(&sun_data).expect("Should decode 24-bit Sun Raster");
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 2);
+
+        // Row 0 Pixel 0: input [10, 20, 30] (BGR) -> RGBA: [30, 20, 10, 255]
+        assert_eq!(&decoded.rgba[0..4], &[30, 20, 10, 255]);
+        // Row 0 Pixel 1: input [40, 50, 60] (BGR) -> RGBA: [60, 50, 40, 255]
+        assert_eq!(&decoded.rgba[4..8], &[60, 50, 40, 255]);
+        // Row 1 Pixel 2: input [71, 81, 91] (BGR) -> RGBA: [91, 81, 71, 255]
+        assert_eq!(&decoded.rgba[20..24], &[91, 81, 71, 255]);
+    }
+
+    #[test]
+    fn test_decode_sun_raster_24bit_rgb_format() {
+        // 3x2, depth 24, RGB format type 3
+        let pixels = vec![
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 0, 11, 21, 31, 41, 51, 61, 71, 81, 91, 0,
+        ];
+        let sun_data = make_sun_raster(3, 2, 24, 3, 0, &[], &pixels);
+
+        let decoded = decode_image(&sun_data).expect("Should decode 24-bit RGB Sun Raster");
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 2);
+
+        // Row 0 Pixel 0: input [10, 20, 30] (RGB) -> RGBA: [10, 20, 30, 255]
+        assert_eq!(&decoded.rgba[0..4], &[10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn test_decode_sun_raster_32bit_standard() {
+        // 2x2, depth 32, standard type 1
+        // row bytes raw = 2 * 4 = 8. No padding needed.
+        // P0: A=10, B=20, G=30, R=40 -> RGBA: [40, 30, 20, 10]
+        // P1: A=50, B=60, G=70, R=80 -> RGBA: [80, 70, 60, 50]
+        // P2: A=90, B=100, G=110, R=120 -> RGBA: [120, 110, 100, 90]
+        // P3: A=130, B=140, G=150, R=160 -> RGBA: [160, 150, 140, 130]
+        let pixels = vec![
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
+        let sun_data = make_sun_raster(2, 2, 32, 1, 0, &[], &pixels);
+
+        let decoded = decode_image(&sun_data).expect("Should decode 32-bit standard Sun Raster");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        assert_eq!(&decoded.rgba[0..4], &[40, 30, 20, 10]);
+        assert_eq!(&decoded.rgba[4..8], &[80, 70, 60, 50]);
+        assert_eq!(&decoded.rgba[8..12], &[120, 110, 100, 90]);
+        assert_eq!(&decoded.rgba[12..16], &[160, 150, 140, 130]);
+    }
+
+    #[test]
+    fn test_decode_sun_raster_32bit_all_zero_alpha() {
+        // 2x2, depth 32, standard type 1, but all alphas are 0.
+        // Max alpha check should force them all to 255.
+        let pixels = vec![
+            0, 20, 30, 40, 0, 60, 70, 80, 0, 100, 110, 120, 0, 140, 150, 160,
+        ];
+        let sun_data = make_sun_raster(2, 2, 32, 1, 0, &[], &pixels);
+
+        let decoded = decode_image(&sun_data).expect("Should decode 32-bit zero-alpha Sun Raster");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        assert_eq!(&decoded.rgba[0..4], &[40, 30, 20, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[80, 70, 60, 255]);
+    }
+
+    #[test]
+    fn test_decode_sun_raster_32bit_rgb_format() {
+        // 2x2, depth 32, RGB format type 3
+        // P0: R=10, G=20, B=30, A=40 -> RGBA: [10, 20, 30, 40]
+        let pixels = vec![
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
+        let sun_data = make_sun_raster(2, 2, 32, 3, 0, &[], &pixels);
+
+        let decoded = decode_image(&sun_data).expect("Should decode 32-bit RGB format Sun Raster");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        assert_eq!(&decoded.rgba[0..4], &[10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn test_decode_sun_raster_8bit_colormap() {
+        // 3x2, depth 8, standard type 1, maptype 1, maplength 6
+        // Colormap (num_colors = 2):
+        // R: [10, 20], G: [30, 40], B: [50, 60]
+        // Row 0: P0=Idx 0, P1=Idx 1, P2=Idx 0, Pad=0
+        // Row 1: P0=Idx 1, P1=Idx 0, P2=Idx 1, Pad=0
+        let colormap = vec![10, 20, 30, 40, 50, 60];
+        let pixels = vec![0, 1, 0, 0, 1, 0, 1, 0];
+        let sun_data = make_sun_raster(3, 2, 8, 1, 1, &colormap, &pixels);
+
+        let decoded = decode_image(&sun_data).expect("Should decode 8-bit colormapped Sun Raster");
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 2);
+
+        // Row 0 Pixel 0 (Idx 0): R=10, G=30, B=50, A=255
+        assert_eq!(&decoded.rgba[0..4], &[10, 30, 50, 255]);
+        // Row 0 Pixel 1 (Idx 1): R=20, G=40, B=60, A=255
+        assert_eq!(&decoded.rgba[4..8], &[20, 40, 60, 255]);
+        // Row 1 Pixel 2 (Idx 1): R=20, G=40, B=60, A=255
+        assert_eq!(&decoded.rgba[20..24], &[20, 40, 60, 255]);
+    }
+
+    #[test]
+    fn test_decode_sun_raster_failures() {
+        // Bad magic
+        let mut bad_magic = make_sun_raster(2, 2, 24, 1, 0, &[], &[0; 12]);
+        bad_magic[0] = 0x00;
+        assert!(decode_image(&bad_magic).is_none());
+
+        // Zero dimensions
+        let bad_dim = make_sun_raster(0, 2, 24, 1, 0, &[], &[0; 12]);
+        assert!(decode_image(&bad_dim).is_none());
+
+        // RLE not supported
+        let rle = make_sun_raster(2, 2, 24, 2, 0, &[], &[0; 12]);
+        assert!(decode_image(&rle).is_none());
+
+        // Depth 1 not supported
+        let depth1 = make_sun_raster(2, 2, 1, 1, 0, &[], &[0; 12]);
+        assert!(decode_image(&depth1).is_none());
+
+        // Bad maplength (odd or not divisible by 3)
+        let bad_map = make_sun_raster(2, 2, 8, 1, 1, &[0; 5], &[0; 8]);
+        assert!(decode_image(&bad_map).is_none());
+
+        // Truncated data
+        let mut trunc = make_sun_raster(2, 2, 24, 1, 0, &[], &[0; 12]);
+        trunc.pop();
+        assert!(decode_image(&trunc).is_none());
     }
 }
