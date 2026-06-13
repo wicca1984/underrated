@@ -249,6 +249,12 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // no links are ever considered visited. Thus, :visited always returns false.
                         false
                     }
+                    "target" => {
+                        // TODO(spec): Real :target matching requires the document URL fragment (the part after #),
+                        // which is not threaded into the selector matching context;
+                        // therefore no element is ever considered the target and :target always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3022,6 +3028,22 @@ mod tests {
         assert!(!matches(&sel_visited, &dom, link_with_href));
         assert!(!matches(&sel_visited, &dom, a_no_href));
         assert!(!matches(&sel_visited, &dom, div_with_href));
+
+        // Matches :target (should never match since we have no URL fragment context in the selector layer)
+        let sel_target = parse_selector_list(":target").unwrap();
+        assert!(!matches(&sel_target, &dom, a_with_href));
+        assert!(!matches(&sel_target, &dom, area_with_href));
+        assert!(!matches(&sel_target, &dom, link_with_href));
+        assert!(!matches(&sel_target, &dom, a_no_href));
+        assert!(!matches(&sel_target, &dom, div_with_href));
+
+        // Ensure elements with id (potential targets) also never match :target
+        let div_with_id = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "foo".into())],
+        });
+        dom.append_child(doc, div_with_id);
+        assert!(!matches(&sel_target, &dom, div_with_id));
     }
 
     #[test]
