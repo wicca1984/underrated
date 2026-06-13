@@ -133,6 +133,13 @@ impl BoaHost {
         let _ = encoding::register_encoding_builtins(&mut context);
         let _ = encoding::register_base64_builtins(&mut context);
 
+        // Setup structuredClone global (t0514)
+        let _ = context.register_global_builtin_callable(
+            JsString::from("structuredClone"),
+            1,
+            NativeFunction::from_fn_ptr(structured_clone_fn),
+        );
+
         // Register XMLHttpRequest stub (t0242)
         if let Err(e) = xhr::register_xhr(&mut context) {
             eprintln!("Failed to register XMLHttpRequest: {:?}", e);
@@ -3314,6 +3321,271 @@ fn request_navigation(
     Ok(JsValue::undefined())
 }
 
+fn structured_clone_value(value: &JsValue, context: &mut Context) -> JsResult<JsValue> {
+    if value.is_symbol() {
+        // TODO(spec): should be a DOMException DataCloneError
+        return Err(JsError::from(
+            JsNativeError::typ().with_message("Symbol is not cloneable"),
+        ));
+    }
+
+    let Some(obj) = value.as_object() else {
+        // It's a primitive (undefined, null, boolean, number, string, bigint)
+        return Ok(value.clone());
+    };
+
+    if obj.is_callable() {
+        // TODO(spec): should be a DOMException DataCloneError
+        return Err(JsError::from(
+            JsNativeError::typ().with_message("Function is not cloneable"),
+        ));
+    }
+
+    // Get [[Class]] using Object.prototype.toString.call(value) to identify internal type
+    let object_constructor = context
+        .global_object()
+        .get(JsString::from("Object"), context)?;
+    let object_constructor_obj = object_constructor.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Object constructor not found"))
+    })?;
+    let prototype = object_constructor_obj.get(JsString::from("prototype"), context)?;
+    let prototype_obj = prototype.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Object.prototype not found"))
+    })?;
+    let to_string_fn_val = prototype_obj.get(JsString::from("toString"), context)?;
+    let to_string_fn = to_string_fn_val.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Object.prototype.toString not callable"))
+    })?;
+    let class_str_val = to_string_fn.call(value, &[], context)?;
+    let class_str = class_str_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    if class_str == "[object Date]" {
+        let get_time_val = obj.get(JsString::from("getTime"), context)?;
+        let get_time_fn = get_time_val.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Date.prototype.getTime not callable"))
+        })?;
+        let time_ms_val = get_time_fn.call(value, &[], context)?;
+        let date_constructor = context
+            .global_object()
+            .get(JsString::from("Date"), context)?;
+        let date_constructor_obj = date_constructor.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Date constructor not found"))
+        })?;
+        let new_date = date_constructor_obj.construct(&[time_ms_val], None, context)?;
+        return Ok(JsValue::from(new_date));
+    }
+
+    if class_str == "[object Array]" {
+        let array_constructor = context
+            .global_object()
+            .get(JsString::from("Array"), context)?;
+        let array_constructor_obj = array_constructor.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Array constructor not found"))
+        })?;
+
+        let length_val = obj.get(JsString::from("length"), context)?;
+        let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+
+        let array_val = array_constructor_obj.construct(&[JsValue::from(length)], None, context)?;
+
+        // TODO(spec): circular references not yet handled
+
+        for i in 0..length {
+            let item_val = obj.get(i, context)?;
+            let cloned_item = structured_clone_value(&item_val, context)?;
+            array_val.set(i, cloned_item, true, context)?;
+        }
+        return Ok(JsValue::from(array_val));
+    }
+
+    if class_str == "[object Map]" {
+        let map_constructor = context
+            .global_object()
+            .get(JsString::from("Map"), context)?;
+        let map_constructor_obj = map_constructor.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Map constructor not found"))
+        })?;
+        let new_map_val = map_constructor_obj.construct(&[], None, context)?;
+
+        // TODO(spec): circular references not yet handled
+
+        let map_set_fn = new_map_val
+            .get(JsString::from("set"), context)?
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(JsNativeError::typ().with_message("Map.prototype.set not callable"))
+            })?;
+
+        let array_constructor = context
+            .global_object()
+            .get(JsString::from("Array"), context)?;
+        let array_constructor_obj = array_constructor.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Array constructor not found"))
+        })?;
+        let array_from_fn = array_constructor_obj
+            .get(JsString::from("from"), context)?
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(JsNativeError::typ().with_message("Array.from not callable"))
+            })?;
+
+        let entries_iterator = obj
+            .get(JsString::from("entries"), context)?
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(
+                    JsNativeError::typ().with_message("Map.prototype.entries not callable"),
+                )
+            })?;
+        let entries_iter_val = entries_iterator.call(value, &[], context)?;
+        let entries_array_val =
+            array_from_fn.call(&JsValue::undefined(), &[entries_iter_val], context)?;
+
+        let length_val = entries_array_val
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(JsNativeError::typ().with_message("Entries array is not an object"))
+            })?
+            .get(JsString::from("length"), context)?;
+        let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+
+        for i in 0..length {
+            let pair_val = entries_array_val
+                .as_object()
+                .ok_or_else(|| {
+                    JsError::from(
+                        JsNativeError::typ().with_message("Entries array element is not an object"),
+                    )
+                })?
+                .get(i, context)?;
+            let pair_obj = pair_val.as_object().ok_or_else(|| {
+                JsError::from(JsNativeError::typ().with_message("Map entry is not an object"))
+            })?;
+            let entry_key = pair_obj.get(0, context)?;
+            let entry_val = pair_obj.get(1, context)?;
+            let cloned_key = structured_clone_value(&entry_key, context)?;
+            let cloned_val = structured_clone_value(&entry_val, context)?;
+            map_set_fn.call(
+                &JsValue::from(new_map_val.clone()),
+                &[cloned_key, cloned_val],
+                context,
+            )?;
+        }
+        return Ok(JsValue::from(new_map_val));
+    }
+
+    if class_str == "[object Set]" {
+        let set_constructor = context
+            .global_object()
+            .get(JsString::from("Set"), context)?;
+        let set_constructor_obj = set_constructor.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Set constructor not found"))
+        })?;
+        let new_set_val = set_constructor_obj.construct(&[], None, context)?;
+
+        // TODO(spec): circular references not yet handled
+
+        let set_add_fn = new_set_val
+            .get(JsString::from("add"), context)?
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(JsNativeError::typ().with_message("Set.prototype.add not callable"))
+            })?;
+
+        let array_constructor = context
+            .global_object()
+            .get(JsString::from("Array"), context)?;
+        let array_constructor_obj = array_constructor.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Array constructor not found"))
+        })?;
+        let array_from_fn = array_constructor_obj
+            .get(JsString::from("from"), context)?
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(JsNativeError::typ().with_message("Array.from not callable"))
+            })?;
+
+        let values_iterator = obj
+            .get(JsString::from("values"), context)?
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(
+                    JsNativeError::typ().with_message("Set.prototype.values not callable"),
+                )
+            })?;
+        let values_iter_val = values_iterator.call(value, &[], context)?;
+        let values_array_val =
+            array_from_fn.call(&JsValue::undefined(), &[values_iter_val], context)?;
+
+        let length_val = values_array_val
+            .as_object()
+            .ok_or_else(|| {
+                JsError::from(JsNativeError::typ().with_message("Values array is not an object"))
+            })?
+            .get(JsString::from("length"), context)?;
+        let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+
+        for i in 0..length {
+            let elem_val = values_array_val
+                .as_object()
+                .ok_or_else(|| {
+                    JsError::from(
+                        JsNativeError::typ().with_message("Values array element is not an object"),
+                    )
+                })?
+                .get(i, context)?;
+            let cloned_elem = structured_clone_value(&elem_val, context)?;
+            set_add_fn.call(&JsValue::from(new_set_val.clone()), &[cloned_elem], context)?;
+        }
+        return Ok(JsValue::from(new_set_val));
+    }
+
+    // Fallback: Plain Object
+    let new_obj_val = object_constructor_obj.construct(&[], None, context)?;
+
+    // TODO(spec): circular references not yet handled
+
+    let keys_val = object_constructor_obj.get(JsString::from("keys"), context)?;
+    let keys_fn = keys_val.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Object.keys not callable"))
+    })?;
+
+    let keys_array_val =
+        keys_fn.call(&JsValue::undefined(), std::slice::from_ref(value), context)?;
+    let keys_array_obj = keys_array_val.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Keys array is not an object"))
+    })?;
+
+    let length_val = keys_array_obj.get(JsString::from("length"), context)?;
+    let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+
+    for i in 0..length {
+        let key_val = keys_array_obj.get(i, context)?;
+        let key_str = key_val.to_string(context)?;
+        let prop_val = obj.get(key_str.clone(), context)?;
+        let cloned_prop = structured_clone_value(&prop_val, context)?;
+        new_obj_val.set(key_str, cloned_prop, true, context)?;
+    }
+
+    Ok(JsValue::from(new_obj_val))
+}
+
+fn structured_clone_fn(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let value = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("structuredClone requires at least 1 argument"),
+        )
+    })?;
+    structured_clone_value(value, context)
+}
+
 fn bridge_active_element(
     _this: &JsValue,
     _args: &[JsValue],
@@ -6320,6 +6592,106 @@ pub fn url_search_params_to_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_structured_clone_t0514() {
+        let mut host = BoaHost::new();
+
+        // 1. Primitive round-trips
+        host.eval(r#"{
+            if (structuredClone(42) !== 42) throw "number mismatch";
+            if (structuredClone("hello") !== "hello") throw "string mismatch";
+            if (structuredClone(true) !== true) throw "boolean true mismatch";
+            if (structuredClone(false) !== false) throw "boolean false mismatch";
+            if (structuredClone(null) !== null) throw "null mismatch";
+            if (structuredClone(undefined) !== undefined) throw "undefined mismatch";
+            if (structuredClone(12345678901234567890n) !== 12345678901234567890n) throw "bigint mismatch";
+        }"#).unwrap();
+
+        // 2. Objects deep cloning and independence
+        host.eval(
+            r#"{
+            const original = { a: 1, b: { c: 2 } };
+            const clone = structuredClone(original);
+            if (clone.a !== 1) throw "clone.a mismatch";
+            if (clone.b.c !== 2) throw "clone.b.c mismatch";
+            
+            // Mutate clone and assert original is unchanged (deep copy)
+            clone.b.c = 99;
+            if (original.b.c !== 2) throw "original mutated!";
+            if (clone.b.c !== 99) throw "clone not mutated";
+        }"#,
+        )
+        .unwrap();
+
+        // 3. Arrays and nested arrays
+        host.eval(
+            r#"{
+            const original = [1, 2, [3, 4], { x: 5 }];
+            const clone = structuredClone(original);
+            if (clone[0] !== 1 || clone[1] !== 2) throw "flat array mismatch";
+            if (clone[2][0] !== 3 || clone[2][1] !== 4) throw "nested array mismatch";
+            if (clone[3].x !== 5) throw "nested object in array mismatch";
+
+            // Mutate nested array
+            clone[2][0] = 99;
+            if (original[2][0] !== 3) throw "original array mutated!";
+        }"#,
+        )
+        .unwrap();
+
+        // 4. Dates
+        host.eval(
+            r#"{
+            const d = new Date(1450000000000);
+            const clone = structuredClone(d);
+            if (clone.getTime() !== 1450000000000) throw "Date time mismatch";
+            if (clone === d) throw "Date reference is the same";
+        }"#,
+        )
+        .unwrap();
+
+        // 5. Maps
+        host.eval(
+            r#"{
+            const m = new Map();
+            m.set("key", { val: 42 });
+            const clone = structuredClone(m);
+            if (!clone.has("key")) throw "Map clone missing key";
+            if (clone.get("key").val !== 42) throw "Map clone nested value mismatch";
+
+            // Mutate nested value in Map
+            clone.get("key").val = 99;
+            if (m.get("key").val !== 42) throw "original Map mutated!";
+        }"#,
+        )
+        .unwrap();
+
+        // 6. Sets
+        host.eval(
+            r#"{
+            const s = new Set();
+            const obj = { val: 100 };
+            s.add(obj);
+            const clone = structuredClone(s);
+            if (clone.size !== 1) throw "Set clone size mismatch";
+            
+            // Retrieve the cloned object
+            let clonedObj;
+            clone.forEach(v => { clonedObj = v; });
+            if (clonedObj.val !== 100) throw "Set clone element mismatch";
+            if (clonedObj === obj) throw "Set element reference same";
+
+            clonedObj.val = 200;
+            if (obj.val !== 100) throw "original Set element mutated!";
+        }"#,
+        )
+        .unwrap();
+
+        // 7. Non-cloneable: Functions and Symbols should throw TypeError
+        assert!(host.eval("structuredClone(() => {})").is_err());
+        assert!(host.eval("structuredClone(Symbol('test'))").is_err());
+    }
 
     #[test]
     fn test_url_search_params_basic() {
