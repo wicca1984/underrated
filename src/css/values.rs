@@ -632,6 +632,54 @@ impl TryFrom<&CssValue> for HyphensValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum TextRenderingValue {
+    Auto,
+    OptimizeSpeed,
+    OptimizeLegibility,
+    GeometricPrecision,
+}
+
+impl TextRenderingValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(Self::Auto),
+            "optimizeSpeed" => Some(Self::OptimizeSpeed),
+            "optimizeLegibility" => Some(Self::OptimizeLegibility),
+            "geometricPrecision" => Some(Self::GeometricPrecision),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::OptimizeSpeed => "optimizeSpeed",
+            Self::OptimizeLegibility => "optimizeLegibility",
+            Self::GeometricPrecision => "geometricPrecision",
+        }
+    }
+}
+
+impl std::str::FromStr for TextRenderingValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for TextRenderingValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum FontKerningValue {
     Auto,
     Normal,
@@ -1114,6 +1162,7 @@ pub enum CssValue {
     BackfaceVisibility(BackfaceVisibilityValue),
     EmptyCells(EmptyCellsValue),
     Hyphens(HyphensValue),
+    TextRendering(TextRenderingValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1213,6 +1262,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "backface-visibility"
             | "empty-cells"
             | "hyphens"
+            | "text-rendering"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -1349,6 +1399,16 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "none" | "manual" | "auto")
             }
             CssValue::Hyphens(_) => true,
+            _ => false,
+        },
+        "text-rendering" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.as_str(),
+                    "auto" | "optimizeSpeed" | "optimizeLegibility" | "geometricPrecision"
+                )
+            }
+            CssValue::TextRendering(_) => true,
             _ => false,
         },
         "position" => match value {
@@ -2003,6 +2063,27 @@ fn parse_hyphens(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::Hyphens(kw))
 }
 
+fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_string());
+            }
+            _ => return None, // invalid token for text-rendering recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = TextRenderingValue::parse(&idents[0])?;
+    Some(CssValue::TextRendering(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -2038,6 +2119,9 @@ pub fn parse_property_value(
     }
     if name_lower == "hyphens" {
         return parse_hyphens(components);
+    }
+    if name_lower == "text-rendering" {
+        return parse_text_rendering(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -3007,6 +3091,40 @@ mod tests {
             parse_value(&components),
             Some(CssValue::Keyword("auto".to_string()))
         );
+    }
+
+    #[test]
+    fn test_text_rendering() {
+        let cases = [
+            ("auto", Some(TextRenderingValue::Auto)),
+            ("optimizeSpeed", Some(TextRenderingValue::OptimizeSpeed)),
+            (
+                "optimizeLegibility",
+                Some(TextRenderingValue::OptimizeLegibility),
+            ),
+            (
+                "geometricPrecision",
+                Some(TextRenderingValue::GeometricPrecision),
+            ),
+            ("OPTIMIZESPEED", None), // Case-sensitive check
+            ("nonsense", None),
+        ];
+
+        for (input, expected) in cases {
+            let parsed = TextRenderingValue::parse(input);
+            assert_eq!(parsed, expected);
+            if let Some(val) = expected {
+                assert_eq!(val.as_str(), input);
+                let components = [token(CssToken::Ident(input.to_string()))];
+                assert_eq!(
+                    parse_property_value("text-rendering", &components),
+                    Some(CssValue::TextRendering(val))
+                );
+            } else {
+                let components = [token(CssToken::Ident(input.to_string()))];
+                assert_eq!(parse_property_value("text-rendering", &components), None);
+            }
+        }
     }
 
     #[test]
