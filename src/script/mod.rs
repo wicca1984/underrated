@@ -502,6 +502,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_namespace_uri),
+                JsString::from("namespaceURI"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_node_name),
                 JsString::from("nodeName"),
                 1,
@@ -2182,6 +2187,14 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'namespaceURI', {
+                        get() {
+                            return bridge.namespaceURI(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'nodeName', {
                         get() {
                             return bridge.nodeName(this.__key__);
@@ -2716,6 +2729,14 @@ impl BoaHost {
                 Object.defineProperty(Document.prototype, 'localName', {
                     get() {
                         return bridge.localName(this.__key__);
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(Document.prototype, 'namespaceURI', {
+                    get() {
+                        return bridge.namespaceURI(this.__key__);
                     },
                     enumerable: true,
                     configurable: true
@@ -6165,6 +6186,37 @@ fn bridge_local_name(
 
     if let Some(local_name) = local_name_opt {
         Ok(JsValue::from(JsString::from(local_name)))
+    } else {
+        Ok(JsValue::undefined())
+    }
+}
+
+fn bridge_namespace_uri(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let namespace_uri_opt = with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            if let Some(NodeData::Element { .. }) = dom.data(node_id) {
+                // TODO(spec): foreign-content (SVG/MathML) namespaces are not yet distinguished
+                Some("http://www.w3.org/1999/xhtml".to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(namespace_uri) = namespace_uri_opt {
+        Ok(JsValue::from(JsString::from(namespace_uri)))
     } else {
         Ok(JsValue::undefined())
     }
@@ -11820,6 +11872,47 @@ mod tests {
         assert_eq!(
             res,
             Ok(r##"{"spanTagName":"SPAN","spanLocalName":"span","divUpperTagName":"DIV","divUpperLocalName":"div","divLowerTagName":"DIV","divLowerLocalName":"div","isReadOnly":true}"##.to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_namespace_uri() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        // Let's create an element node manually using Dom
+        let custom_id = dom.create_node(NodeData::Element {
+            name: "SPAN".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(document, custom_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            (function() {
+                const span = document.firstChild; // SPAN node we created in Rust
+                const div = document.createElement('div');
+
+                // Test read-only property: assigning to namespaceURI should be ignored
+                const origNamespaceURI = div.namespaceURI;
+                div.namespaceURI = "custom";
+                const isReadOnly = div.namespaceURI === origNamespaceURI;
+
+                const verification = {
+                    spanNamespaceURI: span.namespaceURI,
+                    divNamespaceURI: div.namespaceURI,
+                    docNamespaceURIIsUndefined: document.namespaceURI === undefined,
+                    isReadOnly: isReadOnly,
+                };
+                return JSON.stringify(verification);
+            })()
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok(r##"{"spanNamespaceURI":"http://www.w3.org/1999/xhtml","divNamespaceURI":"http://www.w3.org/1999/xhtml","docNamespaceURIIsUndefined":true,"isReadOnly":true}"##.to_string())
         );
     }
 
