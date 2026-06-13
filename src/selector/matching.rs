@@ -268,6 +268,12 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :modal always returns false.
                         false
                     }
+                    "fullscreen" => {
+                        // TODO(spec): Real :fullscreen matching requires a Fullscreen API and tracking of
+                        // the fullscreen element(s), which is intentionally out of scope and not implemented
+                        // in this engine. Thus, :fullscreen always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3089,6 +3095,39 @@ mod tests {
         });
         dom.append_child(doc, dialog_elem);
         assert!(!matches(&sel_modal, &dom, dialog_elem));
+    }
+
+    #[test]
+    fn test_fullscreen_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <a href="x">t</a>
+        let a_with_href = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("href".into(), "x".into())],
+        });
+        dom.append_child(doc, a_with_href);
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <dialog>
+        let dialog_elem = dom.create_node(NodeData::Element {
+            name: "dialog".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, dialog_elem);
+
+        // Matches :fullscreen (should never match since we have no Fullscreen API or fullscreen-element tracking)
+        let sel_fullscreen = parse_selector_list(":fullscreen").unwrap();
+        assert!(!matches(&sel_fullscreen, &dom, a_with_href));
+        assert!(!matches(&sel_fullscreen, &dom, div_elem));
+        assert!(!matches(&sel_fullscreen, &dom, dialog_elem));
     }
 
     #[test]
