@@ -183,6 +183,57 @@ impl TryFrom<&CssValue> for WhiteSpaceValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ObjectFitValue {
+    Fill,
+    Contain,
+    Cover,
+    None,
+    ScaleDown,
+}
+
+impl ObjectFitValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "fill" => Some(Self::Fill),
+            "contain" => Some(Self::Contain),
+            "cover" => Some(Self::Cover),
+            "none" => Some(Self::None),
+            "scale-down" => Some(Self::ScaleDown),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fill => "fill",
+            Self::Contain => "contain",
+            Self::Cover => "cover",
+            Self::None => "none",
+            Self::ScaleDown => "scale-down",
+        }
+    }
+}
+
+impl std::str::FromStr for ObjectFitValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ObjectFitValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -2481,6 +2532,62 @@ mod tests {
             parse_property_value("color", &[token(CssToken::Ident("red".to_string()))]),
             Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
         );
+    }
+
+    #[test]
+    fn test_object_fit_value() {
+        // Test parsing keyword strings to ObjectFitValue
+        assert_eq!(ObjectFitValue::parse("fill"), Some(ObjectFitValue::Fill));
+        assert_eq!(
+            ObjectFitValue::parse("contain"),
+            Some(ObjectFitValue::Contain)
+        );
+        assert_eq!(ObjectFitValue::parse("cover"), Some(ObjectFitValue::Cover));
+        assert_eq!(ObjectFitValue::parse("none"), Some(ObjectFitValue::None));
+        assert_eq!(
+            ObjectFitValue::parse("scale-down"),
+            Some(ObjectFitValue::ScaleDown)
+        );
+        assert_eq!(ObjectFitValue::parse("FILL"), Some(ObjectFitValue::Fill));
+        assert_eq!(
+            ObjectFitValue::parse("Scale-Down"),
+            Some(ObjectFitValue::ScaleDown)
+        );
+        assert_eq!(ObjectFitValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!("fill".parse::<ObjectFitValue>(), Ok(ObjectFitValue::Fill));
+        assert_eq!(
+            "contain".parse::<ObjectFitValue>(),
+            Ok(ObjectFitValue::Contain)
+        );
+        assert_eq!("cover".parse::<ObjectFitValue>(), Ok(ObjectFitValue::Cover));
+        assert_eq!("none".parse::<ObjectFitValue>(), Ok(ObjectFitValue::None));
+        assert_eq!(
+            "scale-down".parse::<ObjectFitValue>(),
+            Ok(ObjectFitValue::ScaleDown)
+        );
+        assert_eq!("BOGUS".parse::<ObjectFitValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(ObjectFitValue::Fill.as_str(), "fill");
+        assert_eq!(ObjectFitValue::Contain.as_str(), "contain");
+        assert_eq!(ObjectFitValue::Cover.as_str(), "cover");
+        assert_eq!(ObjectFitValue::None.as_str(), "none");
+        assert_eq!(ObjectFitValue::ScaleDown.as_str(), "scale-down");
+
+        assert_eq!(ObjectFitValue::Fill.as_str(), "fill");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            ObjectFitValue::try_from(&CssValue::Keyword("contain".to_string())),
+            Ok(ObjectFitValue::Contain)
+        );
+        assert_eq!(
+            ObjectFitValue::try_from(&CssValue::Keyword("SCALE-DOWN".to_string())),
+            Ok(ObjectFitValue::ScaleDown)
+        );
+        assert_eq!(ObjectFitValue::try_from(&CssValue::Number(1.0)), Err(()));
     }
 
     #[test]
