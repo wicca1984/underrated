@@ -1521,6 +1521,266 @@ fn is_conservative_tga(bytes: &[u8]) -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endian {
+    Little,
+    Big,
+}
+
+impl Endian {
+    fn read_u16(&self, bytes: &[u8], offset: usize) -> Option<u16> {
+        let buf: [u8; 2] = bytes.get(offset..offset + 2)?.try_into().ok()?;
+        match self {
+            Endian::Little => Some(u16::from_le_bytes(buf)),
+            Endian::Big => Some(u16::from_be_bytes(buf)),
+        }
+    }
+
+    fn read_u32(&self, bytes: &[u8], offset: usize) -> Option<u32> {
+        let buf: [u8; 4] = bytes.get(offset..offset + 4)?.try_into().ok()?;
+        match self {
+            Endian::Little => Some(u32::from_le_bytes(buf)),
+            Endian::Big => Some(u32::from_be_bytes(buf)),
+        }
+    }
+}
+
+fn get_single_value(endian: Endian, bytes: &[u8], entry_offset: usize) -> Option<u32> {
+    let tag_type = endian.read_u16(bytes, entry_offset + 2)?;
+    let count = endian.read_u32(bytes, entry_offset + 4)?;
+    if count != 1 {
+        return None;
+    }
+    match tag_type {
+        1 => bytes.get(entry_offset + 8).map(|&b| b as u32),
+        3 => endian.read_u16(bytes, entry_offset + 8).map(|v| v as u32),
+        4 => endian.read_u32(bytes, entry_offset + 8),
+        _ => None,
+    }
+}
+
+fn get_array_values(endian: Endian, bytes: &[u8], entry_offset: usize) -> Option<Vec<u32>> {
+    let tag_type = endian.read_u16(bytes, entry_offset + 2)?;
+    let count = endian.read_u32(bytes, entry_offset + 4)? as usize;
+    if count == 0 {
+        return Some(Vec::new());
+    }
+
+    let value_size = match tag_type {
+        1 => 1, // BYTE
+        3 => 2, // SHORT
+        4 => 4, // LONG
+        _ => return None,
+    };
+
+    let total_size = count.checked_mul(value_size)?;
+    let data_offset = if total_size <= 4 {
+        entry_offset + 8
+    } else {
+        endian.read_u32(bytes, entry_offset + 8)? as usize
+    };
+
+    let mut values = Vec::with_capacity(count);
+    for i in 0..count {
+        let item_offset = data_offset.checked_add(i.checked_mul(value_size)?)?;
+        let val = match tag_type {
+            1 => *bytes.get(item_offset)? as u32,
+            3 => endian.read_u16(bytes, item_offset)? as u32,
+            4 => endian.read_u32(bytes, item_offset)?,
+            _ => return None,
+        };
+        values.push(val);
+    }
+    Some(values)
+}
+
+/// Decodes a baseline uncompressed TIFF image from a byte slice.
+/// Supports 8-bit grayscale and 8-bit RGB, in both little-endian and big-endian byte order.
+pub fn decode_tiff(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 8 {
+        return None;
+    }
+
+    let endian = if bytes[0] == 0x49 && bytes[1] == 0x49 {
+        if bytes[2] != 0x2A || bytes[3] != 0x00 {
+            return None;
+        }
+        Endian::Little
+    } else if bytes[0] == 0x4D && bytes[1] == 0x4D {
+        if bytes[2] != 0x00 || bytes[3] != 0x2A {
+            return None;
+        }
+        Endian::Big
+    } else {
+        return None;
+    };
+
+    let first_ifd_offset = endian.read_u32(bytes, 4)? as usize;
+    if first_ifd_offset >= bytes.len() {
+        return None;
+    }
+
+    let num_entries = endian.read_u16(bytes, first_ifd_offset)? as usize;
+    let ifd_end = first_ifd_offset
+        .checked_add(2)?
+        .checked_add(num_entries.checked_mul(12)?)?
+        .checked_add(4)?;
+    if ifd_end > bytes.len() {
+        return None;
+    }
+
+    let mut image_width_entry = None;
+    let mut image_length_entry = None;
+    let mut bits_per_sample_entry = None;
+    let mut compression_entry = None;
+    let mut photometric_entry = None;
+    let mut strip_offsets_entry = None;
+    let mut samples_per_pixel_entry = None;
+    let mut rows_per_strip_entry = None;
+    let mut strip_byte_counts_entry = None;
+
+    for i in 0..num_entries {
+        let entry_offset = first_ifd_offset + 2 + i * 12;
+        let tag = endian.read_u16(bytes, entry_offset)?;
+        match tag {
+            256 => image_width_entry = Some(entry_offset),
+            257 => image_length_entry = Some(entry_offset),
+            258 => bits_per_sample_entry = Some(entry_offset),
+            259 => compression_entry = Some(entry_offset),
+            262 => photometric_entry = Some(entry_offset),
+            273 => strip_offsets_entry = Some(entry_offset),
+            277 => samples_per_pixel_entry = Some(entry_offset),
+            278 => rows_per_strip_entry = Some(entry_offset),
+            279 => strip_byte_counts_entry = Some(entry_offset),
+            _ => {}
+        }
+    }
+
+    let image_width = get_single_value(endian, bytes, image_width_entry?)?;
+    if image_width == 0 {
+        return None;
+    }
+    let image_length = get_single_value(endian, bytes, image_length_entry?)?;
+    if image_length == 0 {
+        return None;
+    }
+
+    let samples_per_pixel = match samples_per_pixel_entry {
+        Some(entry) => get_single_value(endian, bytes, entry)?,
+        None => 1,
+    };
+
+    let _bits_per_sample = match bits_per_sample_entry {
+        Some(entry) => {
+            let vals = get_array_values(endian, bytes, entry)?;
+            if vals.is_empty() || vals.len() != samples_per_pixel as usize {
+                return None;
+            }
+            for &val in &vals {
+                if val != 8 {
+                    return None;
+                }
+            }
+            vals
+        }
+        None => return None,
+    };
+
+    let compression = match compression_entry {
+        Some(entry) => get_single_value(endian, bytes, entry)?,
+        None => 1,
+    };
+    if compression != 1 {
+        return None;
+    }
+
+    let photometric = get_single_value(endian, bytes, photometric_entry?)?;
+    if photometric == 1 {
+        if samples_per_pixel != 1 {
+            return None;
+        }
+    } else if photometric == 2 {
+        if samples_per_pixel != 3 {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
+    let rows_per_strip = match rows_per_strip_entry {
+        Some(entry) => get_single_value(endian, bytes, entry)?,
+        None => image_length,
+    };
+    if rows_per_strip == 0 {
+        return None;
+    }
+
+    let strip_offsets = get_array_values(endian, bytes, strip_offsets_entry?)?;
+    let strip_byte_counts = get_array_values(endian, bytes, strip_byte_counts_entry?)?;
+
+    let num_strips = (image_length.checked_add(rows_per_strip)?.checked_sub(1)?) / rows_per_strip;
+    let num_strips = num_strips as usize;
+    if strip_offsets.len() < num_strips || strip_byte_counts.len() < num_strips {
+        return None;
+    }
+
+    let width_usize = image_width as usize;
+    let height_usize = image_length as usize;
+    let total_pixels = width_usize.checked_mul(height_usize)?;
+    let total_bytes = total_pixels.checked_mul(4)?;
+    let mut rgba = vec![0u8; total_bytes];
+
+    let mut current_row = 0;
+    for strip_idx in 0..num_strips {
+        let offset = *strip_offsets.get(strip_idx)? as usize;
+        let byte_count = *strip_byte_counts.get(strip_idx)? as usize;
+
+        let strip_bytes = bytes.get(offset..offset.checked_add(byte_count)?)?;
+
+        let num_rows_in_strip = std::cmp::min(rows_per_strip, image_length - current_row);
+        let bytes_per_row = width_usize * (samples_per_pixel as usize);
+
+        for r in 0..num_rows_in_strip {
+            let row_start_in_strip = r as usize * bytes_per_row;
+            let row_bytes =
+                strip_bytes.get(row_start_in_strip..row_start_in_strip + bytes_per_row)?;
+
+            let dest_row_idx = current_row + r;
+            let dest_row_start = dest_row_idx as usize * width_usize * 4;
+
+            if samples_per_pixel == 1 {
+                for (col, &gray) in row_bytes.iter().enumerate().take(width_usize) {
+                    let dest_pixel_start = dest_row_start + col * 4;
+                    rgba[dest_pixel_start] = gray;
+                    rgba[dest_pixel_start + 1] = gray;
+                    rgba[dest_pixel_start + 2] = gray;
+                    rgba[dest_pixel_start + 3] = 255;
+                }
+            } else if samples_per_pixel == 3 {
+                for col in 0..width_usize {
+                    let r_val = row_bytes[col * 3];
+                    let g_val = row_bytes[col * 3 + 1];
+                    let b_val = row_bytes[col * 3 + 2];
+                    let dest_pixel_start = dest_row_start + col * 4;
+                    rgba[dest_pixel_start] = r_val;
+                    rgba[dest_pixel_start + 1] = g_val;
+                    rgba[dest_pixel_start + 2] = b_val;
+                    rgba[dest_pixel_start + 3] = 255;
+                }
+            }
+        }
+        current_row += num_rows_in_strip;
+    }
+
+    // TODO(spec): LZW/PackBits/Deflate compression, tiled TIFF, 16-bit, paletted, CMYK, and multi-IFD are out of scope for the baseline decoder.
+
+    Some(DecodedImage {
+        width: image_width,
+        height: image_length,
+        rgba,
+    })
+}
+
 /// Decodes a TGA (Truevision Targa) image byte stream into a DecodedImage.
 /// Supports uncompressed true-color (type 2) at 24bpp and 32bpp,
 /// uncompressed grayscale (type 3) at 8bpp, and RLE versions (types 10 and 11).
@@ -2482,7 +2742,7 @@ pub fn decode_wbmp(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, or XBM) into a DecodedImage by sniffing the format.
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, TIFF, or XBM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -2513,6 +2773,11 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         && matches!(bytes.get(1), Some(0 | 2 | 3 | 4 | 5))
     {
         decode_pcx(bytes)
+    } else if bytes.len() >= 4
+        && ((bytes[0] == 0x49 && bytes[1] == 0x49 && bytes[2] == 0x2A && bytes[3] == 0x00)
+            || (bytes[0] == 0x4D && bytes[1] == 0x4D && bytes[2] == 0x00 && bytes[3] == 0x2A))
+    {
+        decode_tiff(bytes)
     } else {
         // Detect TGA as a last resort
         let is_tga_footer =
@@ -3956,5 +4221,161 @@ mod tests {
         // Width 8, Height 2 expects 2 bytes of bitmap, but we only give 1 byte
         let truncated_data = vec![0x00, 0x00, 0x08, 0x02, 0x55];
         assert!(decode_image(&truncated_data).is_none());
+    }
+
+    fn build_tiff_test_image(
+        endian: Endian,
+        width: u32,
+        height: u32,
+        photometric: u16,
+        samples_per_pixel: u16,
+        compression: u16,
+        pixel_data: &[u8],
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        let push_u16 = |b: &mut Vec<u8>, val: u16| match endian {
+            Endian::Little => b.extend_from_slice(&val.to_le_bytes()),
+            Endian::Big => b.extend_from_slice(&val.to_be_bytes()),
+        };
+
+        let push_u32 = |b: &mut Vec<u8>, val: u32| match endian {
+            Endian::Little => b.extend_from_slice(&val.to_le_bytes()),
+            Endian::Big => b.extend_from_slice(&val.to_be_bytes()),
+        };
+
+        match endian {
+            Endian::Little => buf.extend_from_slice(b"II\x2A\x00"),
+            Endian::Big => buf.extend_from_slice(b"MM\x00\x2A"),
+        }
+        push_u32(&mut buf, 0);
+
+        let pixel_offset = buf.len() as u32;
+        buf.extend_from_slice(pixel_data);
+
+        let bits_per_sample_offset = buf.len() as u32;
+        for _ in 0..samples_per_pixel {
+            push_u16(&mut buf, 8);
+        }
+
+        let ifd_offset = buf.len() as u32;
+        let ifd_offset_bytes = match endian {
+            Endian::Little => ifd_offset.to_le_bytes(),
+            Endian::Big => ifd_offset.to_be_bytes(),
+        };
+        buf[4..8].copy_from_slice(&ifd_offset_bytes);
+
+        let num_entries = 9u16;
+        push_u16(&mut buf, num_entries);
+
+        let push_entry = |b: &mut Vec<u8>, tag: u16, ty: u16, count: u32, val_or_offset: u32| {
+            push_u16(b, tag);
+            push_u16(b, ty);
+            push_u32(b, count);
+            let val_bytes = match endian {
+                Endian::Little => {
+                    if ty == 3 && count == 1 {
+                        [
+                            (val_or_offset & 0xFF) as u8,
+                            ((val_or_offset >> 8) & 0xFF) as u8,
+                            0,
+                            0,
+                        ]
+                    } else if ty == 1 && count == 1 {
+                        [(val_or_offset & 0xFF) as u8, 0, 0, 0]
+                    } else {
+                        val_or_offset.to_le_bytes()
+                    }
+                }
+                Endian::Big => {
+                    if ty == 3 && count == 1 {
+                        [
+                            ((val_or_offset >> 8) & 0xFF) as u8,
+                            (val_or_offset & 0xFF) as u8,
+                            0,
+                            0,
+                        ]
+                    } else if ty == 1 && count == 1 {
+                        [(val_or_offset & 0xFF) as u8, 0, 0, 0]
+                    } else {
+                        val_or_offset.to_be_bytes()
+                    }
+                }
+            };
+            b.extend_from_slice(&val_bytes);
+        };
+
+        push_entry(&mut buf, 256, 4, 1, width);
+        push_entry(&mut buf, 257, 4, 1, height);
+        let bits_per_sample_val_or_offset = if samples_per_pixel == 1 {
+            8
+        } else {
+            bits_per_sample_offset
+        };
+        push_entry(
+            &mut buf,
+            258,
+            3,
+            samples_per_pixel as u32,
+            bits_per_sample_val_or_offset,
+        );
+        push_entry(&mut buf, 259, 3, 1, compression as u32);
+        push_entry(&mut buf, 262, 3, 1, photometric as u32);
+        push_entry(&mut buf, 273, 4, 1, pixel_offset);
+        push_entry(&mut buf, 277, 3, 1, samples_per_pixel as u32);
+        push_entry(&mut buf, 278, 4, 1, height);
+        push_entry(&mut buf, 279, 4, 1, pixel_data.len() as u32);
+
+        push_u32(&mut buf, 0);
+
+        buf
+    }
+
+    #[test]
+    fn test_decode_tiff_uncompressed() {
+        // 1. A 2x2 little-endian 8-bit RGB TIFF -> Some with width=2, height=2, and the expected RGBA bytes.
+        let pixel_data = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        let tiff_le = build_tiff_test_image(Endian::Little, 2, 2, 2, 3, 1, &pixel_data);
+        let decoded = decode_tiff(&tiff_le).expect("Should decode LE 2x2 RGB");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(
+            decoded.rgba,
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ]
+        );
+
+        // 2. The same image encoded big-endian decodes to the identical RGBA.
+        let tiff_be = build_tiff_test_image(Endian::Big, 2, 2, 2, 3, 1, &pixel_data);
+        let decoded_be = decode_tiff(&tiff_be).expect("Should decode BE 2x2 RGB");
+        assert_eq!(decoded_be.width, 2);
+        assert_eq!(decoded_be.height, 2);
+        assert_eq!(decoded_be.rgba, decoded.rgba);
+
+        // 3. A 2x1 8-bit grayscale TIFF -> Some with gray replicated into R,G,B and A=255.
+        let gray_pixel_data = vec![128, 64];
+        let tiff_gray = build_tiff_test_image(Endian::Little, 2, 1, 1, 1, 1, &gray_pixel_data);
+        let decoded_gray = decode_tiff(&tiff_gray).expect("Should decode gray 2x1");
+        assert_eq!(decoded_gray.width, 2);
+        assert_eq!(decoded_gray.height, 1);
+        assert_eq!(
+            decoded_gray.rgba,
+            vec![128, 128, 128, 255, 64, 64, 64, 255,]
+        );
+
+        // 4. A TIFF with Compression=5 (LZW) -> None.
+        let tiff_lzw = build_tiff_test_image(Endian::Little, 2, 2, 2, 3, 5, &pixel_data);
+        assert!(decode_tiff(&tiff_lzw).is_none());
+
+        // 5. Truncated/garbage bytes -> None (no panic).
+        assert!(decode_tiff(&[]).is_none());
+        assert!(decode_tiff(&[0x49, 0x49]).is_none());
+        assert!(decode_tiff(&[0x49, 0x49, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00]).is_none());
+
+        // 6. decode_image correctly routes a TIFF magic buffer to the TIFF decoder.
+        let routed = decode_image(&tiff_le).expect("decode_image should route TIFF");
+        assert_eq!(routed.width, 2);
+        assert_eq!(routed.rgba, decoded.rgba);
     }
 }
