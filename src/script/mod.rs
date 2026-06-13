@@ -22,6 +22,7 @@ use std::collections::HashMap;
 pub mod event;
 pub mod formdata;
 pub mod navigator;
+pub mod performance;
 
 /// Errors that can occur during script execution.
 #[derive(Debug, PartialEq)]
@@ -546,6 +547,13 @@ impl BoaHost {
         let _ = context.register_global_property(
             JsString::from("navigator"),
             navigator,
+            Attribute::all(),
+        );
+
+        let performance = performance::create_performance(context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
             Attribute::all(),
         );
 
@@ -8701,6 +8709,27 @@ mod tests {
                 .is_ok()
         );
         assert!(host.eval("if (window.navigator.userAgent !== 'underrated/1.0') throw 'window userAgent mismatch';").is_ok());
+    }
+
+    #[test]
+    fn test_performance_now() {
+        let mut host = BoaHost::new();
+        assert!(
+            host.eval("if (typeof performance.now !== 'function') throw 'now is not a function';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (typeof window.performance.now !== 'function') throw 'window now is not a function';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("const t = performance.now(); if (typeof t !== 'number' || t < 0) throw 'invalid now value';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("const t1 = performance.now(); const t2 = performance.now(); if (!(t2 >= t1)) throw 'not monotonic';")
+                .is_ok()
+        );
     }
 
     #[test]
