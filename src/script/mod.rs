@@ -5263,6 +5263,76 @@ pub fn run_inline_scripts(
     dom
 }
 
+/// Finds `<script>` elements in document order and runs them.
+///
+/// For inline scripts, it runs their text content. For scripts with a `src` attribute,
+/// it resolves and fetches the external source and executes it.
+/// If any script throws an error or fails to fetch/decode, it is caught/ignored silently.
+pub fn run_scripts(
+    mut dom: Dom,
+    styles: &std::collections::HashMap<
+        crate::infra::NodeId,
+        crate::style::CategorizedComputedStyle,
+    >,
+    base_url: &crate::url::Url,
+    loader: &dyn crate::loader::ResourceLoader,
+) -> Dom {
+    // Collect script node IDs in document order (pre-order traversal)
+    let mut script_ids = Vec::new();
+    for id in dom.descendants(dom.document()) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(id)
+            && name.eq_ignore_ascii_case("script")
+        {
+            let has_defer = dom.get_attribute(id, "defer").is_some();
+            let has_async = dom.get_attribute(id, "async").is_some();
+
+            if has_defer || has_async {
+                // TODO(spec): Support defer or async execution modes.
+                continue;
+            }
+
+            script_ids.push(id);
+        }
+    }
+
+    let mut host = BoaHost::new();
+    for id in script_ids {
+        if let Some(src_val) = dom.get_attribute(id, "src") {
+            let maybe_bytes = if src_val.starts_with("data:") {
+                crate::loader::load_data_uri(src_val)
+            } else if let Some(resolved_url) = crate::url::resolve(base_url, src_val) {
+                if resolved_url.scheme == "data" {
+                    crate::loader::load_data_uri(&resolved_url.serialize())
+                } else if resolved_url.scheme == "http" || resolved_url.scheme == "https" {
+                    loader.load(&resolved_url).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(bytes) = maybe_bytes
+                && let Ok(script_str) = String::from_utf8(bytes)
+            {
+                // Execute the script with the current DOM context
+                // spec: S-61 Any exception from a throwing script must be caught per-script and not abort the entire run.
+                let _ = host.eval_with_dom_and_styles(&script_str, &mut dom, styles);
+            }
+        } else {
+            let src = dom.text_content(id);
+            // Execute the script with the current DOM context
+            // spec: S-61 Any exception from a throwing script must be caught per-script and not abort the entire run.
+            let _ = host.eval_with_dom_and_styles(&src, &mut dom, styles);
+        }
+    }
+
+    // Fire DOM lifecycle events (DOMContentLoaded, load) and expose document.readyState after scripts run.
+    let _ = host.dispatch_lifecycle_events(&mut dom, styles);
+
+    dom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7850,6 +7920,186 @@ mod tests {
 
         // Run: output should be "AB"
         let mutated_dom = run_inline_scripts(dom, &std::collections::HashMap::new());
+        assert_eq!(mutated_dom.text_content(element_id), "AB");
+    }
+
+    #[test]
+    fn test_external_data_url_script_runs() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "x".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("initial".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![(
+                "src".to_string(),
+                "data:text/javascript,document.getElementById('x').textContent='external_data'"
+                    .to_string(),
+            )],
+        });
+        dom.append_child(document, script_id);
+
+        let base_url = crate::url::Url::parse("about:blank").unwrap();
+        struct MockDummyLoader;
+        impl crate::loader::ResourceLoader for MockDummyLoader {
+            fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
+        }
+
+        let mutated_dom = run_scripts(
+            dom,
+            &std::collections::HashMap::new(),
+            &base_url,
+            &MockDummyLoader,
+        );
+        assert_eq!(mutated_dom.text_content(element_id), "external_data");
+    }
+
+    #[test]
+    fn test_external_http_script_via_mock_loader() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("original".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("src".to_string(), "http://example.test/app.js".to_string())],
+        });
+        dom.append_child(document, script_id);
+
+        struct MockHttpLoader;
+        impl crate::loader::ResourceLoader for MockHttpLoader {
+            fn load(&self, url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                if url.serialize() == "http://example.test/app.js" {
+                    Ok(b"document.getElementById('target').textContent = 'http_loaded'".to_vec())
+                } else {
+                    Err(crate::loader::LoadError::NotFound)
+                }
+            }
+        }
+
+        let base_url = crate::url::Url::parse("http://example.test/").unwrap();
+        let mutated_dom = run_scripts(
+            dom,
+            &std::collections::HashMap::new(),
+            &base_url,
+            &MockHttpLoader,
+        );
+        assert_eq!(mutated_dom.text_content(element_id), "http_loaded");
+    }
+
+    #[test]
+    fn test_external_script_fetch_failure_is_safe() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("initial".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        // This script will fail to load
+        let script_fail = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("src".to_string(), "http://example.test/fail.js".to_string())],
+        });
+        dom.append_child(document, script_fail);
+
+        // Later inline script runs successfully
+        let script_ok = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let text_ok = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent = 'after_failure'".to_string(),
+        ));
+        dom.append_child(script_ok, text_ok);
+        dom.append_child(document, script_ok);
+
+        struct MockFailingLoader;
+        impl crate::loader::ResourceLoader for MockFailingLoader {
+            fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
+        }
+
+        let base_url = crate::url::Url::parse("http://example.test/").unwrap();
+        let mutated_dom = run_scripts(
+            dom,
+            &std::collections::HashMap::new(),
+            &base_url,
+            &MockFailingLoader,
+        );
+        assert_eq!(mutated_dom.text_content(element_id), "after_failure");
+    }
+
+    #[test]
+    fn test_run_scripts_document_order() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let element_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "target".to_string())],
+        });
+        let text_id = dom.create_node(NodeData::Text("".to_string()));
+        dom.append_child(element_id, text_id);
+        dom.append_child(document, element_id);
+
+        // 1. External script appends "A"
+        let script_ext = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![(
+                "src".to_string(),
+                "data:text/javascript,document.getElementById('target').textContent += 'A'"
+                    .to_string(),
+            )],
+        });
+        dom.append_child(document, script_ext);
+
+        // 2. Inline script appends "B"
+        let script_inl = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        let text_inl = dom.create_node(NodeData::Text(
+            "document.getElementById('target').textContent += 'B'".to_string(),
+        ));
+        dom.append_child(script_inl, text_inl);
+        dom.append_child(document, script_inl);
+
+        struct MockDummyLoader;
+        impl crate::loader::ResourceLoader for MockDummyLoader {
+            fn load(&self, _url: &crate::url::Url) -> Result<Vec<u8>, crate::loader::LoadError> {
+                Err(crate::loader::LoadError::NotFound)
+            }
+        }
+
+        let base_url = crate::url::Url::parse("about:blank").unwrap();
+        let mutated_dom = run_scripts(
+            dom,
+            &std::collections::HashMap::new(),
+            &base_url,
+            &MockDummyLoader,
+        );
         assert_eq!(mutated_dom.text_content(element_id), "AB");
     }
 
