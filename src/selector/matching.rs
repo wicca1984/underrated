@@ -280,6 +280,42 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     return false;
                 }
                 false
+            } else if name.starts_with("lang(") && name.ends_with(')') {
+                let content = &name["lang(".len()..name.len() - 1];
+                let lang_ranges: Vec<&str> = content.split(',').collect();
+
+                // Find element's language by traversing ancestors-or-self
+                let mut curr = Some(node);
+                let mut element_lang = None;
+                while let Some(curr_node) = curr {
+                    if let Some(NodeData::Element { attrs, .. }) = dom.data(curr_node) {
+                        let lang_attr = attrs
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("lang"))
+                            .map(|(_, v)| v);
+                        if let Some(val) = lang_attr {
+                            element_lang = Some(val.as_str());
+                            break;
+                        }
+                    }
+                    curr = dom.parent(curr_node);
+                }
+
+                if let Some(el_lang) = element_lang {
+                    lang_ranges.iter().any(|range| {
+                        let r = range.trim();
+                        if el_lang.eq_ignore_ascii_case(r) {
+                            true
+                        } else if el_lang.len() > r.len() {
+                            el_lang[..r.len()].eq_ignore_ascii_case(r)
+                                && el_lang.as_bytes().get(r.len()) == Some(&b'-')
+                        } else {
+                            false
+                        }
+                    })
+                } else {
+                    false
+                }
             } else {
                 match name.to_ascii_lowercase().as_str() {
                     "hover" => get_node_state(node).hover,
@@ -2317,5 +2353,78 @@ mod tests {
         assert!(matches(&sel_a_link, &dom, a_with_href));
         assert!(!matches(&sel_a_link, &dom, a_no_href));
         assert!(!matches(&sel_a_link, &dom, area_with_href));
+    }
+
+    #[test]
+    fn test_matches_lang() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // DOM Structure:
+        // <div lang="EN">
+        //   <p id="p_en_us" lang="en-US"></p>
+        //   <p id="p_fr" lang="fr">
+        //     <span id="span_inherited"></span>
+        //   </p>
+        //   <p id="p_no_lang"></p>
+        // </div>
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("lang".into(), "EN".into())],
+        });
+        dom.append_child(doc, div);
+
+        let p_en_us = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("lang".into(), "en-US".into())],
+        });
+        dom.append_child(div, p_en_us);
+
+        let p_fr = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("lang".into(), "fr".into())],
+        });
+        dom.append_child(div, p_fr);
+
+        let span_inherited = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(p_fr, span_inherited);
+
+        let p_no_lang = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, p_no_lang);
+
+        // Case-insensitivity: lang="EN" matches :lang(en)
+        let sel_en = parse_selector_list(":lang(en)").unwrap();
+        assert!(matches(&sel_en, &dom, div));
+
+        // Sub-language: en-US matches :lang(en)
+        assert!(matches(&sel_en, &dom, p_en_us));
+
+        // Inheritance: p_no_lang has no lang, but div has lang="EN" which matches :lang(en)
+        assert!(matches(&sel_en, &dom, p_no_lang));
+
+        // Negation: fr does not match :lang(en)
+        assert!(!matches(&sel_en, &dom, p_fr));
+
+        // Sub-language: en does not match :lang(en-US)
+        let sel_en_us = parse_selector_list(":lang(en-US)").unwrap();
+        assert!(!matches(&sel_en_us, &dom, div));
+        assert!(matches(&sel_en_us, &dom, p_en_us));
+
+        // Inheritance chain: span_inherited has no lang but inherits "fr" from p_fr
+        let sel_fr = parse_selector_list(":lang(fr)").unwrap();
+        assert!(matches(&sel_fr, &dom, span_inherited));
+        assert!(!matches(&sel_en, &dom, span_inherited));
+
+        // Multiple comma-separated languages list inside :lang()
+        let sel_multi = parse_selector_list(":lang(fr, en-US)").unwrap();
+        assert!(matches(&sel_multi, &dom, p_fr));
+        assert!(matches(&sel_multi, &dom, p_en_us));
+        assert!(!matches(&sel_multi, &dom, div)); // div is EN, which is not fr or en-US (en-US is too specific)
     }
 }

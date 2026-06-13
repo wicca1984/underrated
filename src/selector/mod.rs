@@ -496,6 +496,34 @@ impl<'a> SelectorParser<'a> {
                         }
                         Ok(Component::Not(Box::new(compound)))
                     }
+                    "lang" => {
+                        let mut langs = Vec::new();
+                        loop {
+                            self.skip_whitespace();
+                            match self.peek() {
+                                CssToken::Ident(s) | CssToken::String(s) => {
+                                    langs.push(s.clone());
+                                    self.consume();
+                                }
+                                _ => return Err(SelectorParseError::InvalidSelector),
+                            }
+                            self.skip_whitespace();
+                            match self.peek() {
+                                CssToken::Comma => {
+                                    self.consume();
+                                }
+                                CssToken::RightParen => {
+                                    self.consume();
+                                    break;
+                                }
+                                _ => return Err(SelectorParseError::InvalidSelector),
+                            }
+                        }
+                        if langs.is_empty() {
+                            return Err(SelectorParseError::InvalidSelector);
+                        }
+                        Ok(Component::PseudoClass(format!("lang({})", langs.join(","))))
+                    }
                     _ => {
                         // TODO(spec): Other functional pseudo-classes.
                         // We need to consume until RightParen to stay in sync.
@@ -865,6 +893,18 @@ mod tests {
         } else {
             panic!("Expected Not component");
         }
+
+        // :lang(...)
+        let list = parse_selector_list(":lang(en)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::PseudoClass("lang(en)".to_string())
+        );
+        let list = parse_selector_list(":lang(en-US, \"fr\")").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::PseudoClass("lang(en-US,fr)".to_string())
+        );
 
         // :first-child, :last-child
         let list = parse_selector_list(":first-child").unwrap();
