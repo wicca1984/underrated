@@ -550,6 +550,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "50% 50%",
     },
     PropertyMetadata {
+        name: "scroll-behavior",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "pointer-events",
         inherited: false,
         initial: "auto",
@@ -773,6 +778,16 @@ mod tests {
         assert_eq!(object_position.name, "object-position");
         assert!(!object_position.inherited);
         assert_eq!(object_position.initial, "50% 50%");
+    }
+
+    #[test]
+    fn test_additive_properties_t0473() {
+        let scroll_behavior = lookup("scroll-behavior");
+        assert!(scroll_behavior.is_some());
+        let scroll_behavior = scroll_behavior.unwrap();
+        assert_eq!(scroll_behavior.name, "scroll-behavior");
+        assert!(!scroll_behavior.inherited);
+        assert_eq!(scroll_behavior.initial, "auto");
     }
 
     #[test]

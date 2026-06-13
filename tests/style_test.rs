@@ -249,3 +249,43 @@ fn test_object_position_style() {
         Some(&CssValue::Keyword("contain".to_string()))
     );
 }
+
+#[test]
+fn test_scroll_behavior_style() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+    let div1 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("style".into(), "scroll-behavior: smooth;".into())],
+    });
+    let div2 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("style".into(), "scroll-behavior: auto;".into())],
+    });
+    let div3 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("style".into(), "scroll-behavior: invalid-value;".into())],
+    });
+    dom.append_child(doc, div1);
+    dom.append_child(doc, div2);
+    dom.append_child(doc, div3);
+
+    let stylesheet = parse_stylesheet("");
+    let styles = compute_styles_with_viewport(&dom, &stylesheet, 1024.0);
+
+    let div1_style = styles.get(&div1).unwrap();
+    assert_eq!(
+        div1_style.get("scroll-behavior"),
+        Some(&CssValue::Keyword("smooth".to_string()))
+    );
+
+    let div2_style = styles.get(&div2).unwrap();
+    assert_eq!(
+        div2_style.get("scroll-behavior"),
+        Some(&CssValue::Keyword("auto".to_string()))
+    );
+
+    let div3_style = styles.get(&div3).unwrap();
+    // Invalid value should be dropped/not set, so getting it returns None.
+    assert_eq!(div3_style.get("scroll-behavior"), None);
+}

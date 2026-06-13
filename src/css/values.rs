@@ -322,6 +322,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "float"
             | "clear"
             | "table-layout"
+            | "scroll-behavior"
             | "visibility"
             | "direction"
             | "cursor"
@@ -453,6 +454,12 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "table-layout" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "fixed")
+            }
+            _ => false,
+        },
+        "scroll-behavior" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "auto" | "smooth")
             }
             _ => false,
         },
@@ -687,6 +694,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "fixed" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "scroll-behavior" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "smooth" => Some(val),
                     _ => None,
                 }
             } else {
@@ -2609,5 +2626,42 @@ mod tests {
                 CssValue::Length(50.0, LengthUnit::Percent),
             ]))
         );
+
+        // Test parse_property_value for scroll-behavior (t0473)
+        assert_eq!(
+            parse_property_value(
+                "scroll-behavior",
+                &[token(CssToken::Ident("smooth".to_string()))]
+            ),
+            Some(CssValue::Keyword("smooth".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "scroll-behavior",
+                &[token(CssToken::Ident("auto".to_string()))]
+            ),
+            Some(CssValue::Keyword("auto".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "scroll-behavior",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_valid_property_value for scroll-behavior (t0473)
+        assert!(is_valid_property_value(
+            "scroll-behavior",
+            &CssValue::Keyword("smooth".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "scroll-behavior",
+            &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "scroll-behavior",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
     }
 }
