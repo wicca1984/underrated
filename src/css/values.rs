@@ -415,6 +415,51 @@ impl TryFrom<&CssValue> for EmptyCellsValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FontKerningValue {
+    Auto,
+    Normal,
+    None,
+}
+
+impl FontKerningValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "normal" => Some(Self::Normal),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Normal => "normal",
+            Self::None => "none",
+        }
+    }
+}
+
+impl std::str::FromStr for FontKerningValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for FontKerningValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ImageRendering {
     Auto,
     Smooth,
@@ -692,6 +737,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "grid-template-columns"
             | "grid-template-rows"
             | "image-rendering"
+            | "font-kerning"
     )
 }
 
@@ -881,6 +927,12 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                     kw.to_ascii_lowercase().as_str(),
                     "auto" | "smooth" | "high-quality" | "crisp-edges" | "pixelated"
                 )
+            }
+            _ => false,
+        },
+        "font-kerning" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "auto" | "normal" | "none")
             }
             _ => false,
         },
@@ -1408,6 +1460,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "smooth" | "high-quality" | "crisp-edges" | "pixelated" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "font-kerning" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "normal" | "none" => Some(val),
                     _ => None,
                 }
             } else {
@@ -3140,6 +3202,71 @@ mod tests {
     }
 
     #[test]
+    fn test_font_kerning_value() {
+        // Test parsing keyword strings to FontKerningValue
+        assert_eq!(
+            FontKerningValue::parse("auto"),
+            Some(FontKerningValue::Auto)
+        );
+        assert_eq!(
+            FontKerningValue::parse("normal"),
+            Some(FontKerningValue::Normal)
+        );
+        assert_eq!(
+            FontKerningValue::parse("none"),
+            Some(FontKerningValue::None)
+        );
+        assert_eq!(
+            FontKerningValue::parse("AUTO"),
+            Some(FontKerningValue::Auto)
+        );
+        assert_eq!(
+            FontKerningValue::parse("Normal"),
+            Some(FontKerningValue::Normal)
+        );
+        assert_eq!(
+            FontKerningValue::parse("None"),
+            Some(FontKerningValue::None)
+        );
+        assert_eq!(FontKerningValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "auto".parse::<FontKerningValue>(),
+            Ok(FontKerningValue::Auto)
+        );
+        assert_eq!(
+            "normal".parse::<FontKerningValue>(),
+            Ok(FontKerningValue::Normal)
+        );
+        assert_eq!(
+            "none".parse::<FontKerningValue>(),
+            Ok(FontKerningValue::None)
+        );
+        assert_eq!("BOGUS".parse::<FontKerningValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(FontKerningValue::Auto.as_str(), "auto");
+        assert_eq!(FontKerningValue::Normal.as_str(), "normal");
+        assert_eq!(FontKerningValue::None.as_str(), "none");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            FontKerningValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(FontKerningValue::Auto)
+        );
+        assert_eq!(
+            FontKerningValue::try_from(&CssValue::Keyword("NORMAL".to_string())),
+            Ok(FontKerningValue::Normal)
+        );
+        assert_eq!(
+            FontKerningValue::try_from(&CssValue::Keyword("none".to_string())),
+            Ok(FontKerningValue::None)
+        );
+        assert_eq!(FontKerningValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
     fn test_parse_transform() {
         let parse = |input: &str| {
             let components = crate::css::parser::parse_component_values(input);
@@ -3983,6 +4110,35 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "image-rendering",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for font-kerning (t0543)
+        assert!(is_known_layout_property("font-kerning"));
+        assert!(is_known_layout_property("Font-Kerning"));
+
+        for val in &["auto", "normal", "none", "AUTO", "Normal"] {
+            assert_eq!(
+                parse_property_value("font-kerning", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "font-kerning",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &["auto", "normal", "none", "AUTO", "Normal"] {
+            assert!(is_valid_property_value(
+                "font-kerning",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "font-kerning",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
