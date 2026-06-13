@@ -380,6 +380,7 @@ pub struct ResetEffects {
     pub text_decoration_style: String,
     pub text_overflow: String,
     pub box_shadow: Option<crate::css::values::CssValue>,
+    pub transform: Vec<crate::css::values::TransformFn>,
 }
 
 impl Default for ResetEffects {
@@ -406,6 +407,7 @@ impl Default for ResetEffects {
             text_decoration_style: String::new(),
             text_overflow: "clip".to_string(),
             box_shadow: None,
+            transform: Vec::new(),
         }
     }
 }
@@ -1296,6 +1298,13 @@ impl CategorizedComputedStyle {
                 Arc::make_mut(&mut self.reset_effects).text_overflow = css_value_to_string(value)
             }
             "box-shadow" => Arc::make_mut(&mut self.reset_effects).box_shadow = Some(value.clone()),
+            "transform" => {
+                if let crate::css::values::CssValue::Transform(fns) = value {
+                    Arc::make_mut(&mut self.reset_effects).transform = fns.clone();
+                } else if css_value_to_string(value).eq_ignore_ascii_case("none") {
+                    Arc::make_mut(&mut self.reset_effects).transform = Vec::new();
+                }
+            }
 
             _ => {}
         }
@@ -1769,6 +1778,13 @@ impl CategorizedComputedStyle {
                 .box_shadow
                 .as_ref()
                 .map(css_value_to_string),
+            "transform" => Some(if self.reset_effects.transform.is_empty() {
+                "none".to_string()
+            } else {
+                css_value_to_string(&crate::css::values::CssValue::Transform(
+                    self.reset_effects.transform.clone(),
+                ))
+            }),
 
             _ => None,
         }
@@ -2252,6 +2268,54 @@ mod tests {
         assert_eq!(
             style.get_property_as_string("overflow-y"),
             Some("auto".to_string())
+        );
+    }
+
+    #[test]
+    fn test_transform_categorization() {
+        use crate::css::values::{CssValue, LengthOrPercent, LengthUnit, TransformFn};
+
+        let mut style = CategorizedComputedStyle::initial();
+
+        // 1. Initial default is empty
+        assert!(style.reset_effects.transform.is_empty());
+        assert_eq!(
+            style.get_property_as_string("transform"),
+            Some("none".to_string())
+        );
+
+        // 2. Set transform: translate(10px, 20px)
+        let t_val = CssValue::Transform(vec![TransformFn::Translate {
+            x: LengthOrPercent {
+                value: 10.0,
+                unit: LengthUnit::Px,
+            },
+            y: LengthOrPercent {
+                value: 20.0,
+                unit: LengthUnit::Px,
+            },
+        }]);
+        style.set_property("transform", &t_val);
+        assert_eq!(style.reset_effects.transform.len(), 1);
+        if let TransformFn::Translate { x, y } = &style.reset_effects.transform[0] {
+            assert_eq!(x.value, 10.0);
+            assert_eq!(x.unit, LengthUnit::Px);
+            assert_eq!(y.value, 20.0);
+            assert_eq!(y.unit, LengthUnit::Px);
+        } else {
+            panic!("Expected Translate fn");
+        }
+        assert_eq!(
+            style.get_property_as_string("transform"),
+            Some("translate(10px, 20px)".to_string())
+        );
+
+        // 3. Set transform: none
+        style.set_property("transform", &CssValue::Keyword("none".to_string()));
+        assert!(style.reset_effects.transform.is_empty());
+        assert_eq!(
+            style.get_property_as_string("transform"),
+            Some("none".to_string())
         );
     }
 }
