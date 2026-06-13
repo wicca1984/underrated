@@ -310,6 +310,8 @@ pub struct ResetFlex {
     pub align_content: String,
     pub row_gap: i32,
     pub column_gap: i32,
+    pub column_count: i32,
+    pub column_width: i32,
 }
 
 impl Default for ResetFlex {
@@ -327,6 +329,8 @@ impl Default for ResetFlex {
             align_content: "normal".to_string(),
             row_gap: -1,
             column_gap: -1,
+            column_count: -1,
+            column_width: -1,
         }
     }
 }
@@ -1003,6 +1007,51 @@ impl CategorizedComputedStyle {
                     flex.column_gap = col_px;
                 }
             }
+            "column-count" => {
+                let count = match value {
+                    CssValue::Number(v) => {
+                        let n = v.round() as i32;
+                        if n >= 1 { n } else { -1 }
+                    }
+                    _ => -1,
+                };
+                Arc::make_mut(&mut self.reset_flex).column_count = count;
+            }
+            "column-width" => {
+                let w = value_to_px_or_auto(value, fs);
+                let width = if w >= 0 { w } else { -1 };
+                Arc::make_mut(&mut self.reset_flex).column_width = width;
+            }
+            "columns" => {
+                let mut leaves = Vec::new();
+                flatten_value(value, &mut leaves);
+                let mut parsed_count = -1;
+                let mut parsed_width = -1;
+                for leaf in &leaves {
+                    match leaf {
+                        CssValue::Length(..) => {
+                            let w = value_to_px_or_auto(leaf, fs);
+                            if w >= 0 {
+                                parsed_width = w;
+                            }
+                        }
+                        CssValue::Number(v) => {
+                            if *v == 0.0 {
+                                parsed_width = 0;
+                            } else {
+                                let n = v.round() as i32;
+                                if n >= 1 {
+                                    parsed_count = n;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let flex = Arc::make_mut(&mut self.reset_flex);
+                flex.column_count = parsed_count;
+                flex.column_width = parsed_width;
+            }
 
             // ResetTable
             "table-layout" => {
@@ -1558,6 +1607,16 @@ impl CategorizedComputedStyle {
             } else {
                 format!("{}px", self.reset_flex.column_gap)
             }),
+            "column-count" => Some(if self.reset_flex.column_count == -1 {
+                "auto".to_string()
+            } else {
+                self.reset_flex.column_count.to_string()
+            }),
+            "column-width" => Some(if self.reset_flex.column_width == -1 {
+                "auto".to_string()
+            } else {
+                format!("{}px", self.reset_flex.column_width)
+            }),
 
             // ResetTable
             "table-layout" => Some(self.reset_table.table_layout.clone()),
@@ -1916,5 +1975,98 @@ mod tests {
         assert_eq!(initial.reset_box.display, "inline");
         assert_eq!(initial.reset_box.width, -1);
         assert_eq!(initial.reset_effects.opacity, 1.0);
+    }
+
+    #[test]
+    fn test_multicolumn_parsing() {
+        use crate::css::values::{CssValue, LengthUnit};
+
+        let mut style = CategorizedComputedStyle::initial();
+
+        // 1. column-count integer parsed
+        style.set_property("column-count", &CssValue::Number(3.0));
+        assert_eq!(style.reset_flex.column_count, 3);
+        assert_eq!(
+            style.get_property_as_string("column-count"),
+            Some("3".to_string())
+        );
+
+        // 2. column-count auto -> -1
+        style.set_property("column-count", &CssValue::Keyword("auto".to_string()));
+        assert_eq!(style.reset_flex.column_count, -1);
+        assert_eq!(
+            style.get_property_as_string("column-count"),
+            Some("auto".to_string())
+        );
+
+        // Invalid column-count (e.g. 0 or negative) -> -1
+        style.set_property("column-count", &CssValue::Number(0.0));
+        assert_eq!(style.reset_flex.column_count, -1);
+        style.set_property("column-count", &CssValue::Number(-5.0));
+        assert_eq!(style.reset_flex.column_count, -1);
+
+        // 3. column-width px parsed
+        style.set_property("column-width", &CssValue::Length(200.0, LengthUnit::Px));
+        assert_eq!(style.reset_flex.column_width, 200);
+        assert_eq!(
+            style.get_property_as_string("column-width"),
+            Some("200px".to_string())
+        );
+
+        // column-width auto -> -1
+        style.set_property("column-width", &CssValue::Keyword("auto".to_string()));
+        assert_eq!(style.reset_flex.column_width, -1);
+        assert_eq!(
+            style.get_property_as_string("column-width"),
+            Some("auto".to_string())
+        );
+
+        // 4. columns: 200px 3 sets both
+        let cols_both = CssValue::Multiple(vec![
+            CssValue::Length(200.0, LengthUnit::Px),
+            CssValue::Number(3.0),
+        ]);
+        style.set_property("columns", &cols_both);
+        assert_eq!(style.reset_flex.column_width, 200);
+        assert_eq!(style.reset_flex.column_count, 3);
+        assert_eq!(
+            style.get_property_as_string("column-width"),
+            Some("200px".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("column-count"),
+            Some("3".to_string())
+        );
+
+        // 5. columns: auto 2 sets count only (width should be auto / -1)
+        let cols_count_only = CssValue::Multiple(vec![
+            CssValue::Keyword("auto".to_string()),
+            CssValue::Number(2.0),
+        ]);
+        style.set_property("columns", &cols_count_only);
+        assert_eq!(style.reset_flex.column_width, -1);
+        assert_eq!(style.reset_flex.column_count, 2);
+        assert_eq!(
+            style.get_property_as_string("column-width"),
+            Some("auto".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("column-count"),
+            Some("2".to_string())
+        );
+
+        // 6. columns: 150px set width only (count should reset to -1)
+        let cols_width_only = CssValue::Length(150.0, LengthUnit::Px);
+        style.set_property("columns", &cols_width_only);
+        assert_eq!(style.reset_flex.column_width, 150);
+        assert_eq!(style.reset_flex.column_count, -1);
+        assert_eq!(
+            style.get_property_as_string("column-width"),
+            Some("150px".to_string())
+        );
+        assert_eq!(
+            style.get_property_as_string("column-count"),
+            Some("auto".to_string())
+        );
     }
 }
