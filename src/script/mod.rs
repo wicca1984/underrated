@@ -158,6 +158,7 @@ impl BoaHost {
         let _ = context.register_global_class::<formdata::FormData>();
         let _ = context.register_global_class::<AbortSignal>();
         let _ = context.register_global_class::<AbortController>();
+        let _ = context.register_global_class::<DOMParser>();
 
         let bridge = ObjectInitializer::new(context)
             .function(
@@ -856,8 +857,17 @@ impl BoaHost {
 
                 class Node extends EventTarget {}
                 class Element extends Node {}
+                class Document extends Node {
+                    constructor(key) {
+                        super();
+                        this.__key__ = key;
+                        document.__node_registry__[key] = this;
+                        this.__readyState__ = 'complete';
+                    }
+                }
                 window.Node = Node;
                 window.Element = Element;
+                window.Document = Document;
 
                 Element.prototype.matches = function(selector) {
                     if (this.nodeType !== 1) return false;
@@ -2317,56 +2327,56 @@ impl BoaHost {
                     return arr;
                 }
 
-                document.createElement = function(tagName) {
+                Document.prototype.createElement = function(tagName) {
                     const key = bridge.createElement(String(tagName));
                     return getOrCreateNode(key);
                 };
 
-                document.createTextNode = function(data) {
+                Document.prototype.createTextNode = function(data) {
                     const key = bridge.createTextNode(data !== undefined ? String(data) : "");
                     return getOrCreateNode(key);
                 };
 
-                document.createComment = function(data) {
+                Document.prototype.createComment = function(data) {
                     const key = bridge.createComment(data !== undefined ? String(data) : "");
                     return getOrCreateNode(key);
                 };
 
-                document.getElementById = function(id) {
-                    const key = bridge.getElementById(String(id));
+                Document.prototype.getElementById = function(id) {
+                    const key = bridge.getElementById(String(id), this.__key__);
                     return getOrCreateNode(key);
                 };
 
-                document.querySelector = function(selector) {
-                    const key = bridge.querySelector(String(selector));
+                Document.prototype.querySelector = function(selector) {
+                    const key = bridge.querySelector(String(selector), this.__key__);
                     return getOrCreateNode(key);
                 };
 
-                document.querySelectorAll = function(selector) {
-                    const keys = bridge.querySelectorAll(String(selector));
+                Document.prototype.querySelectorAll = function(selector) {
+                    const keys = bridge.querySelectorAll(String(selector), this.__key__);
                     if (!keys) return [];
                     return keys.map(key => getOrCreateNode(key));
                 };
 
-                document.getElementsByTagName = function(tagName) {
-                    const keys = bridge.getElementsByTagName(String(tagName));
+                Document.prototype.getElementsByTagName = function(tagName) {
+                    const keys = bridge.getElementsByTagName(String(tagName), this.__key__);
                     if (!keys) return decorateCollection([]);
                     return decorateCollection(keys.map(key => getOrCreateNode(key)));
                 };
 
-                document.getElementsByClassName = function(className) {
-                    const keys = bridge.getElementsByClassName(String(className));
+                Document.prototype.getElementsByClassName = function(className) {
+                    const keys = bridge.getElementsByClassName(String(className), this.__key__);
                     if (!keys) return decorateCollection([]);
                     return decorateCollection(keys.map(key => getOrCreateNode(key)));
                 };
 
-                document.getElementsByName = function(name) {
-                    const keys = bridge.getElementsByName(String(name));
+                Document.prototype.getElementsByName = function(name) {
+                    const keys = bridge.getElementsByName(String(name), this.__key__);
                     if (!keys) return [];
                     return keys.map(key => getOrCreateNode(key));
                 };
 
-                document.appendChild = function(child) {
+                Document.prototype.appendChild = function(child) {
                     if (!child || !child.__key__) {
                         throw new TypeError("child must be a Node");
                     }
@@ -2374,7 +2384,7 @@ impl BoaHost {
                     return child;
                 };
 
-                document.removeChild = function(child) {
+                Document.prototype.removeChild = function(child) {
                     if (!child || !child.__key__) {
                         throw new TypeError("child must be a Node");
                     }
@@ -2382,7 +2392,7 @@ impl BoaHost {
                     return child;
                 };
 
-                document.insertBefore = function(newNode, refNode) {
+                Document.prototype.insertBefore = function(newNode, refNode) {
                     if (!newNode || !newNode.__key__) {
                         throw new TypeError("newNode must be a Node");
                     }
@@ -2391,7 +2401,7 @@ impl BoaHost {
                     return newNode;
                 };
 
-                document.replaceChild = function(newChild, oldChild) {
+                Document.prototype.replaceChild = function(newChild, oldChild) {
                     if (!newChild || !newChild.__key__) {
                         throw new TypeError("newChild must be a Node");
                     }
@@ -2402,13 +2412,13 @@ impl BoaHost {
                     return oldChild;
                 };
 
-                document.cloneNode = function(deep) {
+                Document.prototype.cloneNode = function(deep) {
                     const isDeep = deep !== undefined ? Boolean(deep) : false;
                     const clonedKey = bridge.cloneNode(this.__key__, isDeep);
                     return getOrCreateNode(clonedKey);
                 };
 
-                Object.setPrototypeOf(document, Node.prototype);
+                Object.setPrototypeOf(document, Document.prototype);
                 document.addEventListener = bridge.addEventListener;
                 document.removeEventListener = bridge.removeEventListener;
                 document.dispatchEvent = bridge.dispatchEvent;
@@ -2418,7 +2428,7 @@ impl BoaHost {
                 window.dispatchEvent = bridge.dispatchEvent;
 
                 document.__readyState__ = 'loading';
-                Object.defineProperty(document, 'readyState', {
+                Object.defineProperty(Document.prototype, 'readyState', {
                     get() {
                         return this.__readyState__ || 'loading';
                     },
@@ -2426,19 +2436,19 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'activeElement', {
+                Object.defineProperty(Document.prototype, 'activeElement', {
                     get() {
                         const key = bridge.activeElement();
                         if (key) {
                             return getOrCreateNode(key);
                         }
-                        return document.body;
+                        return this.body;
                     },
                     enumerable: true,
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'parentNode', {
+                Object.defineProperty(Document.prototype, 'parentNode', {
                     get() {
                         return getOrCreateNode(bridge.parentNode(this.__key__));
                     },
@@ -2446,7 +2456,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'isConnected', {
+                Object.defineProperty(Document.prototype, 'isConnected', {
                     get() {
                         return bridge.isConnected(this.__key__);
                     },
@@ -2454,19 +2464,19 @@ impl BoaHost {
                     configurable: true
                 });
 
-                document.contains = function(otherNode) {
+                Document.prototype.contains = function(otherNode) {
                     return bridge.contains(this.__key__, (otherNode && otherNode.__key__) || null);
                 };
 
-                document.hasChildNodes = function() {
+                Document.prototype.hasChildNodes = function() {
                     return bridge.hasChildNodes(this.__key__);
                 };
 
-                document.isSameNode = function(otherNode) {
+                Document.prototype.isSameNode = function(otherNode) {
                     return this === otherNode;
                 };
 
-                document.getRootNode = function(options) {
+                Document.prototype.getRootNode = function(options) {
                     let curr = this;
                     while (curr.parentNode) {
                         curr = curr.parentNode;
@@ -2474,26 +2484,26 @@ impl BoaHost {
                     return curr;
                 };
 
-                document.isEqualNode = function(otherNode) {
+                Document.prototype.isEqualNode = function(otherNode) {
                     return isEqualNodeHelper(this, otherNode);
                 };
 
-                document.compareDocumentPosition = function(otherNode) {
+                Document.prototype.compareDocumentPosition = function(otherNode) {
                     return compareDocumentPositionHelper(this, otherNode);
                 };
 
-                Object.defineProperty(document, 'DOCUMENT_POSITION_DISCONNECTED', { value: 1, enumerable: true });
-                Object.defineProperty(document, 'DOCUMENT_POSITION_PRECEDING', { value: 2, enumerable: true });
-                Object.defineProperty(document, 'DOCUMENT_POSITION_FOLLOWING', { value: 4, enumerable: true });
-                Object.defineProperty(document, 'DOCUMENT_POSITION_CONTAINS', { value: 8, enumerable: true });
-                Object.defineProperty(document, 'DOCUMENT_POSITION_CONTAINED_BY', { value: 16, enumerable: true });
-                Object.defineProperty(document, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
+                Object.defineProperty(Document.prototype, 'DOCUMENT_POSITION_DISCONNECTED', { value: 1, enumerable: true });
+                Object.defineProperty(Document.prototype, 'DOCUMENT_POSITION_PRECEDING', { value: 2, enumerable: true });
+                Object.defineProperty(Document.prototype, 'DOCUMENT_POSITION_FOLLOWING', { value: 4, enumerable: true });
+                Object.defineProperty(Document.prototype, 'DOCUMENT_POSITION_CONTAINS', { value: 8, enumerable: true });
+                Object.defineProperty(Document.prototype, 'DOCUMENT_POSITION_CONTAINED_BY', { value: 16, enumerable: true });
+                Object.defineProperty(Document.prototype, 'DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC', { value: 32, enumerable: true });
 
-                document.normalize = function() {
+                Document.prototype.normalize = function() {
                     bridge.normalize(this.__key__);
                 };
 
-                Object.defineProperty(document, 'childNodes', {
+                Object.defineProperty(Document.prototype, 'childNodes', {
                     get() {
                         const keys = bridge.childNodes(this.__key__);
                         if (!keys) return [];
@@ -2505,9 +2515,9 @@ impl BoaHost {
 
                 // spec: https://dom.spec.whatwg.org/#dom-document-documentelement
                 // TODO(spec): getElementsByTagName-based lookup does not enforce that the root <html> is the document element or a direct child of document.
-                Object.defineProperty(document, 'documentElement', {
+                Object.defineProperty(Document.prototype, 'documentElement', {
                     get() {
-                        return document.getElementsByTagName("html")[0] || null;
+                        return this.getElementsByTagName("html")[0] || null;
                     },
                     enumerable: true,
                     configurable: true
@@ -2515,9 +2525,9 @@ impl BoaHost {
 
                 // spec: https://dom.spec.whatwg.org/#dom-document-body
                 // TODO(spec): getElementsByTagName-based lookup does not enforce the "must be a child of documentElement" / frameset rules.
-                Object.defineProperty(document, 'body', {
+                Object.defineProperty(Document.prototype, 'body', {
                     get() {
-                        return document.getElementsByTagName("body")[0] || null;
+                        return this.getElementsByTagName("body")[0] || null;
                     },
                     enumerable: true,
                     configurable: true
@@ -2525,15 +2535,15 @@ impl BoaHost {
 
                 // spec: https://dom.spec.whatwg.org/#dom-document-head
                 // TODO(spec): getElementsByTagName-based lookup does not enforce the "must be a child of documentElement" / head rules.
-                Object.defineProperty(document, 'head', {
+                Object.defineProperty(Document.prototype, 'head', {
                     get() {
-                        return document.getElementsByTagName("head")[0] || null;
+                        return this.getElementsByTagName("head")[0] || null;
                     },
                     enumerable: true,
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'firstChild', {
+                Object.defineProperty(Document.prototype, 'firstChild', {
                     get() {
                         return getOrCreateNode(bridge.firstChild(this.__key__));
                     },
@@ -2541,7 +2551,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'lastChild', {
+                Object.defineProperty(Document.prototype, 'lastChild', {
                     get() {
                         return getOrCreateNode(bridge.lastChild(this.__key__));
                     },
@@ -2549,7 +2559,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'nextSibling', {
+                Object.defineProperty(Document.prototype, 'nextSibling', {
                     get() {
                         return getOrCreateNode(bridge.nextSibling(this.__key__));
                     },
@@ -2557,7 +2567,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'previousSibling', {
+                Object.defineProperty(Document.prototype, 'previousSibling', {
                     get() {
                         return getOrCreateNode(bridge.previousSibling(this.__key__));
                     },
@@ -2565,7 +2575,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'firstElementChild', {
+                Object.defineProperty(Document.prototype, 'firstElementChild', {
                     get() {
                         return getOrCreateNode(bridge.firstElementChild(this.__key__));
                     },
@@ -2573,7 +2583,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'lastElementChild', {
+                Object.defineProperty(Document.prototype, 'lastElementChild', {
                     get() {
                         return getOrCreateNode(bridge.lastElementChild(this.__key__));
                     },
@@ -2581,7 +2591,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'nextElementSibling', {
+                Object.defineProperty(Document.prototype, 'nextElementSibling', {
                     get() {
                         return getOrCreateNode(bridge.nextElementSibling(this.__key__));
                     },
@@ -2589,7 +2599,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'previousElementSibling', {
+                Object.defineProperty(Document.prototype, 'previousElementSibling', {
                     get() {
                         return getOrCreateNode(bridge.previousElementSibling(this.__key__));
                     },
@@ -2597,7 +2607,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'children', {
+                Object.defineProperty(Document.prototype, 'children', {
                     get() {
                         const keys = bridge.children(this.__key__);
                         if (!keys) return [];
@@ -2607,7 +2617,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'childElementCount', {
+                Object.defineProperty(Document.prototype, 'childElementCount', {
                     get() {
                         return bridge.childElementCount(this.__key__);
                     },
@@ -2615,7 +2625,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'parentElement', {
+                Object.defineProperty(Document.prototype, 'parentElement', {
                     get() {
                         return getOrCreateNode(bridge.parentElement(this.__key__));
                     },
@@ -2623,7 +2633,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'tagName', {
+                Object.defineProperty(Document.prototype, 'tagName', {
                     get() {
                         return bridge.tagName(this.__key__);
                     },
@@ -2631,7 +2641,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'nodeName', {
+                Object.defineProperty(Document.prototype, 'nodeName', {
                     get() {
                         return bridge.nodeName(this.__key__);
                     },
@@ -2639,7 +2649,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'nodeType', {
+                Object.defineProperty(Document.prototype, 'nodeType', {
                     get() {
                         return bridge.nodeType(this.__key__);
                     },
@@ -2647,7 +2657,7 @@ impl BoaHost {
                     configurable: true
                 });
 
-                Object.defineProperty(document, 'nodeValue', {
+                Object.defineProperty(Document.prototype, 'nodeValue', {
                     get() {
                         return bridge.getNodeValue(this.__key__);
                     },
@@ -3268,8 +3278,7 @@ fn index_dom_nodes(dom: &Dom, key_to_node: &mut HashMap<String, NodeId>) {
     }
 }
 
-fn find_element_by_id(dom: &Dom, id: &str) -> Option<NodeId> {
-    let root = dom.document();
+fn find_element_by_id(dom: &Dom, root: NodeId, id: &str) -> Option<NodeId> {
     let mut stack = vec![root];
     while let Some(node_id) = stack.pop() {
         if let Some(NodeData::Element { attrs, .. }) = dom.data(node_id)
@@ -3680,8 +3689,26 @@ fn bridge_get_element_by_id(
         return Ok(JsValue::null());
     };
 
+    let root_key_opt = if let Some(arg) = args.get(1) {
+        if !arg.is_undefined() && !arg.is_null() {
+            Some(arg.to_string(context)?.to_std_string().unwrap_or_default())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let key_opt = with_dom(|dom, key_to_node| {
-        if let Some(node_id) = find_element_by_id(dom, &id_val) {
+        let root_node = if let Some(ref r_key) = root_key_opt {
+            key_to_node
+                .get(r_key)
+                .copied()
+                .unwrap_or_else(|| dom.document())
+        } else {
+            dom.document()
+        };
+        if let Some(node_id) = find_element_by_id(dom, root_node, &id_val) {
             let k = format!("{:?}", node_id);
             key_to_node.insert(k.clone(), node_id);
             Some(k)
@@ -3708,8 +3735,26 @@ fn bridge_query_selector(
         return Ok(JsValue::null());
     };
 
+    let root_key_opt = if let Some(arg) = args.get(1) {
+        if !arg.is_undefined() && !arg.is_null() {
+            Some(arg.to_string(context)?.to_std_string().unwrap_or_default())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let key_opt = with_dom(|dom, key_to_node| {
-        if let Some(node_id) = dom.query_selector(&selector_val) {
+        let root_node = if let Some(ref r_key) = root_key_opt {
+            key_to_node
+                .get(r_key)
+                .copied()
+                .unwrap_or_else(|| dom.document())
+        } else {
+            dom.document()
+        };
+        if let Some(node_id) = dom.query_selector_from(root_node, &selector_val) {
             let k = format!("{:?}", node_id);
             key_to_node.insert(k.clone(), node_id);
             Some(k)
@@ -3811,11 +3856,20 @@ fn bridge_closest(
 
 fn execute_dom_query_to_js_array(
     selector: &str,
+    root_key_opt: Option<String>,
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     let keys = with_dom(|dom, key_to_node| {
+        let root_node = if let Some(ref r_key) = root_key_opt {
+            key_to_node
+                .get(r_key)
+                .copied()
+                .unwrap_or_else(|| dom.document())
+        } else {
+            dom.document()
+        };
         let mut keys_list = Vec::new();
-        for node_id in dom.query_selector_all(selector) {
+        for node_id in dom.query_selector_all_from(root_node, selector) {
             let k = format!("{:?}", node_id);
             key_to_node.insert(k.clone(), node_id);
             keys_list.push(k);
@@ -3855,7 +3909,16 @@ fn bridge_query_selector_all(
     } else {
         String::new()
     };
-    execute_dom_query_to_js_array(&selector_val, context)
+    let root_key_opt = if let Some(arg) = args.get(1) {
+        if !arg.is_undefined() && !arg.is_null() {
+            Some(arg.to_string(context)?.to_std_string().unwrap_or_default())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    execute_dom_query_to_js_array(&selector_val, root_key_opt, context)
 }
 
 fn bridge_get_elements_by_tag_name(
@@ -3868,6 +3931,15 @@ fn bridge_get_elements_by_tag_name(
     } else {
         String::new()
     };
+    let root_key_opt = if let Some(arg) = args.get(1) {
+        if !arg.is_undefined() && !arg.is_null() {
+            Some(arg.to_string(context)?.to_std_string().unwrap_or_default())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Case-insensitivity: getElementsByTagName tag matching in HTML is ASCII-case-insensitive.
     // HTML tag names are conventionally lowercase in the parsed DOM.
@@ -3879,7 +3951,7 @@ fn bridge_get_elements_by_tag_name(
         tag_name.to_ascii_lowercase()
     };
 
-    execute_dom_query_to_js_array(&selector, context)
+    execute_dom_query_to_js_array(&selector, root_key_opt, context)
 }
 
 fn bridge_get_elements_by_class_name(
@@ -3892,6 +3964,15 @@ fn bridge_get_elements_by_class_name(
     } else {
         String::new()
     };
+    let root_key_opt = if let Some(arg) = args.get(1) {
+        if !arg.is_undefined() && !arg.is_null() {
+            Some(arg.to_string(context)?.to_std_string().unwrap_or_default())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let tokens: Vec<&str> = cls
         .split_ascii_whitespace()
@@ -3901,7 +3982,7 @@ fn bridge_get_elements_by_class_name(
     if tokens.is_empty() {
         // If there are no class tokens, pass an empty selector which will fail to parse
         // and safely return an empty array.
-        execute_dom_query_to_js_array("", context)
+        execute_dom_query_to_js_array("", root_key_opt, context)
     } else {
         // Map ["a", "b"] to ".a.b"
         let selector = tokens
@@ -3909,7 +3990,7 @@ fn bridge_get_elements_by_class_name(
             .map(|t| format!(".{}", t))
             .collect::<Vec<String>>()
             .join("");
-        execute_dom_query_to_js_array(&selector, context)
+        execute_dom_query_to_js_array(&selector, root_key_opt, context)
     }
 }
 
@@ -3923,13 +4004,22 @@ fn bridge_get_elements_by_name(
     } else {
         String::new()
     };
+    let root_key_opt = if let Some(arg) = args.get(1) {
+        if !arg.is_undefined() && !arg.is_null() {
+            Some(arg.to_string(context)?.to_std_string().unwrap_or_default())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     if name.is_empty() {
-        execute_dom_query_to_js_array("", context)
+        execute_dom_query_to_js_array("", root_key_opt, context)
     } else {
         let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
         let selector = format!("[name=\"{}\"]", escaped);
-        execute_dom_query_to_js_array(&selector, context)
+        execute_dom_query_to_js_array(&selector, root_key_opt, context)
     }
 }
 
@@ -6900,6 +6990,102 @@ pub fn abort_controller_abort(
     Ok(JsValue::undefined())
 }
 
+fn import_node_subtree(
+    temp_dom: &crate::dom::Dom,
+    temp_node_id: crate::infra::NodeId,
+    dom: &mut crate::dom::Dom,
+    key_to_node: &mut std::collections::HashMap<String, crate::infra::NodeId>,
+) -> crate::infra::NodeId {
+    let node_data = temp_dom
+        .data(temp_node_id)
+        .cloned()
+        .unwrap_or(crate::dom::NodeData::Document);
+    let new_node_id = dom.create_node(node_data);
+    let key = format!("{:?}", new_node_id);
+    key_to_node.insert(key, new_node_id);
+    for child in temp_dom.children(temp_node_id) {
+        let new_child_id = import_node_subtree(temp_dom, *child, dom, key_to_node);
+        dom.append_child(new_node_id, new_child_id);
+    }
+    new_node_id
+}
+
+/// Implementation of WHATWG DOM `DOMParser` interface (t0522).
+/// Spec: <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#domparser>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct DOMParser {}
+
+impl Class for DOMParser {
+    const NAME: &'static str = "DOMParser";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        Ok(DOMParser {})
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        class.method(
+            JsString::from("parseFromString"),
+            2,
+            NativeFunction::from_fn_ptr(dom_parser_parse_from_string),
+        );
+        Ok(())
+    }
+}
+
+pub fn dom_parser_parse_from_string(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let markup = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let _mime_type = if let Some(arg) = args.get(1) {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        "text/html".to_string()
+    };
+
+    // // TODO(spec): XML parsing is not supported. Fallback to HTML parsing for text/xml and application/xml.
+
+    let parsed_doc_key_opt = with_dom(|dom, key_to_node| {
+        let temp_dom =
+            crate::html::parse_document(crate::encoding::InputStream::from_utf8(markup.as_bytes()));
+
+        let parsed_doc_node_id = dom.create_node(crate::dom::NodeData::Document);
+        let parsed_doc_key = format!("{:?}", parsed_doc_node_id);
+        key_to_node.insert(parsed_doc_key.clone(), parsed_doc_node_id);
+
+        for child in temp_dom.children(temp_dom.document()) {
+            let new_child_id = import_node_subtree(&temp_dom, *child, dom, key_to_node);
+            dom.append_child(parsed_doc_node_id, new_child_id);
+        }
+
+        parsed_doc_key
+    })?;
+
+    let document_constructor = context
+        .global_object()
+        .get(JsString::from("Document"), context)?;
+    let document_obj = document_constructor.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Document constructor not found"))
+    })?;
+    let document_inst = document_obj.construct(
+        &[JsValue::from(JsString::from(parsed_doc_key_opt))],
+        None,
+        context,
+    )?;
+    Ok(JsValue::from(document_inst))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6994,6 +7180,46 @@ mod tests {
             if (onabortCalled !== 1) throw "onabort called again";
             if (signal.reason !== "event reason") throw "reason should not change on subsequent aborts";
         }"#).unwrap();
+    }
+
+    #[test]
+    fn test_dom_parser_t0522() {
+        let mut host = BoaHost::new();
+
+        // 1. DOMParser constructor exists on global
+        host.eval(r#"{
+            if (typeof DOMParser === "undefined") throw "DOMParser is not defined";
+            const parser = new DOMParser();
+            if (typeof parser.parseFromString !== "function") throw "parseFromString is not a function";
+        }"#).unwrap();
+
+        // 2. parseFromString works on a simple HTML string and returns a Document
+        let mut dom = crate::dom::Dom::new();
+        let res = host.eval_with_dom(
+            r#"{
+                const parser = new DOMParser();
+                const doc = parser.parseFromString('<div id="x">hello DOMParser</div>', 'text/html');
+                
+                // Assert it behaves like a Document with the existing accessors
+                if (!doc) throw "doc is null or undefined";
+                const elem = doc.getElementById('x');
+                if (!elem) throw "element with ID x not found in parsed document";
+                elem.textContent;
+            }"#,
+            &mut dom,
+        ).unwrap();
+        assert_eq!(res, "hello DOMParser");
+
+        // 3. Document fallback for text/xml and application/xml
+        host.eval_with_dom(
+            r#"{
+                const parser = new DOMParser();
+                const docXml = parser.parseFromString('<xml id="xml-test">xml content</xml>', 'text/xml');
+                const elem = docXml.getElementById('xml-test');
+                if (elem.textContent !== 'xml content') throw "XML fallback failed";
+            }"#,
+            &mut dom,
+        ).unwrap();
     }
 
     #[test]
