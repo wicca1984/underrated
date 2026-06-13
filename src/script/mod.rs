@@ -584,6 +584,242 @@ impl BoaHost {
                 window.location = locationObj;
                 document.location = locationObj;
 
+                // --- HTML5 History API implementation (t0497) ---
+                (function() {
+                    function parseAbsoluteUrl(urlStr) {
+                        const match = urlStr.match(/^(([a-zA-Z][a-zA-Z0-9.+-]*):)?\/\/([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/);
+                        if (match) {
+                            const protocol = match[2] ? match[2] + ":" : "";
+                            const host = match[3] || "";
+                            const pathname = match[4] || "/";
+                            const search = match[5] || "";
+                            const hash = match[6] || "";
+                            let hostname = host;
+                            let port = "";
+                            const portIndex = host.lastIndexOf(':');
+                            if (portIndex !== -1 && portIndex > host.lastIndexOf(']')) {
+                                hostname = host.substring(0, portIndex);
+                                port = host.substring(portIndex + 1);
+                            }
+                            const origin = protocol ? protocol + "//" + host : "";
+                            return {
+                                href: urlStr,
+                                protocol,
+                                host,
+                                hostname,
+                                port,
+                                pathname,
+                                search,
+                                hash,
+                                origin
+                            };
+                        }
+                        return {
+                            href: urlStr,
+                            protocol: "",
+                            host: "",
+                            hostname: "",
+                            port: "",
+                            pathname: urlStr,
+                            search: "",
+                            hash: "",
+                            origin: ""
+                        };
+                    }
+
+                    function resolveAndParse(url) {
+                        if (/^[a-zA-Z][a-zA-Z0-9.+-]*:/.test(url)) {
+                            return parseAbsoluteUrl(url);
+                        }
+                        const loc = window.__document_location__;
+                        if (url.startsWith('//')) {
+                            return parseAbsoluteUrl(loc.protocol + url);
+                        }
+                        const urlMatch = url.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
+                        const rawPath = urlMatch[1] || "";
+                        const rawSearch = urlMatch[2] || "";
+                        const rawHash = urlMatch[3] || "";
+
+                        let newPathname = loc.pathname;
+                        let newSearch = loc.search;
+                        let newHash = loc.hash;
+
+                        if (url.startsWith('/')) {
+                            newPathname = rawPath;
+                            newSearch = rawSearch;
+                            newHash = rawHash;
+                        } else if (url.startsWith('?')) {
+                            newSearch = rawSearch;
+                            newHash = rawHash;
+                        } else if (url.startsWith('#')) {
+                            newHash = rawHash;
+                        } else {
+                            const lastSlash = loc.pathname.lastIndexOf('/');
+                            let basePath = "/";
+                            if (lastSlash !== -1) {
+                                basePath = loc.pathname.substring(0, lastSlash + 1);
+                            }
+                            newPathname = basePath + rawPath;
+                            newSearch = rawSearch;
+                            newHash = rawHash;
+                        }
+
+                        let href = "";
+                        if (loc.protocol || loc.host) {
+                            href = (loc.protocol || "") + "//" + (loc.host || "") + newPathname + newSearch + newHash;
+                        } else {
+                            href = newPathname + newSearch + newHash;
+                        }
+
+                        return {
+                            href,
+                            protocol: loc.protocol,
+                            host: loc.host,
+                            hostname: loc.hostname,
+                            port: loc.port,
+                            pathname: newPathname,
+                            search: newSearch,
+                            hash: newHash,
+                            origin: loc.origin
+                        };
+                    }
+
+                    function updateDocumentLocation(parsed) {
+                        window.__document_location__.href = parsed.href;
+                        window.__document_location__.protocol = parsed.protocol;
+                        window.__document_location__.host = parsed.host;
+                        window.__document_location__.hostname = parsed.hostname;
+                        window.__document_location__.port = parsed.port;
+                        window.__document_location__.pathname = parsed.pathname;
+                        window.__document_location__.search = parsed.search;
+                        window.__document_location__.hash = parsed.hash;
+                        window.__document_location__.origin = parsed.origin;
+                    }
+
+                    function cloneState(state) {
+                        if (state === undefined) return null;
+                        try {
+                            return JSON.parse(JSON.stringify(state));
+                        } catch (e) {
+                            return state;
+                        }
+                    }
+
+                    function getEntryUrl(entry) {
+                        if (!entry) return "";
+                        if (entry._url !== undefined && entry._url !== null && entry._url !== "") {
+                            return entry._url;
+                        }
+                        return window.__document_location__.href || "";
+                    }
+
+                    const entries = [
+                        {
+                            state: null,
+                            title: "",
+                            _url: undefined
+                        }
+                    ];
+                    let currentIndex = 0;
+
+                    const historyObj = {
+                        get state() {
+                            return entries[currentIndex] ? entries[currentIndex].state : null;
+                        },
+                        get length() {
+                            return entries.length;
+                        },
+                        pushState(state, title, url) {
+                            // If the first entry's _url is still undefined, capture the current href
+                            if (entries[0] && entries[0]._url === undefined) {
+                                entries[0]._url = window.__document_location__.href;
+                            }
+
+                            // Truncate any forward entries after current index
+                            entries.splice(currentIndex + 1);
+
+                            let resolvedUrl = window.__document_location__.href;
+                            if (url !== undefined && url !== null && url !== "") {
+                                const parsed = resolveAndParse(String(url));
+                                updateDocumentLocation(parsed);
+                                resolvedUrl = parsed.href;
+                            }
+
+                            const cloned = cloneState(state);
+                            entries.push({
+                                state: cloned,
+                                title: title || "",
+                                _url: resolvedUrl
+                            });
+                            currentIndex = entries.length - 1;
+                        },
+                        replaceState(state, title, url) {
+                            if (entries[0] && entries[0]._url === undefined) {
+                                entries[0]._url = window.__document_location__.href;
+                            }
+
+                            let resolvedUrl = window.__document_location__.href;
+                            if (url !== undefined && url !== null && url !== "") {
+                                const parsed = resolveAndParse(String(url));
+                                updateDocumentLocation(parsed);
+                                resolvedUrl = parsed.href;
+                            }
+
+                            const cloned = cloneState(state);
+                            entries[currentIndex] = {
+                                state: cloned,
+                                title: title || "",
+                                _url: resolvedUrl
+                            };
+                        },
+                        go(delta) {
+                            if (typeof delta !== 'number') {
+                                delta = parseInt(delta, 10);
+                                if (isNaN(delta)) {
+                                    return;
+                                }
+                            }
+                            let targetIndex = currentIndex + delta;
+                            if (targetIndex < 0) {
+                                targetIndex = 0;
+                            }
+                            if (targetIndex >= entries.length) {
+                                targetIndex = entries.length - 1;
+                            }
+                            if (targetIndex !== currentIndex) {
+                                currentIndex = targetIndex;
+                                const entry = entries[currentIndex];
+                                if (entry) {
+                                    const parsed = resolveAndParse(getEntryUrl(entry));
+                                    updateDocumentLocation(parsed);
+
+                                    const event = new Event('popstate');
+                                    try {
+                                        event.state = entry.state;
+                                    } catch (e) {}
+                                    try {
+                                        Object.defineProperty(event, 'state', {
+                                            value: entry.state,
+                                            writable: true,
+                                            configurable: true,
+                                            enumerable: true
+                                        });
+                                    } catch (e) {}
+                                    window.dispatchEvent(event);
+                                }
+                            }
+                        },
+                        back() {
+                            this.go(-1);
+                        },
+                        forward() {
+                            this.go(1);
+                        }
+                    };
+
+                    window.history = historyObj;
+                })();
+
                 class DOMException extends Error {
                     constructor(message, name) {
                         super(message);
@@ -9424,6 +9660,147 @@ mod tests {
         assert!(
             host.eval("if (window.location.pathname !== '/initial') throw 'pathname mismatch';")
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_history_api_basic() {
+        let mut host = BoaHost::new();
+        host.set_document_url("https://example.com/home");
+
+        // Verify initial state
+        assert!(
+            host.eval("if (window.history.length !== 1) throw 'initial length mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.history.state !== null) throw 'initial state mismatch';")
+                .is_ok()
+        );
+
+        // Test pushState with state and relative URL
+        assert!(
+            host.eval("window.history.pushState({a: 1}, 'title 1', '/foo')")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.history.length !== 2) throw 'length mismatch after push';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.history.state.a !== 1) throw 'state value mismatch after push';")
+                .is_ok()
+        );
+        assert!(
+            host.eval(
+                "if (window.location.pathname !== '/foo') throw 'pathname mismatch after push';"
+            )
+            .is_ok()
+        );
+        assert!(host.eval("if (window.location.href !== 'https://example.com/foo') throw 'href mismatch after push';").is_ok());
+
+        // Test replaceState
+        assert!(
+            host.eval("window.history.replaceState({b: 2}, 'title 2', '/bar')")
+                .is_ok()
+        );
+        assert!(
+            host.eval(
+                "if (window.history.length !== 2) throw 'length should not change after replace';"
+            )
+            .is_ok()
+        );
+        assert!(
+            host.eval(
+                "if (window.history.state.b !== 2) throw 'state value mismatch after replace';"
+            )
+            .is_ok()
+        );
+        assert!(host.eval("if (window.history.state.a !== undefined) throw 'old state should be gone after replace';").is_ok());
+        assert!(
+            host.eval(
+                "if (window.location.pathname !== '/bar') throw 'pathname mismatch after replace';"
+            )
+            .is_ok()
+        );
+
+        // Push another one to test back and forward
+        assert!(
+            host.eval("window.history.pushState({c: 3}, 'title 3', 'baz')")
+                .is_ok()
+        );
+        assert!(
+            host.eval(
+                "if (window.history.length !== 3) throw 'length mismatch after second push';"
+            )
+            .is_ok()
+        );
+        assert!(host.eval("if (window.location.pathname !== '/baz') throw 'pathname mismatch after second push';").is_ok());
+
+        // Set up event listener for popstate
+        assert!(
+            host.eval(
+                "
+            window.popstateLogs = [];
+            window.addEventListener('popstate', (e) => {
+                window.popstateLogs.push(e.state);
+            });
+        "
+            )
+            .is_ok()
+        );
+
+        // Go back - should go from index 2 to index 1 (state {b: 2})
+        assert!(host.eval("window.history.back()").is_ok());
+        assert!(
+            host.eval("if (window.history.state.b !== 2) throw 'state mismatch after back';")
+                .is_ok()
+        );
+        assert!(
+            host.eval(
+                "if (window.location.pathname !== '/bar') throw 'pathname mismatch after back';"
+            )
+            .is_ok()
+        );
+
+        // Go back again - should go from index 1 to index 0 (state null)
+        assert!(host.eval("window.history.back()").is_ok());
+        assert!(
+            host.eval(
+                "if (window.history.state !== null) throw 'state mismatch after second back';"
+            )
+            .is_ok()
+        );
+        assert!(host.eval("if (window.location.pathname !== '/home') throw 'pathname mismatch after second back';").is_ok());
+
+        // Go forward - should go from index 0 to index 1
+        assert!(host.eval("window.history.forward()").is_ok());
+        assert!(
+            host.eval("if (window.history.state.b !== 2) throw 'state mismatch after forward';")
+                .is_ok()
+        );
+
+        // Go with delta - should go from index 1 to index 2
+        assert!(host.eval("window.history.go(1)").is_ok());
+        assert!(
+            host.eval("if (window.history.state.c !== 3) throw 'state mismatch after go';")
+                .is_ok()
+        );
+
+        // Verify popstate logs
+        // We did back (to {b:2}), back (to null), forward (to {b:2}), go(1) (to {c:3})
+        // So popstateLogs should have: [{b:2}, null, {b:2}, {c:3}]
+        assert!(
+            host.eval(
+                "
+            if (window.popstateLogs.length !== 4) throw 'popstate event count mismatch';
+            if (window.popstateLogs[0].b !== 2) throw 'first popstate mismatch';
+            if (window.popstateLogs[1] !== null) throw 'second popstate mismatch';
+            if (window.popstateLogs[2].b !== 2) throw 'third popstate mismatch';
+            if (window.popstateLogs[3].c !== 3) throw 'fourth popstate mismatch';
+        "
+            )
+            .is_ok()
         );
     }
 
