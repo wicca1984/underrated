@@ -242,6 +242,13 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     }
                     "link" => is_link(dom, node),
                     "any-link" => is_link(dom, node),
+                    "visited" => {
+                        // TODO(spec): Real :visited matching requires a visited-link history,
+                        // which is intentionally out of scope here.
+                        // Since this engine does not currently have a browsing history store,
+                        // no links are ever considered visited. Thus, :visited always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3007,6 +3014,14 @@ mod tests {
         assert!(matches(&sel_a_link, &dom, a_with_href));
         assert!(!matches(&sel_a_link, &dom, a_no_href));
         assert!(!matches(&sel_a_link, &dom, area_with_href));
+
+        // Matches :visited (should never match since we have no history store)
+        let sel_visited = parse_selector_list(":visited").unwrap();
+        assert!(!matches(&sel_visited, &dom, a_with_href));
+        assert!(!matches(&sel_visited, &dom, area_with_href));
+        assert!(!matches(&sel_visited, &dom, link_with_href));
+        assert!(!matches(&sel_visited, &dom, a_no_href));
+        assert!(!matches(&sel_visited, &dom, div_with_href));
     }
 
     #[test]
