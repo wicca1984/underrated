@@ -1383,6 +1383,15 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'outerText', {
+                        get() {
+                            return this.innerText;
+                        },
+                        // TODO(spec): outerText setter (destructive element replacement) not implemented
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'innerHTML', {
                         get() {
                             if (this.nodeType !== 1) return undefined;
