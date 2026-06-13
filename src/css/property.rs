@@ -585,6 +585,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "all",
     },
     PropertyMetadata {
+        name: "transition-timing-function",
+        inherited: false,
+        initial: "ease",
+    },
+    PropertyMetadata {
+        name: "transition-delay",
+        inherited: false,
+        initial: "0s",
+    },
+    PropertyMetadata {
         name: "column-count",
         inherited: false,
         initial: "auto",
@@ -830,6 +840,23 @@ mod tests {
         assert_eq!(caret_color.name, "caret-color");
         assert!(caret_color.inherited);
         assert_eq!(caret_color.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0479() {
+        let timing = lookup("transition-timing-function");
+        assert!(timing.is_some());
+        let timing = timing.unwrap();
+        assert_eq!(timing.name, "transition-timing-function");
+        assert!(!timing.inherited);
+        assert_eq!(timing.initial, "ease");
+
+        let delay = lookup("transition-delay");
+        assert!(delay.is_some());
+        let delay = delay.unwrap();
+        assert_eq!(delay.name, "transition-delay");
+        assert!(!delay.inherited);
+        assert_eq!(delay.initial, "0s");
     }
 
     #[test]
