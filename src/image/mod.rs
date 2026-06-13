@@ -2387,6 +2387,101 @@ pub fn decode_xpm(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
+/// Decodes a WBMP (Wireless Application Protocol Bitmap, Type 0) image.
+/// spec: S-19
+pub fn decode_wbmp(bytes: &[u8]) -> Option<DecodedImage> {
+    if bytes.len() < 4 {
+        return None;
+    }
+
+    // Byte 0: TypeField must be 0x00
+    if bytes[0] != 0x00 {
+        return None;
+    }
+
+    // Byte 1: FixHeaderField must be 0x00
+    if bytes[1] != 0x00 {
+        return None;
+    }
+
+    let mut offset = 2;
+
+    // Helper to parse variable-length unsigned integer (uintvar)
+    let mut parse_uintvar = |offset: &mut usize| -> Option<u32> {
+        let mut value: u32 = 0;
+        let mut bytes_read = 0;
+        loop {
+            let &b = bytes.get(*offset)?;
+            *offset += 1;
+            bytes_read += 1;
+            if value > (u32::MAX >> 7) {
+                return None; // Overflow
+            }
+            value = (value << 7) | ((b & 0x7F) as u32);
+            if (b & 0x80) == 0 {
+                break;
+            }
+            if bytes_read >= 5 {
+                return None; // Limit uintvar to 5 bytes to prevent infinite loop or huge value
+            }
+        }
+        Some(value)
+    };
+
+    let width = parse_uintvar(&mut offset)?;
+    let height = parse_uintvar(&mut offset)?;
+
+    // Reject width/height of 0 or absurdly large dimensions
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+
+    // Each row is padded to a whole byte boundary
+    let bytes_per_row = (width as usize).div_ceil(8);
+    let expected_bitmap_bytes = bytes_per_row.checked_mul(height as usize)?;
+
+    // Ensure we have enough bytes remaining for the bitmap
+    let remaining_bytes = bytes.len().checked_sub(offset)?;
+    if remaining_bytes < expected_bitmap_bytes {
+        return None;
+    }
+
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+    let out_bytes = total_pixels.checked_mul(4)?;
+    let mut rgba = vec![0u8; out_bytes];
+
+    for y in 0..height {
+        let row_start_byte = offset + (y as usize) * bytes_per_row;
+        for x in 0..width {
+            let byte_idx = row_start_byte + (x as usize) / 8;
+            let byte = *bytes.get(byte_idx)?;
+            let bit_shift = 7 - (x % 8);
+            let is_set = ((byte >> bit_shift) & 1) != 0;
+
+            let out_idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            if is_set {
+                // White (255, 255, 255, 255)
+                rgba[out_idx] = 255;
+                rgba[out_idx + 1] = 255;
+                rgba[out_idx + 2] = 255;
+                rgba[out_idx + 3] = 255;
+            } else {
+                // Black (0, 0, 0, 255)
+                rgba[out_idx] = 0;
+                rgba[out_idx + 1] = 0;
+                rgba[out_idx + 2] = 0;
+                rgba[out_idx + 3] = 255;
+            }
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, or XBM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
@@ -2424,6 +2519,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
             bytes.len() >= 26 && bytes.get(bytes.len() - 18..) == Some(b"TRUEVISION-XFILE.\0");
         if is_tga_footer || is_conservative_tga(bytes) {
             decode_tga(bytes)
+        } else if bytes.starts_with(&[0x00, 0x00]) {
+            decode_wbmp(bytes)
         } else {
             None
         }
@@ -3775,5 +3872,89 @@ mod tests {
         // Row too short
         let bad4 = b"/* XPM */ static char *test[] = { \"2 2 1 1\", \"a c red\", \"aa\", \"a\" };";
         assert!(decode_image(bad4).is_none());
+    }
+
+    #[test]
+    fn test_decode_wbmp_basic() {
+        // WBMP Type 0, header:
+        // TypeField: 0x00, FixHeaderField: 0x00
+        // Width: 8 (uintvar 0x08), Height: 2 (uintvar 0x02)
+        // Row 1: 0x55 (01010101 -> black, white, black, white, black, white, black, white)
+        // Row 2: 0xAA (10101010 -> white, black, white, black, white, black, white, black)
+        let wbmp_data = vec![0x00, 0x00, 0x08, 0x02, 0x55, 0xAA];
+
+        let decoded = decode_image(&wbmp_data).expect("Should decode WBMP successfully");
+        assert_eq!(decoded.width, 8);
+        assert_eq!(decoded.height, 2);
+
+        // Row 0 check: 01010101
+        // pixel 0: black
+        assert_eq!(&decoded.rgba[0..4], &[0, 0, 0, 255]);
+        // pixel 1: white
+        assert_eq!(&decoded.rgba[4..8], &[255, 255, 255, 255]);
+        // pixel 2: black
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 0, 255]);
+        // pixel 3: white
+        assert_eq!(&decoded.rgba[12..16], &[255, 255, 255, 255]);
+
+        // Row 1 check (offset 8 * 4 = 32): 10101010
+        // pixel 0: white
+        assert_eq!(&decoded.rgba[32..36], &[255, 255, 255, 255]);
+        // pixel 1: black
+        assert_eq!(&decoded.rgba[36..40], &[0, 0, 0, 255]);
+        // pixel 2: white
+        assert_eq!(&decoded.rgba[40..44], &[255, 255, 255, 255]);
+        // pixel 3: black
+        assert_eq!(&decoded.rgba[44..48], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn test_decode_wbmp_multibyte_uintvar() {
+        // WBMP Type 0, header:
+        // TypeField: 0x00, FixHeaderField: 0x00
+        // Width: 129 -> multi-byte uintvar [0x81, 0x01]
+        // Height: 1 -> single-byte uintvar [0x01]
+        // Row padding: (129).div_ceil(8) = 17 bytes per row. Let's provide 17 bytes of 0xFF (all white).
+        let mut wbmp_data = vec![0x00, 0x00, 0x81, 0x01, 0x01];
+        wbmp_data.extend(std::iter::repeat(0xFF).take(17));
+
+        let decoded = decode_image(&wbmp_data).expect("Should decode WBMP with multi-byte uintvar");
+        assert_eq!(decoded.width, 129);
+        assert_eq!(decoded.height, 1);
+
+        // Every pixel should be white
+        for x in 0..129 {
+            let idx = x * 4;
+            assert_eq!(&decoded.rgba[idx..idx + 4], &[255, 255, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn test_decode_wbmp_failures() {
+        // Truncated header
+        assert!(decode_image(&[0x00, 0x00]).is_none());
+        assert!(decode_image(&[0x00, 0x00, 0x08]).is_none());
+
+        // Non-zero TypeField
+        assert!(decode_image(&[0x01, 0x00, 0x08, 0x02, 0x55, 0xAA]).is_none());
+
+        // Non-zero FixHeaderField
+        assert!(decode_image(&[0x00, 0x01, 0x08, 0x02, 0x55, 0xAA]).is_none());
+
+        // Zero dimension width
+        assert!(decode_image(&[0x00, 0x00, 0x00, 0x02, 0x00]).is_none());
+
+        // Zero dimension height
+        assert!(decode_image(&[0x00, 0x00, 0x08, 0x00, 0x00]).is_none());
+
+        // Hostile / absurd dimension (16385, which is > 16384)
+        // 16385 in uintvar: [0x81, 0x80, 0x01]
+        let hostile_data = vec![0x00, 0x00, 0x81, 0x80, 0x01, 0x01, 0x00];
+        assert!(decode_image(&hostile_data).is_none());
+
+        // Truncated bitmap data
+        // Width 8, Height 2 expects 2 bytes of bitmap, but we only give 1 byte
+        let truncated_data = vec![0x00, 0x00, 0x08, 0x02, 0x55];
+        assert!(decode_image(&truncated_data).is_none());
     }
 }
