@@ -558,6 +558,72 @@ impl TryFrom<&CssValue> for ImageRendering {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum PointerEventsValue {
+    Auto,
+    None,
+    VisiblePainted,
+    VisibleFill,
+    VisibleStroke,
+    Visible,
+    Painted,
+    Fill,
+    Stroke,
+    All,
+}
+
+impl PointerEventsValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "none" => Some(Self::None),
+            "visiblepainted" => Some(Self::VisiblePainted),
+            "visiblefill" => Some(Self::VisibleFill),
+            "visiblestroke" => Some(Self::VisibleStroke),
+            "visible" => Some(Self::Visible),
+            "painted" => Some(Self::Painted),
+            "fill" => Some(Self::Fill),
+            "stroke" => Some(Self::Stroke),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+            Self::VisiblePainted => "visiblePainted",
+            Self::VisibleFill => "visibleFill",
+            Self::VisibleStroke => "visibleStroke",
+            Self::Visible => "visible",
+            Self::Painted => "painted",
+            Self::Fill => "fill",
+            Self::Stroke => "stroke",
+            Self::All => "all",
+        }
+    }
+}
+
+impl std::str::FromStr for PointerEventsValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for PointerEventsValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -789,6 +855,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "text-justify"
             | "object-fit"
             | "caption-side"
+            | "pointer-events"
     )
 }
 
@@ -999,6 +1066,24 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "caption-side" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "top" | "bottom")
+            }
+            _ => false,
+        },
+        "pointer-events" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto"
+                        | "none"
+                        | "visiblepainted"
+                        | "visiblefill"
+                        | "visiblestroke"
+                        | "visible"
+                        | "painted"
+                        | "fill"
+                        | "stroke"
+                        | "all"
+                )
             }
             _ => false,
         },
@@ -1565,6 +1650,17 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "top" | "bottom" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "pointer-events" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "none" | "visiblepainted" | "visiblefill" | "visiblestroke"
+                    | "visible" | "painted" | "fill" | "stroke" | "all" => Some(val),
                     _ => None,
                 }
             } else {
@@ -3229,6 +3325,100 @@ mod tests {
     }
 
     #[test]
+    fn test_pointer_events_value() {
+        // Test parsing keyword strings to PointerEventsValue
+        assert_eq!(
+            PointerEventsValue::parse("auto"),
+            Some(PointerEventsValue::Auto)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("none"),
+            Some(PointerEventsValue::None)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("visiblePainted"),
+            Some(PointerEventsValue::VisiblePainted)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("visiblepainted"),
+            Some(PointerEventsValue::VisiblePainted)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("visiblefill"),
+            Some(PointerEventsValue::VisibleFill)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("visiblestroke"),
+            Some(PointerEventsValue::VisibleStroke)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("visible"),
+            Some(PointerEventsValue::Visible)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("painted"),
+            Some(PointerEventsValue::Painted)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("fill"),
+            Some(PointerEventsValue::Fill)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("stroke"),
+            Some(PointerEventsValue::Stroke)
+        );
+        assert_eq!(
+            PointerEventsValue::parse("all"),
+            Some(PointerEventsValue::All)
+        );
+        assert_eq!(PointerEventsValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "auto".parse::<PointerEventsValue>(),
+            Ok(PointerEventsValue::Auto)
+        );
+        assert_eq!(
+            "none".parse::<PointerEventsValue>(),
+            Ok(PointerEventsValue::None)
+        );
+        assert_eq!(
+            "visiblepainted".parse::<PointerEventsValue>(),
+            Ok(PointerEventsValue::VisiblePainted)
+        );
+        assert_eq!("BOGUS".parse::<PointerEventsValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(PointerEventsValue::Auto.as_str(), "auto");
+        assert_eq!(PointerEventsValue::None.as_str(), "none");
+        assert_eq!(
+            PointerEventsValue::VisiblePainted.as_str(),
+            "visiblePainted"
+        );
+        assert_eq!(PointerEventsValue::VisibleFill.as_str(), "visibleFill");
+        assert_eq!(PointerEventsValue::VisibleStroke.as_str(), "visibleStroke");
+        assert_eq!(PointerEventsValue::Visible.as_str(), "visible");
+        assert_eq!(PointerEventsValue::Painted.as_str(), "painted");
+        assert_eq!(PointerEventsValue::Fill.as_str(), "fill");
+        assert_eq!(PointerEventsValue::Stroke.as_str(), "stroke");
+        assert_eq!(PointerEventsValue::All.as_str(), "all");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            PointerEventsValue::try_from(&CssValue::Keyword("visiblePainted".to_string())),
+            Ok(PointerEventsValue::VisiblePainted)
+        );
+        assert_eq!(
+            PointerEventsValue::try_from(&CssValue::Keyword("NONE".to_string())),
+            Ok(PointerEventsValue::None)
+        );
+        assert_eq!(
+            PointerEventsValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+    }
+
+    #[test]
     fn test_image_rendering_value() {
         // Test parsing keyword strings to ImageRendering
         assert_eq!(ImageRendering::parse("auto"), Some(ImageRendering::Auto));
@@ -4398,6 +4588,63 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "caption-side",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for pointer-events (t0553)
+        assert!(is_known_layout_property("pointer-events"));
+        assert!(is_known_layout_property("Pointer-Events"));
+
+        for val in &[
+            "auto",
+            "none",
+            "visiblePainted",
+            "visibleFill",
+            "visibleStroke",
+            "visible",
+            "painted",
+            "fill",
+            "stroke",
+            "all",
+            "visiblepainted",
+            "AUTO",
+            "None",
+        ] {
+            assert_eq!(
+                parse_property_value("pointer-events", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "pointer-events",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "auto",
+            "none",
+            "visiblePainted",
+            "visibleFill",
+            "visibleStroke",
+            "visible",
+            "painted",
+            "fill",
+            "stroke",
+            "all",
+            "visiblepainted",
+            "AUTO",
+            "None",
+        ] {
+            assert!(is_valid_property_value(
+                "pointer-events",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "pointer-events",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
