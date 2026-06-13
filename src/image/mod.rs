@@ -1235,6 +1235,262 @@ pub fn decode_qoi(bytes: &[u8]) -> Option<DecodedImage> {
     }
 }
 
+/// Decodes a Netpbm (PNM: PBM/PGM/PPM) byte stream into a DecodedImage.
+/// Supports ASCII variants (P1, P2, P3) and binary variants (P4, P5, P6).
+/// spec: S-19
+pub fn decode_pnm(bytes: &[u8]) -> Option<DecodedImage> {
+    struct PnmParser<'a> {
+        bytes: &'a [u8],
+        pos: usize,
+    }
+
+    impl<'a> PnmParser<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            Self { bytes, pos: 0 }
+        }
+
+        fn skip_whitespace_and_comments(&mut self) {
+            while self.pos < self.bytes.len() {
+                let b = self.bytes[self.pos];
+                if b.is_ascii_whitespace() {
+                    self.pos += 1;
+                } else if b == b'#' {
+                    self.pos += 1;
+                    while self.pos < self.bytes.len() {
+                        let next_b = self.bytes[self.pos];
+                        self.pos += 1;
+                        if next_b == b'\n' || next_b == b'\r' {
+                            break;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        fn next_u32(&mut self) -> Option<u32> {
+            self.skip_whitespace_and_comments();
+            let start = self.pos;
+            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+            if start == self.pos {
+                return None;
+            }
+            let s = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
+            s.parse::<u32>().ok()
+        }
+
+        fn next_p1_bit(&mut self) -> Option<u8> {
+            self.skip_whitespace_and_comments();
+            if self.pos < self.bytes.len() {
+                let b = self.bytes[self.pos];
+                if b == b'0' || b == b'1' {
+                    self.pos += 1;
+                    return Some(b - b'0');
+                }
+            }
+            None
+        }
+    }
+
+    if bytes.len() < 2 || bytes[0] != b'P' {
+        return None;
+    }
+    let variant = bytes[1];
+    if !((b'1'..=b'6').contains(&variant)) {
+        return None;
+    }
+
+    let mut parser = PnmParser::new(bytes);
+    parser.pos = 2; // Move past the magic "Px"
+
+    let width = parser.next_u32()?;
+    let height = parser.next_u32()?;
+
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+
+    let total_pixels = width.checked_mul(height)?;
+    let total_bytes = total_pixels.checked_mul(4)?;
+
+    let maxval = if variant == b'1' || variant == b'4' {
+        0
+    } else {
+        let mv = parser.next_u32()?;
+        if mv == 0 || mv > 65535 {
+            return None;
+        }
+        mv
+    };
+
+    let is_binary = variant == b'4' || variant == b'5' || variant == b'6';
+
+    let rgba = if is_binary {
+        // Exactly one whitespace byte separates the last header token from the binary raster.
+        let separator_byte = *parser.bytes.get(parser.pos)?;
+        if !separator_byte.is_ascii_whitespace() {
+            return None;
+        }
+        parser.pos += 1;
+        let raster_start = parser.pos;
+        let raster_bytes = &parser.bytes[raster_start..];
+
+        match variant {
+            b'4' => {
+                let bytes_per_row = (width as usize).div_ceil(8);
+                let expected_raster_len = bytes_per_row.checked_mul(height as usize)?;
+                if raster_bytes.len() < expected_raster_len {
+                    return None;
+                }
+                let mut rgba = Vec::with_capacity(total_bytes as usize);
+                for y in 0..height {
+                    let row_start = (y as usize).checked_mul(bytes_per_row)?;
+                    let row_data = raster_bytes.get(row_start..row_start + bytes_per_row)?;
+                    for x in 0..width {
+                        let byte_idx = (x as usize) / 8;
+                        let bit_idx = 7 - ((x as usize) % 8);
+                        let byte_val = row_data[byte_idx];
+                        let bit = (byte_val >> bit_idx) & 1;
+                        if bit == 1 {
+                            rgba.extend_from_slice(&[0, 0, 0, 255]);
+                        } else {
+                            rgba.extend_from_slice(&[255, 255, 255, 255]);
+                        }
+                    }
+                }
+                rgba
+            }
+            b'5' => {
+                let mut rgba = Vec::with_capacity(total_bytes as usize);
+                if maxval < 256 {
+                    let expected_raster_len = total_pixels as usize;
+                    if raster_bytes.len() < expected_raster_len {
+                        return None;
+                    }
+                    for &value_byte in raster_bytes.iter().take(expected_raster_len) {
+                        let value = value_byte as u32;
+                        let value = value.min(maxval);
+                        let gray = (value * 255 / maxval) as u8;
+                        rgba.extend_from_slice(&[gray, gray, gray, 255]);
+                    }
+                } else {
+                    let expected_raster_len = (total_pixels as usize).checked_mul(2)?;
+                    if raster_bytes.len() < expected_raster_len {
+                        return None;
+                    }
+                    for chunk in raster_bytes.chunks_exact(2).take(total_pixels as usize) {
+                        let value = u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+                        let value = value.min(maxval);
+                        let gray = (value * 255 / maxval) as u8;
+                        rgba.extend_from_slice(&[gray, gray, gray, 255]);
+                    }
+                }
+                rgba
+            }
+            b'6' => {
+                let mut rgba = Vec::with_capacity(total_bytes as usize);
+                if maxval < 256 {
+                    let expected_raster_len = (total_pixels as usize).checked_mul(3)?;
+                    if raster_bytes.len() < expected_raster_len {
+                        return None;
+                    }
+                    for chunk in raster_bytes.chunks_exact(3).take(total_pixels as usize) {
+                        let r_val = chunk[0] as u32;
+                        let g_val = chunk[1] as u32;
+                        let b_val = chunk[2] as u32;
+
+                        let r_val = r_val.min(maxval);
+                        let g_val = g_val.min(maxval);
+                        let b_val = b_val.min(maxval);
+
+                        let r = (r_val * 255 / maxval) as u8;
+                        let g = (g_val * 255 / maxval) as u8;
+                        let b = (b_val * 255 / maxval) as u8;
+
+                        rgba.extend_from_slice(&[r, g, b, 255]);
+                    }
+                } else {
+                    let expected_raster_len = (total_pixels as usize).checked_mul(6)?;
+                    if raster_bytes.len() < expected_raster_len {
+                        return None;
+                    }
+                    for chunk in raster_bytes.chunks_exact(6).take(total_pixels as usize) {
+                        let r_val = u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+                        let g_val = u16::from_be_bytes([chunk[2], chunk[3]]) as u32;
+                        let b_val = u16::from_be_bytes([chunk[4], chunk[5]]) as u32;
+
+                        let r_val = r_val.min(maxval);
+                        let g_val = g_val.min(maxval);
+                        let b_val = b_val.min(maxval);
+
+                        let r = (r_val * 255 / maxval) as u8;
+                        let g = (g_val * 255 / maxval) as u8;
+                        let b = (b_val * 255 / maxval) as u8;
+
+                        rgba.extend_from_slice(&[r, g, b, 255]);
+                    }
+                }
+                rgba
+            }
+            _ => return None,
+        }
+    } else {
+        match variant {
+            b'1' => {
+                let mut rgba = Vec::with_capacity(total_bytes as usize);
+                for _ in 0..total_pixels {
+                    let bit = parser.next_p1_bit()?;
+                    if bit == 1 {
+                        rgba.extend_from_slice(&[0, 0, 0, 255]);
+                    } else {
+                        rgba.extend_from_slice(&[255, 255, 255, 255]);
+                    }
+                }
+                rgba
+            }
+            b'2' => {
+                let mut rgba = Vec::with_capacity(total_bytes as usize);
+                for _ in 0..total_pixels {
+                    let value = parser.next_u32()?;
+                    let value = value.min(maxval);
+                    let gray = (value * 255 / maxval) as u8;
+                    rgba.extend_from_slice(&[gray, gray, gray, 255]);
+                }
+                rgba
+            }
+            b'3' => {
+                let mut rgba = Vec::with_capacity(total_bytes as usize);
+                for _ in 0..total_pixels {
+                    let r_val = parser.next_u32()?;
+                    let g_val = parser.next_u32()?;
+                    let b_val = parser.next_u32()?;
+
+                    let r_val = r_val.min(maxval);
+                    let g_val = g_val.min(maxval);
+                    let b_val = b_val.min(maxval);
+
+                    let r = (r_val * 255 / maxval) as u8;
+                    let g = (g_val * 255 / maxval) as u8;
+                    let b = (b_val * 255 / maxval) as u8;
+
+                    rgba.extend_from_slice(&[r, g, b, 255]);
+                }
+                rgba
+            }
+            _ => return None,
+        }
+    };
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, or QOI) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
@@ -1253,6 +1509,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_qoi(bytes)
     } else if let Some(true) = is_svg_sniff(bytes) {
         decode_svg(bytes)
+    } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
+        decode_pnm(bytes)
     } else {
         None
     }
@@ -1979,5 +2237,78 @@ mod tests {
         assert_eq!(decoded.height, 1);
         assert_eq!(&decoded.rgba[0..4], &[50, 100, 150, 255]);
         assert_eq!(&decoded.rgba[4..8], &[50, 100, 150, 255]);
+    }
+
+    #[test]
+    fn test_decode_pnm_all() {
+        // P1: ASCII bitmap
+        let p1_data = b"P1\n# Comment\n2 1\n1 0\n";
+        let img = decode_pnm(p1_data).expect("Should decode P1");
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[0, 0, 0, 255, 255, 255, 255, 255]);
+
+        // P2: ASCII graymap
+        let p2_data = b"P2\n2 1\n100\n50 100";
+        let img = decode_pnm(p2_data).expect("Should decode P2");
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[127, 127, 127, 255, 255, 255, 255, 255]);
+
+        // P3: ASCII pixmap
+        let p3_data = b"P3\n# Another comment\n2 1\n255\n10 20 30 40 50 60\n";
+        let img = decode_pnm(p3_data).expect("Should decode P3");
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[10, 20, 30, 255, 40, 50, 60, 255]);
+
+        // P4: Binary bitmap
+        let p4_data = b"P4\n2 1\n\x80";
+        let img = decode_pnm(p4_data).expect("Should decode P4");
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[0, 0, 0, 255, 255, 255, 255, 255]);
+
+        // P5: Binary graymap (maxval < 256)
+        let p5_data = b"P5\n2 1\n255\n\x0a\x14";
+        let img = decode_pnm(p5_data).expect("Should decode P5 < 256");
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[10, 10, 10, 255, 20, 20, 20, 255]);
+
+        // P5: Binary graymap (maxval >= 256)
+        let p5_data_16 = b"P5\n2 1\n1000\n\x01\xf4\x03\xe8";
+        let img = decode_pnm(p5_data_16).expect("Should decode P5 >= 256");
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[127, 127, 127, 255, 255, 255, 255, 255]);
+
+        // P6: Binary pixmap (maxval < 256)
+        let p6_data = b"P6\n1 1\n255\n\x0a\x14\x1e";
+        let img = decode_pnm(p6_data).expect("Should decode P6 < 256");
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[10, 20, 30, 255]);
+
+        // P6: Binary pixmap (maxval >= 256)
+        let p6_data_16 = b"P6\n1 1\n1000\n\x01\xf4\x01\xf4\x01\xf4";
+        let img = decode_pnm(p6_data_16).expect("Should decode P6 >= 256");
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[127, 127, 127, 255]);
+
+        // Check decode_image routing
+        let routed = decode_image(p6_data).expect("Should route P6 to decode_image");
+        assert_eq!(routed.width, 1);
+        assert_eq!(routed.height, 1);
+        assert_eq!(&routed.rgba, &[10, 20, 30, 255]);
+
+        // Malformed and invalid checks
+        assert!(decode_pnm(&[]).is_none());
+        assert!(decode_pnm(b"P").is_none());
+        assert!(decode_pnm(b"P7\n1 1\n255\n").is_none());
+        assert!(decode_pnm(b"P6\n0 1\n255\n").is_none());
+        assert!(decode_pnm(b"P6\n1 1\n0\n").is_none());
+        assert!(decode_pnm(b"P6\n1 1\n65536\n").is_none());
     }
 }
