@@ -728,34 +728,11 @@ pub struct ShorthandExpansion {
 /// Static table of shorthand properties and their corresponding ordered longhands.
 static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
-        name: "margin",
-        longhands: &["margin-top", "margin-right", "margin-bottom", "margin-left"],
-    },
-    ShorthandExpansion {
-        name: "padding",
+        name: "border-bottom",
         longhands: &[
-            "padding-top",
-            "padding-right",
-            "padding-bottom",
-            "padding-left",
-        ],
-    },
-    ShorthandExpansion {
-        name: "border-width",
-        longhands: &[
-            "border-top-width",
-            "border-right-width",
             "border-bottom-width",
-            "border-left-width",
-        ],
-    },
-    ShorthandExpansion {
-        name: "border-style",
-        longhands: &[
-            "border-top-style",
-            "border-right-style",
             "border-bottom-style",
-            "border-left-style",
+            "border-bottom-color",
         ],
     },
     ShorthandExpansion {
@@ -764,6 +741,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "border-top-color",
             "border-right-color",
             "border-bottom-color",
+            "border-left-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-left",
+        longhands: &[
+            "border-left-width",
+            "border-left-style",
             "border-left-color",
         ],
     },
@@ -777,8 +762,46 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
-        name: "overflow",
-        longhands: &["overflow-x", "overflow-y"],
+        name: "border-right",
+        longhands: &[
+            "border-right-width",
+            "border-right-style",
+            "border-right-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-style",
+        longhands: &[
+            "border-top-style",
+            "border-right-style",
+            "border-bottom-style",
+            "border-left-style",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-top",
+        longhands: &["border-top-width", "border-top-style", "border-top-color"],
+    },
+    ShorthandExpansion {
+        name: "border-width",
+        longhands: &[
+            "border-top-width",
+            "border-right-width",
+            "border-bottom-width",
+            "border-left-width",
+        ],
+    },
+    ShorthandExpansion {
+        name: "columns",
+        longhands: &["column-width", "column-count"],
+    },
+    ShorthandExpansion {
+        name: "flex",
+        longhands: &["flex-grow", "flex-shrink", "flex-basis"],
+    },
+    ShorthandExpansion {
+        name: "flex-flow",
+        longhands: &["flex-direction", "flex-wrap"],
     },
     ShorthandExpansion {
         name: "gap",
@@ -789,20 +812,50 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         longhands: &["top", "right", "bottom", "left"],
     },
     ShorthandExpansion {
-        name: "place-items",
-        longhands: &["align-items", "justify-items"],
+        name: "list-style",
+        longhands: &["list-style-type", "list-style-position", "list-style-image"],
+    },
+    ShorthandExpansion {
+        name: "margin",
+        longhands: &["margin-top", "margin-right", "margin-bottom", "margin-left"],
+    },
+    ShorthandExpansion {
+        name: "outline",
+        longhands: &["outline-width", "outline-style", "outline-color"],
+    },
+    ShorthandExpansion {
+        name: "overflow",
+        longhands: &["overflow-x", "overflow-y"],
+    },
+    ShorthandExpansion {
+        name: "padding",
+        longhands: &[
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+        ],
     },
     ShorthandExpansion {
         name: "place-content",
         longhands: &["align-content", "justify-content"],
     },
     ShorthandExpansion {
+        name: "place-items",
+        longhands: &["align-items", "justify-items"],
+    },
+    ShorthandExpansion {
         name: "place-self",
         longhands: &["align-self", "justify-self"],
     },
     ShorthandExpansion {
-        name: "columns",
-        longhands: &["column-width", "column-count"],
+        name: "text-decoration",
+        longhands: &[
+            "text-decoration-line",
+            "text-decoration-style",
+            "text-decoration-color",
+            "text-decoration-thickness",
+        ],
     },
 ];
 
@@ -1179,6 +1232,39 @@ mod tests {
         let radius_slice = radius.unwrap();
         assert_eq!(radius_slice.len(), 4);
         assert_eq!(radius_slice[0], "border-top-left-radius");
+
+        assert_eq!(
+            shorthand_longhands("border-top"),
+            Some(&["border-top-width", "border-top-style", "border-top-color"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("Flex"),
+            Some(&["flex-grow", "flex-shrink", "flex-basis"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("text-decoration"),
+            Some(
+                &[
+                    "text-decoration-line",
+                    "text-decoration-style",
+                    "text-decoration-color",
+                    "text-decoration-thickness"
+                ][..]
+            )
+        );
+        assert_eq!(
+            shorthand_longhands("list-style"),
+            Some(&["list-style-type", "list-style-position", "list-style-image"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("outline"),
+            Some(&["outline-width", "outline-style", "outline-color"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("flex-flow"),
+            Some(&["flex-direction", "flex-wrap"][..])
+        );
+        assert_eq!(shorthand_longhands("completely-unknown"), None);
     }
 
     #[test]
