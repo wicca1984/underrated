@@ -248,6 +248,8 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "enabled" => is_enabled(dom, node),
                     "required" => is_required(dom, node),
                     "optional" => is_optional(dom, node),
+                    "in-range" => is_in_range(dom, node),
+                    "out-of-range" => is_out_of_range(dom, node),
                     "read-only" => is_read_only(dom, node),
                     "read-write" => is_read_write(dom, node),
                     "placeholder-shown" => is_placeholder_shown(dom, node),
@@ -743,6 +745,127 @@ fn is_optional(dom: &Dom, node: NodeId) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_out_of_range(dom: &Dom, node: NodeId) -> bool {
+    let (name, attrs) = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+
+    if !ascii::eq_ignore_ascii_case(name, "input") {
+        return false;
+    }
+
+    let input_type = attrs
+        .iter()
+        .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("text");
+
+    let is_numeric = ascii::eq_ignore_ascii_case(input_type, "number")
+        || ascii::eq_ignore_ascii_case(input_type, "range");
+
+    let is_date_family = ascii::eq_ignore_ascii_case(input_type, "date")
+        || ascii::eq_ignore_ascii_case(input_type, "month")
+        || ascii::eq_ignore_ascii_case(input_type, "week")
+        || ascii::eq_ignore_ascii_case(input_type, "time")
+        || ascii::eq_ignore_ascii_case(input_type, "datetime-local");
+
+    if !is_numeric && !is_date_family {
+        return false;
+    }
+
+    let has_min = attrs
+        .iter()
+        .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "min"));
+    let has_max = attrs
+        .iter()
+        .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "max"));
+
+    if !has_min && !has_max {
+        return false;
+    }
+
+    if is_date_family {
+        // TODO(spec): date/time range comparison
+        return false;
+    }
+
+    if is_numeric {
+        let val = match attrs
+            .iter()
+            .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "value"))
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+        {
+            Some(v) => v,
+            None => return false, // parsing value failed: no constraint violation
+        };
+
+        if attrs
+            .iter()
+            .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "min"))
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .is_some_and(|min_val| val < min_val)
+        {
+            return true;
+        }
+
+        if attrs
+            .iter()
+            .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "max"))
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .is_some_and(|max_val| val > max_val)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_in_range(dom: &Dom, node: NodeId) -> bool {
+    let (name, attrs) = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+
+    if !ascii::eq_ignore_ascii_case(name, "input") {
+        return false;
+    }
+
+    let input_type = attrs
+        .iter()
+        .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("text");
+
+    let is_numeric = ascii::eq_ignore_ascii_case(input_type, "number")
+        || ascii::eq_ignore_ascii_case(input_type, "range");
+
+    let is_date_family = ascii::eq_ignore_ascii_case(input_type, "date")
+        || ascii::eq_ignore_ascii_case(input_type, "month")
+        || ascii::eq_ignore_ascii_case(input_type, "week")
+        || ascii::eq_ignore_ascii_case(input_type, "time")
+        || ascii::eq_ignore_ascii_case(input_type, "datetime-local");
+
+    if !is_numeric && !is_date_family {
+        return false;
+    }
+
+    let has_min = attrs
+        .iter()
+        .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "min"));
+    let has_max = attrs
+        .iter()
+        .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "max"));
+
+    if !has_min && !has_max {
+        return false;
+    }
+
+    // Since in-range and out-of-range are mutually exclusive for a constrained element:
+    !is_out_of_range(dom, node)
 }
 
 fn is_read_write(dom: &Dom, node: NodeId) -> bool {
@@ -2126,6 +2249,150 @@ mod tests {
             &parse_selector_list(":read-write").unwrap(),
             &dom,
             input_mixed_readonly
+        ));
+    }
+
+    #[test]
+    fn test_range_pseudo_classes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 1. <input type=number min=1 max=10 value=5> -> matches :in-range, not :out-of-range
+        let input_in_range = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "number".into()),
+                ("min".into(), "1".into()),
+                ("max".into(), "10".into()),
+                ("value".into(), "5".into()),
+            ],
+        });
+        dom.append_child(doc, input_in_range);
+
+        // 2. <input type=number min=1 max=10 value=20> -> matches :out-of-range, not :in-range
+        let input_out_of_range = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "number".into()),
+                ("min".into(), "1".into()),
+                ("max".into(), "10".into()),
+                ("value".into(), "20".into()),
+            ],
+        });
+        dom.append_child(doc, input_out_of_range);
+
+        // 3. <input type=text value=5> -> matches NEITHER (not range-applicable type)
+        let input_text = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "text".into()), ("value".into(), "5".into())],
+        });
+        dom.append_child(doc, input_text);
+
+        // 4. <input type=number value=5> -> matches NEITHER (no min/max constraints)
+        let input_no_limits = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "number".into()),
+                ("value".into(), "5".into()),
+            ],
+        });
+        dom.append_child(doc, input_no_limits);
+
+        // 5. <input type=number min=abc max=def value=5> -> matches :in-range, not :out-of-range (min/max fail to parse)
+        let input_invalid_limits = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "number".into()),
+                ("min".into(), "abc".into()),
+                ("max".into(), "def".into()),
+                ("value".into(), "5".into()),
+            ],
+        });
+        dom.append_child(doc, input_invalid_limits);
+
+        // 6. <input type=date min=2026-01-01 max=2026-12-31 value=2026-06-13> -> matches :in-range (date-family, skipped lexical comparison)
+        let input_date = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "date".into()),
+                ("min".into(), "2026-01-01".into()),
+                ("max".into(), "2026-12-31".into()),
+                ("value".into(), "2026-06-13".into()),
+            ],
+        });
+        dom.append_child(doc, input_date);
+
+        // Assertions
+        // 1. input_in_range
+        assert!(matches(
+            &parse_selector_list(":in-range").unwrap(),
+            &dom,
+            input_in_range
+        ));
+        assert!(!matches(
+            &parse_selector_list(":out-of-range").unwrap(),
+            &dom,
+            input_in_range
+        ));
+
+        // 2. input_out_of_range
+        assert!(matches(
+            &parse_selector_list(":out-of-range").unwrap(),
+            &dom,
+            input_out_of_range
+        ));
+        assert!(!matches(
+            &parse_selector_list(":in-range").unwrap(),
+            &dom,
+            input_out_of_range
+        ));
+
+        // 3. input_text
+        assert!(!matches(
+            &parse_selector_list(":in-range").unwrap(),
+            &dom,
+            input_text
+        ));
+        assert!(!matches(
+            &parse_selector_list(":out-of-range").unwrap(),
+            &dom,
+            input_text
+        ));
+
+        // 4. input_no_limits
+        assert!(!matches(
+            &parse_selector_list(":in-range").unwrap(),
+            &dom,
+            input_no_limits
+        ));
+        assert!(!matches(
+            &parse_selector_list(":out-of-range").unwrap(),
+            &dom,
+            input_no_limits
+        ));
+
+        // 5. input_invalid_limits
+        assert!(matches(
+            &parse_selector_list(":in-range").unwrap(),
+            &dom,
+            input_invalid_limits
+        ));
+        assert!(!matches(
+            &parse_selector_list(":out-of-range").unwrap(),
+            &dom,
+            input_invalid_limits
+        ));
+
+        // 6. input_date
+        assert!(matches(
+            &parse_selector_list(":in-range").unwrap(),
+            &dom,
+            input_date
+        ));
+        assert!(!matches(
+            &parse_selector_list(":out-of-range").unwrap(),
+            &dom,
+            input_date
         ));
     }
 
