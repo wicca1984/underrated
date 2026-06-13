@@ -12,7 +12,6 @@
 use std::sync::{Arc, Mutex};
 use underrated::dom::{Dom, NodeData};
 use underrated::forms::{self, FormState};
-use underrated::infra::NodeId;
 use underrated::loader::{HttpLoader, ResourceLoader};
 use underrated::shell::WinitWindow;
 use underrated::url::Url;
@@ -88,26 +87,6 @@ fn url_for_target(target: &Target) -> String {
     }
 }
 
-/// Walks up from the given node to find the nearest <a> ancestor with a non-empty href attribute.
-fn find_link_href(dom: &Dom, node: NodeId) -> Option<String> {
-    let mut current = node;
-    loop {
-        if let Some(NodeData::Element { name, .. }) = dom.data(current)
-            && name.eq_ignore_ascii_case("a")
-            && let Some(href) = dom.get_attribute(current, "href")
-            && !href.is_empty()
-        {
-            return Some(href.to_string());
-        }
-        if let Some(parent) = dom.parent(current) {
-            current = parent;
-        } else {
-            break;
-        }
-    }
-    None
-}
-
 fn main() {
     let width: u32 = 800;
     let height: u32 = 600;
@@ -157,104 +136,28 @@ fn main() {
     let mut form_state = underrated::forms::FormState::new();
     form_state.set_current_url(&url);
 
-    struct Session {
-        browsing_context: underrated::engine::BrowsingContext,
-        input_manager: underrated::shell::ShellInputManager,
-        form_state: underrated::forms::FormState,
-    }
-
-    let session = Arc::new(Mutex::new(Session {
+    let session = Arc::new(Mutex::new(underrated::app::BrowserSession::new(
         browsing_context,
         input_manager,
         form_state,
-    }));
+        base_url,
+        width,
+        height,
+    )));
 
     let session_draw = session.clone();
     let draw_closure = move || {
         if let Ok(session) = session_draw.lock() {
-            let caret = session
-                .browsing_context
-                .focus_node
-                .map(|node| (node, session.browsing_context.caret_index));
-            let display_list = underrated::paint::build_display_list_with_caret(
-                &session.browsing_context.page.layout,
-                &session.browsing_context.page.dom,
-                &session.browsing_context.page.styles,
-                caret,
-            );
-            underrated::raster::rasterize(&display_list, width, height)
+            session.render()
         } else {
             underrated::raster::Canvas::new(width, height)
         }
     };
 
     let session_event = session.clone();
-    let base_url_clone = base_url.clone();
     let event_closure = move |event: underrated::shell::InputEvent| {
         if let Ok(mut session) = session_event.lock() {
-            match event {
-                underrated::shell::InputEvent::Click { x, y } => {
-                    let clicked_node = underrated::layout::hit_test(
-                        &session.browsing_context.page.layout,
-                        x as f32,
-                        y as f32,
-                    );
-                    session.input_manager.handle_click(x, y, clicked_node);
-                    let focused = session.input_manager.focused_element();
-                    session.browsing_context.set_focus(focused);
-                    if let Some(focused_node) = session.browsing_context.focus_node {
-                        let caret_pos = session.input_manager.caret_position(focused_node);
-                        session.browsing_context.caret_index = caret_pos;
-                    }
-
-                    if let Some(node) = clicked_node
-                        && let Some(href) = find_link_href(&session.browsing_context.page.dom, node)
-                    {
-                        let req = underrated::forms::NavigationRequest {
-                            url: href,
-                            method: underrated::forms::Method::Get,
-                            body: String::new(),
-                            content_type: None,
-                        };
-                        let new_page = underrated::engine::navigate(
-                            &req,
-                            &base_url_clone,
-                            &underrated::loader::HttpLoader,
-                            width as f32,
-                        );
-                        session.browsing_context.navigate(new_page);
-                        session.input_manager.blur();
-                    }
-                }
-                underrated::shell::InputEvent::Key { key } => {
-                    if let Some(focused) = session.input_manager.focused_element() {
-                        if key == "Enter" || key == "Return" {
-                            if let Some(new_page) = underrated::engine::navigate_from_enter(
-                                &session.browsing_context.page.dom,
-                                focused,
-                                &session.form_state,
-                                &base_url_clone,
-                                &underrated::loader::HttpLoader,
-                                width as f32,
-                            ) {
-                                session.browsing_context.navigate(new_page);
-                                session.input_manager.blur();
-                            }
-                        } else {
-                            session.input_manager.handle_key(&key);
-                            let text = session.input_manager.text_buffer(focused).to_string();
-                            let caret_pos = session.input_manager.caret_position(focused);
-                            session.form_state.set_value(focused, &text);
-                            session
-                                .browsing_context
-                                .page
-                                .dom
-                                .set_attribute(focused, "value", &text);
-                            session.browsing_context.caret_index = caret_pos;
-                        }
-                    }
-                }
-            }
+            session.handle_input_event(event, &underrated::loader::HttpLoader);
         }
     };
 
@@ -333,58 +236,5 @@ mod tests {
     fn test_url_for_target_url() {
         let target = Target::Url("https://example.com/some/path".to_string());
         assert_eq!(url_for_target(&target), "https://example.com/some/path");
-    }
-
-    #[test]
-    fn test_find_link_href_basic() {
-        let mut dom = Dom::new();
-        // Create an <a> node with href="/result"
-        let a_node = dom.create_node(NodeData::Element {
-            name: "a".into(),
-            attrs: vec![("href".into(), "/result".into())],
-        });
-        // Create a <span> node
-        let span_node = dom.create_node(NodeData::Element {
-            name: "span".into(),
-            attrs: vec![],
-        });
-        // Append span_node under a_node
-        dom.append_child(a_node, span_node);
-
-        // find_link_href starting from span should find "/result"
-        assert_eq!(find_link_href(&dom, span_node), Some("/result".to_string()));
-        // find_link_href starting from a_node itself should find "/result"
-        assert_eq!(find_link_href(&dom, a_node), Some("/result".to_string()));
-
-        // Node with no <a> ancestor should return None
-        let div_node = dom.create_node(NodeData::Element {
-            name: "div".into(),
-            attrs: vec![],
-        });
-        assert_eq!(find_link_href(&dom, div_node), None);
-
-        // <a> with empty href should return None
-        let a_empty = dom.create_node(NodeData::Element {
-            name: "a".into(),
-            attrs: vec![("href".into(), "".into())],
-        });
-        assert_eq!(find_link_href(&dom, a_empty), None);
-
-        // <a> with missing href should return None
-        let a_missing = dom.create_node(NodeData::Element {
-            name: "a".into(),
-            attrs: vec![],
-        });
-        assert_eq!(find_link_href(&dom, a_missing), None);
-
-        // <a> in uppercase "A" should be matched case-insensitively
-        let a_upper = dom.create_node(NodeData::Element {
-            name: "A".into(),
-            attrs: vec![("href".into(), "/uppercase".into())],
-        });
-        assert_eq!(
-            find_link_href(&dom, a_upper),
-            Some("/uppercase".to_string())
-        );
     }
 }
