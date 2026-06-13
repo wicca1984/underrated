@@ -1747,20 +1747,7 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             _ => false,
         },
         "font-stretch" => match value {
-            CssValue::Keyword(kw) => {
-                matches!(
-                    kw.to_ascii_lowercase().as_str(),
-                    "ultra-condensed"
-                        | "extra-condensed"
-                        | "condensed"
-                        | "semi-condensed"
-                        | "normal"
-                        | "semi-expanded"
-                        | "expanded"
-                        | "extra-expanded"
-                        | "ultra-expanded"
-                )
-            }
+            CssValue::Keyword(kw) => FontStretchValue::parse(kw).is_some(),
             CssValue::FontStretch(_) => true,
             _ => false,
         },
