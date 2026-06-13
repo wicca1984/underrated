@@ -39,6 +39,7 @@ pub struct InheritedText {
     pub text_align_last: String,
     pub tab_size: u32,
     pub hyphens: String,
+    pub text_rendering: String,
     pub text_shadow: Option<crate::css::values::CssValue>,
 }
 
@@ -69,6 +70,7 @@ impl Default for InheritedText {
             text_align_last: "auto".to_string(),
             tab_size: 8,
             hyphens: "manual".to_string(),
+            text_rendering: "auto".to_string(),
             text_shadow: None,
         }
     }
@@ -802,6 +804,9 @@ impl CategorizedComputedStyle {
             "hyphens" => {
                 Arc::make_mut(&mut self.inherited_text).hyphens = css_value_to_string(value)
             }
+            "text-rendering" => {
+                Arc::make_mut(&mut self.inherited_text).text_rendering = css_value_to_string(value)
+            }
             "text-shadow" => {
                 Arc::make_mut(&mut self.inherited_text).text_shadow = Some(value.clone())
             }
@@ -1469,6 +1474,7 @@ impl CategorizedComputedStyle {
             "text-align-last" => Some(self.inherited_text.text_align_last.clone()),
             "tab-size" => Some(self.inherited_text.tab_size.to_string()),
             "hyphens" => Some(self.inherited_text.hyphens.clone()),
+            "text-rendering" => Some(self.inherited_text.text_rendering.clone()),
             "text-shadow" => self
                 .inherited_text
                 .text_shadow
@@ -2045,6 +2051,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             EmptyCellsValue::Hide => "hide".to_string(),
         },
         CssValue::Hyphens(h) => h.as_str().to_string(),
+        CssValue::TextRendering(tr) => tr.as_str().to_string(),
     }
 }
 
