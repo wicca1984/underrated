@@ -565,6 +565,31 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
     },
     PropertyMetadata {
+        name: "scroll-snap-type",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "scroll-snap-align",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "scroll-snap-stop",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "scroll-padding",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-margin",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
         name: "overscroll-behavior",
         inherited: false,
         initial: "auto",
@@ -896,6 +921,44 @@ mod tests {
         assert_eq!(overscroll_behavior_y.name, "overscroll-behavior-y");
         assert!(!overscroll_behavior_y.inherited);
         assert_eq!(overscroll_behavior_y.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0495() {
+        let scroll_snap_type = lookup("scroll-snap-type");
+        assert!(scroll_snap_type.is_some());
+        let scroll_snap_type = scroll_snap_type.unwrap();
+        assert_eq!(scroll_snap_type.name, "scroll-snap-type");
+        assert!(!scroll_snap_type.inherited);
+        assert_eq!(scroll_snap_type.initial, "none");
+
+        let scroll_snap_align = lookup("scroll-snap-align");
+        assert!(scroll_snap_align.is_some());
+        let scroll_snap_align = scroll_snap_align.unwrap();
+        assert_eq!(scroll_snap_align.name, "scroll-snap-align");
+        assert!(!scroll_snap_align.inherited);
+        assert_eq!(scroll_snap_align.initial, "none");
+
+        let scroll_snap_stop = lookup("scroll-snap-stop");
+        assert!(scroll_snap_stop.is_some());
+        let scroll_snap_stop = scroll_snap_stop.unwrap();
+        assert_eq!(scroll_snap_stop.name, "scroll-snap-stop");
+        assert!(!scroll_snap_stop.inherited);
+        assert_eq!(scroll_snap_stop.initial, "normal");
+
+        let scroll_padding = lookup("scroll-padding");
+        assert!(scroll_padding.is_some());
+        let scroll_padding = scroll_padding.unwrap();
+        assert_eq!(scroll_padding.name, "scroll-padding");
+        assert!(!scroll_padding.inherited);
+        assert_eq!(scroll_padding.initial, "auto");
+
+        let scroll_margin = lookup("scroll-margin");
+        assert!(scroll_margin.is_some());
+        let scroll_margin = scroll_margin.unwrap();
+        assert_eq!(scroll_margin.name, "scroll-margin");
+        assert!(!scroll_margin.inherited);
+        assert_eq!(scroll_margin.initial, "0");
     }
 
     #[test]
