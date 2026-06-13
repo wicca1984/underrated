@@ -19,4 +19,7 @@ cargo test
 echo "=== Running cargo doc ==="
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
+echo "=== Running render smoke gate ==="
+bash "$(dirname "$0")/smoke.sh"
+
 echo "All gates passed!"
