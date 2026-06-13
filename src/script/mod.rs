@@ -548,6 +548,22 @@ impl BoaHost {
                 }
                 window.DOMException = DOMException;
 
+                class Node extends EventTarget {}
+                class Element extends Node {}
+                window.Node = Node;
+                window.Element = Element;
+
+                Element.prototype.matches = function(selector) {
+                    if (this.nodeType !== 1) return false;
+                    return bridge.matches(this.__key__, String(selector));
+                };
+
+                Element.prototype.closest = function(selector) {
+                    if (this.nodeType !== 1) return null;
+                    const key = bridge.closest(this.__key__, String(selector));
+                    return getOrCreateNode(key);
+                };
+
                 function getTokens(element) {
                     const value = element.getAttribute('class');
                     if (!value) return [];
@@ -1273,15 +1289,6 @@ impl BoaHost {
                         getAttributeNames() {
                             return bridge.getAttributeNames(this.__key__);
                         },
-                        matches(selector) {
-                            if (this.nodeType !== 1) return false;
-                            return bridge.matches(this.__key__, String(selector));
-                        },
-                        closest(selector) {
-                            if (this.nodeType !== 1) return null;
-                            const key = bridge.closest(this.__key__, String(selector));
-                            return getOrCreateNode(key);
-                        },
                         insertAdjacentElement(position, element) {
                             if (this.nodeType !== 1) return null;
                             if (!element || !element.__key__) {
@@ -1335,7 +1342,12 @@ impl BoaHost {
                         }
                     };
 
-                    Object.setPrototypeOf(node, EventTarget.prototype);
+                    const isElement = bridge.nodeType(key) === 1;
+                    if (isElement) {
+                        Object.setPrototypeOf(node, Element.prototype);
+                    } else {
+                        Object.setPrototypeOf(node, Node.prototype);
+                    }
                     node.addEventListener = bridge.addEventListener;
                     node.removeEventListener = bridge.removeEventListener;
                     node.dispatchEvent = bridge.dispatchEvent;
@@ -2014,7 +2026,7 @@ impl BoaHost {
                     return getOrCreateNode(clonedKey);
                 };
 
-                Object.setPrototypeOf(document, EventTarget.prototype);
+                Object.setPrototypeOf(document, Node.prototype);
                 document.addEventListener = bridge.addEventListener;
                 document.removeEventListener = bridge.removeEventListener;
                 document.dispatchEvent = bridge.dispatchEvent;
@@ -6263,6 +6275,44 @@ mod tests {
         // - closest returns self when self matches: getElementById('a').closest('#a').id => "a"
         let res6 = host.eval_with_dom("document.getElementById('a').closest('#a').id", &mut dom);
         assert_eq!(res6, Ok("a".to_string()));
+
+        // - prototype and instance checks (t0468)
+        let res_proto_matches = host.eval_with_dom("typeof Element.prototype.matches", &mut dom);
+        assert_eq!(res_proto_matches, Ok("function".to_string()));
+
+        let res_proto_closest = host.eval_with_dom("typeof Element.prototype.closest", &mut dom);
+        assert_eq!(res_proto_closest, Ok("function".to_string()));
+
+        let res_instanceof_element = host.eval_with_dom(
+            "document.getElementById('b-span') instanceof Element",
+            &mut dom,
+        );
+        assert_eq!(res_instanceof_element, Ok("true".to_string()));
+
+        let res_instanceof_node = host.eval_with_dom(
+            "document.getElementById('b-span') instanceof Node",
+            &mut dom,
+        );
+        assert_eq!(res_instanceof_node, Ok("true".to_string()));
+
+        let res_instanceof_event_target = host.eval_with_dom(
+            "document.getElementById('b-span') instanceof EventTarget",
+            &mut dom,
+        );
+        assert_eq!(res_instanceof_event_target, Ok("true".to_string()));
+
+        // - invalid selector string should not panic or throw, behaves like querySelector
+        let res_invalid_matches = host.eval_with_dom(
+            "document.getElementById('b-span').matches('div > > p')",
+            &mut dom,
+        );
+        assert_eq!(res_invalid_matches, Ok("false".to_string()));
+
+        let res_invalid_closest = host.eval_with_dom(
+            "document.getElementById('b-span').closest('div > > p')",
+            &mut dom,
+        );
+        assert_eq!(res_invalid_closest, Ok("null".to_string()));
     }
 
     #[test]
