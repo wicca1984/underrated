@@ -323,6 +323,9 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "clear"
             | "table-layout"
             | "scroll-behavior"
+            | "overscroll-behavior"
+            | "overscroll-behavior-x"
+            | "overscroll-behavior-y"
             | "user-select"
             | "visibility"
             | "direction"
@@ -465,6 +468,33 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "scroll-behavior" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "smooth")
+            }
+            _ => false,
+        },
+        "overscroll-behavior" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "contain" | "none"
+                )
+            }
+            CssValue::Multiple(vals) if vals.len() == 2 => vals.iter().all(|val| match val {
+                CssValue::Keyword(kw) => {
+                    matches!(
+                        kw.to_ascii_lowercase().as_str(),
+                        "auto" | "contain" | "none"
+                    )
+                }
+                _ => false,
+            }),
+            _ => false,
+        },
+        "overscroll-behavior-x" | "overscroll-behavior-y" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "contain" | "none"
+                )
             }
             _ => false,
         },
@@ -754,6 +784,42 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "smooth" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "overscroll-behavior" => {
+            // TODO(spec): expand overscroll-behavior shorthand in style resolver if needed
+            match &val {
+                CssValue::Keyword(kw) => match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "contain" | "none" => Some(val),
+                    _ => None,
+                },
+                CssValue::Multiple(vals) => {
+                    if vals.len() == 2 {
+                        let is_valid = vals.iter().all(|v| match v {
+                            CssValue::Keyword(kw) => {
+                                matches!(
+                                    kw.to_ascii_lowercase().as_str(),
+                                    "auto" | "contain" | "none"
+                                )
+                            }
+                            _ => false,
+                        });
+                        if is_valid { Some(val) } else { None }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        "overscroll-behavior-x" | "overscroll-behavior-y" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "contain" | "none" => Some(val),
                     _ => None,
                 }
             } else {
@@ -2922,6 +2988,118 @@ mod tests {
                     value: 10.0,
                     unit: "px".to_string()
                 })]
+            ),
+            None
+        );
+
+        // Test overscroll properties (t0485)
+        assert!(is_known_layout_property("overscroll-behavior"));
+        assert!(is_known_layout_property("overscroll-behavior-x"));
+        assert!(is_known_layout_property("overscroll-behavior-y"));
+
+        // Test parse_property_value and is_valid_property_value for overscroll-behavior-x and overscroll-behavior-y
+        for prop in &["overscroll-behavior-x", "overscroll-behavior-y"] {
+            for val in &["auto", "contain", "none", "AUTO", "None"] {
+                assert_eq!(
+                    parse_property_value(prop, &[token(CssToken::Ident(val.to_string()))]),
+                    Some(CssValue::Keyword(val.to_string()))
+                );
+                assert!(is_valid_property_value(
+                    prop,
+                    &CssValue::Keyword(val.to_string())
+                ));
+            }
+            assert_eq!(
+                parse_property_value(prop, &[token(CssToken::Ident("invalid".to_string()))]),
+                None
+            );
+            assert!(!is_valid_property_value(
+                prop,
+                &CssValue::Keyword("invalid".to_string())
+            ));
+            // Multiple values are invalid for -x and -y longhands
+            assert_eq!(
+                parse_property_value(
+                    prop,
+                    &[
+                        token(CssToken::Ident("contain".to_string())),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Ident("none".to_string())),
+                    ]
+                ),
+                None
+            );
+        }
+
+        // Test parse_property_value and is_valid_property_value for overscroll-behavior
+        for val in &["auto", "contain", "none", "AUTO", "None"] {
+            assert_eq!(
+                parse_property_value(
+                    "overscroll-behavior",
+                    &[token(CssToken::Ident(val.to_string()))]
+                ),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+            assert!(is_valid_property_value(
+                "overscroll-behavior",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+
+        // Test overscroll-behavior with 2 values
+        assert_eq!(
+            parse_property_value(
+                "overscroll-behavior",
+                &[
+                    token(CssToken::Ident("contain".to_string())),
+                    token(CssToken::Whitespace),
+                    token(CssToken::Ident("none".to_string())),
+                ]
+            ),
+            Some(CssValue::Multiple(vec![
+                CssValue::Keyword("contain".to_string()),
+                CssValue::Keyword("none".to_string()),
+            ]))
+        );
+        assert!(is_valid_property_value(
+            "overscroll-behavior",
+            &CssValue::Multiple(vec![
+                CssValue::Keyword("contain".to_string()),
+                CssValue::Keyword("none".to_string()),
+            ])
+        ));
+
+        // Test invalid 2-value overscroll-behavior
+        assert_eq!(
+            parse_property_value(
+                "overscroll-behavior",
+                &[
+                    token(CssToken::Ident("contain".to_string())),
+                    token(CssToken::Whitespace),
+                    token(CssToken::Ident("invalid".to_string())),
+                ]
+            ),
+            None
+        );
+        assert!(!is_valid_property_value(
+            "overscroll-behavior",
+            &CssValue::Multiple(vec![
+                CssValue::Keyword("contain".to_string()),
+                CssValue::Keyword("invalid".to_string()),
+            ])
+        ));
+
+        // Test invalid 3-value overscroll-behavior
+        assert_eq!(
+            parse_property_value(
+                "overscroll-behavior",
+                &[
+                    token(CssToken::Ident("contain".to_string())),
+                    token(CssToken::Whitespace),
+                    token(CssToken::Ident("none".to_string())),
+                    token(CssToken::Whitespace),
+                    token(CssToken::Ident("auto".to_string())),
+                ]
             ),
             None
         );
