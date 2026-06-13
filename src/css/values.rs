@@ -372,6 +372,48 @@ impl TryFrom<&CssValue> for CaptionSideValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum EmptyCellsValue {
+    Show,
+    Hide,
+}
+
+impl EmptyCellsValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "show" => Some(Self::Show),
+            "hide" => Some(Self::Hide),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Show => "show",
+            Self::Hide => "hide",
+        }
+    }
+}
+
+impl std::str::FromStr for EmptyCellsValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for EmptyCellsValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -2916,6 +2958,36 @@ mod tests {
             Ok(CaptionSideValue::Bottom)
         );
         assert_eq!(CaptionSideValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
+    fn test_empty_cells_value() {
+        // Test parsing keyword strings to EmptyCellsValue
+        assert_eq!(EmptyCellsValue::parse("show"), Some(EmptyCellsValue::Show));
+        assert_eq!(EmptyCellsValue::parse("hide"), Some(EmptyCellsValue::Hide));
+        assert_eq!(EmptyCellsValue::parse("SHOW"), Some(EmptyCellsValue::Show));
+        assert_eq!(EmptyCellsValue::parse("Hide"), Some(EmptyCellsValue::Hide));
+        assert_eq!(EmptyCellsValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!("show".parse::<EmptyCellsValue>(), Ok(EmptyCellsValue::Show));
+        assert_eq!("hide".parse::<EmptyCellsValue>(), Ok(EmptyCellsValue::Hide));
+        assert_eq!("BOGUS".parse::<EmptyCellsValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(EmptyCellsValue::Show.as_str(), "show");
+        assert_eq!(EmptyCellsValue::Hide.as_str(), "hide");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            EmptyCellsValue::try_from(&CssValue::Keyword("show".to_string())),
+            Ok(EmptyCellsValue::Show)
+        );
+        assert_eq!(
+            EmptyCellsValue::try_from(&CssValue::Keyword("HIDE".to_string())),
+            Ok(EmptyCellsValue::Hide)
+        );
+        assert_eq!(EmptyCellsValue::try_from(&CssValue::Number(1.0)), Err(()));
     }
 
     #[test]
