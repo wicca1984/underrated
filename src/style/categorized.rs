@@ -2067,6 +2067,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::TextRendering(tr) => tr.as_str().to_string(),
         CssValue::ImageRendering(ir) => ir.as_str().to_string(),
         CssValue::FontVariantCaps(fvc) => fvc.as_str().to_string(),
+        CssValue::FontStretch(fs) => fs.as_str().to_string(),
     }
 }
 
@@ -2675,6 +2676,52 @@ mod tests {
                 FontVariantCapsValue::TitlingCaps
             )),
             "titling-caps".to_string()
+        );
+    }
+
+    #[test]
+    fn test_font_stretch_style_categorization() {
+        use crate::css::values::{CssValue, FontStretchValue};
+
+        let mut style = CategorizedComputedStyle::initial();
+        // Check initial default is normal
+        assert_eq!(
+            style.get_property_as_string("font-stretch"),
+            Some("normal".to_string())
+        );
+
+        // Set to condensed and read back
+        style.set_property(
+            "font-stretch",
+            &CssValue::FontStretch(FontStretchValue::Condensed),
+        );
+        assert_eq!(
+            style.get_property_as_string("font-stretch"),
+            Some("condensed".to_string())
+        );
+
+        // Set to expanded and read back
+        style.set_property(
+            "font-stretch",
+            &CssValue::FontStretch(FontStretchValue::Expanded),
+        );
+        assert_eq!(
+            style.get_property_as_string("font-stretch"),
+            Some("expanded".to_string())
+        );
+
+        // Test css_value_to_string serialization directly for some values
+        assert_eq!(
+            css_value_to_string(&CssValue::FontStretch(FontStretchValue::Normal)),
+            "normal".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontStretch(FontStretchValue::Condensed)),
+            "condensed".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontStretch(FontStretchValue::Expanded)),
+            "expanded".to_string()
         );
     }
 }
