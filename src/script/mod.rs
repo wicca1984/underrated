@@ -159,6 +159,8 @@ impl BoaHost {
         let _ = context.register_global_class::<AbortSignal>();
         let _ = context.register_global_class::<AbortController>();
         let _ = context.register_global_class::<DOMParser>();
+        let _ = context.register_global_class::<MutationObserver>();
+        let _ = context.register_global_class::<MutationRecord>();
 
         let bridge = ObjectInitializer::new(context)
             .function(
@@ -7086,9 +7088,757 @@ pub fn dom_parser_parse_from_string(
     Ok(JsValue::from(document_inst))
 }
 
+/// Options dictionary/object for `MutationObserver.observe`.
+/// Spec: <https://dom.spec.whatwg.org/#dictdef-mutationobserverinit>
+#[derive(Debug, Clone, Trace, Finalize)]
+pub struct MutationObserverOptions {
+    pub child_list: bool,
+    pub attributes: Option<bool>,
+    pub subtree: bool,
+    pub character_data: Option<bool>,
+    pub attribute_old_value: Option<bool>,
+    pub character_data_old_value: Option<bool>,
+    pub attribute_filter: Option<Vec<String>>,
+}
+
+/// Helper function to parse `MutationObserverInit` dictionary/options object.
+fn parse_mutation_observer_options(
+    options_val: &JsValue,
+    context: &mut Context,
+) -> JsResult<MutationObserverOptions> {
+    let options_obj = options_val.as_object().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: observe() requires options parameter"),
+        )
+    })?;
+
+    // childList
+    let child_list_val = options_obj.get(JsString::from("childList"), context)?;
+    let child_list = if child_list_val.is_undefined() {
+        false
+    } else {
+        child_list_val.to_boolean()
+    };
+
+    // attributes
+    let attributes_val = options_obj.get(JsString::from("attributes"), context)?;
+    let attributes = if attributes_val.is_undefined() {
+        None
+    } else {
+        Some(attributes_val.to_boolean())
+    };
+
+    // subtree
+    let subtree_val = options_obj.get(JsString::from("subtree"), context)?;
+    let subtree = if subtree_val.is_undefined() {
+        false
+    } else {
+        subtree_val.to_boolean()
+    };
+
+    // characterData
+    let character_data_val = options_obj.get(JsString::from("characterData"), context)?;
+    let character_data = if character_data_val.is_undefined() {
+        None
+    } else {
+        Some(character_data_val.to_boolean())
+    };
+
+    // attributeOldValue
+    let attribute_old_value_val = options_obj.get(JsString::from("attributeOldValue"), context)?;
+    let attribute_old_value = if attribute_old_value_val.is_undefined() {
+        None
+    } else {
+        Some(attribute_old_value_val.to_boolean())
+    };
+
+    // characterDataOldValue
+    let character_data_old_value_val =
+        options_obj.get(JsString::from("characterDataOldValue"), context)?;
+    let character_data_old_value = if character_data_old_value_val.is_undefined() {
+        None
+    } else {
+        Some(character_data_old_value_val.to_boolean())
+    };
+
+    // attributeFilter
+    let attribute_filter_val = options_obj.get(JsString::from("attributeFilter"), context)?;
+    let attribute_filter = if attribute_filter_val.is_undefined() || attribute_filter_val.is_null()
+    {
+        None
+    } else {
+        let filter_obj = attribute_filter_val.as_object().ok_or_else(|| {
+            JsError::from(
+                JsNativeError::typ()
+                    .with_message("TypeError: attributeFilter must be a sequence of strings"),
+            )
+        })?;
+        let len_val = filter_obj.get(JsString::from("length"), context)?;
+        let len = len_val.to_number(context)? as usize;
+        let mut filter = Vec::with_capacity(len);
+        for i in 0..len {
+            let item = filter_obj.get(i, context)?;
+            filter.push(item.to_string(context)?.to_std_string().unwrap_or_default());
+        }
+        Some(filter)
+    };
+
+    // Apply defaults and validate options per spec:
+    // 1. If options["attributeOldValue"] or options["attributeFilter"] is present, and options["attributes"] is not present, set options["attributes"] to true.
+    let mut resolved_attributes = attributes;
+    if (attribute_old_value.is_some() || attribute_filter.is_some()) && attributes.is_none() {
+        resolved_attributes = Some(true);
+    }
+
+    // 2. If options["characterDataOldValue"] is present, and options["characterData"] is not present, set options["characterData"] to true.
+    let mut resolved_character_data = character_data;
+    if character_data_old_value.is_some() && character_data.is_none() {
+        resolved_character_data = Some(true);
+    }
+
+    // Validation rules:
+    // 1. At least one of childList, attributes, or characterData must be true.
+    let final_attributes = resolved_attributes.unwrap_or(false);
+    let final_character_data = resolved_character_data.unwrap_or(false);
+    if !child_list && !final_attributes && !final_character_data {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: At least one of childList, attributes, or characterData must be true",
+        )));
+    }
+
+    // 2. If options["attributes"] is false, and options["attributeOldValue"] is true, or options["attributeFilter"] is present, throw TypeError.
+    if !final_attributes && (attribute_old_value.unwrap_or(false) || attribute_filter.is_some()) {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: attributeOldValue or attributeFilter cannot be present when attributes is false"
+        )));
+    }
+
+    // 3. If options["characterData"] is false, and options["characterDataOldValue"] is true, throw TypeError.
+    if !final_character_data && character_data_old_value.unwrap_or(false) {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: characterDataOldValue cannot be true when characterData is false",
+        )));
+    }
+
+    Ok(MutationObserverOptions {
+        child_list,
+        attributes: resolved_attributes,
+        subtree,
+        character_data: resolved_character_data,
+        attribute_old_value,
+        character_data_old_value,
+        attribute_filter,
+    })
+}
+
+/// An active observation setup on a target DOM Node.
+#[derive(Debug, Trace, Finalize, Clone)]
+pub struct Observation {
+    pub target: JsValue,
+    pub target_key: String,
+    pub options: MutationObserverOptions,
+}
+
+/// Implementation of WHATWG DOM `MutationObserver` interface.
+/// Spec: <https://dom.spec.whatwg.org/#interface-mutationobserver>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct MutationObserver {
+    pub(crate) callback: JsValue,
+    pub(crate) active_observations: GcRefCell<Vec<Observation>>,
+    pub(crate) record_queue: GcRefCell<Vec<JsValue>>,
+}
+
+impl Class for MutationObserver {
+    const NAME: &'static str = "MutationObserver";
+    const LENGTH: usize = 1;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+        if !callback.is_callable() {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "TypeError: MutationObserver constructor requires a callback function",
+            )));
+        }
+        Ok(MutationObserver {
+            callback,
+            active_observations: GcRefCell::new(Vec::new()),
+            record_queue: GcRefCell::new(Vec::new()),
+        })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        class
+            .method(
+                JsString::from("observe"),
+                2,
+                NativeFunction::from_fn_ptr(mutation_observer_observe),
+            )
+            .method(
+                JsString::from("disconnect"),
+                0,
+                NativeFunction::from_fn_ptr(mutation_observer_disconnect),
+            )
+            .method(
+                JsString::from("takeRecords"),
+                0,
+                NativeFunction::from_fn_ptr(mutation_observer_take_records),
+            )
+            .method(
+                JsString::from("__queueRecord"),
+                1,
+                NativeFunction::from_fn_ptr(mutation_observer_queue_record_internal),
+            );
+
+        Ok(())
+    }
+}
+
+pub fn mutation_observer_observe(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<MutationObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationObserver object"),
+        )
+    })?;
+
+    let target = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: observe() requires target parameter"),
+        )
+    })?;
+
+    let target_obj = target.as_object().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: target must be a DOM Node (object)"),
+        )
+    })?;
+
+    let key_val = target_obj.get(JsString::from("__key__"), context)?;
+    if key_val.is_undefined() || key_val.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: target must be a DOM Node with a __key__",
+        )));
+    }
+    let target_key = key_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let options_val = args.get(1).ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: observe() requires options parameter"),
+        )
+    })?;
+    let options = parse_mutation_observer_options(options_val, context)?;
+
+    // Check if duplicate target is being observed
+    let mut active = observer.active_observations.borrow_mut();
+    if let Some(pos) = active.iter().position(|obs| obs.target_key == target_key) {
+        active[pos].options = options;
+    } else {
+        active.push(Observation {
+            target: target.clone(),
+            target_key,
+            options,
+        });
+    }
+
+    Ok(JsValue::undefined())
+}
+
+pub fn mutation_observer_disconnect(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<MutationObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationObserver object"),
+        )
+    })?;
+
+    observer.active_observations.borrow_mut().clear();
+    observer.record_queue.borrow_mut().clear();
+
+    Ok(JsValue::undefined())
+}
+
+pub fn mutation_observer_take_records(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<MutationObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationObserver object"),
+        )
+    })?;
+
+    // Drain/empty the queue
+    let mut queue = observer.record_queue.borrow_mut();
+    let elements: Vec<JsValue> = std::mem::take(&mut *queue);
+
+    let array = boa_engine::object::builtins::JsArray::from_iter(elements, context);
+    Ok(JsValue::from(array))
+}
+
+pub fn mutation_observer_queue_record_internal(
+    this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let observer = obj.downcast_ref::<MutationObserver>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationObserver object"),
+        )
+    })?;
+
+    let record = args.first().cloned().unwrap_or(JsValue::undefined());
+    observer.record_queue.borrow_mut().push(record);
+
+    Ok(JsValue::undefined())
+}
+
+/// Implementation of WHATWG DOM `MutationRecord` interface.
+/// Spec: <https://dom.spec.whatwg.org/#interface-mutationrecord>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct MutationRecord {
+    pub(crate) r_type: JsString,
+    pub(crate) target: JsValue,
+    pub(crate) added_nodes: JsValue,
+    pub(crate) removed_nodes: JsValue,
+    pub(crate) previous_sibling: JsValue,
+    pub(crate) next_sibling: JsValue,
+    pub(crate) attribute_name: JsValue,
+    pub(crate) attribute_namespace: JsValue,
+    pub(crate) old_value: JsValue,
+}
+
+impl Class for MutationRecord {
+    const NAME: &'static str = "MutationRecord";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let init_obj = args.first().and_then(|v| v.as_object());
+
+        let (
+            r_type,
+            target,
+            added_nodes,
+            removed_nodes,
+            previous_sibling,
+            next_sibling,
+            attribute_name,
+            attribute_namespace,
+            old_value,
+        ) = if let Some(obj) = init_obj {
+            (
+                obj.get(JsString::from("type"), context)?
+                    .to_string(context)?,
+                obj.get(JsString::from("target"), context)?,
+                obj.get(JsString::from("addedNodes"), context)?,
+                obj.get(JsString::from("removedNodes"), context)?,
+                obj.get(JsString::from("previousSibling"), context)?,
+                obj.get(JsString::from("nextSibling"), context)?,
+                obj.get(JsString::from("attributeName"), context)?,
+                obj.get(JsString::from("attributeNamespace"), context)?,
+                obj.get(JsString::from("oldValue"), context)?,
+            )
+        } else {
+            (
+                JsString::from(""),
+                JsValue::undefined(),
+                JsValue::undefined(),
+                JsValue::undefined(),
+                JsValue::null(),
+                JsValue::null(),
+                JsValue::null(),
+                JsValue::null(),
+                JsValue::null(),
+            )
+        };
+
+        Ok(MutationRecord {
+            r_type,
+            target,
+            added_nodes,
+            removed_nodes,
+            previous_sibling,
+            next_sibling,
+            attribute_name,
+            attribute_namespace,
+            old_value,
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let getters: &[(
+            &str,
+            fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+        )] = &[
+            ("type", mutation_record_get_type),
+            ("target", mutation_record_get_target),
+            ("addedNodes", mutation_record_get_added_nodes),
+            ("removedNodes", mutation_record_get_removed_nodes),
+            ("previousSibling", mutation_record_get_previous_sibling),
+            ("nextSibling", mutation_record_get_next_sibling),
+            ("attributeName", mutation_record_get_attribute_name),
+            (
+                "attributeNamespace",
+                mutation_record_get_attribute_namespace,
+            ),
+            ("oldValue", mutation_record_get_old_value),
+        ];
+
+        for &(name, func) in getters {
+            let getter_fn = boa_engine::object::FunctionObjectBuilder::new(
+                &realm,
+                NativeFunction::from_fn_ptr(func),
+            )
+            .name(format!("get {}", name))
+            .build();
+
+            class.accessor(
+                JsString::from(name),
+                Some(getter_fn),
+                None,
+                Attribute::all(),
+            );
+        }
+
+        Ok(())
+    }
+}
+
+pub fn mutation_record_get_type(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(JsValue::from(record.r_type.clone()))
+}
+
+pub fn mutation_record_get_target(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.target.clone())
+}
+
+pub fn mutation_record_get_added_nodes(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.added_nodes.clone())
+}
+
+pub fn mutation_record_get_removed_nodes(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.removed_nodes.clone())
+}
+
+pub fn mutation_record_get_previous_sibling(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.previous_sibling.clone())
+}
+
+pub fn mutation_record_get_next_sibling(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.next_sibling.clone())
+}
+
+pub fn mutation_record_get_attribute_name(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.attribute_name.clone())
+}
+
+pub fn mutation_record_get_attribute_namespace(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.attribute_namespace.clone())
+}
+
+pub fn mutation_record_get_old_value(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let record = obj.downcast_ref::<MutationRecord>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ()
+                .with_message("TypeError: Method called on non-MutationRecord object"),
+        )
+    })?;
+    Ok(record.old_value.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_mutation_observer_t0525() {
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        // 1. Basic properties and constructor exist on global, and validation on constructor
+        host.eval_with_dom(
+            r#"{
+            if (typeof MutationObserver === "undefined") throw "MutationObserver undefined";
+            if (typeof MutationRecord === "undefined") throw "MutationRecord undefined";
+
+            let thrown = false;
+            try {
+                new MutationObserver();
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor without callback did not throw TypeError";
+
+            thrown = false;
+            try {
+                new MutationObserver("not-a-function");
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "Constructor with string callback did not throw TypeError";
+
+            const observer = new MutationObserver(() => {});
+            if (!observer.observe) throw "observe method missing";
+            if (!observer.disconnect) throw "disconnect method missing";
+            if (!observer.takeRecords) throw "takeRecords method missing";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+
+        // 2. Options validation for observe()
+        host.eval_with_dom(
+            r#"{
+            const div = document.createElement("div");
+            const observer = new MutationObserver(() => {});
+
+            // Missing options or empty options must throw TypeError
+            let thrown = false;
+            try {
+                observer.observe(div);
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "observe without options did not throw TypeError";
+
+            thrown = false;
+            try {
+                observer.observe(div, {});
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "observe with empty options did not throw TypeError";
+
+            thrown = false;
+            try {
+                observer.observe(div, { attributes: false, attributeOldValue: true });
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "attributeOldValue with attributes: false did not throw";
+
+            thrown = false;
+            try {
+                observer.observe(div, { characterData: false, characterDataOldValue: true });
+            } catch (e) {
+                thrown = true;
+            }
+            if (!thrown) throw "characterDataOldValue with characterData: false did not throw";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+
+        // 3. Valid options configurations and queue/drain semantics
+        host.eval_with_dom(
+            r#"{
+            const div = document.createElement("div");
+            const observer = new MutationObserver((records) => {});
+
+            // Initial records must be empty
+            const initial = observer.takeRecords();
+            if (initial.length !== 0) throw "initial records not empty";
+
+            // Observe with valid childList
+            observer.observe(div, { child_list: false, childList: true });
+
+            // Mock/Queue a mutation record
+            const record = new MutationRecord({
+                type: "childList",
+                target: div,
+                addedNodes: [div],
+                removedNodes: [],
+                oldValue: "old-val"
+            });
+
+            if (record.type !== "childList") throw "record type mismatch";
+            if (record.target !== div) throw "record target mismatch";
+            if (record.oldValue !== "old-val") throw "record oldValue mismatch";
+
+            observer.__queueRecord(record);
+
+            let records = observer.takeRecords();
+            if (records.length !== 1) throw "queue size mismatch";
+            if (records[0] !== record) throw "wrong record returned";
+
+            // Queue is now empty
+            records = observer.takeRecords();
+            if (records.length !== 0) throw "queue not empty after takeRecords";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+
+        // 4. disconnect() clears active observations and pending records
+        host.eval_with_dom(
+            r#"{
+            const div = document.createElement("div");
+            const observer = new MutationObserver(() => {});
+
+            observer.observe(div, { childList: true });
+
+            const record = new MutationRecord({
+                type: "attributes",
+                target: div
+            });
+            observer.__queueRecord(record);
+
+            observer.disconnect();
+
+            const records = observer.takeRecords();
+            if (records.length !== 0) throw "records not cleared by disconnect";
+        }"#,
+            &mut dom,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn test_abort_controller_signal_t0518() {
