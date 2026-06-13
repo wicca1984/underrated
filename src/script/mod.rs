@@ -156,6 +156,8 @@ impl BoaHost {
         let _ = context.register_global_class::<event::Event>();
         let _ = context.register_global_class::<URLSearchParams>();
         let _ = context.register_global_class::<formdata::FormData>();
+        let _ = context.register_global_class::<AbortSignal>();
+        let _ = context.register_global_class::<AbortController>();
 
         let bridge = ObjectInitializer::new(context)
             .function(
@@ -6589,9 +6591,410 @@ pub fn url_search_params_to_string(
     Ok(JsValue::from(JsString::from(serialized)))
 }
 
+// ==========================================
+// AbortController / AbortSignal API (t0518)
+// ==========================================
+
+fn create_default_abort_error(context: &mut Context) -> JsValue {
+    if let Ok(error_constructor) = context
+        .global_object()
+        .get(JsString::from("Error"), context)
+        && let Some(error_obj) = error_constructor.as_object()
+        && let Ok(error_inst) = error_obj.construct(
+            &[JsValue::from(JsString::from("The user aborted a request."))],
+            None,
+            context,
+        )
+    {
+        let _ = error_inst.set(
+            JsString::from("name"),
+            JsValue::from(JsString::from("AbortError")),
+            true,
+            context,
+        );
+        return JsValue::from(error_inst);
+    }
+    JsValue::undefined()
+}
+
+/// Implementation of the WHATWG `AbortSignal` interface.
+/// Spec: <https://dom.spec.whatwg.org/#interface-abortsignal>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct AbortSignal {
+    pub(crate) aborted: GcRefCell<bool>,
+    pub(crate) reason: GcRefCell<JsValue>,
+}
+
+impl Class for AbortSignal {
+    const NAME: &'static str = "AbortSignal";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let aborted = args.first().and_then(|v| v.as_boolean()).unwrap_or(false);
+        let reason = if aborted {
+            args.get(1)
+                .cloned()
+                .unwrap_or_else(|| create_default_abort_error(context))
+        } else {
+            JsValue::undefined()
+        };
+        Ok(AbortSignal {
+            aborted: GcRefCell::new(aborted),
+            reason: GcRefCell::new(reason),
+        })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let get_aborted_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(abort_signal_get_aborted),
+        )
+        .name("get aborted")
+        .build();
+
+        let get_reason_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(abort_signal_get_reason),
+        )
+        .name("get reason")
+        .build();
+
+        class
+            .accessor(
+                JsString::from("aborted"),
+                Some(get_aborted_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("reason"),
+                Some(get_reason_fn),
+                None,
+                Attribute::all(),
+            )
+            .method(
+                JsString::from("throwIfAborted"),
+                0,
+                NativeFunction::from_fn_ptr(abort_signal_throw_if_aborted),
+            )
+            .method(
+                JsString::from("addEventListener"),
+                2,
+                NativeFunction::from_fn_ptr(event::add_event_listener),
+            )
+            .method(
+                JsString::from("removeEventListener"),
+                2,
+                NativeFunction::from_fn_ptr(event::remove_event_listener),
+            )
+            .method(
+                JsString::from("dispatchEvent"),
+                1,
+                NativeFunction::from_fn_ptr(event::dispatch_event),
+            )
+            .static_method(
+                JsString::from("abort"),
+                1,
+                NativeFunction::from_fn_ptr(abort_signal_abort_static),
+            );
+
+        Ok(())
+    }
+}
+
+pub fn abort_signal_get_aborted(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let signal = obj.downcast_ref::<AbortSignal>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-AbortSignal object"))
+    })?;
+    Ok(JsValue::from(*signal.aborted.borrow()))
+}
+
+pub fn abort_signal_get_reason(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let signal = obj.downcast_ref::<AbortSignal>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-AbortSignal object"))
+    })?;
+    Ok(signal.reason.borrow().clone())
+}
+
+pub fn abort_signal_throw_if_aborted(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let signal = obj.downcast_ref::<AbortSignal>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-AbortSignal object"))
+    })?;
+    if *signal.aborted.borrow() {
+        return Err(JsError::from_opaque(signal.reason.borrow().clone()));
+    }
+    Ok(JsValue::undefined())
+}
+
+pub fn abort_signal_abort_static(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let signal_constructor = context
+        .global_object()
+        .get(JsString::from("AbortSignal"), context)?;
+    let signal_obj = signal_constructor.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("AbortSignal constructor not found"))
+    })?;
+    let reason = if let Some(arg) = args.first() {
+        arg.clone()
+    } else {
+        create_default_abort_error(context)
+    };
+    let signal_inst = signal_obj.construct(&[JsValue::from(true), reason], None, context)?;
+    Ok(JsValue::from(signal_inst))
+}
+
+/// Implementation of the WHATWG `AbortController` interface.
+/// Spec: <https://dom.spec.whatwg.org/#interface-abortcontroller>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct AbortController {
+    pub(crate) signal: GcRefCell<JsValue>,
+}
+
+impl Class for AbortController {
+    const NAME: &'static str = "AbortController";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let signal_constructor = context
+            .global_object()
+            .get(JsString::from("AbortSignal"), context)?;
+        let signal_obj = signal_constructor.as_object().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("AbortSignal constructor not found"))
+        })?;
+        let signal_inst = signal_obj.construct(&[], None, context)?;
+        Ok(AbortController {
+            signal: GcRefCell::new(JsValue::from(signal_inst)),
+        })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let get_signal_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(abort_controller_get_signal),
+        )
+        .name("get signal")
+        .build();
+
+        class
+            .accessor(
+                JsString::from("signal"),
+                Some(get_signal_fn),
+                None,
+                Attribute::all(),
+            )
+            .method(
+                JsString::from("abort"),
+                1,
+                NativeFunction::from_fn_ptr(abort_controller_abort),
+            );
+
+        Ok(())
+    }
+}
+
+pub fn abort_controller_get_signal(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let controller = obj.downcast_ref::<AbortController>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-AbortController object"),
+        )
+    })?;
+    Ok(controller.signal.borrow().clone())
+}
+
+pub fn abort_controller_abort(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let controller = obj.downcast_ref::<AbortController>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-AbortController object"),
+        )
+    })?;
+
+    let reason = if let Some(arg) = args.first() {
+        arg.clone()
+    } else {
+        create_default_abort_error(context)
+    };
+
+    let signal_val = controller.signal.borrow().clone();
+    let signal_obj = signal_val.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Signal is not an object"))
+    })?;
+    let signal = signal_obj.downcast_ref::<AbortSignal>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Signal is not an AbortSignal"))
+    })?;
+
+    if *signal.aborted.borrow() {
+        return Ok(JsValue::undefined());
+    }
+
+    *signal.aborted.borrow_mut() = true;
+    *signal.reason.borrow_mut() = reason;
+
+    // Fire "abort" event
+    if let Ok(event_constructor) = context
+        .global_object()
+        .get(JsString::from("Event"), context)
+        && let Some(event_obj) = event_constructor.as_object()
+        && let Ok(event_inst) =
+            event_obj.construct(&[JsValue::from(JsString::from("abort"))], None, context)
+    {
+        let _ = event::dispatch_event(&signal_val, &[JsValue::from(event_inst.clone())], context);
+
+        if let Ok(onabort_val) = signal_obj.get(JsString::from("onabort"), context)
+            && let Some(onabort_callable) = onabort_val.as_object()
+            && onabort_callable.is_callable()
+        {
+            let _ = onabort_callable.call(&signal_val, &[JsValue::from(event_inst)], context);
+        }
+    }
+
+    Ok(JsValue::undefined())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_abort_controller_signal_t0518() {
+        let mut host = BoaHost::new();
+
+        // 1. Basic properties and constructor exist on global
+        host.eval(r#"{
+            if (typeof AbortController === "undefined") throw "AbortController undefined";
+            if (typeof AbortSignal === "undefined") throw "AbortSignal undefined";
+            
+            const controller = new AbortController();
+            if (!controller.signal) throw "controller.signal not present";
+            if (controller.signal.aborted !== false) throw "should not be aborted initially";
+            if (controller.signal.reason !== undefined) throw "reason should be undefined initially";
+        }"#).unwrap();
+
+        // 2. abort() sets aborted and reason, and throwIfAborted throws
+        host.eval(
+            r#"{
+            const controller = new AbortController();
+            const signal = controller.signal;
+            
+            let thrown = false;
+            try {
+                signal.throwIfAborted();
+            } catch (e) {
+                thrown = true;
+            }
+            if (thrown) throw "throwIfAborted threw before aborted";
+
+            controller.abort("custom reason");
+            if (signal.aborted !== true) throw "aborted should be true";
+            if (signal.reason !== "custom reason") throw "reason mismatch";
+
+            thrown = false;
+            let caughtReason = null;
+            try {
+                signal.throwIfAborted();
+            } catch (e) {
+                thrown = true;
+                caughtReason = e;
+            }
+            if (!thrown) throw "throwIfAborted did not throw after aborted";
+            if (caughtReason !== "custom reason") throw "throwIfAborted threw wrong reason";
+        }"#,
+        )
+        .unwrap();
+
+        // 3. Static AbortSignal.abort(reason?)
+        host.eval(r#"{
+            const signal1 = AbortSignal.abort();
+            if (signal1.aborted !== true) throw "static abort signal not aborted";
+            if (signal1.reason.name !== "AbortError") throw "static abort default reason not AbortError";
+
+            const signal2 = AbortSignal.abort("static reason");
+            if (signal2.aborted !== true) throw "static abort signal 2 not aborted";
+            if (signal2.reason !== "static reason") throw "static abort reason 2 mismatch";
+        }"#).unwrap();
+
+        // 4. addEventListener("abort", cb) and onabort support
+        host.eval(r#"{
+            const controller = new AbortController();
+            const signal = controller.signal;
+
+            let listenerCalled = 0;
+            let listenerArg = null;
+            signal.addEventListener("abort", (e) => {
+                listenerCalled++;
+                listenerArg = e;
+            });
+
+            let onabortCalled = 0;
+            let onabortArg = null;
+            signal.onabort = (e) => {
+                onabortCalled++;
+                onabortArg = e;
+            };
+
+            controller.abort("event reason");
+            
+            if (listenerCalled !== 1) throw "listener should be called exactly once";
+            if (listenerArg.type !== "abort") throw "listener event type mismatch";
+            if (onabortCalled !== 1) throw "onabort should be called exactly once";
+            if (onabortArg.type !== "abort") throw "onabort event type mismatch";
+
+            // Subsequent aborts are no-ops
+            controller.abort("another reason");
+            if (listenerCalled !== 1) throw "listener called again";
+            if (onabortCalled !== 1) throw "onabort called again";
+            if (signal.reason !== "event reason") throw "reason should not change on subsequent aborts";
+        }"#).unwrap();
+    }
 
     #[test]
     fn test_structured_clone_t0514() {
