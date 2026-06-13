@@ -1,6 +1,6 @@
 use underrated::engine::navigate;
-use underrated::forms::{NavigationRequest, Method};
-use underrated::loader::{ResourceLoader, LoaderResponse, RedirectMeta, LoadError, HttpMethod};
+use underrated::forms::{Method, NavigationRequest};
+use underrated::loader::{HttpMethod, LoadError, LoaderResponse, RedirectMeta, ResourceLoader};
 use underrated::url::Url;
 
 struct MockRedirectLoader;
@@ -57,9 +57,9 @@ fn test_navigate_follows_redirect_and_updates_base() {
         body: String::new(),
         content_type: None,
     };
-    
+
     let page = navigate(&req, &base, &loader, 800.0);
     // document base should be the final URL
-    
+
     assert_eq!(page.url.serialize(), "https://www.google.com/");
 }

@@ -206,11 +206,11 @@ impl ResourceLoader for HttpLoader {
         }
 
         let url_str = url.serialize();
-        let agent_config = ureq::Agent::config_builder().max_redirects(0).build().into();
+        let agent_config = ureq::Agent::config_builder().max_redirects(0).build();
         let agent = ureq::Agent::new_with_config(agent_config);
 
         let cookie_hdr = get_cookie_header(url.host.as_deref().unwrap_or(""), &url.path);
-        
+
         let response_result = if method == HttpMethod::Post {
             let mut req = agent.post(&url_str);
             if let Some(c) = cookie_hdr {
@@ -230,17 +230,21 @@ impl ResourceLoader for HttpLoader {
         let response = match response_result {
             Ok(resp) => resp,
             Err(e) => {
-                if let ureq::Error::StatusCode(code) = e {
-                    if code == 404 {
-                        return Err(LoadError::NotFound);
-                    }
+                if let ureq::Error::StatusCode(code) = e
+                    && code == 404
+                {
+                    return Err(LoadError::NotFound);
                 }
                 return Err(LoadError::Io(e.to_string()));
             }
         };
 
         let status = response.status().into();
-        let location = response.headers().get("location").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
 
         for header_value in response.headers().get_all("set-cookie") {
             if let Some(cookie) = header_value.to_str().ok().and_then(|cookie_str| {
@@ -284,7 +288,7 @@ impl ResourceLoader for HttpLoader {
         content_type: Option<&str>,
     ) -> Result<crate::loader::LoaderResponse, LoadError> {
         let (resp, _final_url) = crate::loader::follow_redirects(url, |u| {
-            self.load_request_hop(u, method.clone(), body, content_type)
+            self.load_request_hop(u, method, body, content_type)
         })?;
         Ok(resp)
     }

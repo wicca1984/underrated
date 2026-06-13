@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use underrated::dom::NodeData;
 use underrated::engine;
-use underrated::loader::{HttpLoader, ResourceLoader};
+use underrated::loader::HttpLoader;
 use underrated::url::Url;
 
 fn main() {
@@ -43,7 +43,11 @@ fn main() {
         }
     };
     let html = String::from_utf8_lossy(&resp.bytes).into_owned();
-    println!("fetched   : {} bytes from {url_str}, final_url={}", resp.bytes.len(), final_url.serialize());
+    println!(
+        "fetched   : {} bytes from {url_str}, final_url={}",
+        resp.bytes.len(),
+        final_url.serialize()
+    );
 
     let page = engine::render_page(&html, &final_url, &loader, width as f32);
 
