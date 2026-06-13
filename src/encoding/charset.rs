@@ -20,6 +20,7 @@ pub enum Charset {
     Iso8859_3,
     Iso8859_4,
     Iso8859_5,
+    Iso8859_7,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -74,6 +75,11 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "iso-8859-5" | "iso8859-5" | "iso88595" | "iso_8859-5" | "iso-ir-144"
             | "iso_8859-5:1988" | "csisolatincyrillic" | "cyrillic" => {
                 return Charset::Iso8859_5;
+            }
+            "iso-8859-7" | "iso8859-7" | "iso88597" | "iso_8859-7" | "iso_8859-7:1987"
+            | "iso-ir-126" | "csisolatingreek" | "elot_928" | "ecma-118" | "greek" | "greek8"
+            | "sun_eu_greek" => {
+                return Charset::Iso8859_7;
             }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
@@ -133,6 +139,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "iso-8859-3" => return Some(Charset::Iso8859_3),
                 "iso-8859-4" => return Some(Charset::Iso8859_4),
                 "iso-8859-5" => return Some(Charset::Iso8859_5),
+                "iso-8859-7" => return Some(Charset::Iso8859_7),
                 _ => {}
             }
         }
@@ -159,6 +166,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_3 => decode_iso8859_3(bytes),
         Charset::Iso8859_4 => decode_iso8859_4(bytes),
         Charset::Iso8859_5 => decode_iso8859_5(bytes),
+        Charset::Iso8859_7 => decode_iso8859_7(bytes),
     }
 }
 
@@ -972,6 +980,113 @@ fn decode_iso8859_5(bytes: &[u8]) -> String {
             0xFD => '\u{00A7}', // SECTION SIGN
             0xFE => '\u{045E}', // CYRILLIC SMALL LETTER SHORT U
             0xFF => '\u{045F}', // CYRILLIC SMALL LETTER DZHE
+            _ => char::from(b),
+        };
+        result.push(c);
+    }
+    result
+}
+
+fn decode_iso8859_7(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        let c = match b {
+            0xA0 => '\u{00A0}', // NO-BREAK SPACE
+            0xA1 => '\u{2018}', // LEFT SINGLE QUOTATION MARK
+            0xA2 => '\u{2019}', // RIGHT SINGLE QUOTATION MARK
+            0xA3 => '\u{00A3}', // POUND SIGN
+            0xA4 => '\u{20AC}', // EURO SIGN
+            0xA5 => '\u{20AF}', // DRACHMA SIGN
+            0xA6 => '\u{00A6}', // BROKEN BAR
+            0xA7 => '\u{00A7}', // SECTION SIGN
+            0xA8 => '\u{00A8}', // DIAERESIS
+            0xA9 => '\u{00A9}', // COPYRIGHT SIGN
+            0xAA => '\u{037A}', // GREEK YPOGEGRAMMENI
+            0xAB => '\u{00AB}', // LEFT-POINTING DOUBLE ANGLE QUOTATION MARK
+            0xAC => '\u{00AC}', // NOT SIGN
+            0xAD => '\u{00AD}', // SOFT HYPHEN
+            0xAE => '\u{FFFD}', // UNDEFINED
+            0xAF => '\u{2015}', // HORIZONTAL BAR
+            0xB0 => '\u{00B0}', // DEGREE SIGN
+            0xB1 => '\u{00B1}', // PLUS-MINUS SIGN
+            0xB2 => '\u{00B2}', // SUPERSCRIPT TWO
+            0xB3 => '\u{00B3}', // SUPERSCRIPT THREE
+            0xB4 => '\u{0384}', // GREEK TONOS
+            0xB5 => '\u{0385}', // GREEK DIALYTIKA TONOS
+            0xB6 => '\u{0386}', // GREEK CAPITAL LETTER ALPHA WITH TONOS
+            0xB7 => '\u{00B7}', // MIDDLE DOT
+            0xB8 => '\u{0388}', // GREEK CAPITAL LETTER EPSILON WITH TONOS
+            0xB9 => '\u{0389}', // GREEK CAPITAL LETTER ETA WITH TONOS
+            0xBA => '\u{038A}', // GREEK CAPITAL LETTER IOTA WITH TONOS
+            0xBB => '\u{00BB}', // RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK
+            0xBC => '\u{038C}', // GREEK CAPITAL LETTER OMICRON WITH TONOS
+            0xBD => '\u{00BD}', // VULGAR FRACTION ONE HALF
+            0xBE => '\u{038E}', // GREEK CAPITAL LETTER UPSILON WITH TONOS
+            0xBF => '\u{038F}', // GREEK CAPITAL LETTER OMEGA WITH TONOS
+            0xC0 => '\u{0390}', // GREEK SMALL LETTER IOTA WITH DIALYTIKA AND TONOS
+            0xC1 => '\u{0391}', // GREEK CAPITAL LETTER ALPHA
+            0xC2 => '\u{0392}', // GREEK CAPITAL LETTER BETA
+            0xC3 => '\u{0393}', // GREEK CAPITAL LETTER GAMMA
+            0xC4 => '\u{0394}', // GREEK CAPITAL LETTER DELTA
+            0xC5 => '\u{0395}', // GREEK CAPITAL LETTER EPSILON
+            0xC6 => '\u{0396}', // GREEK CAPITAL LETTER ZETA
+            0xC7 => '\u{0397}', // GREEK CAPITAL LETTER ETA
+            0xC8 => '\u{0398}', // GREEK CAPITAL LETTER THETA
+            0xC9 => '\u{0399}', // GREEK CAPITAL LETTER IOTA
+            0xCA => '\u{039A}', // GREEK CAPITAL LETTER KAPPA
+            0xCB => '\u{039B}', // GREEK CAPITAL LETTER LAMDA
+            0xCC => '\u{039C}', // GREEK CAPITAL LETTER MU
+            0xCD => '\u{039D}', // GREEK CAPITAL LETTER NU
+            0xCE => '\u{039E}', // GREEK CAPITAL LETTER XI
+            0xCF => '\u{039F}', // GREEK CAPITAL LETTER OMICRON
+            0xD0 => '\u{03A0}', // GREEK CAPITAL LETTER PI
+            0xD1 => '\u{03A1}', // GREEK CAPITAL LETTER RHO
+            0xD2 => '\u{FFFD}', // UNDEFINED
+            0xD3 => '\u{03A3}', // GREEK CAPITAL LETTER SIGMA
+            0xD4 => '\u{03A4}', // GREEK CAPITAL LETTER TAU
+            0xD5 => '\u{03A5}', // GREEK CAPITAL LETTER UPSILON
+            0xD6 => '\u{03A6}', // GREEK CAPITAL LETTER PHI
+            0xD7 => '\u{03A7}', // GREEK CAPITAL LETTER CHI
+            0xD8 => '\u{03A8}', // GREEK CAPITAL LETTER PSI
+            0xD9 => '\u{03A9}', // GREEK CAPITAL LETTER OMEGA
+            0xDA => '\u{03AA}', // GREEK CAPITAL LETTER IOTA WITH DIALYTIKA
+            0xDB => '\u{03AB}', // GREEK CAPITAL LETTER UPSILON WITH DIALYTIKA
+            0xDC => '\u{03AC}', // GREEK SMALL LETTER ALPHA WITH TONOS
+            0xDD => '\u{03AD}', // GREEK SMALL LETTER EPSILON WITH TONOS
+            0xDE => '\u{03AE}', // GREEK SMALL LETTER ETA WITH TONOS
+            0xDF => '\u{03AF}', // GREEK SMALL LETTER IOTA WITH TONOS
+            0xE0 => '\u{03B0}', // GREEK SMALL LETTER IOTA WITH DIALYTIKA AND TONOS
+            0xE1 => '\u{03B1}', // GREEK SMALL LETTER ALPHA
+            0xE2 => '\u{03B2}', // GREEK SMALL LETTER BETA
+            0xE3 => '\u{03B3}', // GREEK SMALL LETTER GAMMA
+            0xE4 => '\u{03B4}', // GREEK SMALL LETTER DELTA
+            0xE5 => '\u{03B5}', // GREEK SMALL LETTER EPSILON
+            0xE6 => '\u{03B6}', // GREEK SMALL LETTER ZETA
+            0xE7 => '\u{03B7}', // GREEK SMALL LETTER ETA
+            0xE8 => '\u{03B8}', // GREEK SMALL LETTER THETA
+            0xE9 => '\u{03B9}', // GREEK SMALL LETTER IOTA
+            0xEA => '\u{03BA}', // GREEK SMALL LETTER KAPPA
+            0xEB => '\u{03BB}', // GREEK SMALL LETTER LAMDA
+            0xEC => '\u{03BC}', // GREEK SMALL LETTER MU
+            0xED => '\u{03BD}', // GREEK SMALL LETTER NU
+            0xEE => '\u{03BE}', // GREEK SMALL LETTER XI
+            0xEF => '\u{03BF}', // GREEK SMALL LETTER OMICRON
+            0xF0 => '\u{03C0}', // GREEK SMALL LETTER PI
+            0xF1 => '\u{03C1}', // GREEK SMALL LETTER RHO
+            0xF2 => '\u{03C2}', // GREEK SMALL LETTER FINAL SIGMA
+            0xF3 => '\u{03C3}', // GREEK SMALL LETTER SIGMA
+            0xF4 => '\u{03C4}', // GREEK SMALL LETTER TAU
+            0xF5 => '\u{03C5}', // GREEK SMALL LETTER UPSILON
+            0xF6 => '\u{03C6}', // GREEK SMALL LETTER PHI
+            0xF7 => '\u{03C7}', // GREEK SMALL LETTER CHI
+            0xF8 => '\u{03C8}', // GREEK SMALL LETTER PSI
+            0xF9 => '\u{03C9}', // GREEK SMALL LETTER OMEGA
+            0xFA => '\u{03CA}', // GREEK SMALL LETTER IOTA WITH DIALYTIKA
+            0xFB => '\u{03CB}', // GREEK SMALL LETTER UPSILON WITH DIALYTIKA
+            0xFC => '\u{03CC}', // GREEK SMALL LETTER OMICRON WITH TONOS
+            0xFD => '\u{03CD}', // GREEK SMALL LETTER UPSILON WITH TONOS
+            0xFE => '\u{03CE}', // GREEK SMALL LETTER OMEGA WITH TONOS
+            0xFF => '\u{FFFD}', // UNDEFINED
             _ => char::from(b),
         };
         result.push(c);
@@ -2109,6 +2224,47 @@ mod tests {
         // Meta prescan check
         let html_meta = b"<html><head><meta charset=\"iso-8859-5\"></head></html>";
         assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_5);
+    }
+
+    #[test]
+    fn test_iso8859_7_decode() {
+        // ASCII passthrough
+        assert_eq!(decode(b"abc 123", Charset::Iso8859_7), "abc 123");
+
+        // Representative high-byte mappings
+        assert_eq!(decode(&[0xA0], Charset::Iso8859_7), "\u{00A0}"); // NBSP
+        assert_eq!(decode(&[0xA4], Charset::Iso8859_7), "\u{20AC}"); // Euro
+        assert_eq!(decode(&[0xA5], Charset::Iso8859_7), "\u{20AF}"); // Drachma
+        assert_eq!(decode(&[0xC1], Charset::Iso8859_7), "\u{0391}"); // Capital Alpha
+        assert_eq!(decode(&[0xD1], Charset::Iso8859_7), "\u{03A1}"); // Capital Rho
+
+        // Undefined byte positions decoding to U+FFFD
+        assert_eq!(decode(&[0xAE], Charset::Iso8859_7), "\u{FFFD}");
+        assert_eq!(decode(&[0xD2], Charset::Iso8859_7), "\u{FFFD}");
+        assert_eq!(decode(&[0xFF], Charset::Iso8859_7), "\u{FFFD}");
+
+        // Greek word "Ελλάδα" (Greece)
+        let bytes = &[0xC5, 0xEB, 0xEB, 0xDC, 0xE4, 0xE1];
+        assert_eq!(decode(bytes, Charset::Iso8859_7), "Ελλάδα");
+    }
+
+    #[test]
+    fn test_iso8859_7_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-8859-7")),
+            Charset::Iso8859_7
+        );
+        assert_eq!(sniff_charset(b"abc", Some("greek")), Charset::Iso8859_7);
+        assert_eq!(sniff_charset(b"abc", Some("iso8859-7")), Charset::Iso8859_7);
+        assert_eq!(sniff_charset(b"abc", Some("greek8")), Charset::Iso8859_7);
+        assert_eq!(
+            sniff_charset(b"abc", Some("csisolatingreek")),
+            Charset::Iso8859_7
+        );
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"iso-8859-7\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_7);
     }
 
     #[test]
