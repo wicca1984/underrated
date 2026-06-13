@@ -29,6 +29,7 @@ pub enum Charset {
     Iso8859_6,
     Iso8859_8,
     Iso8859_11,
+    Iso8859_14,
     Koi8R,
     Koi8U,
 }
@@ -123,6 +124,10 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             | "windows-874" | "tis-620" | "tis620" | "thai" => {
                 return Charset::Iso8859_11;
             }
+            "iso-8859-14" | "iso8859-14" | "iso_8859-14" | "iso_8859_14" | "iso885914"
+            | "8859_14" | "iso-ir-199" | "iso_8859-14:1998" | "latin8" | "iso-celtic" | "l8" => {
+                return Charset::Iso8859_14;
+            }
             "koi8-r" | "koi8_r" | "cskoi8r" => {
                 return Charset::Koi8R;
             }
@@ -208,6 +213,11 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 | "cp874" | "windows-874" | "tis-620" | "tis620" | "thai" => {
                     return Some(Charset::Iso8859_11);
                 }
+                "iso-8859-14" | "iso8859-14" | "iso_8859-14" | "iso_8859_14" | "iso885914"
+                | "8859_14" | "iso-ir-199" | "iso_8859-14:1998" | "latin8" | "iso-celtic"
+                | "l8" => {
+                    return Some(Charset::Iso8859_14);
+                }
                 "koi8-r" => return Some(Charset::Koi8R),
                 "koi8-u" => return Some(Charset::Koi8U),
                 _ => {}
@@ -245,6 +255,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_6 => decode_iso8859_6(bytes),
         Charset::Iso8859_8 => decode_iso8859_8(bytes),
         Charset::Iso8859_11 => decode_iso8859_11(bytes),
+        Charset::Iso8859_14 => decode_iso8859_14(bytes),
         Charset::Koi8R => decode_koi8r(bytes),
         Charset::Koi8U => decode_koi8u(bytes),
     }
@@ -3182,6 +3193,128 @@ fn decode_iso8859_11(bytes: &[u8]) -> String {
     result
 }
 
+const ISO_8859_14_MAP: [char; 128] = [
+    // 0x80..=0x9F (C1 control range, identity mapping)
+    '\u{0080}', '\u{0081}', '\u{0082}', '\u{0083}', '\u{0084}', '\u{0085}', '\u{0086}', '\u{0087}',
+    '\u{0088}', '\u{0089}', '\u{008A}', '\u{008B}', '\u{008C}', '\u{008D}', '\u{008E}', '\u{008F}',
+    '\u{0090}', '\u{0091}', '\u{0092}', '\u{0093}', '\u{0094}', '\u{0095}', '\u{0096}', '\u{0097}',
+    '\u{0098}', '\u{0099}', '\u{009A}', '\u{009B}', '\u{009C}', '\u{009D}', '\u{009E}', '\u{009F}',
+    // 0xA0..=0xAF
+    '\u{00A0}', // 0xA0
+    '\u{1E02}', // 0xA1
+    '\u{1E03}', // 0xA2
+    '\u{00A3}', // 0xA3
+    '\u{010A}', // 0xA4
+    '\u{010B}', // 0xA5
+    '\u{1E0A}', // 0xA6
+    '\u{00A7}', // 0xA7
+    '\u{1E80}', // 0xA8
+    '\u{00A9}', // 0xA9
+    '\u{1E82}', // 0xAA
+    '\u{1E0B}', // 0xAB
+    '\u{1EF2}', // 0xAC
+    '\u{00AD}', // 0xAD
+    '\u{00AE}', // 0xAE
+    '\u{0178}', // 0xAF
+    // 0xB0..=0xBF
+    '\u{1E1E}', // 0xB0
+    '\u{1E1F}', // 0xB1
+    '\u{0120}', // 0xB2
+    '\u{0121}', // 0xB3
+    '\u{1E40}', // 0xB4
+    '\u{1E41}', // 0xB5
+    '\u{00B6}', // 0xB6
+    '\u{1E56}', // 0xB7
+    '\u{1E81}', // 0xB8
+    '\u{1E57}', // 0xB9
+    '\u{1E83}', // 0xBA
+    '\u{1E60}', // 0xBB
+    '\u{1EF3}', // 0xBC
+    '\u{1E84}', // 0xBD
+    '\u{1E85}', // 0xBE
+    '\u{1E61}', // 0xBF
+    // 0xC0..=0xCF
+    '\u{00C0}', // 0xC0
+    '\u{00C1}', // 0xC1
+    '\u{00C2}', // 0xC2
+    '\u{00C3}', // 0xC3
+    '\u{00C4}', // 0xC4
+    '\u{00C5}', // 0xC5
+    '\u{00C6}', // 0xC6
+    '\u{00C7}', // 0xC7
+    '\u{00C8}', // 0xC8
+    '\u{00C9}', // 0xC9
+    '\u{00CA}', // 0xCA
+    '\u{00CB}', // 0xCB
+    '\u{00CC}', // 0xCC
+    '\u{00CD}', // 0xCD
+    '\u{00CE}', // 0xCE
+    '\u{00CF}', // 0xCF
+    // 0xD0..=0xDF
+    '\u{0174}', // 0xD0
+    '\u{00D1}', // 0xD1
+    '\u{00D2}', // 0xD2
+    '\u{00D3}', // 0xD3
+    '\u{00D4}', // 0xD4
+    '\u{00D5}', // 0xD5
+    '\u{00D6}', // 0xD6
+    '\u{1E6A}', // 0xD7
+    '\u{00D8}', // 0xD8
+    '\u{00D9}', // 0xD9
+    '\u{00DA}', // 0xDA
+    '\u{00DB}', // 0xDB
+    '\u{00DC}', // 0xDC
+    '\u{00DD}', // 0xDD
+    '\u{0176}', // 0xDE
+    '\u{00DF}', // 0xDF
+    // 0xE0..=0xEF
+    '\u{00E0}', // 0xE0
+    '\u{00E1}', // 0xE1
+    '\u{00E2}', // 0xE2
+    '\u{00E3}', // 0xE3
+    '\u{00E4}', // 0xE4
+    '\u{00E5}', // 0xE5
+    '\u{00E6}', // 0xE6
+    '\u{00E7}', // 0xE7
+    '\u{00E8}', // 0xE8
+    '\u{00E9}', // 0xE9
+    '\u{00EA}', // 0xEA
+    '\u{00EB}', // 0xEB
+    '\u{00EC}', // 0xEC
+    '\u{00ED}', // 0xED
+    '\u{00EE}', // 0xEE
+    '\u{00EF}', // 0xEF
+    // 0xF0..=0xFF
+    '\u{0175}', // 0xF0
+    '\u{00F1}', // 0xF1
+    '\u{00F2}', // 0xF2
+    '\u{00F3}', // 0xF3
+    '\u{00F4}', // 0xF4
+    '\u{00F5}', // 0xF5
+    '\u{00F6}', // 0xF6
+    '\u{1E6B}', // 0xF7
+    '\u{00F8}', // 0xF8
+    '\u{00F9}', // 0xF9
+    '\u{00FA}', // 0xFA
+    '\u{00FB}', // 0xFB
+    '\u{00FC}', // 0xFC
+    '\u{00FD}', // 0xFD
+    '\u{0177}', // 0xFE
+    '\u{00FF}', // 0xFF
+];
+
+fn decode_iso8859_14(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(ISO_8859_14_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4328,5 +4461,86 @@ mod tests {
         // C1 control characters map to their identity code points (C1 range)
         assert_eq!(decode(&[0x80], Charset::Iso8859_11), "\u{0080}");
         assert_eq!(decode(&[0x9F], Charset::Iso8859_11), "\u{009F}");
+    }
+
+    #[test]
+    fn test_iso8859_14_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-8859-14")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso8859-14")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso_8859-14")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso_8859_14")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso885914")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(sniff_charset(b"abc", Some("8859_14")), Charset::Iso8859_14);
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-ir-199")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso_8859-14:1998")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(sniff_charset(b"abc", Some("latin8")), Charset::Iso8859_14);
+        assert_eq!(
+            sniff_charset(b"abc", Some("iso-celtic")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(sniff_charset(b"abc", Some("l8")), Charset::Iso8859_14);
+
+        // Case-insensitivity check
+        assert_eq!(
+            sniff_charset(b"abc", Some("ISO-8859-14")),
+            Charset::Iso8859_14
+        );
+        assert_eq!(sniff_charset(b"abc", Some("LATIN8")), Charset::Iso8859_14);
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"iso-8859-14\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Iso8859_14);
+    }
+
+    #[test]
+    fn test_iso8859_14_decode() {
+        // Pure-ASCII round-trip
+        assert_eq!(decode(b"Hello", Charset::Iso8859_14), "Hello");
+
+        // Defined checkpoints from requirements and ISO-8859-14
+        assert_eq!(decode(&[0xA0], Charset::Iso8859_14), "\u{00A0}"); // NBSP
+        assert_eq!(decode(&[0xA1], Charset::Iso8859_14), "\u{1E02}"); // LATIN CAPITAL LETTER B WITH DOT ABOVE
+        assert_eq!(decode(&[0xA2], Charset::Iso8859_14), "\u{1E03}"); // LATIN SMALL LETTER B WITH DOT ABOVE
+        assert_eq!(decode(&[0xA4], Charset::Iso8859_14), "\u{010A}"); // LATIN CAPITAL LETTER C WITH DOT ABOVE
+        assert_eq!(decode(&[0xA5], Charset::Iso8859_14), "\u{010B}"); // LATIN SMALL LETTER C WITH DOT ABOVE
+        assert_eq!(decode(&[0xA8], Charset::Iso8859_14), "\u{1E80}"); // LATIN CAPITAL LETTER W WITH GRAVE
+        assert_eq!(decode(&[0xAA], Charset::Iso8859_14), "\u{1E82}"); // LATIN CAPITAL LETTER W WITH ACUTE
+        assert_eq!(decode(&[0xAF], Charset::Iso8859_14), "\u{0178}"); // LATIN CAPITAL LETTER Y WITH DIAERESIS
+        assert_eq!(decode(&[0xB2], Charset::Iso8859_14), "\u{0120}"); // LATIN CAPITAL LETTER G WITH DOT ABOVE
+        assert_eq!(decode(&[0xB3], Charset::Iso8859_14), "\u{0121}"); // LATIN SMALL LETTER G WITH DOT ABOVE
+        assert_eq!(decode(&[0xD0], Charset::Iso8859_14), "\u{0174}"); // LATIN CAPITAL LETTER W WITH CIRCUMFLEX
+        assert_eq!(decode(&[0xF0], Charset::Iso8859_14), "\u{0175}"); // LATIN SMALL LETTER W WITH CIRCUMFLEX
+        assert_eq!(decode(&[0xDE], Charset::Iso8859_14), "\u{0176}"); // LATIN CAPITAL LETTER Y WITH CIRCUMFLEX
+        assert_eq!(decode(&[0xFE], Charset::Iso8859_14), "\u{0177}"); // LATIN SMALL LETTER Y WITH CIRCUMFLEX
+
+        // Standard Latin-1 characters mapped in ISO-8859-14 as well
+        assert_eq!(decode(&[0xA3], Charset::Iso8859_14), "\u{00A3}"); // POUND SIGN
+        assert_eq!(decode(&[0xAD], Charset::Iso8859_14), "\u{00AD}"); // SOFT HYPHEN
+        assert_eq!(decode(&[0xFF], Charset::Iso8859_14), "\u{00FF}"); // LATIN SMALL LETTER Y WITH DIAERESIS
+
+        // C1 control characters map to their identity code points (C1 range)
+        assert_eq!(decode(&[0x80], Charset::Iso8859_14), "\u{0080}");
+        assert_eq!(decode(&[0x9F], Charset::Iso8859_14), "\u{009F}");
     }
 }
