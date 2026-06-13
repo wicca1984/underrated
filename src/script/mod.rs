@@ -1520,6 +1520,24 @@ impl BoaHost {
                         return bridge.getBoundingClientRect(this.__key__);
                     };
 
+                    node.getClientRects = function() {
+                        if (this.nodeType !== 1) return null;
+                        const rect = this.getBoundingClientRect();
+                        const rects = rect ? [rect] : [];
+                        Object.defineProperty(rects, 'item', {
+                            value: function(index) {
+                                const idx = Number(index) >>> 0;
+                                if (idx >= this.length) return null;
+                                return this[idx];
+                            },
+                            enumerable: false,
+                            configurable: true,
+                            writable: true
+                        });
+                        // TODO(spec): real DOM may return multiple rects for fragmented inline content; we approximate with the single bounding rect.
+                        return rects;
+                    };
+
                     Object.defineProperty(node, 'offsetWidth', {
                         get() {
                             if (this.nodeType !== 1) return 0;
@@ -8595,6 +8613,54 @@ mod tests {
 
         let res = host.eval_with_dom(script, &mut dom).unwrap();
         assert_eq!(res, "true|true|true|true|true|true|true|true|true|true");
+    }
+
+    // Guards Element.getClientRects() DOM-to-JS script layer bindings wiring.
+    #[test]
+    fn test_element_get_client_rects() {
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("id".to_string(), "rects-div".to_string())],
+        });
+        dom.append_child(document, div_id);
+
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            const el = document.getElementById('rects-div');
+            el.getBoundingClientRect = () => ({ width: 100, height: 50 });
+
+            const rects = el.getClientRects();
+            const lengthOk = rects.length === 1;
+            const widthMatches = rects[0].width === el.getBoundingClientRect().width;
+            
+            const item0 = rects.item(0);
+            const item0Ok = item0 !== null && item0.width === rects[0].width;
+            const item5 = rects.item(5);
+
+            // Check non-enumerable properties on rects
+            let enumerableKeys = Object.keys(rects);
+            const itemIsNotEnumerable = !enumerableKeys.includes('item');
+
+            // Non-elements should return null
+            const textNode = document.createTextNode('hello');
+            const textRects = textNode.getClientRects();
+
+            [
+                lengthOk,
+                widthMatches,
+                item0Ok,
+                item5 === null,
+                itemIsNotEnumerable,
+                textRects === null
+            ].join('|');
+        "#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "true|true|true|true|true|true");
     }
 
     #[test]
