@@ -1247,6 +1247,162 @@ pub fn decode_qoi(bytes: &[u8]) -> Option<DecodedImage> {
     }
 }
 
+/// Decodes a Netpbm PAM (Portable Arbitrary Map: P7) byte stream into a DecodedImage.
+/// spec: S-19
+pub fn decode_pam(bytes: &[u8]) -> Option<DecodedImage> {
+    if !bytes.starts_with(b"P7\n") && !bytes.starts_with(b"P7\r\n") {
+        return None;
+    }
+
+    let mut pos = if bytes.starts_with(b"P7\n") { 3 } else { 4 };
+
+    fn next_line<'a>(bytes: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+        let start = *pos;
+        if start >= bytes.len() {
+            return None;
+        }
+        while *pos < bytes.len() {
+            let b = bytes[*pos];
+            if b == b'\n' {
+                let end = *pos;
+                *pos += 1;
+                let mut len = end - start;
+                if len > 0 && bytes[start + len - 1] == b'\r' {
+                    len -= 1;
+                }
+                return Some(&bytes[start..start + len]);
+            }
+            *pos += 1;
+        }
+        None
+    }
+
+    fn trim(mut s: &[u8]) -> &[u8] {
+        while s.first().is_some_and(|b| b.is_ascii_whitespace()) {
+            s = &s[1..];
+        }
+        while s.last().is_some_and(|b| b.is_ascii_whitespace()) {
+            s = &s[..s.len() - 1];
+        }
+        s
+    }
+
+    fn parse_u32(bytes: &[u8]) -> Option<u32> {
+        let s = std::str::from_utf8(bytes).ok()?;
+        s.parse::<u32>().ok()
+    }
+
+    let mut width: Option<u32> = None;
+    let mut height: Option<u32> = None;
+    let mut depth: Option<u32> = None;
+    let mut maxval: Option<u32> = None;
+    let mut header_ended = false;
+
+    while let Some(line) = next_line(bytes, &mut pos) {
+        let trimmed = trim(line);
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with(b"#") {
+            continue;
+        }
+        if trimmed == b"ENDHDR" {
+            header_ended = true;
+            break;
+        }
+
+        let mut parts = trimmed.splitn(2, |&b| b.is_ascii_whitespace());
+        let key = parts.next()?;
+        let value_raw = parts.next()?;
+        let key = trim(key);
+        let value = trim(value_raw);
+
+        if key == b"WIDTH" {
+            width = Some(parse_u32(value)?);
+        } else if key == b"HEIGHT" {
+            height = Some(parse_u32(value)?);
+        } else if key == b"DEPTH" {
+            depth = Some(parse_u32(value)?);
+        } else if key == b"MAXVAL" {
+            maxval = Some(parse_u32(value)?);
+        } else if key == b"TUPLTYPE" {
+            // Informational, ignore
+        } else {
+            // Unknown key, ignore
+        }
+    }
+
+    if !header_ended {
+        return None;
+    }
+
+    let width = width?;
+    let height = height?;
+    let depth = depth?;
+    let maxval = maxval?;
+
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+    if !matches!(depth, 1..=4) {
+        return None;
+    }
+    if maxval != 255 {
+        return None;
+    }
+
+    let total_pixels = width.checked_mul(height)?;
+    let total_bytes = total_pixels.checked_mul(4)?;
+    let total_samples = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(depth as usize)?;
+
+    let raster_bytes = bytes.get(pos..)?;
+    if raster_bytes.len() < total_samples {
+        return None;
+    }
+
+    let mut rgba = Vec::with_capacity(total_bytes as usize);
+    match depth {
+        1 => {
+            for &v in raster_bytes.iter().take(total_samples) {
+                rgba.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        2 => {
+            for chunk in raster_bytes.chunks_exact(2).take(total_pixels as usize) {
+                let v = chunk[0];
+                let a = chunk[1];
+                rgba.extend_from_slice(&[v, v, v, a]);
+            }
+        }
+        3 => {
+            for chunk in raster_bytes.chunks_exact(3).take(total_pixels as usize) {
+                let r = chunk[0];
+                let g = chunk[1];
+                let b = chunk[2];
+                rgba.extend_from_slice(&[r, g, b, 255]);
+            }
+        }
+        4 => {
+            for chunk in raster_bytes.chunks_exact(4).take(total_pixels as usize) {
+                let r = chunk[0];
+                let g = chunk[1];
+                let b = chunk[2];
+                let a = chunk[3];
+                rgba.extend_from_slice(&[r, g, b, a]);
+            }
+        }
+        _ => return None,
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes a Netpbm (PNM: PBM/PGM/PPM) byte stream into a DecodedImage.
 /// Supports ASCII variants (P1, P2, P3) and binary variants (P4, P5, P6).
 /// spec: S-19
@@ -1311,6 +1467,9 @@ pub fn decode_pnm(bytes: &[u8]) -> Option<DecodedImage> {
         return None;
     }
     let variant = bytes[1];
+    if variant == b'7' {
+        return decode_pam(bytes);
+    }
     if !((b'1'..=b'6').contains(&variant)) {
         return None;
     }
@@ -2985,7 +3144,7 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_xpm(bytes)
     } else if let Some(true) = is_svg_sniff(bytes) {
         decode_svg(bytes)
-    } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
+    } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'7').contains(&bytes[1]) {
         decode_pnm(bytes)
     } else if bytes.first() == Some(&0x0A)
         && bytes.get(2) == Some(&1)
@@ -3932,6 +4091,83 @@ mod tests {
         assert!(decode_pnm(b"P6\n0 1\n255\n").is_none());
         assert!(decode_pnm(b"P6\n1 1\n0\n").is_none());
         assert!(decode_pnm(b"P6\n1 1\n65536\n").is_none());
+    }
+
+    #[test]
+    fn test_decode_pam_all() {
+        // 1. Valid 1x1 DEPTH=3 RGB PAM
+        let pam_rgb =
+            b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n\x0a\x14\x1e";
+        let img = decode_pam(pam_rgb).expect("Should decode valid PAM RGB");
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[10, 20, 30, 255]);
+
+        // 2. Valid DEPTH=1 grayscale
+        let pam_gray =
+            b"P7\n# Some comment\nWIDTH 2\nHEIGHT 1\nDEPTH 1\nMAXVAL 255\nENDHDR\n\x10\x20";
+        let img = decode_pam(pam_gray).expect("Should decode valid PAM gray");
+        assert_eq!(img.width, 2);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[16, 16, 16, 255, 32, 32, 32, 255]);
+
+        // 3. Valid DEPTH=2 grayscale + alpha
+        let pam_gray_alpha =
+            b"P7\nWIDTH 1\nHEIGHT 2\nDEPTH 2\nMAXVAL 255\nENDHDR\n\x10\x80\x20\xff";
+        let img = decode_pam(pam_gray_alpha).expect("Should decode valid PAM gray+alpha");
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 2);
+        assert_eq!(&img.rgba, &[16, 16, 16, 128, 32, 32, 32, 255]);
+
+        // 4. Valid DEPTH=4 RGBA
+        let pam_rgba = b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 4\nMAXVAL 255\nENDHDR\n\x0a\x14\x1e\x28";
+        let img = decode_pam(pam_rgba).expect("Should decode valid PAM RGBA");
+        assert_eq!(img.width, 1);
+        assert_eq!(img.height, 1);
+        assert_eq!(&img.rgba, &[10, 20, 30, 40]);
+
+        // 5. Test comments and whitespaces inside header
+        let pam_comments = b"P7\n  # Spaces before comment\nWIDTH   1\nHEIGHT \t 1\nDEPTH \t 3\n#Comment\nMAXVAL\t255\nENDHDR\n\x01\x02\x03";
+        let img = decode_pam(pam_comments).expect("Should parse comments and whitespace properly");
+        assert_eq!(img.width, 1);
+        assert_eq!(&img.rgba, &[1, 2, 3, 255]);
+
+        // 6. Test carriage returns \r\n
+        let pam_cr =
+            b"P7\r\nWIDTH 1\r\nHEIGHT 1\r\nDEPTH 3\r\nMAXVAL 255\r\nENDHDR\r\n\x01\x02\x03";
+        let img = decode_pam(pam_cr).expect("Should decode PAM with CRLF newlines");
+        assert_eq!(img.width, 1);
+        assert_eq!(&img.rgba, &[1, 2, 3, 255]);
+
+        // 7. Malformed / unsupported test cases
+        // Truncated data
+        assert!(
+            decode_pam(b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 3\nMAXVAL 255\nENDHDR\n\x01\x02").is_none()
+        );
+        // MAXVAL unsupported (not 255)
+        assert!(
+            decode_pam(b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 3\nMAXVAL 256\nENDHDR\n\x00\x00\x00")
+                .is_none()
+        );
+        assert!(
+            decode_pam(b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 3\nMAXVAL 65535\nENDHDR\n\x00\x00\x00")
+                .is_none()
+        );
+        // Missing ENDHDR
+        assert!(decode_pam(b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 3\nMAXVAL 255\n").is_none());
+        // DEPTH not in 1..=4
+        assert!(decode_pam(b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 0\nMAXVAL 255\nENDHDR\n").is_none());
+        assert!(
+            decode_pam(b"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 5\nMAXVAL 255\nENDHDR\n\x01\x02\x03\x04\x05")
+                .is_none()
+        );
+        // Width or height is zero
+        assert!(decode_pam(b"P7\nWIDTH 0\nHEIGHT 1\nDEPTH 3\nMAXVAL 255\nENDHDR\n").is_none());
+
+        // 8. Routing checks
+        let decoded = decode_image(pam_rgb).expect("Should route PAM via decode_image");
+        assert_eq!(decoded.width, 1);
+        assert_eq!(&decoded.rgba, &[10, 20, 30, 255]);
     }
 
     #[test]
