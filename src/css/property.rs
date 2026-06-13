@@ -300,6 +300,21 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "content-box",
     },
     PropertyMetadata {
+        name: "backdrop-filter",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "filter",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "mix-blend-mode",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
         name: "opacity",
         inherited: false,
         initial: "1",
@@ -719,6 +734,30 @@ mod tests {
         let bbc = bbc.unwrap();
         assert_eq!(bbc.name, "border-bottom-color");
         assert!(!bbc.inherited);
+    }
+
+    #[test]
+    fn test_additive_properties_t0469() {
+        let filter = lookup("filter");
+        assert!(filter.is_some());
+        let filter = filter.unwrap();
+        assert_eq!(filter.name, "filter");
+        assert!(!filter.inherited);
+        assert_eq!(filter.initial, "none");
+
+        let backdrop_filter = lookup("backdrop-filter");
+        assert!(backdrop_filter.is_some());
+        let backdrop_filter = backdrop_filter.unwrap();
+        assert_eq!(backdrop_filter.name, "backdrop-filter");
+        assert!(!backdrop_filter.inherited);
+        assert_eq!(backdrop_filter.initial, "none");
+
+        let mix_blend_mode = lookup("mix-blend-mode");
+        assert!(mix_blend_mode.is_some());
+        let mix_blend_mode = mix_blend_mode.unwrap();
+        assert_eq!(mix_blend_mode.name, "mix-blend-mode");
+        assert!(!mix_blend_mode.inherited);
+        assert_eq!(mix_blend_mode.initial, "normal");
     }
 
     #[test]
