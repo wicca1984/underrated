@@ -246,6 +246,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "optional" => is_optional(dom, node),
                     "read-only" => is_read_only(dom, node),
                     "read-write" => is_read_write(dom, node),
+                    "placeholder-shown" => is_placeholder_shown(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -769,6 +770,51 @@ fn is_read_only(dom: &Dom, node: NodeId) -> bool {
                     ascii::eq_ignore_ascii_case(k, "readonly")
                         || ascii::eq_ignore_ascii_case(k, "disabled")
                 })
+        }
+        _ => false,
+    }
+}
+
+fn is_placeholder_shown(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_input = ascii::eq_ignore_ascii_case(name, "input");
+            let is_textarea = ascii::eq_ignore_ascii_case(name, "textarea");
+            if !is_input && !is_textarea {
+                return false;
+            }
+
+            // Must have a non-empty placeholder attribute.
+            let placeholder = attrs
+                .iter()
+                .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "placeholder"))
+                .map(|(_, v)| v);
+
+            let has_non_empty_placeholder = match placeholder {
+                Some(p) => !p.is_empty(),
+                None => false,
+            };
+
+            if !has_non_empty_placeholder {
+                return false;
+            }
+
+            if is_input {
+                // For input: the value attribute is absent or empty.
+                let value = attrs
+                    .iter()
+                    .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "value"))
+                    .map(|(_, v)| v);
+
+                match value {
+                    Some(v) => v.is_empty(),
+                    None => true,
+                }
+            } else {
+                // For textarea: it has no non-whitespace text content / no value.
+                let text = dom.text_content(node);
+                text.trim().is_empty()
+            }
         }
         _ => false,
     }
@@ -1979,6 +2025,89 @@ mod tests {
             &dom,
             input_mixed_readonly
         ));
+    }
+
+    #[test]
+    fn test_placeholder_shown_pseudo_class() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 1. <input placeholder="Search"> (empty value) -> MATCHES
+        let input_empty_ph = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("placeholder".into(), "Search".into())],
+        });
+        dom.append_child(doc, input_empty_ph);
+
+        // 2. <input placeholder="Search" value="hello"> (non-empty value) -> DOES NOT MATCH
+        let input_val_ph = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("placeholder".into(), "Search".into()),
+                ("value".into(), "hello".into()),
+            ],
+        });
+        dom.append_child(doc, input_val_ph);
+
+        // 3. <input placeholder=""> (empty placeholder) -> DOES NOT MATCH
+        let input_empty_ph_empty = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("placeholder".into(), "".into())],
+        });
+        dom.append_child(doc, input_empty_ph_empty);
+
+        // 4. <input> (no placeholder) -> DOES NOT MATCH
+        let input_no_ph = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_no_ph);
+
+        // 5. <textarea placeholder="Write here"> (empty value) -> MATCHES
+        let textarea_empty_ph = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![("placeholder".into(), "Write here".into())],
+        });
+        dom.append_child(doc, textarea_empty_ph);
+
+        // 6. <textarea placeholder="Write here">hello</textarea> (has text child node) -> DOES NOT MATCH
+        let textarea_with_text = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![("placeholder".into(), "Write here".into())],
+        });
+        let text_child = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(textarea_with_text, text_child);
+        dom.append_child(doc, textarea_with_text);
+
+        // 7. <textarea placeholder="Write here">   \n   </textarea> (whitespace-only content) -> MATCHES
+        let textarea_whitespace = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![("placeholder".into(), "Write here".into())],
+        });
+        let ws_child = dom.create_node(NodeData::Text("   \n   ".into()));
+        dom.append_child(textarea_whitespace, ws_child);
+        dom.append_child(doc, textarea_whitespace);
+
+        // 8. <div placeholder="Search"> (not an input/textarea) -> DOES NOT MATCH
+        let div_ph = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("placeholder".into(), "Search".into())],
+        });
+        dom.append_child(doc, div_ph);
+
+        // Assertions
+        let sel = parse_selector_list(":placeholder-shown").unwrap();
+
+        assert!(matches(&sel, &dom, input_empty_ph));
+        assert!(!matches(&sel, &dom, input_val_ph));
+        assert!(!matches(&sel, &dom, input_empty_ph_empty));
+        assert!(!matches(&sel, &dom, input_no_ph));
+
+        assert!(matches(&sel, &dom, textarea_empty_ph));
+        assert!(!matches(&sel, &dom, textarea_with_text));
+        assert!(matches(&sel, &dom, textarea_whitespace));
+
+        assert!(!matches(&sel, &dom, div_ph));
     }
 
     #[test]
