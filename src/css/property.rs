@@ -689,6 +689,31 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "none",
     },
+    PropertyMetadata {
+        name: "orphans",
+        inherited: true,
+        initial: "2",
+    },
+    PropertyMetadata {
+        name: "widows",
+        inherited: true,
+        initial: "2",
+    },
+    PropertyMetadata {
+        name: "break-before",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "break-after",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "break-inside",
+        inherited: false,
+        initial: "auto",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1076,6 +1101,44 @@ mod tests {
         assert_eq!(counter_increment.name, "counter-increment");
         assert!(!counter_increment.inherited);
         assert_eq!(counter_increment.initial, "none");
+    }
+
+    #[test]
+    fn test_additive_properties_t0536() {
+        let orphans = lookup("orphans");
+        assert!(orphans.is_some());
+        let orphans = orphans.unwrap();
+        assert_eq!(orphans.name, "orphans");
+        assert!(orphans.inherited);
+        assert_eq!(orphans.initial, "2");
+
+        let widows = lookup("widows");
+        assert!(widows.is_some());
+        let widows = widows.unwrap();
+        assert_eq!(widows.name, "widows");
+        assert!(widows.inherited);
+        assert_eq!(widows.initial, "2");
+
+        let break_before = lookup("break-before");
+        assert!(break_before.is_some());
+        let break_before = break_before.unwrap();
+        assert_eq!(break_before.name, "break-before");
+        assert!(!break_before.inherited);
+        assert_eq!(break_before.initial, "auto");
+
+        let break_after = lookup("break-after");
+        assert!(break_after.is_some());
+        let break_after = break_after.unwrap();
+        assert_eq!(break_after.name, "break-after");
+        assert!(!break_after.inherited);
+        assert_eq!(break_after.initial, "auto");
+
+        let break_inside = lookup("BREAK-INSIDE");
+        assert!(break_inside.is_some());
+        let break_inside = break_inside.unwrap();
+        assert_eq!(break_inside.name, "break-inside");
+        assert!(!break_inside.inherited);
+        assert_eq!(break_inside.initial, "auto");
     }
 
     #[test]
