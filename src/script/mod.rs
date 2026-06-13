@@ -1805,6 +1805,39 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'title', {
+                        get() {
+                            return this.getAttribute('title') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('title', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'slot', {
+                        get() {
+                            return this.getAttribute('slot') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('slot', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'nonce', {
+                        get() {
+                            return this.getAttribute('nonce') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('nonce', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'accessKey', {
                         get() {
                             return this.getAttribute('accesskey') || '';
