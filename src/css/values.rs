@@ -137,6 +137,79 @@ pub enum MixBlendModeValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BackgroundBlendModeValue {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl BackgroundBlendModeValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "multiply" => Some(Self::Multiply),
+            "screen" => Some(Self::Screen),
+            "overlay" => Some(Self::Overlay),
+            "darken" => Some(Self::Darken),
+            "lighten" => Some(Self::Lighten),
+            "color-dodge" => Some(Self::ColorDodge),
+            "color-burn" => Some(Self::ColorBurn),
+            "hard-light" => Some(Self::HardLight),
+            "soft-light" => Some(Self::SoftLight),
+            "difference" => Some(Self::Difference),
+            "exclusion" => Some(Self::Exclusion),
+            "hue" => Some(Self::Hue),
+            "saturation" => Some(Self::Saturation),
+            "color" => Some(Self::Color),
+            "luminosity" => Some(Self::Luminosity),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Multiply => "multiply",
+            Self::Screen => "screen",
+            Self::Overlay => "overlay",
+            Self::Darken => "darken",
+            Self::Lighten => "lighten",
+            Self::ColorDodge => "color-dodge",
+            Self::ColorBurn => "color-burn",
+            Self::HardLight => "hard-light",
+            Self::SoftLight => "soft-light",
+            Self::Difference => "difference",
+            Self::Exclusion => "exclusion",
+            Self::Hue => "hue",
+            Self::Saturation => "saturation",
+            Self::Color => "color",
+            Self::Luminosity => "luminosity",
+        }
+    }
+}
+
+impl std::str::FromStr for BackgroundBlendModeValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum WhiteSpaceValue {
     Normal,
     Nowrap,
@@ -891,6 +964,7 @@ pub enum CssValue {
     ScrollSnapType(ScrollSnapTypeValue),
     ScrollSnapAlign(ScrollSnapAlignValue),
     MixBlendMode(MixBlendModeValue),
+    BackgroundBlendMode(BackgroundBlendModeValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -984,6 +1058,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "scroll-snap-type"
             | "scroll-snap-align"
             | "mix-blend-mode"
+            | "background-blend-mode"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -1057,6 +1132,31 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::MixBlendMode(_) => true,
+            _ => false,
+        },
+        "background-blend-mode" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "normal"
+                        | "multiply"
+                        | "screen"
+                        | "overlay"
+                        | "darken"
+                        | "lighten"
+                        | "color-dodge"
+                        | "color-burn"
+                        | "hard-light"
+                        | "soft-light"
+                        | "difference"
+                        | "exclusion"
+                        | "hue"
+                        | "saturation"
+                        | "color"
+                        | "luminosity"
+                )
+            }
+            CssValue::BackgroundBlendMode(_) => true,
             _ => false,
         },
         "position" => match value {
@@ -1585,6 +1685,27 @@ fn parse_mix_blend_mode(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::MixBlendMode(kw))
 }
 
+fn parse_background_blend_mode(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for background-blend-mode recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = BackgroundBlendModeValue::parse(&idents[0])?;
+    Some(CssValue::BackgroundBlendMode(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -1602,6 +1723,9 @@ pub fn parse_property_value(
     }
     if name_lower == "mix-blend-mode" {
         return parse_mix_blend_mode(components);
+    }
+    if name_lower == "background-blend-mode" {
+        return parse_background_blend_mode(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -5675,5 +5799,82 @@ mod tests {
             "mix-blend-mode",
             &CssValue::Keyword("banana".to_string())
         ));
+    }
+
+    #[test]
+    fn test_background_blend_mode_parsing_and_recognition() {
+        // Test background-blend-mode: multiply
+        assert_eq!(
+            parse_property_value(
+                "background-blend-mode",
+                &[token(CssToken::Ident("multiply".to_string()))]
+            ),
+            Some(CssValue::BackgroundBlendMode(
+                BackgroundBlendModeValue::Multiply
+            ))
+        );
+
+        // Test normal default
+        assert_eq!(
+            parse_property_value(
+                "background-blend-mode",
+                &[token(CssToken::Ident("normal".to_string()))]
+            ),
+            Some(CssValue::BackgroundBlendMode(
+                BackgroundBlendModeValue::Normal
+            ))
+        );
+
+        // Test color-dodge (hyphenated)
+        assert_eq!(
+            parse_property_value(
+                "background-blend-mode",
+                &[token(CssToken::Ident("color-dodge".to_string()))]
+            ),
+            Some(CssValue::BackgroundBlendMode(
+                BackgroundBlendModeValue::ColorDodge
+            ))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value(
+                "background-blend-mode",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("background-blend-mode"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "background-blend-mode",
+            &CssValue::BackgroundBlendMode(BackgroundBlendModeValue::Multiply)
+        ));
+        assert!(is_valid_property_value(
+            "background-blend-mode",
+            &CssValue::Keyword("multiply".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "background-blend-mode",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test BackgroundBlendModeValue::parse directly
+        assert_eq!(
+            BackgroundBlendModeValue::parse("multiply"),
+            Some(BackgroundBlendModeValue::Multiply)
+        );
+        assert_eq!(
+            BackgroundBlendModeValue::parse("normal"),
+            Some(BackgroundBlendModeValue::Normal)
+        );
+        assert_eq!(BackgroundBlendModeValue::parse("banana"), None);
+        assert_eq!(
+            BackgroundBlendModeValue::parse("MULTIPLY"),
+            Some(BackgroundBlendModeValue::Multiply)
+        );
     }
 }
