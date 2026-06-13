@@ -158,6 +158,7 @@ impl BoaHost {
         let _ = context.register_global_class::<event::Event>();
         let _ = context.register_global_class::<CustomEvent>();
         let _ = context.register_global_class::<URLSearchParams>();
+        let _ = context.register_global_class::<UrlObject>();
         let _ = context.register_global_class::<formdata::FormData>();
         let _ = context.register_global_class::<AbortSignal>();
         let _ = context.register_global_class::<AbortController>();
@@ -6407,6 +6408,332 @@ pub fn run_scripts(
     dom
 }
 
+/// Implementation of WHATWG URL `URL` interface.
+/// Spec: <https://url.spec.whatwg.org/#interface-url>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct UrlObject {
+    #[unsafe_ignore_trace]
+    pub(crate) url: crate::url::Url,
+}
+
+impl Class for UrlObject {
+    const NAME: &'static str = "URL";
+    const LENGTH: usize = 1;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let url_val = args.first().ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message(
+                "Failed to construct 'URL': 1 argument required, but only 0 present.",
+            ))
+        })?;
+        let url_str = url_val
+            .to_string(context)?
+            .to_std_string()
+            .unwrap_or_default();
+
+        let parsed_url = if let Some(base_val) = args.get(1) {
+            if !base_val.is_undefined() && !base_val.is_null() {
+                let base_str = base_val
+                    .to_string(context)?
+                    .to_std_string()
+                    .unwrap_or_default();
+                let base_url = crate::url::Url::parse(&base_str).map_err(|_| {
+                    JsError::from(
+                        JsNativeError::typ().with_message("Failed to construct 'URL': Invalid URL"),
+                    )
+                })?;
+                crate::url::Url::parse_with_base(&url_str, &base_url).map_err(|_| {
+                    JsError::from(
+                        JsNativeError::typ().with_message("Failed to construct 'URL': Invalid URL"),
+                    )
+                })?
+            } else {
+                crate::url::Url::parse(&url_str).map_err(|_| {
+                    JsError::from(
+                        JsNativeError::typ().with_message("Failed to construct 'URL': Invalid URL"),
+                    )
+                })?
+            }
+        } else {
+            crate::url::Url::parse(&url_str).map_err(|_| {
+                JsError::from(
+                    JsNativeError::typ().with_message("Failed to construct 'URL': Invalid URL"),
+                )
+            })?
+        };
+
+        Ok(UrlObject { url: parsed_url })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let get_href_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_href),
+        )
+        .name("get href")
+        .build();
+
+        let get_protocol_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_protocol),
+        )
+        .name("get protocol")
+        .build();
+
+        let get_hostname_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_hostname),
+        )
+        .name("get hostname")
+        .build();
+
+        let get_port_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_port),
+        )
+        .name("get port")
+        .build();
+
+        let get_host_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_host),
+        )
+        .name("get host")
+        .build();
+
+        let get_pathname_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_pathname),
+        )
+        .name("get pathname")
+        .build();
+
+        let get_search_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_search),
+        )
+        .name("get search")
+        .build();
+
+        let get_hash_fn = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(url_get_hash),
+        )
+        .name("get hash")
+        .build();
+
+        class
+            .accessor(
+                JsString::from("href"),
+                Some(get_href_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("protocol"),
+                Some(get_protocol_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("hostname"),
+                Some(get_hostname_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("port"),
+                Some(get_port_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("host"),
+                Some(get_host_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("pathname"),
+                Some(get_pathname_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("search"),
+                Some(get_search_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("hash"),
+                Some(get_hash_fn),
+                None,
+                Attribute::all(),
+            );
+
+        Ok(())
+    }
+}
+
+pub fn url_get_href(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    Ok(JsValue::from(JsString::from(u.serialize())))
+}
+
+pub fn url_get_protocol(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    let protocol = format!("{}:", u.scheme);
+    Ok(JsValue::from(JsString::from(protocol)))
+}
+
+pub fn url_get_hostname(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    let hostname = u.host.clone().unwrap_or_default();
+    Ok(JsValue::from(JsString::from(hostname)))
+}
+
+pub fn url_get_port(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    let port = u.port.map(|p| p.to_string()).unwrap_or_default();
+    Ok(JsValue::from(JsString::from(port)))
+}
+
+pub fn url_get_host(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    let hostname = u.host.clone().unwrap_or_default();
+    let host = if let Some(port) = u.port {
+        format!("{}:{}", hostname, port)
+    } else {
+        hostname
+    };
+    Ok(JsValue::from(JsString::from(host)))
+}
+
+pub fn url_get_pathname(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    let pathname = if u.path.is_empty() {
+        "/".to_string()
+    } else {
+        u.path.clone()
+    };
+    Ok(JsValue::from(JsString::from(pathname)))
+}
+
+pub fn url_get_search(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    let search = if let Some(query) = &u.query {
+        if !query.is_empty() {
+            format!("?{}", query)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    Ok(JsValue::from(JsString::from(search)))
+}
+
+pub fn url_get_hash(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let url_obj = obj.downcast_ref::<UrlObject>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-URL object"))
+    })?;
+    let u = &url_obj.url;
+    let hash = if let Some(fragment) = &u.fragment {
+        if !fragment.is_empty() {
+            format!("#{}", fragment)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    Ok(JsValue::from(JsString::from(hash)))
+}
+
 /// Implementation of WHATWG URL `URLSearchParams` interface.
 /// Spec: <https://url.spec.whatwg.org/#interface-urlsearchparams>
 #[derive(Debug, Trace, Finalize, JsData)]
@@ -8659,6 +8986,63 @@ mod tests {
             params.delete("b");
             if (params.has("b") !== false) throw "after delete has(b) should be false";
             if (params.toString() !== "a=4") throw "after delete toString mismatch";
+        }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_url_basic_getters() {
+        let mut host = BoaHost::new();
+
+        host.eval(
+            r##"{
+            const u = new URL("https://example.com:8080/a/b?x=1&y=2#frag");
+            if (u.href !== "https://example.com:8080/a/b?x=1&y=2#frag") throw "href mismatch: " + u.href;
+            if (u.protocol !== "https:") throw "protocol mismatch: " + u.protocol;
+            if (u.hostname !== "example.com") throw "hostname mismatch: " + u.hostname;
+            if (u.port !== "8080") throw "port mismatch: " + u.port;
+            if (u.host !== "example.com:8080") throw "host mismatch: " + u.host;
+            if (u.pathname !== "/a/b") throw "pathname mismatch: " + u.pathname;
+            if (u.search !== "?x=1&y=2") throw "search mismatch: " + u.search;
+            if (u.hash !== "#frag") throw "hash mismatch: " + u.hash;
+        }"##,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_url_with_base() {
+        let mut host = BoaHost::new();
+
+        host.eval(
+            r#"{
+            const u1 = new URL("/path?z=9", "https://base.org");
+            if (u1.href !== "https://base.org/path?z=9") throw "relative against base href mismatch: " + u1.href;
+            if (u1.pathname !== "/path") throw "relative against base pathname mismatch";
+            if (u1.hostname !== "base.org") throw "relative against base hostname mismatch";
+
+            const u2 = new URL("https://specific.org/p", "https://base.org");
+            if (u2.href !== "https://specific.org/p") throw "absolute ignores base href mismatch: " + u2.href;
+        }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_url_invalid_throws() {
+        let mut host = BoaHost::new();
+
+        host.eval(
+            r#"{
+            let thrown = false;
+            try {
+                new URL("::::not a url");
+            } catch (e) {
+                thrown = true;
+                if (!e.message.includes("Invalid URL")) throw "unexpected error message: " + e.message;
+            }
+            if (!thrown) throw "should have thrown on invalid URL";
         }"#,
         )
         .unwrap();
