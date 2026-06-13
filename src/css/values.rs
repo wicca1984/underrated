@@ -241,6 +241,43 @@ impl std::str::FromStr for IsolationValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ResizeValue {
+    None,
+    Both,
+    Horizontal,
+    Vertical,
+}
+
+impl ResizeValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "both" => Some(Self::Both),
+            "horizontal" => Some(Self::Horizontal),
+            "vertical" => Some(Self::Vertical),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Both => "both",
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
+        }
+    }
+}
+
+impl std::str::FromStr for ResizeValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum WhiteSpaceValue {
     Normal,
     Nowrap,
@@ -997,6 +1034,7 @@ pub enum CssValue {
     MixBlendMode(MixBlendModeValue),
     BackgroundBlendMode(BackgroundBlendModeValue),
     Isolation(IsolationValue),
+    Resize(ResizeValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1092,6 +1130,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "mix-blend-mode"
             | "background-blend-mode"
             | "isolation"
+            | "resize"
             | "overscroll-behavior"
             | "overscroll-behavior-x"
             | "overscroll-behavior-y"
@@ -1197,6 +1236,16 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "isolate")
             }
             CssValue::Isolation(_) => true,
+            _ => false,
+        },
+        "resize" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "none" | "both" | "horizontal" | "vertical"
+                )
+            }
+            CssValue::Resize(_) => true,
             _ => false,
         },
         "position" => match value {
@@ -1767,6 +1816,27 @@ fn parse_isolation(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::Isolation(kw))
 }
 
+fn parse_resize(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for resize recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        // TODO(spec): Support global keywords like inherit/initial/unset/revert if required in future
+        return None;
+    }
+
+    let kw = ResizeValue::parse(&idents[0])?;
+    Some(CssValue::Resize(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -1790,6 +1860,9 @@ pub fn parse_property_value(
     }
     if name_lower == "isolation" {
         return parse_isolation(components);
+    }
+    if name_lower == "resize" {
+        return parse_resize(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -5993,5 +6066,69 @@ mod tests {
             IsolationValue::parse("ISOLATE"),
             Some(IsolationValue::Isolate)
         );
+    }
+
+    #[test]
+    fn test_resize_parsing_and_recognition() {
+        // Test resize: both
+        assert_eq!(
+            parse_property_value("resize", &[token(CssToken::Ident("both".to_string()))]),
+            Some(CssValue::Resize(ResizeValue::Both))
+        );
+
+        // Test none default
+        assert_eq!(
+            parse_property_value("resize", &[token(CssToken::Ident("none".to_string()))]),
+            Some(CssValue::Resize(ResizeValue::None))
+        );
+
+        // Test horizontal
+        assert_eq!(
+            parse_property_value(
+                "resize",
+                &[token(CssToken::Ident("horizontal".to_string()))]
+            ),
+            Some(CssValue::Resize(ResizeValue::Horizontal))
+        );
+
+        // Test vertical
+        assert_eq!(
+            parse_property_value("resize", &[token(CssToken::Ident("vertical".to_string()))]),
+            Some(CssValue::Resize(ResizeValue::Vertical))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value("resize", &[token(CssToken::Ident("banana".to_string()))]),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("resize"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "resize",
+            &CssValue::Resize(ResizeValue::Both)
+        ));
+        assert!(is_valid_property_value(
+            "resize",
+            &CssValue::Keyword("both".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "resize",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test ResizeValue::parse directly
+        assert_eq!(ResizeValue::parse("both"), Some(ResizeValue::Both));
+        assert_eq!(ResizeValue::parse("none"), Some(ResizeValue::None));
+        assert_eq!(
+            ResizeValue::parse("horizontal"),
+            Some(ResizeValue::Horizontal)
+        );
+        assert_eq!(ResizeValue::parse("vertical"), Some(ResizeValue::Vertical));
+        assert_eq!(ResizeValue::parse("banana"), None);
+        assert_eq!(ResizeValue::parse("BOTH"), Some(ResizeValue::Both));
     }
 }

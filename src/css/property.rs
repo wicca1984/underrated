@@ -335,6 +335,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
     },
     PropertyMetadata {
+        name: "resize",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
         name: "clip",
         inherited: false,
         initial: "auto",
@@ -1051,6 +1056,13 @@ mod tests {
         assert_eq!(isolation.name, "isolation");
         assert!(!isolation.inherited);
         assert_eq!(isolation.initial, "auto");
+
+        let resize = lookup("resize");
+        assert!(resize.is_some());
+        let resize = resize.unwrap();
+        assert_eq!(resize.name, "resize");
+        assert!(!resize.inherited);
+        assert_eq!(resize.initial, "none");
     }
 
     #[test]
