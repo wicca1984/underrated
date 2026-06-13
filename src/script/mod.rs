@@ -226,6 +226,16 @@ impl BoaHost {
                 2,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_append),
+                JsString::from("append"),
+                0,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_prepend),
+                JsString::from("prepend"),
+                0,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_remove_child),
                 JsString::from("removeChild"),
                 2,
@@ -1860,18 +1870,16 @@ impl BoaHost {
                     // TODO(spec): ParentNode.append()/prepend() v1 — Node and string (->Text) args only; DocumentFragment expansion and other edge cases out of scope.
                     Object.defineProperty(node, 'append', {
                         value: function(...args) {
+                            const bridgeArgs = [this.__key__];
                             for (let i = 0; i < args.length; i++) {
                                 let arg = args[i];
-                                let n;
-                                if (typeof arg === 'string') {
-                                    n = document.createTextNode(arg);
-                                } else if (arg && arg.__key__) {
-                                    n = arg;
+                                if (arg && arg.__key__) {
+                                    bridgeArgs.push("node", arg.__key__);
                                 } else {
-                                    throw new TypeError("Argument must be a Node or a string");
+                                    bridgeArgs.push("text", String(arg));
                                 }
-                                this.appendChild(n);
                             }
+                            bridge.append(...bridgeArgs);
                         },
                         enumerable: false,
                         configurable: true,
@@ -1880,19 +1888,16 @@ impl BoaHost {
 
                     Object.defineProperty(node, 'prepend', {
                         value: function(...args) {
-                            const refNode = this.firstChild;
+                            const bridgeArgs = [this.__key__];
                             for (let i = 0; i < args.length; i++) {
                                 let arg = args[i];
-                                let n;
-                                if (typeof arg === 'string') {
-                                    n = document.createTextNode(arg);
-                                } else if (arg && arg.__key__) {
-                                    n = arg;
+                                if (arg && arg.__key__) {
+                                    bridgeArgs.push("node", arg.__key__);
                                 } else {
-                                    throw new TypeError("Argument must be a Node or a string");
+                                    bridgeArgs.push("text", String(arg));
                                 }
-                                this.insertBefore(n, refNode);
                             }
+                            bridge.prepend(...bridgeArgs);
                         },
                         enumerable: false,
                         configurable: true,
@@ -3349,6 +3354,122 @@ fn bridge_append_child(
         if let (Some(p_id), Some(c_id)) = (parent_id, child_id) {
             dom.append_child(p_id, c_id);
             // TODO(spec): Re-layout on mutation
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_append(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let parent_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let mut args_parsed = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if let Some(type_arg) = args.get(i) {
+            let type_str = type_arg
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if let Some(val_arg) = args.get(i + 1) {
+                let val_str = val_arg
+                    .to_string(context)?
+                    .to_std_string()
+                    .unwrap_or_default();
+                args_parsed.push((type_str, val_str));
+            }
+        }
+        i += 2;
+    }
+
+    with_dom(|dom, key_to_node| {
+        let parent_id = key_to_node.get(&parent_key).copied();
+        if let Some(p_id) = parent_id {
+            let mut nodes_to_append = Vec::new();
+            for (type_str, val_str) in args_parsed {
+                if type_str == "text" {
+                    let text_node_id = dom.create_node(NodeData::Text(val_str));
+                    let k = format!("{:?}", text_node_id);
+                    key_to_node.insert(k, text_node_id);
+                    nodes_to_append.push(text_node_id);
+                } else if type_str == "node"
+                    && let Some(&c_id) = key_to_node.get(&val_str)
+                {
+                    nodes_to_append.push(c_id);
+                }
+            }
+
+            for c_id in nodes_to_append {
+                dom.append_child(p_id, c_id);
+                // TODO(spec): Re-layout on mutation
+            }
+        }
+    })?;
+
+    Ok(JsValue::undefined())
+}
+
+fn bridge_prepend(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let parent_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let mut args_parsed = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if let Some(type_arg) = args.get(i) {
+            let type_str = type_arg
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if let Some(val_arg) = args.get(i + 1) {
+                let val_str = val_arg
+                    .to_string(context)?
+                    .to_std_string()
+                    .unwrap_or_default();
+                args_parsed.push((type_str, val_str));
+            }
+        }
+        i += 2;
+    }
+
+    with_dom(|dom, key_to_node| {
+        let parent_id = key_to_node.get(&parent_key).copied();
+        if let Some(p_id) = parent_id {
+            let mut nodes_to_prepend = Vec::new();
+            for (type_str, val_str) in args_parsed {
+                if type_str == "text" {
+                    let text_node_id = dom.create_node(NodeData::Text(val_str));
+                    let k = format!("{:?}", text_node_id);
+                    key_to_node.insert(k, text_node_id);
+                    nodes_to_prepend.push(text_node_id);
+                } else if type_str == "node"
+                    && let Some(&c_id) = key_to_node.get(&val_str)
+                {
+                    nodes_to_prepend.push(c_id);
+                }
+            }
+
+            let original_first_child = dom.children(p_id).first().copied();
+
+            for c_id in nodes_to_prepend {
+                dom.insert_before(p_id, c_id, original_first_child);
+                // TODO(spec): Re-layout on mutation
+            }
         }
     })?;
 
@@ -7467,6 +7588,14 @@ mod tests {
             let y = document.createElement('span');
             y.textContent = 'y';
             parent.prepend(x, y);
+
+            // Test no-args calling (should be no-op)
+            parent.append();
+            parent.prepend();
+
+            // Test non-string raw value conversions
+            parent.append(true);
+            parent.append(123);
         ";
         assert!(host.eval_with_dom(script, &mut dom).is_ok());
 
@@ -7476,7 +7605,7 @@ mod tests {
         let parent_id = doc_children[0];
         let parent_children = dom.children(parent_id);
 
-        assert_eq!(parent_children.len(), 7);
+        assert_eq!(parent_children.len(), 9);
         assert_eq!(dom.text_content(parent_children[0]), "x");
         assert_eq!(dom.text_content(parent_children[1]), "y");
         assert_eq!(dom.text_content(parent_children[2]), "z");
@@ -7484,6 +7613,8 @@ mod tests {
         assert_eq!(dom.text_content(parent_children[4]), "b");
         assert_eq!(dom.text_content(parent_children[5]), "c");
         assert_eq!(dom.text_content(parent_children[6]), "hi");
+        assert_eq!(dom.text_content(parent_children[7]), "true");
+        assert_eq!(dom.text_content(parent_children[8]), "123");
     }
 
     #[test]
