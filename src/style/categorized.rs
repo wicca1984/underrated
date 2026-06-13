@@ -1796,7 +1796,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
     use crate::css::values::{
         AlignItemsValue, BackgroundBlendModeValue, BoxSizingValue, Color, CssValue, DisplayValue,
         FlexDirectionValue, IsolationValue, JustifyContentValue, LengthUnit, MixBlendModeValue,
-        OverflowValue, PositionValue, ZIndex,
+        OverflowValue, PositionValue, ResizeValue, ZIndex,
     };
     match val {
         CssValue::Keyword(s) => s.clone(),
@@ -2028,6 +2028,12 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::Isolation(iso) => match iso {
             IsolationValue::Auto => "auto".to_string(),
             IsolationValue::Isolate => "isolate".to_string(),
+        },
+        CssValue::Resize(res) => match res {
+            ResizeValue::None => "none".to_string(),
+            ResizeValue::Both => "both".to_string(),
+            ResizeValue::Horizontal => "horizontal".to_string(),
+            ResizeValue::Vertical => "vertical".to_string(),
         },
     }
 }
@@ -2461,6 +2467,28 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::Isolation(IsolationValue::Isolate)),
             "isolate".to_string()
+        );
+    }
+
+    #[test]
+    fn test_resize_serialization() {
+        use crate::css::values::{CssValue, ResizeValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::Resize(ResizeValue::None)),
+            "none".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::Resize(ResizeValue::Both)),
+            "both".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::Resize(ResizeValue::Horizontal)),
+            "horizontal".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::Resize(ResizeValue::Vertical)),
+            "vertical".to_string()
         );
     }
 }
