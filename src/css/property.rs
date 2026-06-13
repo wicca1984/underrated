@@ -183,6 +183,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "clip-rule",
+        inherited: true,
+        initial: "nonzero",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "display",
@@ -323,6 +328,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         name: "mix-blend-mode",
         inherited: false,
         initial: "normal",
+    },
+    PropertyMetadata {
+        name: "clip",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "clip-path",
+        inherited: false,
+        initial: "none",
     },
     PropertyMetadata {
         name: "opacity",
@@ -959,6 +974,30 @@ mod tests {
         assert_eq!(scroll_margin.name, "scroll-margin");
         assert!(!scroll_margin.inherited);
         assert_eq!(scroll_margin.initial, "0");
+    }
+
+    #[test]
+    fn test_additive_properties_t0498() {
+        let clip_path = lookup("clip-path");
+        assert!(clip_path.is_some());
+        let clip_path = clip_path.unwrap();
+        assert_eq!(clip_path.name, "clip-path");
+        assert!(!clip_path.inherited);
+        assert_eq!(clip_path.initial, "none");
+
+        let clip = lookup("clip");
+        assert!(clip.is_some());
+        let clip = clip.unwrap();
+        assert_eq!(clip.name, "clip");
+        assert!(!clip.inherited);
+        assert_eq!(clip.initial, "auto");
+
+        let clip_rule = lookup("clip-rule");
+        assert!(clip_rule.is_some());
+        let clip_rule = clip_rule.unwrap();
+        assert_eq!(clip_rule.name, "clip-rule");
+        assert!(clip_rule.inherited);
+        assert_eq!(clip_rule.initial, "nonzero");
     }
 
     #[test]
