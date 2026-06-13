@@ -6579,6 +6579,11 @@ impl Class for UrlObject {
                 Some(get_hash_fn),
                 None,
                 Attribute::all(),
+            )
+            .static_method(
+                JsString::from("canParse"),
+                1,
+                NativeFunction::from_fn_ptr(url_can_parse),
             );
 
         Ok(())
@@ -6735,6 +6740,41 @@ pub fn url_get_hash(
         String::new()
     };
     Ok(JsValue::from(JsString::from(hash)))
+}
+
+pub fn url_can_parse(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let url_str = if let Some(url_val) = args.first() {
+        url_val
+            .to_string(context)?
+            .to_std_string()
+            .unwrap_or_default()
+    } else {
+        "undefined".to_string()
+    };
+
+    let has_base = if let Some(base_val) = args.get(1) {
+        if !base_val.is_undefined() && !base_val.is_null() {
+            let base_str = base_val
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if let Ok(base_url) = crate::url::Url::parse(&base_str) {
+                crate::url::Url::parse_with_base(&url_str, &base_url).is_ok()
+            } else {
+                false
+            }
+        } else {
+            crate::url::Url::parse(&url_str).is_ok()
+        }
+    } else {
+        crate::url::Url::parse(&url_str).is_ok()
+    };
+
+    Ok(JsValue::from(has_base))
 }
 
 /// Implementation of WHATWG URL `URLSearchParams` interface.
@@ -9935,14 +9975,57 @@ mod tests {
 
         host.eval(
             r#"{
-            let thrown = false;
+            let threw = false;
             try {
                 new URL("::::not a url");
             } catch (e) {
-                thrown = true;
+                threw = true;
                 if (!e.message.includes("Invalid URL")) throw "unexpected error message: " + e.message;
             }
-            if (!thrown) throw "should have thrown on invalid URL";
+            if (!threw) throw "should have thrown on invalid URL";
+        }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_url_can_parse() {
+        let mut host = BoaHost::new();
+
+        host.eval(
+            r#"{
+            if (typeof URL.canParse !== "function") throw "URL.canParse is not a function";
+            
+            // Valid URLs
+            if (URL.canParse("https://example.com/") !== true) throw "should parse valid absolute URL";
+            if (URL.canParse("http://foo.com/bar?baz=1#frag") !== true) throw "should parse HTTP URL";
+            if (URL.canParse("file:///abc") !== true) throw "should parse file URL";
+
+            // Invalid URLs
+            if (URL.canParse("not a url") !== false) throw "should not parse invalid URL";
+            if (URL.canParse("::::not a url") !== false) throw "should not parse invalid URL with colons";
+
+            // With base URL
+            if (URL.canParse("/path", "https://example.com") !== true) throw "should parse relative URL with base";
+            if (URL.canParse("/path", "invalid base") !== false) throw "should return false with invalid base URL";
+            if (URL.canParse("/path") !== false) throw "should return false with relative URL and no base";
+
+            // Optional base argument null/undefined
+            if (URL.canParse("https://example.com/", null) !== true) throw "should parse with null base";
+            if (URL.canParse("https://example.com/", undefined) !== true) throw "should parse with undefined base";
+            if (URL.canParse("/path", null) !== false) throw "should not parse relative with null base";
+
+            // Argument coercion (no throw on parse failure)
+            if (URL.canParse() !== false) throw "should return false on omitted argument (undefined)";
+            
+            // Symbol coercion should throw standard error (does not return false)
+            let threw_symbol = false;
+            try {
+                URL.canParse(Symbol("foo"));
+            } catch (e) {
+                threw_symbol = true;
+            }
+            if (!threw_symbol) throw "coercing Symbol should throw";
         }"#,
         )
         .unwrap();
