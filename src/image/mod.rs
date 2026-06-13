@@ -1778,6 +1778,12 @@ pub fn decode_pcx(bytes: &[u8]) -> Option<DecodedImage> {
     let width = (xmax as u32) - (xmin as u32) + 1;
     let height = (ymax as u32) - (ymin as u32) + 1;
 
+    // Guard against unbounded allocation from hostile dimensions (matches the
+    // 16384 cap used by the other decoders in this module).
+    if width > 16384 || height > 16384 {
+        return None;
+    }
+
     let nplanes = bytes[65];
     if nplanes != 1 && nplanes != 3 {
         return None;
@@ -1851,7 +1857,10 @@ pub fn decode_pcx(bytes: &[u8]) -> Option<DecodedImage> {
     }
 
     let mut rle_decoder = RleDecoder::new(&bytes[..rle_limit]);
-    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    let total_bytes = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let mut rgba = vec![0u8; total_bytes];
 
     // Allocated once and reused across scanlines; every iteration fully
     // overwrites the buffer below before reading it.
