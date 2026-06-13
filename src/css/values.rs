@@ -1045,6 +1045,7 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             }
             if name.eq_ignore_ascii_case("linear-gradient")
                 || name.eq_ignore_ascii_case("radial-gradient")
+                || name.eq_ignore_ascii_case("conic-gradient")
             {
                 return Some(CssValue::Keyword(serialize_component_value(components[0])));
             }

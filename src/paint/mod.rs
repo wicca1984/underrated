@@ -1245,7 +1245,10 @@ pub fn build_display_list_with_caret(
 
                 // Paint background-image (t0382)
                 let kw = &style.reset_background.background_image;
-                if kw.starts_with("linear-gradient(") || kw.starts_with("radial-gradient(") {
+                if kw.starts_with("linear-gradient(")
+                    || kw.starts_with("radial-gradient(")
+                    || kw.starts_with("conic-gradient(")
+                {
                     if layout_box.rect.size.width > 0.0 && layout_box.rect.size.height > 0.0 {
                         let border_radius = if style.reset_surround.border_top_left_radius >= 0 {
                             Some(style.reset_surround.border_top_left_radius as f32)
