@@ -522,6 +522,10 @@ fn is_inherited_property_name(name: &str) -> bool {
             | "accent-color"
             | "caret-color"
             | "visibility"
+            // Not actually inherited; listed only so `get()` synthesizes the
+            // initial value ("ease"/"0s") from typed storage when unset/invalid.
+            | "transition-timing-function"
+            | "transition-delay"
     )
 }
 
@@ -699,6 +703,12 @@ impl CategorizedComputedStyle {
             if !is_valid {
                 return;
             }
+        }
+
+        if (name == "transition-timing-function" || name == "transition-delay")
+            && !crate::css::values::is_valid_property_value(name, value)
+        {
+            return;
         }
 
         if self.extra_values.is_none() {
