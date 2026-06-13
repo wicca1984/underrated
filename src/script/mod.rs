@@ -131,6 +131,7 @@ impl BoaHost {
 
         // Setup Encoding API built-ins (t0505)
         let _ = encoding::register_encoding_builtins(&mut context);
+        let _ = encoding::register_base64_builtins(&mut context);
 
         // Register XMLHttpRequest stub (t0242)
         if let Err(e) = xhr::register_xhr(&mut context) {
