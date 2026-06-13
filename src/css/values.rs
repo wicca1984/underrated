@@ -323,6 +323,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "clear"
             | "table-layout"
             | "scroll-behavior"
+            | "user-select"
             | "visibility"
             | "direction"
             | "cursor"
@@ -460,6 +461,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "scroll-behavior" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "smooth")
+            }
+            _ => false,
+        },
+        "user-select" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "text" | "none" | "contain" | "all"
+                )
             }
             _ => false,
         },
@@ -704,6 +714,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "smooth" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "user-select" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "text" | "none" | "contain" | "all" => Some(val),
                     _ => None,
                 }
             } else {
@@ -2661,6 +2681,33 @@ mod tests {
         ));
         assert!(!is_valid_property_value(
             "scroll-behavior",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value for user-select (t0475)
+        for val in &["auto", "text", "none", "contain", "all", "AUTO", "None"] {
+            assert_eq!(
+                parse_property_value("user-select", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "user-select",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_valid_property_value for user-select (t0475)
+        for val in &["auto", "text", "none", "contain", "all", "AUTO", "None"] {
+            assert!(is_valid_property_value(
+                "user-select",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "user-select",
             &CssValue::Keyword("invalid-value".to_string())
         ));
     }
