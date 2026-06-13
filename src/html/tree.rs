@@ -241,7 +241,7 @@ impl TreeBuilder {
             InsertionMode::InFrameset => self.handle_in_frameset(token),
             InsertionMode::AfterFrameset => self.handle_after_frameset(token),
             InsertionMode::AfterAfterBody => self.handle_after_after_body(token),
-            InsertionMode::AfterAfterFrameset => self.handle_after_after_body(token), // TODO(spec)
+            InsertionMode::AfterAfterFrameset => self.handle_after_after_frameset(token),
         }
     }
 
@@ -1064,6 +1064,50 @@ impl TreeBuilder {
             },
             Token::Eof => {
                 // Stop parsing.
+            }
+            _ => {
+                // Parse error. Ignore.
+            }
+        }
+    }
+
+    // spec: §13.2.6.4.25 The "after after frameset" insertion mode
+    fn handle_after_after_frameset(&mut self, token: Token) {
+        match token {
+            Token::Comment(data) => {
+                let node = self.dom.create_node(NodeData::Comment(data));
+                self.dom.append_child(self.dom.document(), node);
+            }
+            Token::Doctype { .. } => {
+                self.handle_in_body(token);
+            }
+            Token::Character(c) if is_html_whitespace(c) => {
+                self.handle_in_body(Token::Character(c));
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } if name == "html" => {
+                self.handle_in_body(Token::StartTag {
+                    name,
+                    attrs,
+                    self_closing,
+                });
+            }
+            Token::Eof => {
+                // Stop parsing.
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } if name == "noframes" => {
+                self.handle_in_head(Token::StartTag {
+                    name,
+                    attrs,
+                    self_closing,
+                });
             }
             _ => {
                 // Parse error. Ignore.
@@ -2518,6 +2562,34 @@ mod tests {
     fn test_after_frameset_whitespace() {
         let html = "<html><head></head><frameset><frame></frameset>   </html>";
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><frameset><frame></frame></frameset>   </html>"
+        );
+    }
+
+    #[test]
+    fn test_after_after_frameset_insertion_mode() {
+        // 1. Comments should be appended to the Document object in AfterAfterFrameset mode.
+        let html_comment =
+            "<html><head></head><frameset><frame></frameset></html><!-- trailing comment -->";
+        let dom = parse_document(InputStream::from_utf8(html_comment.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><frameset><frame></frame></frameset></html><!-- trailing comment -->"
+        );
+
+        // 2. Stray tags / anything else (like <p>) should be ignored (parse error, no spurious nodes, insertion mode unchanged).
+        let html_stray = "<html><head></head><frameset><frame></frameset></html><p>stray</p>";
+        let dom = parse_document(InputStream::from_utf8(html_stray.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><frameset><frame></frame></frameset></html>"
+        );
+
+        // 3. DOCTYPE and whitespace and <html> should delegate to 'in body'.
+        let html_whitespace = "<html><head></head><frameset><frame></frameset></html>   ";
+        let dom = parse_document(InputStream::from_utf8(html_whitespace.as_bytes()));
         assert_eq!(
             dom.serialize(dom.document()),
             "<html><head></head><frameset><frame></frame></frameset>   </html>"
