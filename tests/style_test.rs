@@ -393,3 +393,67 @@ fn test_accent_color_and_caret_color_style() {
         Some(&CssValue::Keyword("auto".to_string()))
     );
 }
+
+#[test]
+fn test_transition_timing_function_and_delay_style() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+    let div1 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![(
+            "style".into(),
+            "transition-timing-function: ease-in; transition-delay: 200ms;".into(),
+        )],
+    });
+    let div2 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![(
+            "style".into(),
+            "transition-timing-function: linear; transition-delay: 1.5s;".into(),
+        )],
+    });
+    let div3 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![(
+            "style".into(),
+            "transition-timing-function: invalid-val; transition-delay: invalid-val;".into(),
+        )],
+    });
+    dom.append_child(doc, div1);
+    dom.append_child(doc, div2);
+    dom.append_child(doc, div3);
+
+    let stylesheet = parse_stylesheet("");
+    let styles = compute_styles_with_viewport(&dom, &stylesheet, 1024.0);
+
+    let div1_style = styles.get(&div1).unwrap();
+    assert_eq!(
+        div1_style.get("transition-timing-function"),
+        Some(&CssValue::Keyword("ease-in".to_string()))
+    );
+    assert_eq!(
+        div1_style.get("transition-delay"),
+        Some(&CssValue::Keyword("200ms".to_string()))
+    );
+
+    let div2_style = styles.get(&div2).unwrap();
+    assert_eq!(
+        div2_style.get("transition-timing-function"),
+        Some(&CssValue::Keyword("linear".to_string()))
+    );
+    assert_eq!(
+        div2_style.get("transition-delay"),
+        Some(&CssValue::Keyword("1.5s".to_string()))
+    );
+
+    let div3_style = styles.get(&div3).unwrap();
+    // Invalid value should be dropped/not set, so getting it returns the default initial values.
+    assert_eq!(
+        div3_style.get("transition-timing-function"),
+        Some(&CssValue::Keyword("ease".to_string()))
+    );
+    assert_eq!(
+        div3_style.get("transition-delay"),
+        Some(&CssValue::Keyword("0s".to_string()))
+    );
+}

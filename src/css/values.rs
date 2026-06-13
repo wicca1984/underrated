@@ -329,6 +329,8 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "cursor"
             | "accent-color"
             | "caret-color"
+            | "transition-timing-function"
+            | "transition-delay"
     )
 }
 
@@ -538,6 +540,35 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "currentcolor")
             }
+            _ => false,
+        },
+        "transition-timing-function" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "ease"
+                        | "linear"
+                        | "ease-in"
+                        | "ease-out"
+                        | "ease-in-out"
+                        | "step-start"
+                        | "step-end"
+                )
+            }
+            _ => false,
+        },
+        "transition-delay" => match value {
+            CssValue::Keyword(kw) => {
+                let kw_lower = kw.to_ascii_lowercase();
+                if kw_lower.ends_with("ms") {
+                    kw_lower[..kw_lower.len() - 2].parse::<f32>().is_ok()
+                } else if kw_lower.ends_with('s') {
+                    kw_lower[..kw_lower.len() - 1].parse::<f32>().is_ok()
+                } else {
+                    false
+                }
+            }
+            CssValue::Number(v) => *v == 0.0,
             _ => false,
         },
         _ => true,
@@ -784,6 +815,45 @@ pub fn parse_property_value(
             },
             _ => None,
         },
+        "transition-timing-function" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "ease" | "linear" | "ease-in" | "ease-out" | "ease-in-out" | "step-start"
+                    | "step-end" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "transition-delay" => match &val {
+            CssValue::Keyword(kw) => {
+                let kw_lower = kw.to_ascii_lowercase();
+                if kw_lower.ends_with("ms") {
+                    if kw_lower[..kw_lower.len() - 2].parse::<f32>().is_ok() {
+                        Some(val)
+                    } else {
+                        None
+                    }
+                } else if kw_lower.ends_with('s') {
+                    if kw_lower[..kw_lower.len() - 1].parse::<f32>().is_ok() {
+                        Some(val)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            CssValue::Number(v) => {
+                if *v == 0.0 {
+                    Some(val)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
         "object-position" => {
             // // TODO(spec): full position resolution for object-position grammar.
             Some(val)
@@ -807,7 +877,11 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             }
         }
         ComponentValue::Token(CssToken::Dimension { value, unit }) => {
-            let unit_enum = match unit.to_ascii_lowercase().as_str() {
+            let lower_unit = unit.to_ascii_lowercase();
+            if lower_unit == "s" || lower_unit == "ms" {
+                return Some(CssValue::Keyword(format!("{}{}", value, lower_unit)));
+            }
+            let unit_enum = match lower_unit.as_str() {
                 "px" => LengthUnit::Px,
                 "em" => LengthUnit::Em,
                 "rem" => LengthUnit::Rem,
@@ -2783,6 +2857,73 @@ mod tests {
                 &[token(CssToken::Ident("currentcolor".to_string()))]
             ),
             Some(CssValue::Keyword("currentcolor".to_string()))
+        );
+
+        // Test parse_property_value for transition-timing-function and transition-delay (t0479)
+        for val in &[
+            "ease",
+            "linear",
+            "ease-in",
+            "ease-out",
+            "ease-in-out",
+            "step-start",
+            "step-end",
+            "EASE",
+            "Ease-In",
+        ] {
+            assert_eq!(
+                parse_property_value(
+                    "transition-timing-function",
+                    &[token(CssToken::Ident(val.to_string()))]
+                ),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "transition-timing-function",
+                &[token(CssToken::Ident("invalid".to_string()))]
+            ),
+            None
+        );
+
+        assert_eq!(
+            parse_property_value(
+                "transition-delay",
+                &[token(CssToken::Dimension {
+                    value: 200.0,
+                    unit: "ms".to_string()
+                })]
+            ),
+            Some(CssValue::Keyword("200ms".to_string()))
+        );
+        assert_eq!(
+            parse_property_value(
+                "transition-delay",
+                &[token(CssToken::Dimension {
+                    value: 1.5,
+                    unit: "s".to_string()
+                })]
+            ),
+            Some(CssValue::Keyword("1.5s".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("transition-delay", &[token(CssToken::Number(0.0))]),
+            Some(CssValue::Number(0.0))
+        );
+        assert_eq!(
+            parse_property_value("transition-delay", &[token(CssToken::Number(5.0))]),
+            None
+        );
+        assert_eq!(
+            parse_property_value(
+                "transition-delay",
+                &[token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string()
+                })]
+            ),
+            None
         );
     }
 }

@@ -369,6 +369,8 @@ pub struct ResetEffects {
     pub outline_offset: i32,
     pub transition_duration: u32,
     pub transition_property: String,
+    pub transition_timing_function: String,
+    pub transition_delay: String,
     pub text_decoration_line: String,
     pub text_decoration_color: String,
     pub text_decoration_style: String,
@@ -386,6 +388,8 @@ impl Default for ResetEffects {
             outline_offset: 0,
             transition_duration: 0,
             transition_property: "all".to_string(),
+            transition_timing_function: "ease".to_string(),
+            transition_delay: "0s".to_string(),
             // Empty string = "unspecified" (CSS-initial). Kept distinct from an
             // explicitly-authored `none` so that decoration-propagation consumers
             // (paint::resolve_text_decorations) can tell a default node from one that
@@ -518,6 +522,10 @@ fn is_inherited_property_name(name: &str) -> bool {
             | "accent-color"
             | "caret-color"
             | "visibility"
+            // Not actually inherited; listed only so `get()` synthesizes the
+            // initial value ("ease"/"0s") from typed storage when unset/invalid.
+            | "transition-timing-function"
+            | "transition-delay"
     )
 }
 
@@ -695,6 +703,12 @@ impl CategorizedComputedStyle {
             if !is_valid {
                 return;
             }
+        }
+
+        if (name == "transition-timing-function" || name == "transition-delay")
+            && !crate::css::values::is_valid_property_value(name, value)
+        {
+            return;
         }
 
         if self.extra_values.is_none() {
@@ -1145,6 +1159,15 @@ impl CategorizedComputedStyle {
             "transition-property" => {
                 Arc::make_mut(&mut self.reset_effects).transition_property =
                     css_value_to_string(value)
+            }
+            "transition-timing-function" => {
+                Arc::make_mut(&mut self.reset_effects).transition_timing_function =
+                    css_value_to_string(value)
+            }
+            "transition-delay" => {
+                let s = css_value_to_string(value);
+                Arc::make_mut(&mut self.reset_effects).transition_delay =
+                    if s == "0" { "0s".to_string() } else { s };
             }
             "text-decoration-line" => {
                 Arc::make_mut(&mut self.reset_effects).text_decoration_line =
@@ -1705,6 +1728,10 @@ impl CategorizedComputedStyle {
             "outline-offset" => Some(format!("{}px", self.reset_effects.outline_offset)),
             "transition-duration" => Some(format!("{}s", self.reset_effects.transition_duration)),
             "transition-property" => Some(self.reset_effects.transition_property.clone()),
+            "transition-timing-function" => {
+                Some(self.reset_effects.transition_timing_function.clone())
+            }
+            "transition-delay" => Some(self.reset_effects.transition_delay.clone()),
             "text-decoration-line" => Some(if self.reset_effects.text_decoration_line.is_empty() {
                 "none".to_string()
             } else {
