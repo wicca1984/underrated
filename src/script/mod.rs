@@ -401,6 +401,11 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_is_equal_node),
+                JsString::from("isEqualNode"),
+                1,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_has_child_nodes),
                 JsString::from("hasChildNodes"),
                 1,
@@ -1441,43 +1446,6 @@ impl BoaHost {
                 }
                 window.DOMStringMap = DOMStringMap;
 
-                function isEqualNodeHelper(node, other) {
-                    if (!other) return false;
-                    if (node === other) return true;
-                    if (node.nodeType !== other.nodeType) return false;
-                    if (node.nodeName !== other.nodeName) return false;
-
-                    if (node.nodeType === 1) { // ELEMENT_NODE
-                        const thisAttrs = node.getAttributeNames();
-                        const otherAttrs = other.getAttributeNames();
-                        if (thisAttrs.length !== otherAttrs.length) return false;
-                        for (let i = 0; i < thisAttrs.length; i++) {
-                            const attr = thisAttrs[i];
-                            if (node.getAttribute(attr) !== other.getAttribute(attr)) {
-                                return false;
-                            }
-                        }
-                    }
-
-                    if (node.nodeType === 3 || node.nodeType === 8) { // Text or Comment
-                        // TODO(spec): comment text is currently not fully exposed in Rust text_content.
-                        if (node.textContent !== other.textContent) {
-                            return false;
-                        }
-                    }
-
-                    const thisChildren = node.childNodes;
-                    const otherChildren = other.childNodes;
-                    if (thisChildren.length !== otherChildren.length) return false;
-                    for (let i = 0; i < thisChildren.length; i++) {
-                        if (!isEqualNodeHelper(thisChildren[i], otherChildren[i])) {
-                            return false;
-                        }
-                    }
-
-                    return true;
-                }
-
                 function compareDocumentPositionHelper(node, other) {
                     // TODO(spec): Attribute nodes and shadow roots are not yet supported or exposed, so some advanced edge cases are simplified.
                     const DOCUMENT_POSITION_DISCONNECTED = 1;
@@ -1866,7 +1834,7 @@ impl BoaHost {
                     };
 
                     node.isEqualNode = function(otherNode) {
-                        return isEqualNodeHelper(this, otherNode);
+                        return bridge.isEqualNode(this.__key__, (otherNode && otherNode.__key__) || null);
                     };
 
                     node.compareDocumentPosition = function(otherNode) {
@@ -2538,7 +2506,7 @@ impl BoaHost {
                 };
 
                 Document.prototype.isEqualNode = function(otherNode) {
-                    return isEqualNodeHelper(this, otherNode);
+                    return bridge.isEqualNode(this.__key__, (otherNode && otherNode.__key__) || null);
                 };
 
                 Document.prototype.compareDocumentPosition = function(otherNode) {
@@ -5496,6 +5464,138 @@ fn bridge_contains(
     })?;
 
     Ok(JsValue::from(contains))
+}
+
+fn nodes_equal(dom: &Dom, a: NodeId, b: NodeId) -> bool {
+    // TODO(spec): namespace/prefix and DocumentFragment host comparison are out of scope for v1.
+    let data_a = match dom.data(a) {
+        Some(d) => d,
+        None => return false,
+    };
+    let data_b = match dom.data(b) {
+        Some(d) => d,
+        None => return false,
+    };
+
+    match (data_a, data_b) {
+        (NodeData::Document, NodeData::Document) => {}
+        (
+            NodeData::Doctype {
+                name: name_a,
+                public_id: public_id_a,
+                system_id: system_id_a,
+            },
+            NodeData::Doctype {
+                name: name_b,
+                public_id: public_id_b,
+                system_id: system_id_b,
+            },
+        ) => {
+            if name_a != name_b || public_id_a != public_id_b || system_id_a != system_id_b {
+                return false;
+            }
+        }
+        (
+            NodeData::Element {
+                name: name_a,
+                attrs: attrs_a,
+            },
+            NodeData::Element {
+                name: name_b,
+                attrs: attrs_b,
+            },
+        ) => {
+            if name_a != name_b {
+                return false;
+            }
+            if attrs_a.len() != attrs_b.len() {
+                return false;
+            }
+            let mut sorted_a = attrs_a.clone();
+            let mut sorted_b = attrs_b.clone();
+            sorted_a.sort_unstable();
+            sorted_b.sort_unstable();
+            if sorted_a != sorted_b {
+                return false;
+            }
+        }
+        (NodeData::Text(s_a), NodeData::Text(s_b)) => {
+            if s_a != s_b {
+                return false;
+            }
+        }
+        (NodeData::Comment(s_a), NodeData::Comment(s_b)) => {
+            if s_a != s_b {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    let children_a = dom.children(a);
+    let children_b = dom.children(b);
+    if children_a.len() != children_b.len() {
+        return false;
+    }
+
+    for i in 0..children_a.len() {
+        if !nodes_equal(dom, children_a[i], children_b[i]) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn bridge_is_equal_node(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::from(false));
+    };
+
+    let other_key = if let Some(arg) = args.get(1) {
+        if arg.is_null() || arg.is_undefined() {
+            None
+        } else {
+            let key_str = arg.to_string(context)?.to_std_string().unwrap_or_default();
+            if key_str.is_empty() || key_str == "null" || key_str == "undefined" {
+                None
+            } else {
+                Some(key_str)
+            }
+        }
+    } else {
+        None
+    };
+
+    let other_key = match other_key {
+        Some(k) => k,
+        None => return Ok(JsValue::from(false)),
+    };
+
+    let result = with_dom(|dom, key_to_node| {
+        let this_id = match key_to_node.get(&node_key).copied() {
+            Some(id) => id,
+            None => return false,
+        };
+        let other_id = match key_to_node.get(&other_key).copied() {
+            Some(id) => id,
+            None => return false,
+        };
+
+        if this_id == other_id {
+            return true;
+        }
+
+        nodes_equal(dom, this_id, other_id)
+    })?;
+
+    Ok(JsValue::from(result))
 }
 
 fn bridge_has_child_nodes(
@@ -11164,6 +11264,55 @@ mod tests {
         // Test document isEqualNode
         let res_doc_equal_self = host.eval_with_dom("document.isEqualNode(document)", &mut dom);
         assert_eq!(res_doc_equal_self, Ok("true".to_string()));
+
+        // Compare nested identical trees:
+        let res_nested_equal = host.eval_with_dom(
+            r#"{
+                const parent1 = document.createElement('div');
+                parent1.setAttribute('id', 'a');
+                const child1 = document.createElement('span');
+                child1.appendChild(document.createTextNode('hi'));
+                parent1.appendChild(child1);
+
+                const parent2 = document.createElement('div');
+                parent2.setAttribute('id', 'a');
+                const child2 = document.createElement('span');
+                child2.appendChild(document.createTextNode('hi'));
+                parent2.appendChild(child2);
+
+                parent1.isEqualNode(parent2);
+            }"#,
+            &mut dom,
+        );
+        assert_eq!(res_nested_equal, Ok("true".to_string()));
+
+        // Different tag name returns false:
+        let res_diff_tag = host.eval_with_dom(
+            "const div = document.createElement('div'); const span = document.createElement('span'); div.isEqualNode(span)",
+            &mut dom,
+        );
+        assert_eq!(res_diff_tag, Ok("false".to_string()));
+
+        // Different text content returns false:
+        let res_diff_text = host.eval_with_dom(
+            "const t1 = document.createTextNode('abc'); const t2 = document.createTextNode('xyz'); t1.isEqualNode(t2)",
+            &mut dom,
+        );
+        assert_eq!(res_diff_text, Ok("false".to_string()));
+
+        // A node compared with itself returns true:
+        let res_self_equal = host.eval_with_dom(
+            "const d_self = document.createElement('div'); d_self.isEqualNode(d_self)",
+            &mut dom,
+        );
+        assert_eq!(res_self_equal, Ok("true".to_string()));
+
+        // el.isEqualNode(undefined) returns false:
+        let res_js_undefined = host.eval_with_dom(
+            "document.getElementById('div1').isEqualNode(undefined)",
+            &mut dom,
+        );
+        assert_eq!(res_js_undefined, Ok("false".to_string()));
     }
 
     #[test]
