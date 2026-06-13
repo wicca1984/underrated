@@ -185,6 +185,8 @@ pub struct TreeBuilder {
     template_insertion_modes: Vec<InsertionMode>,
     foster_parenting: bool,
     pub quirks_mode: QuirksMode,
+    pending_table_character_tokens: Vec<char>,
+    original_insertion_mode: Option<InsertionMode>,
 }
 
 impl TreeBuilder {
@@ -199,6 +201,8 @@ impl TreeBuilder {
             template_insertion_modes: Vec::new(),
             foster_parenting: false,
             quirks_mode: QuirksMode::default(),
+            pending_table_character_tokens: Vec::new(),
+            original_insertion_mode: None,
         }
     }
 
@@ -224,7 +228,7 @@ impl TreeBuilder {
             InsertionMode::InBody => self.handle_in_body(token),
             InsertionMode::Text => self.handle_text(token),
             InsertionMode::InTable => self.handle_in_table(token),
-            InsertionMode::InTableText => self.handle_in_table(token), // TODO(spec)
+            InsertionMode::InTableText => self.handle_in_table_text(token),
             InsertionMode::InCaption => self.handle_in_caption(token),
             InsertionMode::InColumnGroup => self.handle_in_column_group(token),
             InsertionMode::InTableBody => self.handle_in_table_body(token),
@@ -1252,9 +1256,10 @@ impl TreeBuilder {
                 }
             },
             Token::Character(_) => {
-                self.foster_parenting = true;
-                self.handle_in_body(token);
-                self.foster_parenting = false;
+                self.pending_table_character_tokens.clear();
+                self.original_insertion_mode = Some(self.insertion_mode);
+                self.insertion_mode = InsertionMode::InTableText;
+                self.process_token(token);
             }
             Token::Eof => {
                 self.handle_in_body(token);
@@ -1263,6 +1268,51 @@ impl TreeBuilder {
                 self.foster_parenting = true;
                 self.handle_in_body(token);
                 self.foster_parenting = false;
+            }
+        }
+    }
+
+    // spec: §13.2.6.4.11 The "in table text" insertion mode
+    fn handle_in_table_text(&mut self, token: Token) {
+        match token {
+            Token::Character(c) => {
+                if c == '\0' {
+                    // Parse error. Ignore.
+                    // TODO(spec): NUL handling is ambiguous or simple parse error.
+                } else {
+                    self.pending_table_character_tokens.push(c);
+                }
+            }
+            _ => {
+                let has_non_whitespace = self
+                    .pending_table_character_tokens
+                    .iter()
+                    .any(|&c| !is_html_whitespace(c));
+                if has_non_whitespace {
+                    // Reprocess the character tokens in the pending table character tokens list using the rules for the 'anything else' insertion mode in the 'in table' insertion mode.
+                    self.foster_parenting = true;
+                    let pending = std::mem::take(&mut self.pending_table_character_tokens);
+                    for &c in &pending {
+                        self.handle_in_body(Token::Character(c));
+                    }
+                    self.foster_parenting = false;
+                } else {
+                    // Otherwise, insert the characters normally.
+                    let pending = std::mem::take(&mut self.pending_table_character_tokens);
+                    for &c in &pending {
+                        self.insert_character(c);
+                    }
+                }
+                // Switch back to original insertion mode.
+                if let Some(mode) = self.original_insertion_mode {
+                    self.insertion_mode = mode;
+                } else {
+                    // Fallback to InTable if not set.
+                    // TODO(spec): original-insertion-mode storage interplay
+                    self.insertion_mode = InsertionMode::InTable;
+                }
+                // Reprocess the current token.
+                self.process_token(token);
             }
         }
     }
@@ -2200,6 +2250,16 @@ mod tests {
         assert_eq!(
             dom.serialize(dom.document()),
             "<html><head></head><body><table><tbody><tr><td></td></tr></tbody></table></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_in_table_text_whitespace_and_non_whitespace() {
+        let html = "<table>  \t\n  <tr><td>cell</td></tr></table>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><table>  \t\n  <tbody><tr><td>cell</td></tr></tbody></table></body></html>"
         );
     }
 
