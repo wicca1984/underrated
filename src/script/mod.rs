@@ -25,6 +25,7 @@ pub mod formdata;
 pub mod headers;
 pub mod navigator;
 pub mod performance;
+pub mod screen;
 
 /// Errors that can occur during script execution.
 #[derive(Debug, PartialEq)]
@@ -572,6 +573,10 @@ impl BoaHost {
             navigator,
             Attribute::all(),
         );
+
+        let screen = screen::create_screen(context);
+        let _ =
+            context.register_global_property(JsString::from("screen"), screen, Attribute::all());
 
         let performance = performance::create_performance(context);
         let _ = context.register_global_property(
@@ -10273,6 +10278,39 @@ mod tests {
                 .is_ok()
         );
         assert!(host.eval("if (window.navigator.userAgent !== 'underrated/1.0') throw 'window userAgent mismatch';").is_ok());
+    }
+
+    #[test]
+    fn test_screen_properties_mod() {
+        let mut host = BoaHost::new();
+        assert!(
+            host.eval("if (screen.width !== 1280) throw 'width mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (screen.height !== 720) throw 'height mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (screen.availWidth !== 1280) throw 'availWidth mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (screen.availHeight !== 720) throw 'availHeight mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (screen.colorDepth !== 24) throw 'colorDepth mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (screen.pixelDepth !== 24) throw 'pixelDepth mismatch';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (window.screen.width !== 1280) throw 'window width mismatch';")
+                .is_ok()
+        );
     }
 
     #[test]
