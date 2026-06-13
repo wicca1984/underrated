@@ -261,6 +261,13 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :autofill always returns false.
                         false
                     }
+                    "modal" => {
+                        // TODO(spec): Real :modal matching requires tracking elements in the top layer
+                        // shown as a modal (e.g. <dialog> opened via showModal(), :fullscreen modals).
+                        // This engine has no modal/top-layer mechanism, so no element is ever modal.
+                        // Thus, :modal always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3066,6 +3073,22 @@ mod tests {
         });
         dom.append_child(doc, input_elem);
         assert!(!matches(&sel_autofill, &dom, input_elem));
+
+        // Matches :modal (should never match since we have no modal/top-layer mechanism)
+        let sel_modal = parse_selector_list(":modal").unwrap();
+        assert!(!matches(&sel_modal, &dom, a_with_href));
+        assert!(!matches(&sel_modal, &dom, area_with_href));
+        assert!(!matches(&sel_modal, &dom, link_with_href));
+        assert!(!matches(&sel_modal, &dom, a_no_href));
+        assert!(!matches(&sel_modal, &dom, div_with_href));
+
+        // Ensure <dialog> (and other elements) also never match :modal
+        let dialog_elem = dom.create_node(NodeData::Element {
+            name: "dialog".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, dialog_elem);
+        assert!(!matches(&sel_modal, &dom, dialog_elem));
     }
 
     #[test]
