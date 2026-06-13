@@ -1885,9 +1885,7 @@ mod tests {
         assert_eq!(decode(&[0xFE], Charset::Windows1258), "\u{20AB}");
 
         // Sample Vietnamese byte sequence using combining accents
-        let bytes = &[
-            0xCA, 0xEC, b'n', b'g', b' ', b'V', b'i', 0xEA, 0xF2, b't',
-        ];
+        let bytes = &[0xCA, 0xEC, b'n', b'g', b' ', b'V', b'i', 0xEA, 0xF2, b't'];
         assert_eq!(
             decode(bytes, Charset::Windows1258),
             "Ê\u{0301}ng Viê\u{0323}t"
