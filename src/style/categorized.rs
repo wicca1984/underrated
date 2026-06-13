@@ -2044,6 +2044,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             EmptyCellsValue::Show => "show".to_string(),
             EmptyCellsValue::Hide => "hide".to_string(),
         },
+        CssValue::Hyphens(h) => h.as_str().to_string(),
     }
 }
 
