@@ -21,6 +21,7 @@ pub enum Charset {
     Iso8859_4,
     Iso8859_5,
     Iso8859_7,
+    Koi8R,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -81,6 +82,9 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             | "sun_eu_greek" => {
                 return Charset::Iso8859_7;
             }
+            "koi8-r" | "koi8_r" | "cskoi8r" => {
+                return Charset::Koi8R;
+            }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
     }
@@ -140,6 +144,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "iso-8859-4" => return Some(Charset::Iso8859_4),
                 "iso-8859-5" => return Some(Charset::Iso8859_5),
                 "iso-8859-7" => return Some(Charset::Iso8859_7),
+                "koi8-r" => return Some(Charset::Koi8R),
                 _ => {}
             }
         }
@@ -167,6 +172,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_4 => decode_iso8859_4(bytes),
         Charset::Iso8859_5 => decode_iso8859_5(bytes),
         Charset::Iso8859_7 => decode_iso8859_7(bytes),
+        Charset::Koi8R => decode_koi8r(bytes),
     }
 }
 
@@ -1954,6 +1960,149 @@ fn decode_windows1258(bytes: &[u8]) -> String {
     result
 }
 
+const KOI8_R_MAP: [char; 128] = [
+    '\u{2500}', // 0x80
+    '\u{2502}', // 0x81
+    '\u{250C}', // 0x82
+    '\u{2510}', // 0x83
+    '\u{2514}', // 0x84
+    '\u{2518}', // 0x85
+    '\u{251C}', // 0x86
+    '\u{2524}', // 0x87
+    '\u{252C}', // 0x88
+    '\u{2534}', // 0x89
+    '\u{253C}', // 0x8A
+    '\u{2580}', // 0x8B
+    '\u{2584}', // 0x8C
+    '\u{2588}', // 0x8D
+    '\u{258C}', // 0x8E
+    '\u{2590}', // 0x8F
+    '\u{2591}', // 0x90
+    '\u{2592}', // 0x91
+    '\u{2593}', // 0x92
+    '\u{2320}', // 0x93
+    '\u{25A0}', // 0x94
+    '\u{2219}', // 0x95
+    '\u{221A}', // 0x96
+    '\u{2248}', // 0x97
+    '\u{2264}', // 0x98
+    '\u{2265}', // 0x99
+    '\u{00A0}', // 0x9A
+    '\u{2321}', // 0x9B
+    '\u{00B0}', // 0x9C
+    '\u{00B2}', // 0x9D
+    '\u{00B7}', // 0x9E
+    '\u{00F7}', // 0x9F
+    '\u{2550}', // 0xA0
+    '\u{2551}', // 0xA1
+    '\u{2552}', // 0xA2
+    '\u{0451}', // 0xA3  CYRILLIC SMALL LETTER IO
+    '\u{2553}', // 0xA4
+    '\u{2554}', // 0xA5
+    '\u{2555}', // 0xA6
+    '\u{2556}', // 0xA7
+    '\u{2557}', // 0xA8
+    '\u{2558}', // 0xA9
+    '\u{2559}', // 0xAA
+    '\u{255A}', // 0xAB
+    '\u{255B}', // 0xAC
+    '\u{255C}', // 0xAD
+    '\u{255D}', // 0xAE
+    '\u{255E}', // 0xAF
+    '\u{255F}', // 0xB0
+    '\u{2560}', // 0xB1
+    '\u{2561}', // 0xB2
+    '\u{0401}', // 0xB3  CYRILLIC CAPITAL LETTER IO
+    '\u{2562}', // 0xB4
+    '\u{2563}', // 0xB5
+    '\u{2564}', // 0xB6
+    '\u{2565}', // 0xB7
+    '\u{2566}', // 0xB8
+    '\u{2567}', // 0xB9
+    '\u{2568}', // 0xBA
+    '\u{2569}', // 0xBB
+    '\u{256A}', // 0xBC
+    '\u{256B}', // 0xBD
+    '\u{256C}', // 0xBE
+    '\u{00A9}', // 0xBF  COPYRIGHT SIGN
+    '\u{044E}', // 0xC0  CYRILLIC SMALL LETTER YU
+    '\u{0430}', // 0xC1  CYRILLIC SMALL LETTER A
+    '\u{0431}', // 0xC2  CYRILLIC SMALL LETTER BE
+    '\u{0446}', // 0xC3  CYRILLIC SMALL LETTER TSE
+    '\u{0434}', // 0xC4  CYRILLIC SMALL LETTER DE
+    '\u{0435}', // 0xC5  CYRILLIC SMALL LETTER IE
+    '\u{0444}', // 0xC6  CYRILLIC SMALL LETTER EF
+    '\u{0433}', // 0xC7  CYRILLIC SMALL LETTER GHE
+    '\u{0445}', // 0xC8  CYRILLIC SMALL LETTER HA
+    '\u{0438}', // 0xC9  CYRILLIC SMALL LETTER I
+    '\u{0439}', // 0xCA  CYRILLIC SMALL LETTER SHORT I
+    '\u{043A}', // 0xCB  CYRILLIC SMALL LETTER KA
+    '\u{043B}', // 0xCC  CYRILLIC SMALL LETTER EL
+    '\u{043C}', // 0xCD  CYRILLIC SMALL LETTER EM
+    '\u{043D}', // 0xCE  CYRILLIC SMALL LETTER EN
+    '\u{043E}', // 0xCF  CYRILLIC SMALL LETTER O
+    '\u{043F}', // 0xD0  CYRILLIC SMALL LETTER PE
+    '\u{044F}', // 0xD1  CYRILLIC SMALL LETTER YA
+    '\u{0440}', // 0xD2  CYRILLIC SMALL LETTER ER
+    '\u{0441}', // 0xD3  CYRILLIC SMALL LETTER ES
+    '\u{0442}', // 0xD4  CYRILLIC SMALL LETTER TE
+    '\u{0443}', // 0xD5  CYRILLIC SMALL LETTER U
+    '\u{0436}', // 0xD6  CYRILLIC SMALL LETTER ZHE
+    '\u{0432}', // 0xD7  CYRILLIC SMALL LETTER VE
+    '\u{044C}', // 0xD8  CYRILLIC SMALL LETTER SOFT SIGN
+    '\u{044B}', // 0xD9  CYRILLIC SMALL LETTER YERU
+    '\u{0437}', // 0xDA  CYRILLIC SMALL LETTER ZE
+    '\u{0448}', // 0xDB  CYRILLIC SMALL LETTER SHA
+    '\u{044D}', // 0xDC  CYRILLIC SMALL LETTER E
+    '\u{0449}', // 0xDD  CYRILLIC SMALL LETTER SHCHA
+    '\u{0447}', // 0xDE  CYRILLIC SMALL LETTER CHE
+    '\u{044A}', // 0xDF  CYRILLIC SMALL LETTER HARD SIGN
+    '\u{042E}', // 0xE0  CYRILLIC CAPITAL LETTER YU
+    '\u{0410}', // 0xE1  CYRILLIC CAPITAL LETTER A
+    '\u{0411}', // 0xE2  CYRILLIC CAPITAL LETTER BE
+    '\u{0426}', // 0xE3  CYRILLIC CAPITAL LETTER TSE
+    '\u{0414}', // 0xE4  CYRILLIC CAPITAL LETTER DE
+    '\u{0415}', // 0xE5  CYRILLIC CAPITAL LETTER IE
+    '\u{0424}', // 0xE6  CYRILLIC CAPITAL LETTER EF
+    '\u{0413}', // 0xE7  CYRILLIC CAPITAL LETTER GHE
+    '\u{0425}', // 0xE8  CYRILLIC CAPITAL LETTER HA
+    '\u{0418}', // 0xE9  CYRILLIC CAPITAL LETTER I
+    '\u{0419}', // 0xEA  CYRILLIC CAPITAL LETTER SHORT I
+    '\u{041A}', // 0xEB  CYRILLIC CAPITAL LETTER KA
+    '\u{041B}', // 0xEC  CYRILLIC CAPITAL LETTER EL
+    '\u{041C}', // 0xED  CYRILLIC CAPITAL LETTER EM
+    '\u{041D}', // 0xEE  CYRILLIC CAPITAL LETTER EN
+    '\u{041E}', // 0xEF  CYRILLIC CAPITAL LETTER O
+    '\u{041F}', // 0xF0  CYRILLIC CAPITAL LETTER PE
+    '\u{042F}', // 0xF1  CYRILLIC CAPITAL LETTER YA
+    '\u{0420}', // 0xF2  CYRILLIC CAPITAL LETTER ER
+    '\u{0421}', // 0xF3  CYRILLIC CAPITAL LETTER ES
+    '\u{0422}', // 0xF4  CYRILLIC CAPITAL LETTER TE
+    '\u{0423}', // 0xF5  CYRILLIC CAPITAL LETTER U
+    '\u{0416}', // 0xF6  CYRILLIC CAPITAL LETTER ZHE
+    '\u{0412}', // 0xF7  CYRILLIC CAPITAL LETTER VE
+    '\u{042C}', // 0xF8  CYRILLIC CAPITAL LETTER SOFT SIGN
+    '\u{042B}', // 0xF9  CYRILLIC CAPITAL LETTER YERU
+    '\u{0417}', // 0xFA  CYRILLIC CAPITAL LETTER ZE
+    '\u{0428}', // 0xFB  CYRILLIC CAPITAL LETTER SHA
+    '\u{042D}', // 0xFC  CYRILLIC CAPITAL LETTER E
+    '\u{0429}', // 0xFD  CYRILLIC CAPITAL LETTER SHCHA
+    '\u{0427}', // 0xFE  CYRILLIC CAPITAL LETTER CHE
+    '\u{042A}', // 0xFF  CYRILLIC CAPITAL LETTER HARD SIGN
+];
+
+fn decode_koi8r(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(KOI8_R_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2623,5 +2772,46 @@ mod tests {
             decode(bytes, Charset::Windows1258),
             "Ê\u{0301}ng Viê\u{0323}t"
         );
+    }
+
+    #[test]
+    fn test_koi8r_sniff() {
+        assert_eq!(sniff_charset(b"abc", Some("koi8-r")), Charset::Koi8R);
+        assert_eq!(sniff_charset(b"abc", Some("koi8_r")), Charset::Koi8R);
+        assert_eq!(sniff_charset(b"abc", Some("cskoi8r")), Charset::Koi8R);
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"koi8-r\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Koi8R);
+    }
+
+    #[test]
+    fn test_koi8r_decode() {
+        // ASCII passthrough (as required: "an ASCII byte decodes to itself")
+        assert_eq!(decode(b"abc 123", Charset::Koi8R), "abc 123");
+
+        // Representative high-byte mappings
+        // The prompt asks us to assert/verify specific mappings, but also to verify the indexing
+        // against the 128 elements provided in order, which match the standard.
+        // Let's assert both standard KOI8-R and standard anchors:
+        // Byte 0xC1 maps to U+0430 (CYRILLIC SMALL LETTER A) in standard KOI8-R (Index 0x41)
+        assert_eq!(decode(&[0xC1], Charset::Koi8R), "\u{0430}");
+        // Byte 0xE1 maps to U+0410 (CYRILLIC CAPITAL LETTER A) in standard KOI8-R (Index 0x61)
+        assert_eq!(decode(&[0xE1], Charset::Koi8R), "\u{0410}");
+        // Byte 0xF2 maps to U+0420 (CYRILLIC CAPITAL LETTER ER) in standard KOI8-R (Index 0x72)
+        assert_eq!(decode(&[0xF2], Charset::Koi8R), "\u{0420}");
+        // Byte 0xF0 maps to U+041F (CYRILLIC CAPITAL LETTER PE) in standard KOI8-R (Index 0x70)
+        assert_eq!(decode(&[0xF0], Charset::Koi8R), "\u{041F}");
+
+        // Verification of anchors per the prompt:
+        // - Byte 0xE1 corresponds to index 0x61. In the canonical 128-entry list, index 0x61 is U+0410 (CYRILLIC CAPITAL LETTER A), while U+0430 (CYRILLIC SMALL LETTER A) is at index 0x41 (byte 0xC1).
+        // - Byte 0xF0 corresponds to index 0x70. In the canonical 128-entry list, index 0x70 is U+041F (CYRILLIC CAPITAL LETTER PE), while U+0420 (CYRILLIC CAPITAL LETTER ER) is at index 0x72 (byte 0xF2).
+
+        // Extra check for Cyrillic small letter IO (0xA3) -> U+0451
+        assert_eq!(decode(&[0xA3], Charset::Koi8R), "\u{0451}");
+        // Extra check for Cyrillic capital letter IO (0xB3) -> U+0401
+        assert_eq!(decode(&[0xB3], Charset::Koi8R), "\u{0401}");
+        // Extra check for Copyright sign (0xBF) -> U+00A9
+        assert_eq!(decode(&[0xBF], Charset::Koi8R), "\u{00A9}");
     }
 }
