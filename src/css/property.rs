@@ -565,6 +565,21 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
     },
     PropertyMetadata {
+        name: "overscroll-behavior",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "overscroll-behavior-x",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "overscroll-behavior-y",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "user-select",
         inherited: false,
         initial: "auto",
@@ -857,6 +872,30 @@ mod tests {
         assert_eq!(delay.name, "transition-delay");
         assert!(!delay.inherited);
         assert_eq!(delay.initial, "0s");
+    }
+
+    #[test]
+    fn test_additive_properties_t0485() {
+        let overscroll_behavior = lookup("overscroll-behavior");
+        assert!(overscroll_behavior.is_some());
+        let overscroll_behavior = overscroll_behavior.unwrap();
+        assert_eq!(overscroll_behavior.name, "overscroll-behavior");
+        assert!(!overscroll_behavior.inherited);
+        assert_eq!(overscroll_behavior.initial, "auto");
+
+        let overscroll_behavior_x = lookup("overscroll-behavior-x");
+        assert!(overscroll_behavior_x.is_some());
+        let overscroll_behavior_x = overscroll_behavior_x.unwrap();
+        assert_eq!(overscroll_behavior_x.name, "overscroll-behavior-x");
+        assert!(!overscroll_behavior_x.inherited);
+        assert_eq!(overscroll_behavior_x.initial, "auto");
+
+        let overscroll_behavior_y = lookup("overscroll-behavior-y");
+        assert!(overscroll_behavior_y.is_some());
+        let overscroll_behavior_y = overscroll_behavior_y.unwrap();
+        assert_eq!(overscroll_behavior_y.name, "overscroll-behavior-y");
+        assert!(!overscroll_behavior_y.inherited);
+        assert_eq!(overscroll_behavior_y.initial, "auto");
     }
 
     #[test]
