@@ -1,7 +1,7 @@
 //! Web Crypto JS object implementation.
 //!
 //! This module defines the `Crypto` object which provides cryptographic APIs.
-//! Spec: https://w3c.github.io/webcrypto/
+//! Spec: <https://w3c.github.io/webcrypto/>
 
 use boa_engine::object::ObjectInitializer;
 use boa_engine::{Context, JsError, JsNativeError, JsObject, JsString, JsValue, NativeFunction};
