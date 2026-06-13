@@ -162,6 +162,7 @@ impl BoaHost {
         let _ = context.register_global_class::<DOMParser>();
         let _ = context.register_global_class::<MutationObserver>();
         let _ = context.register_global_class::<MutationRecord>();
+        let _ = context.register_global_class::<Blob>();
 
         let bridge = ObjectInitializer::new(context)
             .function(
@@ -8043,6 +8044,171 @@ pub fn custom_event_stop_propagation(
     Ok(JsValue::undefined())
 }
 
+/// Implementation of W3C File API `Blob` interface.
+/// Spec: <https://w3c.github.io/FileAPI/#dfn-Blob>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct Blob {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) mime_type: String,
+}
+
+impl Class for Blob {
+    const NAME: &'static str = "Blob";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let mut bytes = Vec::new();
+
+        // 1. Handle parts (first argument)
+        if let Some(parts_val) = args.first()
+            && !parts_val.is_undefined()
+            && !parts_val.is_null()
+        {
+            if let Some(obj) = parts_val.as_object() {
+                let length_val = obj.get(JsString::from("length"), context)?;
+                let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+                for i in 0..length {
+                    let part_val = obj.get(i, context)?;
+                    if let Some(part_obj) = part_val.as_object()
+                        && let Some(other_blob) = part_obj.downcast_ref::<Blob>()
+                    {
+                        bytes.extend_from_slice(&other_blob.bytes);
+                        continue;
+                    }
+                    let part_str = part_val
+                        .to_string(context)?
+                        .to_std_string()
+                        .unwrap_or_default();
+                    bytes.extend_from_slice(part_str.as_bytes());
+                }
+            } else {
+                return Err(JsError::from(
+                    JsNativeError::typ()
+                        .with_message("Blob parts must be an array-like/sequence object"),
+                ));
+            }
+        }
+
+        // 2. Handle options (second argument)
+        let mut mime_type = String::new();
+        if let Some(options_val) = args.get(1)
+            && !options_val.is_undefined()
+            && !options_val.is_null()
+            && let Some(options_obj) = options_val.as_object()
+            && let Ok(type_val) = options_obj.get(JsString::from("type"), context)
+            && !type_val.is_undefined()
+        {
+            let raw_type = type_val
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default();
+            if raw_type
+                .chars()
+                .any(|c| !(0x20..=0x7E).contains(&(c as u32)))
+            {
+                mime_type = String::new();
+            } else {
+                mime_type = raw_type.to_lowercase();
+            }
+        }
+
+        Ok(Blob { bytes, mime_type })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        // Define getter/accessor for "size"
+        let size_getter = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(blob_get_size),
+        )
+        .name("get size")
+        .build();
+
+        class.accessor(
+            JsString::from("size"),
+            Some(size_getter),
+            None,
+            Attribute::all(),
+        );
+
+        // Define getter/accessor for "type"
+        let type_getter = boa_engine::object::FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(blob_get_type),
+        )
+        .name("get type")
+        .build();
+
+        class.accessor(
+            JsString::from("type"),
+            Some(type_getter),
+            None,
+            Attribute::all(),
+        );
+
+        // Define method "text"
+        class.method(
+            JsString::from("text"),
+            0,
+            NativeFunction::from_fn_ptr(blob_text),
+        );
+
+        Ok(())
+    }
+}
+
+pub fn blob_get_size(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let blob = obj.downcast_ref::<Blob>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-Blob object"),
+        )
+    })?;
+    Ok(JsValue::from(blob.bytes.len()))
+}
+
+pub fn blob_get_type(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let blob = obj.downcast_ref::<Blob>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-Blob object"),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(blob.mime_type.clone())))
+}
+
+pub fn blob_text(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let blob = obj.downcast_ref::<Blob>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-Blob object"),
+        )
+    })?;
+    // // TODO(spec): note that the real API returns a Promise. Since our engine does not have Promise support, we return the string synchronously.
+    let text = String::from_utf8_lossy(&blob.bytes).into_owned();
+    Ok(JsValue::from(JsString::from(text)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11580,6 +11746,57 @@ mod tests {
             if (observed.type !== "custom") throw new Error("Observed incorrect type: " + observed.type);
             if (observed.detail.value !== "hello") throw new Error("Observed incorrect detail.value");
             if (observed.currentTarget !== null) throw new Error("Expected currentTarget to be null after dispatching, got: " + observed.currentTarget);
+        "#;
+        host.eval_with_dom(script, &mut dom).unwrap();
+    }
+
+    #[test]
+    fn test_blob_t0534() {
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"
+             if (typeof Blob === "undefined") throw new Error("Blob undefined");
+
+             // 1. Default constructor
+             const b1 = new Blob();
+             if (b1.size !== 0) throw new Error("Expected b1.size to be 0, got " + b1.size);
+             if (b1.type !== "") throw new Error("Expected b1.type to be empty string, got " + b1.type);
+             if (b1.text() !== "") throw new Error("Expected b1.text() to be empty, got " + b1.text());
+
+             // 2. ASCII and multi-byte UTF-8 parts
+             const b2 = new Blob(["hello", "こんにちは"]);
+             // "hello" is 5 bytes, "こんにちは" is 15 bytes. Total size = 20.
+             if (b2.size !== 20) throw new Error("Expected b2.size to be 20, got " + b2.size);
+             if (b2.text() !== "helloこんにちは") throw new Error("Expected b2.text() correct, got " + b2.text());
+
+             // 3. MIME type defaulting and lowercase and invalid char filter
+             const b3 = new Blob(["abc"], { type: "TEXT/html" });
+             if (b3.type !== "text/html") throw new Error("Expected b3.type to be 'text/html', got " + b3.type);
+
+             const b4 = new Blob(["abc"], { type: "text/html\x00" });
+             if (b4.type !== "") throw new Error("Expected b4.type to be empty due to out of range char");
+
+             const b5 = new Blob(["abc"], { type: "text/html\u0100" });
+             if (b5.type !== "") throw new Error("Expected b5.type to be empty due to non-ASCII char");
+
+             // 4. Nested Blob parts
+             const nested = new Blob([b2, " world"]);
+             if (nested.size !== 26) throw new Error("Expected nested.size to be 26, got " + nested.size);
+             if (nested.text() !== "helloこんにちは world") throw new Error("Expected nested.text() correct, got " + nested.text());
+
+             // 5. Read-only properties are read-only
+             let size_val = b2.size;
+             try {
+                 b2.size = 999;
+             } catch(e) {}
+             if (b2.size !== size_val) throw new Error("b2.size should be read-only");
+
+             let type_val = b3.type;
+             try {
+                 b3.type = "invalid";
+             } catch(e) {}
+             if (b3.type !== type_val) throw new Error("b3.type should be read-only");
         "#;
         host.eval_with_dom(script, &mut dom).unwrap();
     }
