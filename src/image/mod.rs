@@ -2175,6 +2175,218 @@ pub fn decode_xbm(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
+fn is_xpm_sniff(bytes: &[u8]) -> bool {
+    let limit = std::cmp::min(bytes.len(), 256);
+    let slice = &bytes[..limit];
+    slice.windows(9).any(|w| w == b"/* XPM */") || slice.windows(7).any(|w| w == b"/*XPM*/")
+}
+
+fn extract_string_literals(s: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            let mut current = String::new();
+            let mut escaped = false;
+            while let Some(&next_c) = chars.peek() {
+                chars.next();
+                if escaped {
+                    current.push(next_c);
+                    escaped = false;
+                } else if next_c == '\\' {
+                    escaped = true;
+                } else if next_c == '"' {
+                    break;
+                } else {
+                    current.push(next_c);
+                }
+            }
+            literals.push(current);
+        } else if c == '/' {
+            // Skip comments!
+            if let Some('/') = chars.peek() {
+                chars.next();
+                // Line comment, skip to end of line
+                for next_c in chars.by_ref() {
+                    if next_c == '\n' {
+                        break;
+                    }
+                }
+            } else if let Some('*') = chars.peek() {
+                chars.next();
+                // Block comment, skip to */
+                while let Some(next_c) = chars.next() {
+                    if next_c == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    literals
+}
+
+fn parse_hex_color(val: &str) -> Option<[u8; 4]> {
+    if !val.starts_with('#') {
+        return None;
+    }
+    let hex = &val[1..];
+    match hex.len() {
+        3 => {
+            let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+            let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+            let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+            Some([r * 17, g * 17, b * 17, 255])
+        }
+        6 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            Some([r, g, b, 255])
+        }
+        12 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            let b = u8::from_str_radix(&hex[8..10], 16).ok()?;
+            Some([r, g, b, 255])
+        }
+        _ => None,
+    }
+}
+
+fn parse_xpm_color(val: &str) -> [u8; 4] {
+    if val.eq_ignore_ascii_case("none") || val.eq_ignore_ascii_case("transparent") {
+        return [0, 0, 0, 0];
+    }
+    if let Some(rgba) = parse_hex_color(val) {
+        return rgba;
+    }
+    match val.to_lowercase().as_str() {
+        "white" => [255, 255, 255, 255],
+        "black" => [0, 0, 0, 255],
+        "red" => [255, 0, 0, 255],
+        "green" => [0, 255, 0, 255],
+        "blue" => [0, 0, 255, 255],
+        "yellow" => [255, 255, 0, 255],
+        "cyan" => [0, 255, 255, 255],
+        "magenta" => [255, 0, 255, 255],
+        "gray" | "grey" => [128, 128, 128, 255],
+        _ => [0, 0, 0, 255], // Fallback to opaque black
+    }
+}
+
+/// Decodes an XPM (X PixMap, version 3) image byte stream into a DecodedImage.
+pub fn decode_xpm(bytes: &[u8]) -> Option<DecodedImage> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    let literals: Vec<Vec<char>> = extract_string_literals(s)
+        .into_iter()
+        .map(|s| s.chars().collect())
+        .collect();
+
+    let mut values_idx = None;
+    for (idx, lit) in literals.iter().enumerate() {
+        let s: String = lit.iter().collect();
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.len() >= 4
+            && parts[0].parse::<u32>().is_ok()
+            && parts[1].parse::<u32>().is_ok()
+            && parts[2].parse::<usize>().is_ok()
+            && parts[3].parse::<usize>().is_ok()
+        {
+            values_idx = Some(idx);
+            break;
+        }
+    }
+
+    let values_idx = values_idx?;
+    let values_str: String = literals[values_idx].iter().collect();
+    let parts: Vec<&str> = values_str.split_whitespace().collect();
+    let width = parts[0].parse::<u32>().ok()?;
+    let height = parts[1].parse::<u32>().ok()?;
+    let num_colors = parts[2].parse::<usize>().ok()?;
+    let chars_per_pixel = parts[3].parse::<usize>().ok()?;
+
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+    if chars_per_pixel != 1 && chars_per_pixel != 2 {
+        return None;
+    }
+
+    if literals.len() < values_idx + 1 + num_colors + (height as usize) {
+        return None;
+    }
+
+    let mut color_map = std::collections::HashMap::new();
+    for i in 0..num_colors {
+        let line = &literals[values_idx + 1 + i];
+        if line.len() < chars_per_pixel {
+            return None;
+        }
+        let id: Vec<char> = line[..chars_per_pixel].to_vec();
+        let remaining_str: String = line[chars_per_pixel..].iter().collect();
+
+        let tokens: Vec<&str> = remaining_str.split_whitespace().collect();
+        let mut color_val = None;
+        let mut tok_idx = 0;
+        while tok_idx < tokens.len() {
+            let key = tokens[tok_idx];
+            if (key == "c" || key == "g" || key == "g4" || key == "m" || key == "s")
+                && tok_idx + 1 < tokens.len()
+            {
+                let val = tokens[tok_idx + 1];
+                if key == "c" {
+                    color_val = Some(val);
+                    break;
+                } else {
+                    color_val = Some(val);
+                }
+                tok_idx += 2;
+            } else {
+                tok_idx += 1;
+            }
+        }
+
+        let parsed = match color_val {
+            Some(val) => parse_xpm_color(val),
+            None => [0, 0, 0, 255],
+        };
+        color_map.insert(id, parsed);
+    }
+
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+    let out_bytes = total_pixels.checked_mul(4)?;
+    let mut rgba = vec![0u8; out_bytes];
+
+    for y in 0..height {
+        let row = &literals[values_idx + 1 + num_colors + (y as usize)];
+        let expected_chars = (width as usize) * chars_per_pixel;
+        if row.len() < expected_chars {
+            return None;
+        }
+        for x in 0..width {
+            let start_idx = (x as usize) * chars_per_pixel;
+            let id = &row[start_idx..start_idx + chars_per_pixel];
+            let color = match color_map.get(id) {
+                Some(&c) => c,
+                None => [0, 0, 0, 255],
+            };
+            let out_idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            rgba[out_idx] = color[0];
+            rgba[out_idx + 1] = color[1];
+            rgba[out_idx + 2] = color[2];
+            rgba[out_idx + 3] = color[3];
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, or XBM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
@@ -2195,6 +2407,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_farbfeld(bytes)
     } else if is_xbm_sniff(bytes) {
         decode_xbm(bytes)
+    } else if is_xpm_sniff(bytes) {
+        decode_xpm(bytes)
     } else if let Some(true) = is_svg_sniff(bytes) {
         decode_svg(bytes)
     } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
@@ -3471,5 +3685,95 @@ mod tests {
         let bad3 =
             b"#define test_width 16\n#define test_height 2\nstatic char test_bits[] = { 1 };";
         assert!(decode_image(bad3).is_none());
+    }
+
+    #[test]
+    fn test_decode_xpm_basic_1char() {
+        let xpm = r#"
+            /* XPM */
+            static char *test[] = {
+                "2 2 3 1",
+                "a c #FF0000",
+                "b c none",
+                "c c #0000FF",
+                "ab",
+                "ca"
+            };
+        "#;
+        let decoded = decode_image(xpm.as_bytes()).expect("Should decode XPM successfully");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        // Row 0: "a" (#FF0000), "b" (none)
+        assert_eq!(&decoded.rgba[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[0, 0, 0, 0]);
+        // Row 1: "c" (#0000FF), "a" (#FF0000)
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn test_decode_xpm_basic_2char() {
+        let xpm = r#"
+            /* XPM */
+            static char *test[] = {
+                "3 2 4 2",
+                "aa c white",
+                "bb c black",
+                "cc c red",
+                "dd c blue",
+                "aaccbb",
+                "bbddaa"
+            };
+        "#;
+        let decoded = decode_image(xpm.as_bytes()).expect("Should decode XPM with 2-char pixels");
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 2);
+        // Row 0: "aa" (white), "cc" (red), "bb" (black)
+        assert_eq!(&decoded.rgba[0..4], &[255, 255, 255, 255]);
+        assert_eq!(&decoded.rgba[4..8], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 0, 255]);
+        // Row 1: "bb" (black), "dd" (blue), "aa" (white)
+        assert_eq!(&decoded.rgba[12..16], &[0, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[16..20], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[20..24], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn test_decode_xpm_16bit_hex() {
+        let xpm = r#"
+            /* XPM */
+            static char *test[] = {
+                "1 1 1 1",
+                ". c #12345678abcd",
+                "."
+            };
+        "#;
+        let decoded = decode_image(xpm.as_bytes()).expect("Should decode 16-bit hex");
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+        // #1234 5678 abcd -> high bytes are 12, 56, ab
+        let r = 0x12;
+        let g = 0x56;
+        let b = 0xab;
+        assert_eq!(&decoded.rgba[0..4], &[r, g, b, 255]);
+    }
+
+    #[test]
+    fn test_decode_xpm_failures() {
+        // Missing values line
+        let bad1 = b"/* XPM */ static char *test[] = { };";
+        assert!(decode_image(bad1).is_none());
+
+        // Zero dimensions
+        let bad2 = b"/* XPM */ static char *test[] = { \"0 2 1 1\", \"a c red\", \"a\" };";
+        assert!(decode_image(bad2).is_none());
+
+        // Missing pixel row
+        let bad3 = b"/* XPM */ static char *test[] = { \"2 2 1 1\", \"a c red\", \"aa\" };";
+        assert!(decode_image(bad3).is_none());
+
+        // Row too short
+        let bad4 = b"/* XPM */ static char *test[] = { \"2 2 1 1\", \"a c red\", \"aa\", \"a\" };";
+        assert!(decode_image(bad4).is_none());
     }
 }
