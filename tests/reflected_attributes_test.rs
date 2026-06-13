@@ -217,3 +217,121 @@ fn test_nonce_setter_updates_attribute() {
     let res = host.eval_with_dom(script, &mut dom).unwrap();
     assert_eq!(res, "xyz987nonce");
 }
+
+#[test]
+fn test_tabindex_empty_by_default() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.tabIndex;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "-1");
+}
+
+#[test]
+fn test_tabindex_reflect_set_attribute() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![
+            ("id".into(), "target".into()),
+            ("tabindex".into(), "3".into()),
+        ],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.tabIndex;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "3");
+}
+
+#[test]
+fn test_tabindex_invalid_parses_to_negative_one() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![
+            ("id".into(), "target".into()),
+            ("tabindex".into(), "abc".into()),
+        ],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.tabIndex;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "-1");
+}
+
+#[test]
+fn test_tabindex_setter_updates_attribute() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.tabIndex = 5;
+        el.getAttribute('tabindex');
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "5");
+}
+
+#[test]
+fn test_tabindex_setter_coercion() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.tabIndex = 12.7;
+        const res1 = el.getAttribute('tabindex');
+        el.tabIndex = 'abc';
+        const res2 = el.getAttribute('tabindex');
+        el.tabIndex = true;
+        const res3 = el.getAttribute('tabindex');
+        [res1, res2, res3].join('|');
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "12|0|1");
+}

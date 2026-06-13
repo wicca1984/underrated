@@ -1942,6 +1942,32 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'tabIndex', {
+                        // HTMLElement.tabIndex reflected attribute binding (t0635)
+                        get() {
+                            const attr = this.getAttribute('tabindex');
+                            if (attr === null) {
+                                // TODO(spec): focusability-dependent default is not implemented, default to -1
+                                return -1;
+                            }
+                            const match = /^[ \t\n\r\f]*([+-]?\d+)/.exec(attr);
+                            if (match) {
+                                return parseInt(match[1], 10);
+                            }
+                            // TODO(spec): invalid value fallback also defaults to -1
+                            return -1;
+                        },
+                        set(val) {
+                            let num = Number(val);
+                            if (isNaN(num) || !isFinite(num)) {
+                                num = 0;
+                            }
+                            this.setAttribute('tabindex', String(num | 0));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'classList', {
                         get() {
                             if (!this.__classList__) {
