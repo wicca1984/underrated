@@ -16,6 +16,7 @@ pub enum Charset {
     Windows1257,
     Windows1258,
     Iso8859_15,
+    Iso8859_2,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -54,6 +55,10 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "windows-1258" | "cp1258" | "x-cp1258" => return Charset::Windows1258,
             "csisolatin9" | "iso-8859-15" | "iso8859-15" | "iso885915" | "iso_8859-15" | "l9" => {
                 return Charset::Iso8859_15;
+            }
+            "iso-8859-2" | "iso8859-2" | "iso88592" | "iso_8859-2" | "iso-ir-101"
+            | "csisolatin2" | "latin2" | "l2" => {
+                return Charset::Iso8859_2;
             }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
@@ -109,6 +114,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "windows-1257" => return Some(Charset::Windows1257),
                 "windows-1258" => return Some(Charset::Windows1258),
                 "iso-8859-15" => return Some(Charset::Iso8859_15),
+                "iso-8859-2" => return Some(Charset::Iso8859_2),
                 _ => {}
             }
         }
@@ -131,6 +137,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Windows1257 => decode_windows1257(bytes),
         Charset::Windows1258 => decode_windows1258(bytes),
         Charset::Iso8859_15 => decode_iso8859_15(bytes),
+        Charset::Iso8859_2 => decode_iso8859_2(bytes),
     }
 }
 
@@ -516,6 +523,113 @@ fn decode_iso8859_15(bytes: &[u8]) -> String {
             0xBC => '\u{0152}',
             0xBD => '\u{0153}',
             0xBE => '\u{0178}',
+            _ => char::from(b),
+        };
+        result.push(c);
+    }
+    result
+}
+
+fn decode_iso8859_2(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        let c = match b {
+            0xA0 => '\u{00A0}',
+            0xA1 => '\u{0104}',
+            0xA2 => '\u{02D8}',
+            0xA3 => '\u{0141}',
+            0xA4 => '\u{00A4}',
+            0xA5 => '\u{013D}',
+            0xA6 => '\u{015A}',
+            0xA7 => '\u{00A7}',
+            0xA8 => '\u{00A8}',
+            0xA9 => '\u{0160}',
+            0xAA => '\u{015E}',
+            0xAB => '\u{0164}',
+            0xAC => '\u{0179}',
+            0xAD => '\u{00AD}',
+            0xAE => '\u{017D}',
+            0xAF => '\u{017B}',
+            0xB0 => '\u{00B0}',
+            0xB1 => '\u{0105}',
+            0xB2 => '\u{02DB}',
+            0xB3 => '\u{0142}',
+            0xB4 => '\u{00B4}',
+            0xB5 => '\u{013E}',
+            0xB6 => '\u{015B}',
+            0xB7 => '\u{02C7}',
+            0xB8 => '\u{00B8}',
+            0xB9 => '\u{0161}',
+            0xBA => '\u{015F}',
+            0xBB => '\u{0165}',
+            0xBC => '\u{017A}',
+            0xBD => '\u{02DD}',
+            0xBE => '\u{017E}',
+            0xBF => '\u{017C}',
+            0xC0 => '\u{0154}',
+            0xC1 => '\u{00C1}',
+            0xC2 => '\u{00C2}',
+            0xC3 => '\u{0102}',
+            0xC4 => '\u{00C4}',
+            0xC5 => '\u{0139}',
+            0xC6 => '\u{0106}',
+            0xC7 => '\u{00C7}',
+            0xC8 => '\u{010C}',
+            0xC9 => '\u{00C9}',
+            0xCA => '\u{0118}',
+            0xCB => '\u{00CB}',
+            0xCC => '\u{011A}',
+            0xCD => '\u{00CD}',
+            0xCE => '\u{00CE}',
+            0xCF => '\u{010E}',
+            0xD0 => '\u{0110}',
+            0xD1 => '\u{0143}',
+            0xD2 => '\u{0147}',
+            0xD3 => '\u{00D3}',
+            0xD4 => '\u{00D4}',
+            0xD5 => '\u{0150}',
+            0xD6 => '\u{00D6}',
+            0xD7 => '\u{00D7}',
+            0xD8 => '\u{0158}',
+            0xD9 => '\u{016E}',
+            0xDA => '\u{00DA}',
+            0xDB => '\u{0170}',
+            0xDC => '\u{00DC}',
+            0xDD => '\u{00DD}',
+            0xDE => '\u{0162}',
+            0xDF => '\u{00DF}',
+            0xE0 => '\u{0155}',
+            0xE1 => '\u{00E1}',
+            0xE2 => '\u{00E2}',
+            0xE3 => '\u{0103}',
+            0xE4 => '\u{00E4}',
+            0xE5 => '\u{013A}',
+            0xE6 => '\u{0107}',
+            0xE7 => '\u{00E7}',
+            0xE8 => '\u{010D}',
+            0xE9 => '\u{00E9}',
+            0xEA => '\u{0119}',
+            0xEB => '\u{00EB}',
+            0xEC => '\u{011B}',
+            0xED => '\u{00ED}',
+            0xEE => '\u{00EE}',
+            0xEF => '\u{010F}',
+            0xF0 => '\u{0111}',
+            0xF1 => '\u{0144}',
+            0xF2 => '\u{0148}',
+            0xF3 => '\u{00F3}',
+            0xF4 => '\u{00F4}',
+            0xF5 => '\u{0151}',
+            0xF6 => '\u{00F6}',
+            0xF7 => '\u{00F7}',
+            0xF8 => '\u{0159}',
+            0xF9 => '\u{016F}',
+            0xFA => '\u{00FA}',
+            0xFB => '\u{0171}',
+            0xFC => '\u{00FC}',
+            0xFD => '\u{00FD}',
+            0xFE => '\u{0163}',
+            0xFF => '\u{02D9}',
             _ => char::from(b),
         };
         result.push(c);
@@ -1531,6 +1645,26 @@ mod tests {
         assert_eq!(
             sniff_charset(b"<html></html>", Some("l9")),
             Charset::Iso8859_15
+        );
+    }
+
+    #[test]
+    fn test_iso8859_2_decode() {
+        assert_eq!(decode(&[0xE1, 0xE9, 0xED], Charset::Iso8859_2), "áéí");
+        assert_eq!(decode(&[0xB9], Charset::Iso8859_2), "š");
+        assert_eq!(decode(&[0xE8], Charset::Iso8859_2), "č");
+        assert_eq!(decode(&[0xA9], Charset::Iso8859_2), "Š");
+    }
+
+    #[test]
+    fn test_iso8859_2_sniff() {
+        assert_eq!(
+            sniff_charset(b"<html></html>", Some("iso-8859-2")),
+            Charset::Iso8859_2
+        );
+        assert_eq!(
+            sniff_charset(b"<html></html>", Some("l2")),
+            Charset::Iso8859_2
         );
     }
 
