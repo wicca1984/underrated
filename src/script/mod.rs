@@ -1629,6 +1629,28 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    // TODO(spec): offsetTop/offsetLeft should be relative to offsetParent
+                    Object.defineProperty(node, 'offsetTop', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return (rect && rect.top !== undefined) ? Math.round(rect.top) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    // TODO(spec): offsetTop/offsetLeft should be relative to offsetParent
+                    Object.defineProperty(node, 'offsetLeft', {
+                        get() {
+                            if (this.nodeType !== 1) return 0;
+                            const rect = this.getBoundingClientRect();
+                            return (rect && rect.left !== undefined) ? Math.round(rect.left) : 0;
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     // TODO(spec): clientWidth approximates border-box width from getBoundingClientRect
                     // because scrollbars and overflow scrolling are not currently modeled in this engine.
                     Object.defineProperty(node, 'clientWidth', {
@@ -8800,33 +8822,53 @@ mod tests {
             // Check original types and rounded default values (original should be 0 because bounding client rect is 0)
             const origWidthType = typeof el.offsetWidth;
             const origHeightType = typeof el.offsetHeight;
+            const origTopType = typeof el.offsetTop;
+            const origLeftType = typeof el.offsetLeft;
+
             const origWidth = el.offsetWidth;
             const origHeight = el.offsetHeight;
+            const origTop = el.offsetTop;
+            const origLeft = el.offsetLeft;
 
             // Mock getBoundingClientRect to test rounding behavior on elements
-            el.getBoundingClientRect = () => ({ width: 100.5, height: 50.1 });
+            el.getBoundingClientRect = () => ({ width: 100.5, height: 50.1, top: 12.3, left: 34.8 });
             const mockWidth = el.offsetWidth;
             const mockHeight = el.offsetHeight;
+            const mockTop = el.offsetTop;
+            const mockLeft = el.offsetLeft;
 
             // Non-element nodeType !== 1 (Text Node)
             const textNode = document.createTextNode('hello');
             const textWidth = textNode.offsetWidth;
             const textHeight = textNode.offsetHeight;
+            const textTop = textNode.offsetTop;
+            const textLeft = textNode.offsetLeft;
 
             [
                 origWidthType === 'number',
                 origHeightType === 'number',
+                origTopType === 'number',
+                origLeftType === 'number',
                 origWidth === 0,
                 origHeight === 0,
+                origTop === 0,
+                origLeft === 0,
                 mockWidth === 101,
                 mockHeight === 50,
+                mockTop === 12,
+                mockLeft === 35,
                 textWidth === 0,
-                textHeight === 0
+                textHeight === 0,
+                textTop === 0,
+                textLeft === 0
             ].join('|');
         "#;
 
         let res = host.eval_with_dom(script, &mut dom).unwrap();
-        assert_eq!(res, "true|true|true|true|true|true|true|true");
+        assert_eq!(
+            res,
+            "true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true"
+        );
     }
 
     #[test]
