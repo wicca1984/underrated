@@ -94,6 +94,7 @@ impl Affine {
                 TransformFn::ScaleX(x) => Affine::scale(*x, 1.0),
                 TransformFn::ScaleY(y) => Affine::scale(1.0, *y),
                 TransformFn::Rotate(AngleDeg(deg)) => Affine::rotate(*deg),
+                TransformFn::Matrix(m) => Affine { m: *m },
                 TransformFn::Translate { .. }
                 | TransformFn::TranslateX(_)
                 | TransformFn::TranslateY(_) => {
@@ -174,5 +175,12 @@ mod tests {
         ];
         let p3 = Affine::from_transform_fns(&fns3).apply_point(2.0, 2.0);
         assert_eq!(p3, (6.0, 6.0));
+    }
+
+    #[test]
+    fn test_matrix_to_affine_t0508() {
+        let fns = vec![TransformFn::Matrix([2.0, 0.0, 0.0, 3.0, 5.0, 7.0])];
+        let aff = Affine::from_transform_fns(&fns);
+        assert_eq!(aff.m, [2.0, 0.0, 0.0, 3.0, 5.0, 7.0]);
     }
 }
