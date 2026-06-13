@@ -1847,6 +1847,8 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             DisplayValue::InlineBlock => "inline-block".to_string(),
             DisplayValue::None => "none".to_string(),
             DisplayValue::Flex => "flex".to_string(),
+            DisplayValue::Grid => "grid".to_string(),
+            DisplayValue::InlineGrid => "inline-grid".to_string(),
             DisplayValue::Table => "table".to_string(),
             DisplayValue::TableRow => "table-row".to_string(),
             DisplayValue::TableCell => "table-cell".to_string(),
@@ -1946,6 +1948,16 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             ZIndex::Index(n) => n.to_string(),
         },
         CssValue::Opacity(val) => val.to_string(),
+        CssValue::GridTemplate(tracks) => tracks
+            .iter()
+            .map(|track| match track {
+                crate::css::values::GridTrackSize::Px(v) => format!("{}px", v),
+                crate::css::values::GridTrackSize::Percent(v) => format!("{}%", v),
+                crate::css::values::GridTrackSize::Fr(v) => format!("{}fr", v),
+                crate::css::values::GridTrackSize::Auto => "auto".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
     }
 }
 
