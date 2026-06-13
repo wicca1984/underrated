@@ -220,6 +220,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                 match name.to_ascii_lowercase().as_str() {
                     "hover" => get_node_state(node).hover,
                     "focus" => get_node_state(node).focus,
+                    "focus-within" => matches_focus_within(dom, node),
                     "active" => get_node_state(node).active,
                     "first-child" => is_first_child(dom, node),
                     "last-child" => is_last_child(dom, node),
@@ -324,6 +325,20 @@ fn matches_has(list: &SelectorList, dom: &Dom, node: NodeId) -> bool {
             }
         }
     })
+}
+
+/// Returns true if the node or any of its descendants is focused.
+fn matches_focus_within(dom: &Dom, node: NodeId) -> bool {
+    if get_node_state(node).focus {
+        return true;
+    }
+    let children = dom.children(node);
+    for &child in children {
+        if matches_focus_within(dom, child) {
+            return true;
+        }
+    }
+    false
 }
 
 fn any_descendant_matches(sel: &ComplexSelector, dom: &Dom, node: NodeId) -> bool {
@@ -2516,5 +2531,81 @@ mod tests {
         assert!(!matches(&sel_has_child_img, &dom, div1));
         assert!(matches(&sel_has_child_img, &dom, div2));
         assert!(!matches(&sel_has_child_img, &dom, div3));
+    }
+
+    #[test]
+    fn test_matches_focus_within() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Build DOM structure:
+        // <div id="parent">
+        //   <div id="child">
+        //     <button id="focused-btn"></button>
+        //   </div>
+        // </div>
+        // <div id="unrelated">
+        //   <button id="unfocused-btn"></button>
+        // </div>
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "parent".into())],
+        });
+        dom.append_child(doc, parent);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child".into())],
+        });
+        dom.append_child(parent, child);
+
+        let focused_btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![("id".into(), "focused-btn".into())],
+        });
+        dom.append_child(child, focused_btn);
+
+        let unrelated = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "unrelated".into())],
+        });
+        dom.append_child(doc, unrelated);
+
+        let unfocused_btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![("id".into(), "unfocused-btn".into())],
+        });
+        dom.append_child(unrelated, unfocused_btn);
+
+        // Parse selectors
+        let sel_focus_within = parse_selector_list(":focus-within").unwrap();
+
+        // Ensure states are cleared initially
+        clear_node_states();
+
+        // Initially nothing has focus, so nothing matches :focus-within
+        assert!(!matches(&sel_focus_within, &dom, parent));
+        assert!(!matches(&sel_focus_within, &dom, child));
+        assert!(!matches(&sel_focus_within, &dom, focused_btn));
+        assert!(!matches(&sel_focus_within, &dom, unrelated));
+
+        // Set focus state on focused-btn
+        set_node_state(
+            focused_btn,
+            NodeState {
+                hover: false,
+                focus: true,
+                active: false,
+            },
+        );
+
+        // Now :focus-within should match parent, child, and focused_btn
+        assert!(matches(&sel_focus_within, &dom, parent));
+        assert!(matches(&sel_focus_within, &dom, child));
+        assert!(matches(&sel_focus_within, &dom, focused_btn));
+
+        // But it should NOT match unrelated or unfocused_btn
+        assert!(!matches(&sel_focus_within, &dom, unrelated));
+        assert!(!matches(&sel_focus_within, &dom, unfocused_btn));
     }
 }
