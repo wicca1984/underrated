@@ -458,6 +458,7 @@ pub fn sniff_response(
             crate::encoding::Charset::Utf16Le => Some("utf-16le".to_string()),
             crate::encoding::Charset::Utf16Be => Some("utf-16be".to_string()),
             crate::encoding::Charset::Windows1252 => Some("windows-1252".to_string()),
+            crate::encoding::Charset::Iso8859_15 => Some("iso-8859-15".to_string()),
         };
     }
 

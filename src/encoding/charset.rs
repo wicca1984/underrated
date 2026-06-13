@@ -7,6 +7,7 @@ pub enum Charset {
     Utf16Le,
     Utf16Be,
     Windows1252,
+    Iso8859_15,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -35,6 +36,9 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "windows-1252" | "ansi_x3.4-1968" | "ascii" | "us-ascii" | "iso-8859-1"
             | "iso8859-1" | "iso_8859-1" | "latin1" | "l1" | "cp1252" | "cp819" | "ibm819"
             | "x-cp1252" => return Charset::Windows1252,
+            "csisolatin9" | "iso-8859-15" | "iso8859-15" | "iso885915" | "iso_8859-15" | "l9" => {
+                return Charset::Iso8859_15;
+            }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
     }
@@ -80,6 +84,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "utf-16le" => return Some(Charset::Utf16Le),
                 "utf-16be" => return Some(Charset::Utf16Be),
                 "windows-1252" => return Some(Charset::Windows1252),
+                "iso-8859-15" => return Some(Charset::Iso8859_15),
                 _ => {}
             }
         }
@@ -93,6 +98,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Utf16Le => decode_utf16(bytes, true),
         Charset::Utf16Be => decode_utf16(bytes, false),
         Charset::Windows1252 => decode_windows1252(bytes),
+        Charset::Iso8859_15 => decode_iso8859_15(bytes),
     }
 }
 
@@ -176,6 +182,25 @@ fn decode_windows1252(bytes: &[u8]) -> String {
         } else {
             result.push(b as char);
         }
+    }
+    result
+}
+
+fn decode_iso8859_15(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        let c = match b {
+            0xA4 => '\u{20AC}',
+            0xA6 => '\u{0160}',
+            0xA8 => '\u{0161}',
+            0xB4 => '\u{017D}',
+            0xB8 => '\u{017E}',
+            0xBC => '\u{0152}',
+            0xBD => '\u{0153}',
+            0xBE => '\u{0178}',
+            _ => char::from(b),
+        };
+        result.push(c);
     }
     result
 }
@@ -307,6 +332,27 @@ mod tests {
         assert_eq!(
             sniff_charset(b"abc", Some("unknown-charset")),
             Charset::Windows1252
+        );
+    }
+
+    #[test]
+    fn test_iso8859_15_decode() {
+        assert_eq!(decode(&[0xA4], Charset::Iso8859_15), "€");
+        assert_eq!(decode(&[0xBD], Charset::Iso8859_15), "œ");
+        assert_eq!(decode(&[0xBE], Charset::Iso8859_15), "Ÿ");
+        assert_eq!(decode(&[0x41], Charset::Iso8859_15), "A");
+        assert_eq!(decode(&[0xE9], Charset::Iso8859_15), "é");
+    }
+
+    #[test]
+    fn test_iso8859_15_sniff() {
+        assert_eq!(
+            sniff_charset(b"<html></html>", Some("iso-8859-15")),
+            Charset::Iso8859_15
+        );
+        assert_eq!(
+            sniff_charset(b"<html></html>", Some("l9")),
+            Charset::Iso8859_15
         );
     }
 }
