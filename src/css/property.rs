@@ -595,6 +595,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
     },
     PropertyMetadata {
+        name: "print-color-adjust",
+        inherited: true,
+        initial: "economy",
+    },
+    PropertyMetadata {
         name: "scroll-snap-type",
         inherited: false,
         initial: "none",
@@ -1105,6 +1110,16 @@ mod tests {
         assert_eq!(scroll_behavior.name, "scroll-behavior");
         assert!(!scroll_behavior.inherited);
         assert_eq!(scroll_behavior.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0645() {
+        let print_color_adjust = lookup("print-color-adjust");
+        assert!(print_color_adjust.is_some());
+        let print_color_adjust = print_color_adjust.unwrap();
+        assert_eq!(print_color_adjust.name, "print-color-adjust");
+        assert!(print_color_adjust.inherited);
+        assert_eq!(print_color_adjust.initial, "economy");
     }
 
     #[test]

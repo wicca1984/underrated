@@ -637,6 +637,50 @@ impl TryFrom<&CssValue> for ScrollBehaviorValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum PrintColorAdjustValue {
+    #[default]
+    Economy,
+    Exact,
+}
+
+impl PrintColorAdjustValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "economy" => Some(Self::Economy),
+            "exact" => Some(Self::Exact),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Economy => "economy",
+            Self::Exact => "exact",
+        }
+    }
+}
+
+impl std::str::FromStr for PrintColorAdjustValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for PrintColorAdjustValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::PrintColorAdjust(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum FontVariantPositionValue {
     #[default]
     Normal,
@@ -1742,6 +1786,7 @@ pub enum CssValue {
     BoxDecorationBreak(BoxDecorationBreakValue),
     MaskType(MaskTypeValue),
     ScrollBehavior(ScrollBehaviorValue),
+    PrintColorAdjust(PrintColorAdjustValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1832,6 +1877,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "clear"
             | "table-layout"
             | "scroll-behavior"
+            | "print-color-adjust"
             | "scroll-snap-type"
             | "scroll-snap-align"
             | "mix-blend-mode"
@@ -2173,6 +2219,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "smooth")
             }
             CssValue::ScrollBehavior(_) => true,
+            _ => false,
+        },
+        "print-color-adjust" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "economy" | "exact")
+            }
+            CssValue::PrintColorAdjust(_) => true,
             _ => false,
         },
         "image-rendering" => match value {
@@ -2873,6 +2926,26 @@ fn parse_scroll_behavior(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::ScrollBehavior(kw))
 }
 
+fn parse_print_color_adjust(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for print-color-adjust recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = PrintColorAdjustValue::parse(&idents[0])?;
+    Some(CssValue::PrintColorAdjust(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -3050,6 +3123,9 @@ pub fn parse_property_value(
     }
     if name_lower == "scroll-behavior" {
         return parse_scroll_behavior(components);
+    }
+    if name_lower == "print-color-adjust" {
+        return parse_print_color_adjust(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -7168,6 +7244,62 @@ mod tests {
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
+        // Test parse_property_value for print-color-adjust (t0645)
+        assert_eq!(
+            parse_property_value(
+                "print-color-adjust",
+                &[token(CssToken::Ident("exact".to_string()))]
+            ),
+            Some(CssValue::PrintColorAdjust(PrintColorAdjustValue::Exact))
+        );
+        assert_eq!(
+            parse_property_value(
+                "print-color-adjust",
+                &[token(CssToken::Ident("economy".to_string()))]
+            ),
+            Some(CssValue::PrintColorAdjust(PrintColorAdjustValue::Economy))
+        );
+        assert_eq!(
+            parse_property_value(
+                "print-color-adjust",
+                &[token(CssToken::Ident("ECONOMY".to_string()))]
+            ),
+            Some(CssValue::PrintColorAdjust(PrintColorAdjustValue::Economy))
+        );
+        assert_eq!(
+            parse_property_value(
+                "print-color-adjust",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_valid_property_value for print-color-adjust (t0645)
+        assert!(is_valid_property_value(
+            "print-color-adjust",
+            &CssValue::Keyword("exact".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "print-color-adjust",
+            &CssValue::Keyword("economy".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "print-color-adjust",
+            &CssValue::Keyword("ECONOMY".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "print-color-adjust",
+            &CssValue::PrintColorAdjust(PrintColorAdjustValue::Exact)
+        ));
+        assert!(is_valid_property_value(
+            "print-color-adjust",
+            &CssValue::PrintColorAdjust(PrintColorAdjustValue::Economy)
+        ));
+        assert!(!is_valid_property_value(
+            "print-color-adjust",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
         // Test parse_property_value for user-select (t0475)
         for val in &["auto", "text", "none", "contain", "all", "AUTO", "None"] {
             assert_eq!(
@@ -8710,6 +8842,57 @@ mod tests {
         assert_eq!(
             UnicodeBidiValue::parse("ISOLATE-OVERRIDE"),
             Some(UnicodeBidiValue::IsolateOverride)
+        );
+    }
+
+    #[test]
+    fn test_print_color_adjust_direct() {
+        use std::str::FromStr;
+
+        // Test PrintColorAdjustValue::parse
+        assert_eq!(
+            PrintColorAdjustValue::parse("economy"),
+            Some(PrintColorAdjustValue::Economy)
+        );
+        assert_eq!(
+            PrintColorAdjustValue::parse("exact"),
+            Some(PrintColorAdjustValue::Exact)
+        );
+        assert_eq!(
+            PrintColorAdjustValue::parse("ECONOMY"),
+            Some(PrintColorAdjustValue::Economy)
+        );
+        assert_eq!(PrintColorAdjustValue::parse("banana"), None);
+
+        // Test as_str
+        assert_eq!(PrintColorAdjustValue::Economy.as_str(), "economy");
+        assert_eq!(PrintColorAdjustValue::Exact.as_str(), "exact");
+
+        // Test FromStr
+        assert_eq!(
+            PrintColorAdjustValue::from_str("economy"),
+            Ok(PrintColorAdjustValue::Economy)
+        );
+        assert_eq!(
+            PrintColorAdjustValue::from_str("exact"),
+            Ok(PrintColorAdjustValue::Exact)
+        );
+        assert_eq!(PrintColorAdjustValue::from_str("banana"), Err(()));
+
+        // Test TryFrom<&CssValue>
+        assert_eq!(
+            PrintColorAdjustValue::try_from(&CssValue::PrintColorAdjust(
+                PrintColorAdjustValue::Exact
+            )),
+            Ok(PrintColorAdjustValue::Exact)
+        );
+        assert_eq!(
+            PrintColorAdjustValue::try_from(&CssValue::Keyword("economy".to_string())),
+            Ok(PrintColorAdjustValue::Economy)
+        );
+        assert_eq!(
+            PrintColorAdjustValue::try_from(&CssValue::Keyword("banana".to_string())),
+            Err(())
         );
     }
 }
