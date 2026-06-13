@@ -508,6 +508,54 @@ impl TryFrom<&CssValue> for TextJustifyValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum WordBreakValue {
+    Normal,
+    BreakAll,
+    KeepAll,
+    BreakWord,
+}
+
+impl WordBreakValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "break-all" => Some(Self::BreakAll),
+            "keep-all" => Some(Self::KeepAll),
+            "break-word" => Some(Self::BreakWord),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::BreakAll => "break-all",
+            Self::KeepAll => "keep-all",
+            Self::BreakWord => "break-word",
+        }
+    }
+}
+
+impl std::str::FromStr for WordBreakValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for WordBreakValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ImageRendering {
     Auto,
     Smooth,
@@ -853,6 +901,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "image-rendering"
             | "font-kerning"
             | "text-justify"
+            | "word-break"
             | "object-fit"
             | "caption-side"
             | "pointer-events"
@@ -1059,6 +1108,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(
                     kw.to_ascii_lowercase().as_str(),
                     "auto" | "inter-word" | "inter-character" | "none"
+                )
+            }
+            _ => false,
+        },
+        "word-break" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "normal" | "break-all" | "keep-all" | "break-word"
                 )
             }
             _ => false,
@@ -1640,6 +1698,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "inter-word" | "inter-character" | "none" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "word-break" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "normal" | "break-all" | "keep-all" | "break-word" => Some(val),
                     _ => None,
                 }
             } else {
@@ -3644,6 +3712,88 @@ mod tests {
     }
 
     #[test]
+    fn test_word_break_value() {
+        // Test parsing keyword strings to WordBreakValue
+        assert_eq!(
+            WordBreakValue::parse("normal"),
+            Some(WordBreakValue::Normal)
+        );
+        assert_eq!(
+            WordBreakValue::parse("break-all"),
+            Some(WordBreakValue::BreakAll)
+        );
+        assert_eq!(
+            WordBreakValue::parse("keep-all"),
+            Some(WordBreakValue::KeepAll)
+        );
+        assert_eq!(
+            WordBreakValue::parse("break-word"),
+            Some(WordBreakValue::BreakWord)
+        );
+        assert_eq!(
+            WordBreakValue::parse("NORMAL"),
+            Some(WordBreakValue::Normal)
+        );
+        assert_eq!(
+            WordBreakValue::parse("Break-All"),
+            Some(WordBreakValue::BreakAll)
+        );
+        assert_eq!(
+            WordBreakValue::parse("Keep-All"),
+            Some(WordBreakValue::KeepAll)
+        );
+        assert_eq!(
+            WordBreakValue::parse("BREAK-WORD"),
+            Some(WordBreakValue::BreakWord)
+        );
+        assert_eq!(WordBreakValue::parse("bogus"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "normal".parse::<WordBreakValue>(),
+            Ok(WordBreakValue::Normal)
+        );
+        assert_eq!(
+            "break-all".parse::<WordBreakValue>(),
+            Ok(WordBreakValue::BreakAll)
+        );
+        assert_eq!(
+            "keep-all".parse::<WordBreakValue>(),
+            Ok(WordBreakValue::KeepAll)
+        );
+        assert_eq!(
+            "break-word".parse::<WordBreakValue>(),
+            Ok(WordBreakValue::BreakWord)
+        );
+        assert_eq!("BOGUS".parse::<WordBreakValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(WordBreakValue::Normal.as_str(), "normal");
+        assert_eq!(WordBreakValue::BreakAll.as_str(), "break-all");
+        assert_eq!(WordBreakValue::KeepAll.as_str(), "keep-all");
+        assert_eq!(WordBreakValue::BreakWord.as_str(), "break-word");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            WordBreakValue::try_from(&CssValue::Keyword("normal".to_string())),
+            Ok(WordBreakValue::Normal)
+        );
+        assert_eq!(
+            WordBreakValue::try_from(&CssValue::Keyword("BREAK-ALL".to_string())),
+            Ok(WordBreakValue::BreakAll)
+        );
+        assert_eq!(
+            WordBreakValue::try_from(&CssValue::Keyword("keep-all".to_string())),
+            Ok(WordBreakValue::KeepAll)
+        );
+        assert_eq!(
+            WordBreakValue::try_from(&CssValue::Keyword("break-word".to_string())),
+            Ok(WordBreakValue::BreakWord)
+        );
+        assert_eq!(WordBreakValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
     fn test_parse_transform() {
         let parse = |input: &str| {
             let components = crate::css::parser::parse_component_values(input);
@@ -4690,6 +4840,49 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "object-fit",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for word-break
+        assert!(is_known_layout_property("word-break"));
+        assert!(is_known_layout_property("Word-Break"));
+
+        for val in &[
+            "normal",
+            "break-all",
+            "keep-all",
+            "break-word",
+            "NORMAL",
+            "Break-All",
+        ] {
+            assert_eq!(
+                parse_property_value("word-break", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "word-break",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "normal",
+            "break-all",
+            "keep-all",
+            "break-word",
+            "NORMAL",
+            "Break-All",
+        ] {
+            assert!(is_valid_property_value(
+                "word-break",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "word-break",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
