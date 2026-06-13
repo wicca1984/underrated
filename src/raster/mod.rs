@@ -384,6 +384,63 @@ impl LinearGradient {
     }
 }
 
+/// Represents a radial gradient background.
+/// spec: S-40
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadialGradient {
+    pub shape: Option<String>,
+    pub stops: Vec<Color>,
+}
+
+impl RadialGradient {
+    /// Parses a CSS radial-gradient background string.
+    /// spec: S-40
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        let content = s.strip_prefix("radial-gradient(")?.strip_suffix(')')?;
+        let parts = split_top_level_commas(content);
+
+        if parts.len() < 2 {
+            return None;
+        }
+
+        // Check if the first part is a color or a shape/position/size descriptor
+        if let Some(first_color) = parse_color(&parts[0]) {
+            // No leading shape descriptor, all parts must be colors
+            let mut stops = Vec::new();
+            stops.push(first_color);
+            for part in &parts[1..] {
+                stops.push(parse_color(part)?);
+            }
+            Some(RadialGradient { shape: None, stops })
+        } else {
+            // First part is shape/position/size descriptor
+            let leading = parts[0].trim().to_ascii_lowercase();
+
+            // TODO(spec): Deferred explicit position `at <pos>`, sizing keywords/values like `closest-side` or `closest-corner` or explicit dimensions, and explicit stop positions in v1.
+            let shape = if leading.contains("circle") {
+                Some("circle".to_string())
+            } else if leading.contains("ellipse") {
+                Some("ellipse".to_string())
+            } else {
+                None
+            };
+
+            // The remaining parts must be the color stops (at least 2 stops required)
+            if parts.len() < 3 {
+                return None;
+            }
+
+            let mut stops = Vec::new();
+            for part in &parts[1..] {
+                stops.push(parse_color(part)?);
+            }
+
+            Some(RadialGradient { shape, stops })
+        }
+    }
+}
+
 /// Splits a string on top-level commas, respecting nested parentheses.
 /// spec: S-40
 fn split_top_level_commas(s: &str) -> Vec<String> {
@@ -588,7 +645,7 @@ fn interpolate_color(c1: Color, c2: Color, t: f32) -> Color {
     Color::Rgba(r, g, b, a)
 }
 
-/// Draws a box's computed linear-gradient background, with optional border-radius rounded-corner clipping.
+/// Draws a box's computed linear-gradient or radial-gradient background, with optional border-radius rounded-corner clipping.
 /// spec: S-40
 pub fn rasterize_gradient_box(
     canvas: &mut Canvas,
@@ -596,73 +653,174 @@ pub fn rasterize_gradient_box(
     background: &str,
     border_radius: Option<f32>,
 ) {
-    let gradient = match LinearGradient::parse(background) {
-        Some(g) => g,
-        None => return, // spec: Ignore invalid gradient formats (I-6)
-    };
+    let background = background.trim();
+    if background.starts_with("radial-gradient(") {
+        let gradient = match RadialGradient::parse(background) {
+            Some(g) => g,
+            None => return, // spec: Ignore invalid gradient formats (I-6)
+        };
 
-    // Clip rendering bounds to the canvas dimensions (prevent out of bounds index - I-6)
-    let x_start = (rect.origin.x.max(0.0).floor() as u32).min(canvas.width);
-    let y_start = (rect.origin.y.max(0.0).floor() as u32).min(canvas.height);
-    let x_end = (rect.max_x().max(0.0).ceil() as u32).min(canvas.width);
-    let y_end = (rect.max_y().max(0.0).ceil() as u32).min(canvas.height);
+        // Clip rendering bounds to the canvas dimensions (prevent out of bounds index - I-6)
+        let x_start = (rect.origin.x.max(0.0).floor() as u32).min(canvas.width);
+        let y_start = (rect.origin.y.max(0.0).floor() as u32).min(canvas.height);
+        let x_end = (rect.max_x().max(0.0).ceil() as u32).min(canvas.width);
+        let y_end = (rect.max_y().max(0.0).ceil() as u32).min(canvas.height);
 
-    let (ux, uy, l) = match &gradient.direction {
-        GradientDirection::ToBottom => (0.0, 1.0, rect.size.height),
-        GradientDirection::ToTop => (0.0, -1.0, rect.size.height),
-        GradientDirection::ToRight => (1.0, 0.0, rect.size.width),
-        GradientDirection::ToLeft => (-1.0, 0.0, rect.size.width),
-        GradientDirection::Angle(deg) => {
-            let rad = deg.to_radians();
-            let ux = rad.sin();
-            let uy = -rad.cos();
-            let l =
-                rect.size.width.abs() * rad.sin().abs() + rect.size.height.abs() * rad.cos().abs();
-            (ux, uy, l)
-        }
-    };
+        let w = rect.size.width;
+        let h = rect.size.height;
+        let cx = rect.origin.x + w / 2.0;
+        let cy = rect.origin.y + h / 2.0;
 
-    // TODO(spec): Other forms / per-corner radius are not yet supported.
+        let is_circle = gradient.shape.as_deref() == Some("circle");
 
-    for y in y_start..y_end {
-        for x in x_start..x_end {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
+        // Precompute radius / factors
+        let circle_r = if is_circle {
+            ((w / 2.0) * (w / 2.0) + (h / 2.0) * (h / 2.0)).sqrt()
+        } else {
+            0.0
+        };
 
-            // Check if the pixel center is inside the rounded rect
-            if border_radius.is_some_and(|r| !is_inside_rounded_rect(&rect, r, px, py)) {
-                continue;
-            }
+        let ellipse_rx = if !is_circle {
+            w / std::f32::consts::SQRT_2
+        } else {
+            0.0
+        };
+        let ellipse_ry = if !is_circle {
+            h / std::f32::consts::SQRT_2
+        } else {
+            0.0
+        };
 
-            let t = if l <= 0.0 {
-                0.0
-            } else {
-                match &gradient.direction {
-                    GradientDirection::ToBottom => (py - rect.origin.y) / l,
-                    GradientDirection::ToTop => (rect.max_y() - py) / l,
-                    GradientDirection::ToRight => (px - rect.origin.x) / l,
-                    GradientDirection::ToLeft => (rect.max_x() - px) / l,
-                    GradientDirection::Angle(_) => {
-                        let cx = rect.origin.x + rect.size.width / 2.0;
-                        let cy = rect.origin.y + rect.size.height / 2.0;
-                        let dx = px - cx;
-                        let dy = py - cy;
-                        let d = dx * ux + dy * uy;
-                        (d / l) + 0.5
-                    }
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+
+                // Check if the pixel center is inside the rounded rect
+                if border_radius.is_some_and(|r| !is_inside_rounded_rect(&rect, r, px, py)) {
+                    continue;
                 }
-            };
-            let t = t.clamp(0.0, 1.0);
 
-            let interpolated =
-                interpolate_color(gradient.color1.clone(), gradient.color2.clone(), t);
-            let (r_s, g_s, b_s, a_s) = match interpolated {
-                Color::Rgba(r, g, b, a) => (r, g, b, a),
-            };
+                let dx = px - cx;
+                let dy = py - cy;
 
-            let index = (y as usize) * (canvas.width as usize) + (x as usize);
-            if let Some(pixel) = canvas.pixels.get_mut(index) {
-                *pixel = blend((r_s, g_s, b_s, a_s), *pixel);
+                let t = if is_circle {
+                    if circle_r <= 0.0 {
+                        0.0
+                    } else {
+                        let d = (dx * dx + dy * dy).sqrt();
+                        d / circle_r
+                    }
+                } else {
+                    if ellipse_rx <= 0.0 || ellipse_ry <= 0.0 {
+                        0.0
+                    } else {
+                        let rx_term = dx / ellipse_rx;
+                        let ry_term = dy / ellipse_ry;
+                        (rx_term * rx_term + ry_term * ry_term).sqrt()
+                    }
+                };
+
+                let t = t.clamp(0.0, 1.0);
+
+                let n = gradient.stops.len();
+                let interpolated = if n < 2 {
+                    gradient
+                        .stops
+                        .first()
+                        .cloned()
+                        .unwrap_or(Color::Rgba(0, 0, 0, 255))
+                } else {
+                    let idx = (t * (n - 1) as f32).floor() as usize;
+                    let idx = idx.min(n - 2);
+                    let t_local = t * (n - 1) as f32 - idx as f32;
+                    let t_local = t_local.clamp(0.0, 1.0);
+                    interpolate_color(
+                        gradient.stops[idx].clone(),
+                        gradient.stops[idx + 1].clone(),
+                        t_local,
+                    )
+                };
+
+                let (r_s, g_s, b_s, a_s) = match interpolated {
+                    Color::Rgba(r, g, b, a) => (r, g, b, a),
+                };
+
+                let index = (y as usize) * (canvas.width as usize) + (x as usize);
+                if let Some(pixel) = canvas.pixels.get_mut(index) {
+                    *pixel = blend((r_s, g_s, b_s, a_s), *pixel);
+                }
+            }
+        }
+    } else {
+        let gradient = match LinearGradient::parse(background) {
+            Some(g) => g,
+            None => return, // spec: Ignore invalid gradient formats (I-6)
+        };
+
+        // Clip rendering bounds to the canvas dimensions (prevent out of bounds index - I-6)
+        let x_start = (rect.origin.x.max(0.0).floor() as u32).min(canvas.width);
+        let y_start = (rect.origin.y.max(0.0).floor() as u32).min(canvas.height);
+        let x_end = (rect.max_x().max(0.0).ceil() as u32).min(canvas.width);
+        let y_end = (rect.max_y().max(0.0).ceil() as u32).min(canvas.height);
+
+        let (ux, uy, l) = match &gradient.direction {
+            GradientDirection::ToBottom => (0.0, 1.0, rect.size.height),
+            GradientDirection::ToTop => (0.0, -1.0, rect.size.height),
+            GradientDirection::ToRight => (1.0, 0.0, rect.size.width),
+            GradientDirection::ToLeft => (-1.0, 0.0, rect.size.width),
+            GradientDirection::Angle(deg) => {
+                let rad = deg.to_radians();
+                let ux = rad.sin();
+                let uy = -rad.cos();
+                let l = rect.size.width.abs() * rad.sin().abs()
+                    + rect.size.height.abs() * rad.cos().abs();
+                (ux, uy, l)
+            }
+        };
+
+        // TODO(spec): Other forms / per-corner radius are not yet supported.
+
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+
+                // Check if the pixel center is inside the rounded rect
+                if border_radius.is_some_and(|r| !is_inside_rounded_rect(&rect, r, px, py)) {
+                    continue;
+                }
+
+                let t = if l <= 0.0 {
+                    0.0
+                } else {
+                    match &gradient.direction {
+                        GradientDirection::ToBottom => (py - rect.origin.y) / l,
+                        GradientDirection::ToTop => (rect.max_y() - py) / l,
+                        GradientDirection::ToRight => (px - rect.origin.x) / l,
+                        GradientDirection::ToLeft => (rect.max_x() - px) / l,
+                        GradientDirection::Angle(_) => {
+                            let cx = rect.origin.x + rect.size.width / 2.0;
+                            let cy = rect.origin.y + rect.size.height / 2.0;
+                            let dx = px - cx;
+                            let dy = py - cy;
+                            let d = dx * ux + dy * uy;
+                            (d / l) + 0.5
+                        }
+                    }
+                };
+                let t = t.clamp(0.0, 1.0);
+
+                let interpolated =
+                    interpolate_color(gradient.color1.clone(), gradient.color2.clone(), t);
+                let (r_s, g_s, b_s, a_s) = match interpolated {
+                    Color::Rgba(r, g, b, a) => (r, g, b, a),
+                };
+
+                let index = (y as usize) * (canvas.width as usize) + (x as usize);
+                if let Some(pixel) = canvas.pixels.get_mut(index) {
+                    *pixel = blend((r_s, g_s, b_s, a_s), *pixel);
+                }
             }
         }
     }
@@ -971,6 +1129,105 @@ mod tests {
 
         // Center pixel (4, 4) should be exactly midpoint (128, 0, 128)
         assert_eq!(canvas.pixel(4, 4), 0xFF800080);
+    }
+
+    #[test]
+    fn test_radial_gradient_parse() {
+        // Simple 2-stop
+        let g1 = RadialGradient::parse("radial-gradient(#ff0000, #0000ff)").unwrap();
+        assert_eq!(g1.shape, None);
+        assert_eq!(g1.stops.len(), 2);
+        assert_eq!(g1.stops[0], Color::Rgba(255, 0, 0, 255));
+        assert_eq!(g1.stops[1], Color::Rgba(0, 0, 255, 255));
+
+        // Leading circle keyword
+        let g2 = RadialGradient::parse("radial-gradient(circle, red, blue)").unwrap();
+        assert_eq!(g2.shape, Some("circle".to_string()));
+        assert_eq!(g2.stops.len(), 2);
+
+        // Leading ellipse keyword
+        let g3 = RadialGradient::parse("radial-gradient(ellipse, #ff0000, #0000ff)").unwrap();
+        assert_eq!(g3.shape, Some("ellipse".to_string()));
+        assert_eq!(g3.stops.len(), 2);
+
+        // Leading complex descriptor (ignored but parsed)
+        let g4 = RadialGradient::parse(
+            "radial-gradient(ellipse farthest-corner at 20% 30%, red, green, blue)",
+        )
+        .unwrap();
+        assert_eq!(g4.shape, Some("ellipse".to_string()));
+        assert_eq!(g4.stops.len(), 3);
+
+        // Malformed inputs
+        assert!(RadialGradient::parse("linear-gradient(to bottom, red, blue)").is_none());
+        assert!(RadialGradient::parse("radial-gradient(red)").is_none());
+        assert!(RadialGradient::parse("radial-gradient(circle, red)").is_none());
+    }
+
+    #[test]
+    fn test_radial_gradient_rendering() {
+        let mut canvas = Canvas::new(9, 9);
+        let rect = Rect::new(0.0, 0.0, 9.0, 9.0);
+
+        rasterize_gradient_box(&mut canvas, rect, "radial-gradient(#ff0000, #0000ff)", None);
+
+        // Center pixel (4,4) should be close to first stop (red)
+        let center_pixel = canvas.pixel(4, 4);
+        let cr = (center_pixel >> 16) & 0xFF;
+        let cb = center_pixel & 0xFF;
+        assert!(cr > 230);
+        assert!(cb < 25);
+
+        // Corner pixel (0,0) should be near the last stop (blue)
+        let corner_pixel = canvas.pixel(0, 0);
+        let cor_r = (corner_pixel >> 16) & 0xFF;
+        let cor_b = corner_pixel & 0xFF;
+        assert!(cor_r < 35);
+        assert!(cor_b > 220);
+
+        // Prove interpolation: count distinct colors inside the painted area.
+        // There should be more than 2 distinct colors.
+        let mut colors = Vec::new();
+        for y in 0..9 {
+            for x in 0..9 {
+                let pixel = canvas.pixel(x, y);
+                if !colors.contains(&pixel) {
+                    colors.push(pixel);
+                }
+            }
+        }
+        assert!(
+            colors.len() > 2,
+            "Proves interpolation occurs, got {} colors",
+            colors.len()
+        );
+    }
+
+    #[test]
+    fn test_radial_gradient_circle_rendering() {
+        let mut canvas = Canvas::new(9, 9);
+        let rect = Rect::new(0.0, 0.0, 9.0, 9.0);
+
+        rasterize_gradient_box(
+            &mut canvas,
+            rect,
+            "radial-gradient(circle, #ff0000, #0000ff)",
+            None,
+        );
+
+        // Center pixel (4,4) is red
+        let center_pixel = canvas.pixel(4, 4);
+        let cr = (center_pixel >> 16) & 0xFF;
+        let cb = center_pixel & 0xFF;
+        assert!(cr > 230);
+        assert!(cb < 25);
+
+        // Corners are blue
+        let corner_pixel = canvas.pixel(0, 0);
+        let cor_r = (corner_pixel >> 16) & 0xFF;
+        let cor_b = corner_pixel & 0xFF;
+        assert!(cor_r < 35);
+        assert!(cor_b > 220);
     }
 
     #[test]
