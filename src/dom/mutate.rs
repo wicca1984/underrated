@@ -114,15 +114,17 @@ impl Dom {
         }
     }
 
-    /// Replaces the text of a `Text` node. No-op for other node kinds.
+    /// Replaces the text of a `Text` or `Comment` node. No-op for other node kinds.
     pub fn set_text(&mut self, node: NodeId, text: &str) {
         let mut changed = false;
-        if let Some(n) = self.arena.get_mut(node)
-            && let NodeData::Text(t) = &mut n.data
-            && t != text
-        {
-            *t = text.to_string();
-            changed = true;
+        if let Some(n) = self.arena.get_mut(node) {
+            match &mut n.data {
+                NodeData::Text(t) | NodeData::Comment(t) if t != text => {
+                    *t = text.to_string();
+                    changed = true;
+                }
+                _ => {}
+            }
         }
         if changed {
             self.mark_dirty(node);

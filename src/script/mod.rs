@@ -456,6 +456,16 @@ impl BoaHost {
                 1,
             )
             .function(
+                NativeFunction::from_fn_ptr(bridge_get_node_value),
+                JsString::from("getNodeValue"),
+                1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_set_node_value),
+                JsString::from("setNodeValue"),
+                2,
+            )
+            .function(
                 NativeFunction::from_fn_ptr(bridge_clone_node),
                 JsString::from("cloneNode"),
                 2,
@@ -1610,10 +1620,19 @@ impl BoaHost {
 
                     Object.defineProperty(node, 'textContent', {
                         get() {
+                            const type = this.nodeType;
+                            if (type === 3 || type === 8) {
+                                return this.nodeValue;
+                            }
                             return bridge.getTextContent(this.__key__);
                         },
                         set(val) {
-                            bridge.setTextContent(this.__key__, String(val));
+                            const type = this.nodeType;
+                            if (type === 3 || type === 8) {
+                                this.nodeValue = val;
+                            } else {
+                                bridge.setTextContent(this.__key__, String(val));
+                            }
                         },
                         enumerable: true,
                         configurable: true
@@ -2095,6 +2114,19 @@ impl BoaHost {
                     Object.defineProperty(node, 'nodeType', {
                         get() {
                             return bridge.nodeType(this.__key__);
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
+                    Object.defineProperty(node, 'nodeValue', {
+                        get() {
+                            return bridge.getNodeValue(this.__key__);
+                        },
+                        set(val) {
+                            if (this.nodeType === 3 || this.nodeType === 8) {
+                                bridge.setNodeValue(this.__key__, val === null ? "" : String(val));
+                            }
                         },
                         enumerable: true,
                         configurable: true
@@ -2600,6 +2632,17 @@ impl BoaHost {
                 Object.defineProperty(document, 'nodeType', {
                     get() {
                         return bridge.nodeType(this.__key__);
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
+
+                Object.defineProperty(document, 'nodeValue', {
+                    get() {
+                        return bridge.getNodeValue(this.__key__);
+                    },
+                    set(val) {
+                        // no-op for Document
                     },
                     enumerable: true,
                     configurable: true
@@ -5520,6 +5563,66 @@ fn bridge_node_type(
     } else {
         Ok(JsValue::undefined())
     }
+}
+
+fn bridge_get_node_value(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::null());
+    };
+
+    let val_opt = with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            match dom.data(node_id) {
+                Some(NodeData::Text(s)) => Some(s.clone()),
+                Some(NodeData::Comment(s)) => Some(s.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })?;
+
+    if let Some(val) = val_opt {
+        Ok(JsValue::from(JsString::from(val)))
+    } else {
+        Ok(JsValue::null())
+    }
+}
+
+fn bridge_set_node_value(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let node_key = if let Some(arg) = args.first() {
+        arg.to_string(context)?.to_std_string().unwrap_or_default()
+    } else {
+        return Ok(JsValue::undefined());
+    };
+
+    let val = if let Some(arg) = args.get(1) {
+        if arg.is_null() || arg.is_undefined() {
+            String::new()
+        } else {
+            arg.to_string(context)?.to_std_string().unwrap_or_default()
+        }
+    } else {
+        String::new()
+    };
+
+    with_dom(|dom, key_to_node| {
+        if let Some(&node_id) = key_to_node.get(&node_key) {
+            dom.set_text(node_id, &val);
+        }
+    })?;
+
+    Ok(JsValue::undefined())
 }
 
 fn clone_node_recursive(dom: &mut Dom, node_id: NodeId, deep: bool) -> NodeId {
@@ -8678,6 +8781,63 @@ mod tests {
         ";
         let res = host.eval_with_dom(script, &mut dom);
         assert_eq!(res, Ok("true,true,true".to_string()));
+    }
+
+    #[test]
+    fn test_dom_node_value() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            const results = [];
+
+            // 1. document.nodeValue is null and setter is a no-op
+            results.push(document.nodeValue === null);
+            document.nodeValue = 'some value';
+            results.push(document.nodeValue === null);
+
+            // 2. Element.nodeValue is null and setter is a no-op
+            const div = document.createElement('div');
+            results.push(div.nodeValue === null);
+            div.nodeValue = 'hello element';
+            results.push(div.nodeValue === null);
+
+            // 3. TextNode.nodeValue getter & setter
+            const text = document.createTextNode('hello text');
+            results.push(text.nodeValue === 'hello text');
+            text.nodeValue = 'new text';
+            results.push(text.nodeValue === 'new text');
+
+            // 4. CommentNode.nodeValue getter & setter
+            const comment = document.createComment('hello comment');
+            results.push(comment.nodeValue === 'hello comment');
+            comment.nodeValue = 'new comment';
+            results.push(comment.nodeValue === 'new comment');
+
+            // 5. null assignment to nodeValue behaves as empty string for Text/Comment
+            text.nodeValue = null;
+            results.push(text.nodeValue === '');
+            comment.nodeValue = null;
+            results.push(comment.nodeValue === '');
+
+            // 6. textContent on comment and text node delegates to nodeValue
+            text.nodeValue = 'text content test';
+            results.push(text.textContent === 'text content test');
+            text.textContent = 'new text content';
+            results.push(text.nodeValue === 'new text content');
+
+            comment.nodeValue = 'comment content test';
+            results.push(comment.textContent === 'comment content test');
+            comment.textContent = 'new comment content';
+            results.push(comment.nodeValue === 'new comment content');
+
+            results.join(',');
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(
+            res,
+            Ok("true,true,true,true,true,true,true,true,true,true,true,true,true,true".to_string())
+        );
     }
 
     #[test]
