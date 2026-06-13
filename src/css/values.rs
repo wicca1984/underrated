@@ -680,6 +680,58 @@ impl TryFrom<&CssValue> for TextRenderingValue {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ImageRenderingValue {
+    Auto,
+    CrispEdges,
+    Pixelated,
+    Smooth,
+    HighQuality,
+}
+
+impl ImageRenderingValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "crisp-edges" => Some(Self::CrispEdges),
+            "pixelated" => Some(Self::Pixelated),
+            "smooth" => Some(Self::Smooth),
+            "high-quality" => Some(Self::HighQuality),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::CrispEdges => "crisp-edges",
+            Self::Pixelated => "pixelated",
+            Self::Smooth => "smooth",
+            Self::HighQuality => "high-quality",
+        }
+    }
+}
+
+impl std::str::FromStr for ImageRenderingValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ImageRenderingValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::ImageRendering(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum FontKerningValue {
     Auto,
     Normal,
@@ -1163,6 +1215,7 @@ pub enum CssValue {
     EmptyCells(EmptyCellsValue),
     Hyphens(HyphensValue),
     TextRendering(TextRenderingValue),
+    ImageRendering(ImageRenderingValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1548,6 +1601,7 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                     "auto" | "smooth" | "high-quality" | "crisp-edges" | "pixelated"
                 )
             }
+            CssValue::ImageRendering(_) => true,
             _ => false,
         },
         "font-kerning" => match value {
@@ -2084,6 +2138,26 @@ fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::TextRendering(kw))
 }
 
+fn parse_image_rendering(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_string());
+            }
+            _ => return None, // invalid token for image-rendering recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = ImageRenderingValue::parse(&idents[0])?;
+    Some(CssValue::ImageRendering(kw))
+}
+
 /// Parses a list of component values for a specific property, returning a typed CSS value if it matches a known layout property.
 pub fn parse_property_value(
     property_name: &str,
@@ -2122,6 +2196,9 @@ pub fn parse_property_value(
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
+    }
+    if name_lower == "image-rendering" {
+        return parse_image_rendering(components);
     }
     let val = parse_value(components)?;
     match name_lower.as_str() {
@@ -2298,16 +2375,6 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "smooth" => Some(val),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        }
-        "image-rendering" => {
-            if let CssValue::Keyword(kw) = &val {
-                match kw.to_ascii_lowercase().as_str() {
-                    "auto" | "smooth" | "high-quality" | "crisp-edges" | "pixelated" => Some(val),
                     _ => None,
                 }
             } else {
@@ -3125,6 +3192,106 @@ mod tests {
                 assert_eq!(parse_property_value("text-rendering", &components), None);
             }
         }
+    }
+
+    #[test]
+    fn test_image_rendering() {
+        use std::str::FromStr;
+
+        // Test parsing and roundtrip via parse and FromStr
+        assert_eq!(
+            ImageRenderingValue::parse("crisp-edges"),
+            Some(ImageRenderingValue::CrispEdges)
+        );
+        assert_eq!(
+            ImageRenderingValue::from_str("crisp-edges"),
+            Ok(ImageRenderingValue::CrispEdges)
+        );
+        assert_eq!(ImageRenderingValue::CrispEdges.as_str(), "crisp-edges");
+
+        assert_eq!(
+            ImageRenderingValue::parse("pixelated"),
+            Some(ImageRenderingValue::Pixelated)
+        );
+        assert_eq!(
+            ImageRenderingValue::from_str("pixelated"),
+            Ok(ImageRenderingValue::Pixelated)
+        );
+        assert_eq!(ImageRenderingValue::Pixelated.as_str(), "pixelated");
+
+        assert_eq!(
+            ImageRenderingValue::parse("smooth"),
+            Some(ImageRenderingValue::Smooth)
+        );
+        assert_eq!(
+            ImageRenderingValue::from_str("smooth"),
+            Ok(ImageRenderingValue::Smooth)
+        );
+        assert_eq!(ImageRenderingValue::Smooth.as_str(), "smooth");
+
+        assert_eq!(
+            ImageRenderingValue::parse("high-quality"),
+            Some(ImageRenderingValue::HighQuality)
+        );
+        assert_eq!(
+            ImageRenderingValue::from_str("high-quality"),
+            Ok(ImageRenderingValue::HighQuality)
+        );
+        assert_eq!(ImageRenderingValue::HighQuality.as_str(), "high-quality");
+
+        assert_eq!(
+            ImageRenderingValue::parse("auto"),
+            Some(ImageRenderingValue::Auto)
+        );
+        assert_eq!(
+            ImageRenderingValue::from_str("auto"),
+            Ok(ImageRenderingValue::Auto)
+        );
+        assert_eq!(ImageRenderingValue::Auto.as_str(), "auto");
+
+        // Case-insensitivity check
+        assert_eq!(
+            ImageRenderingValue::parse("CRISP-EDGES"),
+            Some(ImageRenderingValue::CrispEdges)
+        );
+        assert_eq!(
+            ImageRenderingValue::from_str("CRISP-EDGES"),
+            Ok(ImageRenderingValue::CrispEdges)
+        );
+
+        // Unknown keywords are rejected
+        assert_eq!(ImageRenderingValue::parse("bogus"), None);
+        assert_eq!(ImageRenderingValue::from_str("bogus"), Err(()));
+
+        // Test TryFrom<&CssValue>
+        let css_val_keyword = CssValue::Keyword("crisp-edges".to_string());
+        assert_eq!(
+            ImageRenderingValue::try_from(&css_val_keyword),
+            Ok(ImageRenderingValue::CrispEdges)
+        );
+
+        let css_val_typed = CssValue::ImageRendering(ImageRenderingValue::Pixelated);
+        assert_eq!(
+            ImageRenderingValue::try_from(&css_val_typed),
+            Ok(ImageRenderingValue::Pixelated)
+        );
+
+        let css_val_invalid = CssValue::Keyword("bogus".to_string());
+        assert_eq!(ImageRenderingValue::try_from(&css_val_invalid), Err(()));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "image-rendering",
+            &CssValue::ImageRendering(ImageRenderingValue::CrispEdges)
+        ));
+        assert!(is_valid_property_value(
+            "image-rendering",
+            &CssValue::Keyword("pixelated".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "image-rendering",
+            &CssValue::Keyword("bogus".to_string())
+        ));
     }
 
     #[test]
@@ -5449,21 +5616,21 @@ mod tests {
         assert!(is_known_layout_property("image-rendering"));
         assert!(is_known_layout_property("Image-Rendering"));
 
-        for val in &[
-            "auto",
-            "smooth",
-            "high-quality",
-            "crisp-edges",
-            "pixelated",
-            "AUTO",
-            "Smooth",
+        for (val, expected_variant) in &[
+            ("auto", ImageRenderingValue::Auto),
+            ("smooth", ImageRenderingValue::Smooth),
+            ("high-quality", ImageRenderingValue::HighQuality),
+            ("crisp-edges", ImageRenderingValue::CrispEdges),
+            ("pixelated", ImageRenderingValue::Pixelated),
+            ("AUTO", ImageRenderingValue::Auto),
+            ("Smooth", ImageRenderingValue::Smooth),
         ] {
             assert_eq!(
                 parse_property_value(
                     "image-rendering",
                     &[token(CssToken::Ident(val.to_string()))]
                 ),
-                Some(CssValue::Keyword(val.to_string()))
+                Some(CssValue::ImageRendering(*expected_variant))
             );
         }
         assert_eq!(
