@@ -33,6 +33,7 @@ pub enum DisplayItem {
         rect: Rect,
         text: String,
         color: Color,
+        letter_spacing: f32,
     },
     Image {
         rect: Rect,
@@ -540,6 +541,28 @@ fn resolve_text_color(
     Color::Rgba(0, 0, 0, 255) // Default fallback color is black
 }
 
+/// Helper to resolve the computed letter-spacing of a text node, following the DOM tree upwards.
+fn resolve_letter_spacing(
+    dom: &Dom,
+    node_id: NodeId,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> f32 {
+    let mut current = Some(node_id);
+    let mut depth = 0;
+    while let Some(curr_id) = current
+        && depth < 1000
+    {
+        if let Some(style) = styles.get(&curr_id)
+            && style.inherited_text.letter_spacing != -1
+        {
+            return style.inherited_text.letter_spacing as f32;
+        }
+        current = dom.parent(curr_id);
+        depth += 1;
+    }
+    0.0
+}
+
 /// Helper to resolve the computed text shadow of a text node, following the DOM tree upwards.
 fn resolve_text_shadow(
     dom: &Dom,
@@ -984,6 +1007,11 @@ pub fn build_display_list_with_caret(
         {
             let own_opacity = get_opacity(style);
             effective_opacity = inherited_opacity * own_opacity;
+            let letter_spacing = if style.inherited_text.letter_spacing == -1 {
+                0.0
+            } else {
+                style.inherited_text.letter_spacing as f32
+            };
             // Treat `collapse` the same as `hidden` for this task.
             // TODO(spec): S-12 visibility: collapse differs from hidden for table-row/column content.
             let node_hidden = style.inherited_effects.visibility == "hidden"
@@ -1069,6 +1097,7 @@ pub fn build_display_list_with_caret(
                     rect: corrected_rect,
                     text: label_text,
                     color: scale_color_alpha(&text_color, effective_opacity),
+                    letter_spacing,
                 });
             } else if is_text_input {
                 skip_children = true;
@@ -1112,6 +1141,7 @@ pub fn build_display_list_with_caret(
                         rect: corrected_rect,
                         text,
                         color: scale_color_alpha(&text_color, effective_opacity),
+                        letter_spacing,
                     });
                 }
 
@@ -1721,6 +1751,7 @@ pub fn build_display_list_with_caret(
                 if let Some(NodeData::Text(text)) = dom.data(node_id) {
                     // spec: S-82: reliably resolve text color, defaulting to blue-ish for links
                     let color = resolve_text_color(dom, node_id, styles);
+                    let letter_spacing = resolve_letter_spacing(dom, node_id, styles);
 
                     // spec: S-82: Correct text baseline vertical y positioning within line height.
                     // Center-align 8px font glyphs vertically inside the line box height.
@@ -1881,6 +1912,7 @@ pub fn build_display_list_with_caret(
                                                 &shadow_color,
                                                 effective_opacity,
                                             ),
+                                            letter_spacing,
                                         });
                                     }
                                 }
@@ -1891,6 +1923,7 @@ pub fn build_display_list_with_caret(
                             rect: corrected_rect,
                             text: display_text,
                             color: scale_color_alpha(&color, effective_opacity),
+                            letter_spacing,
                         });
 
                         // spec: S-82: if computed text-decorations are present (underline, overline, line-through)
@@ -3969,7 +4002,10 @@ mod tests {
         );
         assert_eq!(text_items.len(), 1, "Expected 1 centered button text item");
 
-        if let DisplayItem::Text { text, color, rect } = text_items[0] {
+        if let DisplayItem::Text {
+            text, color, rect, ..
+        } = text_items[0]
+        {
             assert_eq!(text, "Click me");
             assert_eq!(color, &Color::Rgba(0, 0, 0, 255));
             // Assert centered/correct offsets
@@ -5330,6 +5366,7 @@ mod tests {
             rect: shadow_rect,
             text: shadow_txt,
             color: shadow_col,
+            ..
         } = text_items[0]
         {
             assert_eq!(shadow_txt, "paint");
@@ -5339,6 +5376,7 @@ mod tests {
                 rect: main_rect,
                 text: main_txt,
                 color: main_col,
+                ..
             } = text_items[1]
             {
                 assert_eq!(main_txt, "paint");
@@ -5465,6 +5503,7 @@ mod tests {
             rect: s2_rect,
             text: s2_txt,
             color: s2_col,
+            ..
         } = text_items[0]
         {
             assert_eq!(s2_txt, "paint");
@@ -5475,6 +5514,7 @@ mod tests {
                 rect: s1_rect,
                 text: s1_txt,
                 color: s1_col,
+                ..
             } = text_items[1]
             {
                 assert_eq!(s1_txt, "paint");
@@ -5485,6 +5525,7 @@ mod tests {
                     rect: main_rect,
                     text: main_txt,
                     color: main_col,
+                    ..
                 } = text_items[2]
                 {
                     assert_eq!(main_txt, "paint");
@@ -5872,7 +5913,10 @@ mod tests {
                 .collect();
 
             assert_eq!(text_items.len(), 1);
-            if let DisplayItem::Text { text, color, rect } = text_items[0] {
+            if let DisplayItem::Text {
+                text, color, rect, ..
+            } = text_items[0]
+            {
                 assert_eq!(text, "hello");
                 assert_eq!(color, &Color::Rgba(255, 0, 0, 255));
                 assert!(rect.origin.x > layout.rect.origin.x); // Left padding applied
