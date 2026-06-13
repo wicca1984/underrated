@@ -109,6 +109,7 @@ thread_local! {
     static PENDING_NAVIGATION: RefCell<Option<String>> = const { RefCell::new(None) };
     static ELEMENT_SCROLL_TOP: RefCell<HashMap<NodeId, f64>> = RefCell::new(HashMap::new());
     static ELEMENT_SCROLL_LEFT: RefCell<HashMap<NodeId, f64>> = RefCell::new(HashMap::new());
+    static DOCUMENT_FRAGMENTS: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 impl BoaHost {
@@ -219,6 +220,11 @@ impl BoaHost {
                 NativeFunction::from_fn_ptr(bridge_create_comment),
                 JsString::from("createComment"),
                 1,
+            )
+            .function(
+                NativeFunction::from_fn_ptr(bridge_create_document_fragment),
+                JsString::from("createDocumentFragment"),
+                0,
             )
             .function(
                 NativeFunction::from_fn_ptr(bridge_has_attribute),
@@ -923,9 +929,17 @@ impl BoaHost {
                         this.__readyState__ = 'complete';
                     }
                 }
+                class DocumentFragment extends Node {
+                    constructor(key) {
+                        super();
+                        this.__key__ = key;
+                        document.__node_registry__[key] = this;
+                    }
+                }
                 window.Node = Node;
                 window.Element = Element;
                 window.Document = Document;
+                window.DocumentFragment = DocumentFragment;
 
                 Element.prototype.matches = function(selector) {
                     if (this.nodeType !== 1) return false;
@@ -1649,9 +1663,11 @@ impl BoaHost {
                         }
                     };
 
-                    const isElement = bridge.nodeType(key) === 1;
-                    if (isElement) {
+                    const nodeType = bridge.nodeType(key);
+                    if (nodeType === 1) {
                         Object.setPrototypeOf(node, Element.prototype);
+                    } else if (nodeType === 11) {
+                        Object.setPrototypeOf(node, DocumentFragment.prototype);
                     } else {
                         Object.setPrototypeOf(node, Node.prototype);
                     }
@@ -2368,6 +2384,11 @@ impl BoaHost {
 
                 Document.prototype.createComment = function(data) {
                     const key = bridge.createComment(data !== undefined ? String(data) : "");
+                    return getOrCreateNode(key);
+                };
+
+                Document.prototype.createDocumentFragment = function() {
+                    const key = bridge.createDocumentFragment();
                     return getOrCreateNode(key);
                 };
 
@@ -3351,6 +3372,7 @@ fn clear_bridge_state() {
     KEY_TO_NODE.with(|cell| cell.borrow_mut().clear());
     ELEMENT_SCROLL_TOP.with(|cell| cell.borrow_mut().clear());
     ELEMENT_SCROLL_LEFT.with(|cell| cell.borrow_mut().clear());
+    DOCUMENT_FRAGMENTS.with(|cell| cell.borrow_mut().clear());
 }
 
 fn request_navigation(
@@ -4548,6 +4570,24 @@ fn bridge_create_comment(
         let node_id = dom.create_node(NodeData::Comment(data));
         let k = format!("{:?}", node_id);
         key_to_node.insert(k.clone(), node_id);
+        k
+    })?;
+
+    Ok(JsValue::from(JsString::from(key)))
+}
+
+fn bridge_create_document_fragment(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let key = with_dom(|dom, key_to_node| {
+        let node_id = dom.create_node(NodeData::Document);
+        let k = format!("{:?}", node_id);
+        key_to_node.insert(k.clone(), node_id);
+        DOCUMENT_FRAGMENTS.with(|cell| {
+            cell.borrow_mut().insert(k.clone());
+        });
         k
     })?;
 
@@ -6089,6 +6129,11 @@ fn bridge_node_name(
         return Ok(JsValue::undefined());
     };
 
+    let is_doc_fragment = DOCUMENT_FRAGMENTS.with(|cell| cell.borrow().contains(&node_key));
+    if is_doc_fragment {
+        return Ok(JsValue::from(JsString::from("#document-fragment")));
+    }
+
     let node_name_opt = with_dom(|dom, key_to_node| {
         if let Some(&node_id) = key_to_node.get(&node_key) {
             match dom.data(node_id) {
@@ -6121,6 +6166,11 @@ fn bridge_node_type(
     } else {
         return Ok(JsValue::undefined());
     };
+
+    let is_doc_fragment = DOCUMENT_FRAGMENTS.with(|cell| cell.borrow().contains(&node_key));
+    if is_doc_fragment {
+        return Ok(JsValue::from(11));
+    }
 
     let node_type_opt = with_dom(|dom, key_to_node| {
         if let Some(&node_id) = key_to_node.get(&node_key) {
@@ -12956,6 +13006,42 @@ mod tests {
         match dom.data(comment_id) {
             Some(NodeData::Comment(content)) => assert_eq!(content, "hello comment"),
             _ => panic!("Expected Comment node"),
+        }
+    }
+
+    #[test]
+    fn test_dom_write_create_document_fragment() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let fragment = document.createDocumentFragment();
+            let type_ok = fragment.nodeType === 11;
+            let name_ok = fragment.nodeName === '#document-fragment';
+            
+            let div = document.createElement('div');
+            fragment.appendChild(div);
+            let child_count = fragment.childNodes ? fragment.childNodes.length : 1;
+            
+            document.appendChild(fragment);
+            
+            [type_ok, name_ok, child_count].join(',');
+        ";
+        let res = host.eval_with_dom(script, &mut dom);
+        assert_eq!(res, Ok("true,true,1".to_string()));
+
+        // Verify the backing DOM structure on the Rust side
+        let root_children = dom.children(dom.document());
+        assert_eq!(root_children.len(), 1);
+        let fragment_id = root_children[0];
+        assert_eq!(dom.data(fragment_id), Some(&NodeData::Document));
+
+        let frag_children = dom.children(fragment_id);
+        assert_eq!(frag_children.len(), 1);
+        let div_id = frag_children[0];
+        match dom.data(div_id) {
+            Some(NodeData::Element { name, .. }) => assert_eq!(name, "div"),
+            _ => panic!("Expected Element node 'div' as child of DocumentFragment"),
         }
     }
 
