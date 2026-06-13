@@ -2086,6 +2086,7 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::FontVariantCaps(fvc) => fvc.as_str().to_string(),
         CssValue::FontVariantPosition(fvp) => fvp.as_str().to_string(),
         CssValue::FontStretch(fs) => fs.as_str().to_string(),
+        CssValue::FontOpticalSizing(fos) => fos.as_str().to_string(),
         // TODO(spec): text-align-last fully plumbing to style and layout is a future task
         CssValue::TextAlignLast(tal) => tal.as_str().to_string(),
         // TODO(spec): unicode-bidi fully plumbing to style and layout is a future task
@@ -2838,6 +2839,20 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::FontStretch(FontStretchValue::Expanded)),
             "expanded".to_string()
+        );
+    }
+
+    #[test]
+    fn test_font_optical_sizing_style_categorization() {
+        use crate::css::values::{CssValue, FontOpticalSizingValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::FontOpticalSizing(FontOpticalSizingValue::Auto)),
+            "auto".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::FontOpticalSizing(FontOpticalSizingValue::None)),
+            "none".to_string()
         );
     }
 }
