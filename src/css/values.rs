@@ -414,6 +414,57 @@ impl TryFrom<&CssValue> for EmptyCellsValue {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ImageRendering {
+    Auto,
+    Smooth,
+    HighQuality,
+    CrispEdges,
+    Pixelated,
+}
+
+impl ImageRendering {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "smooth" => Some(Self::Smooth),
+            "high-quality" => Some(Self::HighQuality),
+            "crisp-edges" => Some(Self::CrispEdges),
+            "pixelated" => Some(Self::Pixelated),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Smooth => "smooth",
+            Self::HighQuality => "high-quality",
+            Self::CrispEdges => "crisp-edges",
+            Self::Pixelated => "pixelated",
+        }
+    }
+}
+
+impl std::str::FromStr for ImageRendering {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ImageRendering {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LengthOrPercent {
     pub value: f32,
@@ -640,6 +691,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "transition-delay"
             | "grid-template-columns"
             | "grid-template-rows"
+            | "image-rendering"
     )
 }
 
@@ -820,6 +872,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "scroll-behavior" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "smooth")
+            }
+            _ => false,
+        },
+        "image-rendering" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "smooth" | "high-quality" | "crisp-edges" | "pixelated"
+                )
             }
             _ => false,
         },
@@ -1337,6 +1398,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "auto" | "smooth" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "image-rendering" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "smooth" | "high-quality" | "crisp-edges" | "pixelated" => Some(val),
                     _ => None,
                 }
             } else {
@@ -2991,6 +3062,84 @@ mod tests {
     }
 
     #[test]
+    fn test_image_rendering_value() {
+        // Test parsing keyword strings to ImageRendering
+        assert_eq!(ImageRendering::parse("auto"), Some(ImageRendering::Auto));
+        assert_eq!(
+            ImageRendering::parse("smooth"),
+            Some(ImageRendering::Smooth)
+        );
+        assert_eq!(
+            ImageRendering::parse("high-quality"),
+            Some(ImageRendering::HighQuality)
+        );
+        assert_eq!(
+            ImageRendering::parse("crisp-edges"),
+            Some(ImageRendering::CrispEdges)
+        );
+        assert_eq!(
+            ImageRendering::parse("pixelated"),
+            Some(ImageRendering::Pixelated)
+        );
+        assert_eq!(ImageRendering::parse("AUTO"), Some(ImageRendering::Auto));
+        assert_eq!(
+            ImageRendering::parse("Smooth"),
+            Some(ImageRendering::Smooth)
+        );
+        assert_eq!(
+            ImageRendering::parse("High-Quality"),
+            Some(ImageRendering::HighQuality)
+        );
+        assert_eq!(
+            ImageRendering::parse("Crisp-Edges"),
+            Some(ImageRendering::CrispEdges)
+        );
+        assert_eq!(
+            ImageRendering::parse("Pixelated"),
+            Some(ImageRendering::Pixelated)
+        );
+        assert_eq!(ImageRendering::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!("auto".parse::<ImageRendering>(), Ok(ImageRendering::Auto));
+        assert_eq!(
+            "smooth".parse::<ImageRendering>(),
+            Ok(ImageRendering::Smooth)
+        );
+        assert_eq!(
+            "high-quality".parse::<ImageRendering>(),
+            Ok(ImageRendering::HighQuality)
+        );
+        assert_eq!(
+            "crisp-edges".parse::<ImageRendering>(),
+            Ok(ImageRendering::CrispEdges)
+        );
+        assert_eq!(
+            "pixelated".parse::<ImageRendering>(),
+            Ok(ImageRendering::Pixelated)
+        );
+        assert_eq!("BOGUS".parse::<ImageRendering>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(ImageRendering::Auto.as_str(), "auto");
+        assert_eq!(ImageRendering::Smooth.as_str(), "smooth");
+        assert_eq!(ImageRendering::HighQuality.as_str(), "high-quality");
+        assert_eq!(ImageRendering::CrispEdges.as_str(), "crisp-edges");
+        assert_eq!(ImageRendering::Pixelated.as_str(), "pixelated");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            ImageRendering::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(ImageRendering::Auto)
+        );
+        assert_eq!(
+            ImageRendering::try_from(&CssValue::Keyword("PIXELATED".to_string())),
+            Ok(ImageRendering::Pixelated)
+        );
+        assert_eq!(ImageRendering::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
     fn test_parse_transform() {
         let parse = |input: &str| {
             let components = crate::css::parser::parse_component_values(input);
@@ -3786,6 +3935,54 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "user-select",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for image-rendering (t0541)
+        assert!(is_known_layout_property("image-rendering"));
+        assert!(is_known_layout_property("Image-Rendering"));
+
+        for val in &[
+            "auto",
+            "smooth",
+            "high-quality",
+            "crisp-edges",
+            "pixelated",
+            "AUTO",
+            "Smooth",
+        ] {
+            assert_eq!(
+                parse_property_value(
+                    "image-rendering",
+                    &[token(CssToken::Ident(val.to_string()))]
+                ),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "image-rendering",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "auto",
+            "smooth",
+            "high-quality",
+            "crisp-edges",
+            "pixelated",
+            "AUTO",
+            "Smooth",
+        ] {
+            assert!(is_valid_property_value(
+                "image-rendering",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "image-rendering",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
