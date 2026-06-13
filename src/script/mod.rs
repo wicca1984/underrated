@@ -154,6 +154,7 @@ impl BoaHost {
     fn setup_experimental_dom(context: &mut Context) {
         let _ = context.register_global_class::<event::EventTarget>();
         let _ = context.register_global_class::<event::Event>();
+        let _ = context.register_global_class::<CustomEvent>();
         let _ = context.register_global_class::<URLSearchParams>();
         let _ = context.register_global_class::<formdata::FormData>();
         let _ = context.register_global_class::<AbortSignal>();
@@ -7693,6 +7694,355 @@ pub fn mutation_record_get_old_value(
     Ok(record.old_value.clone())
 }
 
+/// Implementation of WHATWG DOM `CustomEvent` interface.
+/// Spec: <https://dom.spec.whatwg.org/#interface-customevent>
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct CustomEvent {
+    pub(crate) r#type: String,
+    pub(crate) bubbles: bool,
+    pub(crate) cancelable: bool,
+    pub(crate) detail: GcRefCell<JsValue>,
+    pub(crate) target: GcRefCell<Option<JsValue>>,
+    pub(crate) current_target: GcRefCell<Option<JsValue>>,
+    pub(crate) default_prevented: GcRefCell<bool>,
+    pub(crate) propagation_stopped: GcRefCell<bool>,
+}
+
+impl Class for CustomEvent {
+    const NAME: &'static str = "CustomEvent";
+    const LENGTH: usize = 1;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let event_type = args
+            .first()
+            .ok_or_else(|| {
+                JsError::from(
+                    JsNativeError::typ()
+                        .with_message("CustomEvent constructor requires at least 1 argument"),
+                )
+            })?
+            .to_string(context)?
+            .to_std_string()
+            .unwrap_or_default();
+
+        let mut detail = JsValue::null();
+        let mut bubbles = false;
+        let mut cancelable = false;
+
+        if let Some(options_val) = args.get(1)
+            && let Some(options_obj) = options_val.as_object()
+        {
+            if let Ok(detail_val) = options_obj.get(JsString::from("detail"), context)
+                && !detail_val.is_undefined()
+            {
+                detail = detail_val;
+            }
+            if let Ok(bubbles_val) = options_obj.get(JsString::from("bubbles"), context) {
+                bubbles = bubbles_val.as_boolean().unwrap_or(false);
+            }
+            if let Ok(cancelable_val) = options_obj.get(JsString::from("cancelable"), context) {
+                cancelable = cancelable_val.as_boolean().unwrap_or(false);
+            }
+        }
+
+        Ok(CustomEvent {
+            r#type: event_type,
+            bubbles,
+            cancelable,
+            detail: GcRefCell::new(detail),
+            target: GcRefCell::new(None),
+            current_target: GcRefCell::new(None),
+            default_prevented: GcRefCell::new(false),
+            propagation_stopped: GcRefCell::new(false),
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let getters: &[(
+            &str,
+            fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
+        )] = &[
+            ("type", custom_event_get_type),
+            ("bubbles", custom_event_get_bubbles),
+            ("cancelable", custom_event_get_cancelable),
+            ("detail", custom_event_get_detail),
+            ("target", custom_event_get_target),
+            ("currentTarget", custom_event_get_current_target),
+            ("defaultPrevented", custom_event_get_default_prevented),
+            ("propagationStopped", custom_event_get_propagation_stopped),
+        ];
+
+        for &(name, func) in getters {
+            let getter_fn = boa_engine::object::FunctionObjectBuilder::new(
+                &realm,
+                NativeFunction::from_fn_ptr(func),
+            )
+            .name(format!("get {}", name))
+            .build();
+
+            // Check if there is a setter
+            let setter_fn = if name == "target" {
+                Some(
+                    boa_engine::object::FunctionObjectBuilder::new(
+                        &realm,
+                        NativeFunction::from_fn_ptr(custom_event_set_target),
+                    )
+                    .name("set target")
+                    .build(),
+                )
+            } else if name == "currentTarget" {
+                Some(
+                    boa_engine::object::FunctionObjectBuilder::new(
+                        &realm,
+                        NativeFunction::from_fn_ptr(custom_event_set_current_target),
+                    )
+                    .name("set currentTarget")
+                    .build(),
+                )
+            } else {
+                None
+            };
+
+            class.accessor(
+                JsString::from(name),
+                Some(getter_fn),
+                setter_fn,
+                Attribute::all(),
+            );
+        }
+
+        class.method(
+            JsString::from("preventDefault"),
+            0,
+            NativeFunction::from_fn_ptr(custom_event_prevent_default),
+        );
+        class.method(
+            JsString::from("stopPropagation"),
+            0,
+            NativeFunction::from_fn_ptr(custom_event_stop_propagation),
+        );
+
+        Ok(())
+    }
+}
+
+pub fn custom_event_get_type(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(event.r#type.clone())))
+}
+
+pub fn custom_event_get_bubbles(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(JsValue::from(event.bubbles))
+}
+
+pub fn custom_event_get_cancelable(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(JsValue::from(event.cancelable))
+}
+
+pub fn custom_event_get_detail(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(event.detail.borrow().clone())
+}
+
+pub fn custom_event_get_target(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(event.target.borrow().clone().unwrap_or(JsValue::null()))
+}
+
+pub fn custom_event_set_target(
+    this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    let val = args.first().cloned().unwrap_or(JsValue::null());
+    *event.target.borrow_mut() = if val.is_null() || val.is_undefined() {
+        None
+    } else {
+        Some(val)
+    };
+    Ok(JsValue::undefined())
+}
+
+pub fn custom_event_get_current_target(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(event
+        .current_target
+        .borrow()
+        .clone()
+        .unwrap_or(JsValue::null()))
+}
+
+pub fn custom_event_set_current_target(
+    this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    let val = args.first().cloned().unwrap_or(JsValue::null());
+    *event.current_target.borrow_mut() = if val.is_null() || val.is_undefined() {
+        None
+    } else {
+        Some(val)
+    };
+    Ok(JsValue::undefined())
+}
+
+pub fn custom_event_get_default_prevented(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(JsValue::from(*event.default_prevented.borrow()))
+}
+
+pub fn custom_event_get_propagation_stopped(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    Ok(JsValue::from(*event.propagation_stopped.borrow()))
+}
+
+pub fn custom_event_prevent_default(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    *event.default_prevented.borrow_mut() = true;
+    Ok(JsValue::undefined())
+}
+
+pub fn custom_event_stop_propagation(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("TypeError: Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<CustomEvent>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: Method called on non-CustomEvent object"),
+        )
+    })?;
+    *event.propagation_stopped.borrow_mut() = true;
+    Ok(JsValue::undefined())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11185,6 +11535,53 @@ mod tests {
             if (count !== 1) throw new Error('Expected count to be 1 after removing');
         "#;
         assert!(host.eval(script).is_ok());
+    }
+
+    #[test]
+    fn test_custom_event_t0529() {
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"
+            if (typeof CustomEvent === "undefined") throw new Error("CustomEvent undefined");
+
+            // No options
+            const ev1 = new CustomEvent("test-type");
+            if (ev1.type !== "test-type") throw new Error("Expected type test-type, got " + ev1.type);
+            if (ev1.detail !== null) throw new Error("Expected detail to default to null, got " + ev1.detail);
+            if (ev1.bubbles !== false) throw new Error("Expected bubbles to default to false, got " + ev1.bubbles);
+            if (ev1.cancelable !== false) throw new Error("Expected cancelable to default to false, got " + ev1.cancelable);
+
+            // With options
+            const ev2 = new CustomEvent("custom", {
+                detail: { value: "hello", count: 42 },
+                bubbles: true,
+                cancelable: true
+            });
+            if (ev2.type !== "custom") throw new Error("Expected type custom, got " + ev2.type);
+            if (ev2.bubbles !== true) throw new Error("Expected bubbles to be true, got " + ev2.bubbles);
+            if (ev2.cancelable !== true) throw new Error("Expected cancelable to be true, got " + ev2.cancelable);
+            if (ev2.detail === null) throw new Error("Expected detail to not be null");
+            if (ev2.detail.value !== "hello") throw new Error("Expected detail.value to be 'hello', got " + ev2.detail.value);
+            if (ev2.detail.count !== 42) throw new Error("Expected detail.count to be 42, got " + ev2.detail.count);
+
+            // Dispatch and listen on standard EventTarget
+            const target = new EventTarget();
+            let observed = null;
+            target.addEventListener("custom", (e) => {
+                observed = e;
+                if (e.target !== target) throw new Error("e.target is not target! got: " + e.target + ", expected: " + target);
+                if (e.currentTarget !== target) throw new Error("e.currentTarget is not target! got: " + e.currentTarget + ", expected: " + target);
+            });
+
+            target.dispatchEvent(ev2);
+
+            if (observed === null) throw new Error("Event listener was not invoked");
+            if (observed.type !== "custom") throw new Error("Observed incorrect type: " + observed.type);
+            if (observed.detail.value !== "hello") throw new Error("Observed incorrect detail.value");
+            if (observed.currentTarget !== null) throw new Error("Expected currentTarget to be null after dispatching, got: " + observed.currentTarget);
+        "#;
+        host.eval_with_dom(script, &mut dom).unwrap();
     }
 
     #[test]
