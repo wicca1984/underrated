@@ -1952,7 +1952,230 @@ pub fn decode_farbfeld(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, or TGA) into a DecodedImage by sniffing the format.
+fn is_xbm_sniff(bytes: &[u8]) -> bool {
+    let limit = std::cmp::min(bytes.len(), 4096);
+    let slice = &bytes[..limit];
+
+    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    contains_subslice(slice, b"#define")
+        && (contains_subslice(slice, b"_width") || contains_subslice(slice, b"width"))
+        && (contains_subslice(slice, b"_bits") || contains_subslice(slice, b"bits"))
+}
+
+struct XbmScanner<'a> {
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> XbmScanner<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, pos: 0 }
+    }
+
+    fn skip(&mut self) {
+        while self.pos < self.text.len() {
+            let remaining = &self.text[self.pos..];
+            if remaining.starts_with(|c: char| c.is_ascii_whitespace()) {
+                if let Some(c) = remaining.chars().next() {
+                    self.pos += c.len_utf8();
+                }
+            } else if remaining.starts_with("/*") {
+                if let Some(end_idx) = remaining.find("*/") {
+                    self.pos += end_idx + 2;
+                } else {
+                    self.pos = self.text.len();
+                }
+            } else if remaining.starts_with("//") {
+                if let Some(end_idx) = remaining.find('\n') {
+                    self.pos += end_idx + 1;
+                } else {
+                    self.pos = self.text.len();
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn next_token(&mut self) -> Option<&'a str> {
+        self.skip();
+        if self.pos >= self.text.len() {
+            return None;
+        }
+        let start = self.pos;
+        let first = self.text[start..].chars().next()?;
+
+        if first.is_ascii_alphanumeric() || first == '_' {
+            let mut len = 0;
+            for c in self.text[start..].chars() {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    len += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            self.pos += len;
+            Some(&self.text[start..start + len])
+        } else if first == '#' {
+            self.pos += 1;
+            Some("#")
+        } else if first == '{' {
+            self.pos += 1;
+            Some("{")
+        } else if first == '}' {
+            self.pos += 1;
+            Some("}")
+        } else if first == '[' {
+            self.pos += 1;
+            Some("[")
+        } else if first == ']' {
+            self.pos += 1;
+            Some("]")
+        } else if first == '=' {
+            self.pos += 1;
+            Some("=")
+        } else if first == ';' {
+            self.pos += 1;
+            Some(";")
+        } else if first == ',' {
+            self.pos += 1;
+            Some(",")
+        } else {
+            self.pos += first.len_utf8();
+            Some(&self.text[start..start + first.len_utf8()])
+        }
+    }
+}
+
+fn trim_integer_suffix(mut s: &str) -> &str {
+    while s.ends_with('U') || s.ends_with('u') || s.ends_with('L') || s.ends_with('l') {
+        s = &s[..s.len() - 1];
+    }
+    s
+}
+
+fn parse_int(s: &str) -> Result<u32, ()> {
+    let s = trim_integer_suffix(s);
+    if s.starts_with("0x") || s.starts_with("0X") {
+        u32::from_str_radix(&s[2..], 16).map_err(|_| ())
+    } else {
+        s.parse::<u32>().map_err(|_| ())
+    }
+}
+
+fn parse_byte(s: &str) -> Result<u8, ()> {
+    let s = trim_integer_suffix(s);
+    if s.starts_with("0x") || s.starts_with("0X") {
+        u8::from_str_radix(&s[2..], 16).map_err(|_| ())
+    } else {
+        s.parse::<u8>().map_err(|_| ())
+    }
+}
+
+/// Decodes an XBM (X BitMap) image byte stream into a DecodedImage.
+pub fn decode_xbm(bytes: &[u8]) -> Option<DecodedImage> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    let mut width: Option<u32> = None;
+    let mut height: Option<u32> = None;
+    let mut bits = Vec::new();
+
+    let mut scanner = XbmScanner::new(s);
+    let mut in_bits_decl = false;
+    let mut in_bits_block = false;
+
+    while let Some(tok) = scanner.next_token() {
+        match tok {
+            "#" => {
+                if let (Some("define"), Some(name)) = (scanner.next_token(), scanner.next_token()) {
+                    let parsed = scanner.next_token().and_then(|val| parse_int(val).ok());
+                    match (name, parsed) {
+                        (n, Some(w)) if n == "width" || n.ends_with("_width") => {
+                            width = Some(w);
+                        }
+                        (n, Some(h)) if n == "height" || n.ends_with("_height") => {
+                            height = Some(h);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "bits" => {
+                in_bits_decl = true;
+            }
+            "{" => {
+                if in_bits_decl {
+                    in_bits_block = true;
+                    in_bits_decl = false;
+                }
+            }
+            "}" => {
+                if in_bits_block {
+                    break;
+                }
+            }
+            _ => {
+                if tok.ends_with("_bits") {
+                    in_bits_decl = true;
+                } else if in_bits_block {
+                    let _ = parse_byte(tok).map(|b| bits.push(b));
+                }
+            }
+        }
+    }
+
+    let width = width?;
+    let height = height?;
+
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+
+    let bytes_per_row = width.div_ceil(8) as usize;
+    let expected_total_bytes = bytes_per_row.checked_mul(height as usize)?;
+    if bits.len() < expected_total_bytes {
+        return None;
+    }
+
+    let total_pixels = (width as usize).checked_mul(height as usize)?;
+    let out_bytes = total_pixels.checked_mul(4)?;
+    let mut rgba = vec![0u8; out_bytes];
+
+    for y in 0..height {
+        for x in 0..width {
+            let byte_idx = (y as usize) * bytes_per_row + (x as usize) / 8;
+            if byte_idx >= bits.len() {
+                return None;
+            }
+            let byte = bits[byte_idx];
+            let bit_shift = x % 8;
+            let is_set = (byte & (1 << bit_shift)) != 0;
+
+            let out_idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            if is_set {
+                rgba[out_idx] = 0;
+                rgba[out_idx + 1] = 0;
+                rgba[out_idx + 2] = 0;
+                rgba[out_idx + 3] = 255;
+            } else {
+                rgba[out_idx] = 0;
+                rgba[out_idx + 1] = 0;
+                rgba[out_idx + 2] = 0;
+                rgba[out_idx + 3] = 0;
+            }
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, or XBM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -1970,6 +2193,8 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_qoi(bytes)
     } else if bytes.starts_with(b"farbfeld") {
         decode_farbfeld(bytes)
+    } else if is_xbm_sniff(bytes) {
+        decode_xbm(bytes)
     } else if let Some(true) = is_svg_sniff(bytes) {
         decode_svg(bytes)
     } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'6').contains(&bytes[1]) {
@@ -3168,5 +3393,83 @@ mod tests {
         // Hostile dimensions check (> 16384)
         let hostile_width = b"farbfeld\x00\x00\x40\x01\x00\x00\x00\x01".to_vec(); // width = 16385
         assert!(decode_farbfeld(&hostile_width).is_none());
+    }
+
+    #[test]
+    fn test_decode_xbm_basic() {
+        let xbm_data = r#"
+            #define test_width 16
+            #define test_height 7
+            static char test_bits[] = {
+               0x13, 0x00, 0x15, 0x00, 0x93, 0xcd, 0x55, 0xa5, 0x93, 0xc5, 0x00, 0x80,
+               0x00, 0x60
+            };
+        "#;
+
+        let decoded = decode_image(xbm_data.as_bytes()).expect("Should decode XBM image");
+        assert_eq!(decoded.width, 16);
+        assert_eq!(decoded.height, 7);
+
+        // Check some specific pixels
+        // Row 0, pixel 0: bit 0 of 0x13 is 1 -> foreground (0, 0, 0, 255)
+        let idx = 0;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 255]);
+
+        // Row 0, pixel 1: bit 1 of 0x13 is 1 -> foreground (0, 0, 0, 255)
+        let idx = 4;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 255]);
+
+        // Row 0, pixel 2: bit 2 of 0x13 is 0 -> background (0, 0, 0, 0)
+        let idx = 8;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+
+        // Row 0, pixel 8: bit 0 of 0x00 is 0 -> background (0, 0, 0, 0)
+        let idx = 32;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_decode_xbm_comments_and_decimal() {
+        let xbm_data = r#"
+            /* This is a comment */
+            #define test_width 8
+            #define test_height 2 // Another comment
+            static unsigned char test_bits[] = {
+               1, 2
+            };
+        "#;
+
+        let decoded = decode_image(xbm_data.as_bytes()).expect("Should decode XBM with comments");
+        assert_eq!(decoded.width, 8);
+        assert_eq!(decoded.height, 2);
+
+        // Row 0, byte 0 is 1 (binary 0000 0001). Pixel 0 is set (foreground), others are clear (background).
+        let idx = 0;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 255]);
+        let idx = 4;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+
+        // Row 1, byte 0 is 2 (binary 0000 0010). Pixel 0 is clear, pixel 1 is set.
+        let idx = 32;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 0]);
+        let idx = 36;
+        assert_eq!(&decoded.rgba[idx..idx + 4], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn test_decode_xbm_failures() {
+        // Missing width
+        let bad1 = b"#define test_height 2\nstatic char test_bits[] = { 1, 2 };";
+        assert!(decode_image(bad1).is_none());
+
+        // Zero dimension
+        let bad2 =
+            b"#define test_width 0\n#define test_height 2\nstatic char test_bits[] = { 1, 2 };";
+        assert!(decode_image(bad2).is_none());
+
+        // Truncated bits array
+        let bad3 =
+            b"#define test_width 16\n#define test_height 2\nstatic char test_bits[] = { 1 };";
+        assert!(decode_image(bad3).is_none());
     }
 }
