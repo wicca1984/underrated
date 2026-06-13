@@ -329,3 +329,67 @@ fn test_user_select_style() {
     // Invalid value should be dropped/not set, so getting it returns None.
     assert_eq!(div3_style.get("user-select"), None);
 }
+
+#[test]
+fn test_accent_color_and_caret_color_style() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+    let div1 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![(
+            "style".into(),
+            "accent-color: red; caret-color: #00ff00;".into(),
+        )],
+    });
+    let div2 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![(
+            "style".into(),
+            "accent-color: auto; caret-color: auto;".into(),
+        )],
+    });
+    let div3 = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![(
+            "style".into(),
+            "accent-color: invalid-val; caret-color: invalid-val;".into(),
+        )],
+    });
+    dom.append_child(doc, div1);
+    dom.append_child(doc, div2);
+    dom.append_child(doc, div3);
+
+    let stylesheet = parse_stylesheet("");
+    let styles = compute_styles_with_viewport(&dom, &stylesheet, 1024.0);
+
+    let div1_style = styles.get(&div1).unwrap();
+    assert_eq!(
+        div1_style.get("accent-color"),
+        Some(&CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+    );
+    assert_eq!(
+        div1_style.get("caret-color"),
+        Some(&CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+    );
+
+    let div2_style = styles.get(&div2).unwrap();
+    assert_eq!(
+        div2_style.get("accent-color"),
+        Some(&CssValue::Keyword("auto".to_string()))
+    );
+    assert_eq!(
+        div2_style.get("caret-color"),
+        Some(&CssValue::Keyword("auto".to_string()))
+    );
+
+    let div3_style = styles.get(&div3).unwrap();
+    // Invalid value should be dropped/not set, so getting it returns the fallback auto.
+    assert_eq!(
+        div3_style.get("accent-color"),
+        Some(&CssValue::Keyword("auto".to_string()))
+    );
+    assert_eq!(
+        div3_style.get("caret-color"),
+        Some(&CssValue::Keyword("auto".to_string()))
+    );
+}

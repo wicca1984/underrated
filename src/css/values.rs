@@ -327,6 +327,8 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "visibility"
             | "direction"
             | "cursor"
+            | "accent-color"
+            | "caret-color"
     )
 }
 
@@ -528,6 +530,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                         | "zoom-in"
                         | "zoom-out"
                 )
+            }
+            _ => false,
+        },
+        "accent-color" | "caret-color" => match value {
+            CssValue::Color(_) => true,
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "auto" | "currentcolor")
             }
             _ => false,
         },
@@ -767,6 +776,14 @@ pub fn parse_property_value(
                 None
             }
         }
+        "accent-color" | "caret-color" => match &val {
+            CssValue::Color(_) => Some(val),
+            CssValue::Keyword(kw) => match kw.to_ascii_lowercase().as_str() {
+                "auto" | "currentcolor" => Some(val),
+                _ => None,
+            },
+            _ => None,
+        },
         "object-position" => {
             // // TODO(spec): full position resolution for object-position grammar.
             Some(val)
@@ -2710,5 +2727,62 @@ mod tests {
             "user-select",
             &CssValue::Keyword("invalid-value".to_string())
         ));
+
+        // Test parse_property_value for accent-color and caret-color (t0477)
+        assert_eq!(
+            parse_property_value(
+                "accent-color",
+                &[token(CssToken::Ident("auto".to_string()))]
+            ),
+            Some(CssValue::Keyword("auto".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("accent-color", &[token(CssToken::Ident("red".to_string()))]),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+        assert_eq!(
+            parse_property_value(
+                "accent-color",
+                &[token(CssToken::Hash("00ff00".to_string()))]
+            ),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+        assert_eq!(
+            parse_property_value(
+                "accent-color",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_valid_property_value for accent-color and caret-color (t0477)
+        assert!(is_valid_property_value(
+            "accent-color",
+            &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "accent-color",
+            &CssValue::Color(Color::Rgba(255, 0, 0, 255))
+        ));
+        assert!(!is_valid_property_value(
+            "accent-color",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        assert_eq!(
+            parse_property_value("caret-color", &[token(CssToken::Ident("auto".to_string()))]),
+            Some(CssValue::Keyword("auto".to_string()))
+        );
+        assert_eq!(
+            parse_property_value("caret-color", &[token(CssToken::Ident("blue".to_string()))]),
+            Some(CssValue::Color(Color::Rgba(0, 0, 255, 255)))
+        );
+        assert_eq!(
+            parse_property_value(
+                "caret-color",
+                &[token(CssToken::Ident("currentcolor".to_string()))]
+            ),
+            Some(CssValue::Keyword("currentcolor".to_string()))
+        );
     }
 }
