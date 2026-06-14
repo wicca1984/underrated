@@ -177,6 +177,7 @@ fn test_html5lib_tokenizer_conformance() {
         "tests/html5lib-tests/tokenizer/unicodeChars.test",
         "tests/html5lib-tests/tokenizer/unicodeCharsProblematic.test",
         "tests/html5lib-tests/tokenizer/pendingSpecChanges.test",
+        "tests/html5lib-tests/tokenizer/xmlViolation.test",
     ];
 
     for file_path in &files {
@@ -187,6 +188,7 @@ fn test_html5lib_tokenizer_conformance() {
 
         let tests_arr = root
             .get("tests")
+            .or_else(|| root.get("xmlViolationTests"))
             .and_then(|v| v.as_array())
             .unwrap_or_else(|| panic!("No tests array in file: {}", file_path));
 
@@ -241,6 +243,9 @@ fn test_html5lib_tokenizer_conformance() {
                 let stream = InputStream::from_utf8(input.as_bytes());
                 let mut tokenizer = Tokenizer::new(stream);
                 tokenizer.set_initial_state(&state);
+                if file_path.contains("xmlViolation.test") {
+                    tokenizer.set_xml_mode(true);
+                }
 
                 if let Some(tag_str) = test.get("lastStartTag").and_then(|v| v.as_str()) {
                     tokenizer.set_last_start_tag(tag_str);
@@ -338,7 +343,7 @@ fn test_html5lib_tokenizer_conformance() {
     // Future regressions (more failures) will turn the test red. If the tokenizer
     // improves and failure count drops, this constant should be lowered accordingly,
     // never raised.
-    // Loaded files: test1, test2, test3, test4, contentModelFlags, escapeFlag, domjs, entities, namedEntities, numericEntities, unicodeChars, unicodeCharsProblematic. Observed: PASS=7031, FAIL=0, SKIP=0.
+    // Loaded files: test1, test2, test3, test4, contentModelFlags, escapeFlag, domjs, entities, namedEntities, numericEntities, unicodeChars, unicodeCharsProblematic, pendingSpecChanges, xmlViolation. Observed: PASS=7036, FAIL=0, SKIP=0.
     const BASELINE_MAX_FAILURES: usize = 0;
 
     // Print summary to stderr as required
