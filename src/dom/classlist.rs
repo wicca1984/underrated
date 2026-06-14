@@ -15,6 +15,8 @@ pub enum ClassTokenError {
     Empty,
     /// Token contains ASCII whitespace.
     ContainsWhitespace,
+    /// Supported tokens are not defined for this attribute.
+    SupportedTokensNotDefined,
 }
 
 impl Dom {
@@ -261,6 +263,103 @@ impl Dom {
         }
     }
 
+    /// Try adding the class `name` to the element's `class` attribute.
+    ///
+    /// Returns `Ok(())` if successful or if the node is not an Element (no-op).
+    /// Returns `Err(ClassTokenError::Empty)` if the token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if the token contains ASCII whitespace.
+    pub fn try_add_class(&mut self, node: NodeId, name: &str) -> Result<(), ClassTokenError> {
+        self.validate_class_token(name)?;
+        self.add_class(node, name);
+        Ok(())
+    }
+
+    /// Try adding multiple class tokens to the element's `class` attribute.
+    ///
+    /// Returns `Ok(())` if successful or if the node is not an Element (no-op).
+    /// Returns `Err(ClassTokenError::Empty)` if any token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if any token contains ASCII whitespace.
+    pub fn try_add_classes(
+        &mut self,
+        node: NodeId,
+        tokens: &[&str],
+    ) -> Result<(), ClassTokenError> {
+        for token in tokens {
+            self.validate_class_token(token)?;
+        }
+        self.add_classes(node, tokens);
+        Ok(())
+    }
+
+    /// Try removing the class `name` from the element's `class` attribute.
+    ///
+    /// Returns `Ok(())` if successful or if the node is not an Element (no-op).
+    /// Returns `Err(ClassTokenError::Empty)` if the token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if the token contains ASCII whitespace.
+    pub fn try_remove_class(&mut self, node: NodeId, name: &str) -> Result<(), ClassTokenError> {
+        self.validate_class_token(name)?;
+        self.remove_class(node, name);
+        Ok(())
+    }
+
+    /// Try removing multiple class tokens from the element's `class` attribute.
+    ///
+    /// Returns `Ok(())` if successful or if the node is not an Element (no-op).
+    /// Returns `Err(ClassTokenError::Empty)` if any token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if any token contains ASCII whitespace.
+    pub fn try_remove_classes(
+        &mut self,
+        node: NodeId,
+        tokens: &[&str],
+    ) -> Result<(), ClassTokenError> {
+        for token in tokens {
+            self.validate_class_token(token)?;
+        }
+        self.remove_classes(node, tokens);
+        Ok(())
+    }
+
+    /// Try toggling the presence of class `name` with optional force behavior.
+    ///
+    /// Returns `Ok(bool)` representing the presence state if successful, or `Ok(false)` if the node is not an Element (no-op).
+    /// Returns `Err(ClassTokenError::Empty)` if the token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if the token contains ASCII whitespace.
+    pub fn try_toggle_class_force(
+        &mut self,
+        node: NodeId,
+        name: &str,
+        force: Option<bool>,
+    ) -> Result<bool, ClassTokenError> {
+        self.validate_class_token(name)?;
+        Ok(self.toggle_class_force(node, name, force))
+    }
+
+    /// Try replacing class `old` with class `new`.
+    ///
+    /// Returns `Ok(true)` if old was replaced, `Ok(false)` if old was not found or if the node is not an Element (no-op).
+    /// Returns `Err(ClassTokenError::Empty)` if either token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if either token contains ASCII whitespace.
+    pub fn try_replace_class(
+        &mut self,
+        node: NodeId,
+        old: &str,
+        new: &str,
+    ) -> Result<bool, ClassTokenError> {
+        self.validate_class_token(old)?;
+        self.validate_class_token(new)?;
+        Ok(self.replace_class(node, old, new))
+    }
+
+    /// Try checking if the element has the given class `name`.
+    ///
+    /// Returns `Ok(bool)` if successful, or `Ok(false)` if the node is not an Element (no-op).
+    /// Returns `Err(ClassTokenError::Empty)` if the token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if the token contains ASCII whitespace.
+    pub fn try_contains_class(&self, node: NodeId, name: &str) -> Result<bool, ClassTokenError> {
+        self.validate_class_token(name)?;
+        Ok(self.contains_class(node, name))
+    }
+
     /// Standard alias of `add_class`.
     pub fn class_list_add(&mut self, node: NodeId, token: &str) {
         self.add_class(node, token);
@@ -294,6 +393,67 @@ impl Dom {
     /// Standard alias of `contains_class`.
     pub fn class_list_contains(&self, node: NodeId, name: &str) -> bool {
         self.contains_class(node, name)
+    }
+
+    /// Standard alias of `try_add_class`.
+    pub fn class_list_try_add(&mut self, node: NodeId, token: &str) -> Result<(), ClassTokenError> {
+        self.try_add_class(node, token)
+    }
+
+    /// Standard alias of `try_add_classes`.
+    pub fn class_list_try_add_multiple(
+        &mut self,
+        node: NodeId,
+        tokens: &[&str],
+    ) -> Result<(), ClassTokenError> {
+        self.try_add_classes(node, tokens)
+    }
+
+    /// Standard alias of `try_remove_class`.
+    pub fn class_list_try_remove(
+        &mut self,
+        node: NodeId,
+        token: &str,
+    ) -> Result<(), ClassTokenError> {
+        self.try_remove_class(node, token)
+    }
+
+    /// Standard alias of `try_remove_classes`.
+    pub fn class_list_try_remove_multiple(
+        &mut self,
+        node: NodeId,
+        tokens: &[&str],
+    ) -> Result<(), ClassTokenError> {
+        self.try_remove_classes(node, tokens)
+    }
+
+    /// Standard alias of `try_toggle_class_force`.
+    pub fn class_list_try_toggle(
+        &mut self,
+        node: NodeId,
+        token: &str,
+        force: Option<bool>,
+    ) -> Result<bool, ClassTokenError> {
+        self.try_toggle_class_force(node, token, force)
+    }
+
+    /// Standard alias of `try_replace_class`.
+    pub fn class_list_try_replace(
+        &mut self,
+        node: NodeId,
+        old: &str,
+        new: &str,
+    ) -> Result<bool, ClassTokenError> {
+        self.try_replace_class(node, old, new)
+    }
+
+    /// Standard alias of `try_contains_class`.
+    pub fn class_list_try_contains(
+        &self,
+        node: NodeId,
+        name: &str,
+    ) -> Result<bool, ClassTokenError> {
+        self.try_contains_class(node, name)
     }
 
     /// Executes a callback for each class token in the element's class list.
@@ -363,6 +523,25 @@ impl Dom {
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-supports
     pub fn class_list_supports(&self, _node: NodeId, _token: &str) -> bool {
         false
+    }
+
+    /// Try checking if the token is supported. For `classList`, this always returns
+    /// `Err(ClassTokenError::SupportedTokensNotDefined)` per standard DOM specification.
+    pub fn try_class_list_supports(
+        &self,
+        _node: NodeId,
+        _token: &str,
+    ) -> Result<bool, ClassTokenError> {
+        Err(ClassTokenError::SupportedTokensNotDefined)
+    }
+
+    /// Standard alias of `try_class_list_supports`.
+    pub fn class_list_try_supports(
+        &self,
+        node: NodeId,
+        token: &str,
+    ) -> Result<bool, ClassTokenError> {
+        self.try_class_list_supports(node, token)
     }
 
     /// Returns a vector of zero-based index and class token pairs.
@@ -864,5 +1043,98 @@ mod tests {
         let text2 = dom.create_node(NodeData::Text("hello".into()));
         let tokens_empty: Vec<String> = dom.class_list_iter(text2).collect();
         assert!(tokens_empty.is_empty());
+    }
+
+    #[test]
+    fn test_domtokenlist_extended_try_semantics() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. Valid try_add_class and try_contains_class
+        assert_eq!(dom.try_add_class(el, "foo"), Ok(()));
+        assert_eq!(dom.try_contains_class(el, "foo"), Ok(true));
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo"));
+
+        // 2. Invalid validation cases
+        assert_eq!(dom.try_add_class(el, ""), Err(ClassTokenError::Empty));
+        assert_eq!(
+            dom.try_add_class(el, "foo bar"),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+        assert_eq!(dom.try_contains_class(el, ""), Err(ClassTokenError::Empty));
+        assert_eq!(
+            dom.try_contains_class(el, "foo bar"),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+
+        // 3. Valid try_add_classes and validation on invalid tokens
+        assert_eq!(dom.try_add_classes(el, &["bar", "baz"]), Ok(()));
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo bar baz"));
+        assert_eq!(
+            dom.try_add_classes(el, &["qux", ""]),
+            Err(ClassTokenError::Empty)
+        );
+
+        // 4. try_remove_class and validation
+        assert_eq!(dom.try_remove_class(el, "bar"), Ok(()));
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo baz"));
+        assert_eq!(
+            dom.try_remove_class(el, " "),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+
+        // 5. try_remove_classes and validation
+        assert_eq!(dom.try_remove_classes(el, &["foo"]), Ok(()));
+        assert_eq!(dom.get_attribute(el, "class"), Some("baz"));
+        assert_eq!(
+            dom.try_remove_classes(el, &["baz", "invalid whitespace"]),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+
+        // 6. try_toggle_class_force and validation
+        assert_eq!(
+            dom.try_toggle_class_force(el, "newclass", Some(true)),
+            Ok(true)
+        );
+        assert_eq!(dom.get_attribute(el, "class"), Some("baz newclass"));
+        assert_eq!(
+            dom.try_toggle_class_force(el, "newclass", Some(false)),
+            Ok(false)
+        );
+        assert_eq!(dom.get_attribute(el, "class"), Some("baz"));
+        assert_eq!(
+            dom.try_toggle_class_force(el, "with space", None),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+
+        // 7. try_replace_class and validation
+        assert_eq!(dom.try_replace_class(el, "baz", "replaced"), Ok(true));
+        assert_eq!(dom.get_attribute(el, "class"), Some("replaced"));
+        assert_eq!(
+            dom.try_replace_class(el, "replaced", ""),
+            Err(ClassTokenError::Empty)
+        );
+        assert_eq!(
+            dom.try_replace_class(el, "", "replaced"),
+            Err(ClassTokenError::Empty)
+        );
+
+        // 8. try_class_list_supports and class_list_try_supports
+        assert_eq!(
+            dom.try_class_list_supports(el, "foo"),
+            Err(ClassTokenError::SupportedTokensNotDefined)
+        );
+        assert_eq!(
+            dom.class_list_try_supports(el, "bar"),
+            Err(ClassTokenError::SupportedTokensNotDefined)
+        );
+
+        // 9. Safe no-ops on non-element or invalid
+        let text = dom.create_node(NodeData::Text("hello".into()));
+        assert_eq!(dom.try_add_class(text, "foo"), Ok(()));
+        assert_eq!(dom.try_contains_class(text, "foo"), Ok(false));
+        assert_eq!(dom.try_remove_class(text, "foo"), Ok(()));
+        assert_eq!(dom.try_toggle_class_force(text, "foo", None), Ok(false));
+        assert_eq!(dom.try_replace_class(text, "foo", "bar"), Ok(false));
     }
 }
