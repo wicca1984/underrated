@@ -868,6 +868,74 @@ pub fn parse_color(s: &str) -> Option<Color> {
                     };
                     return parse_predefined_color(colorspace, c1, c2, c3, alpha);
                 }
+            } else if s_lower.starts_with("color-mix(") {
+                let content = s[10..s.len() - 1].trim();
+                let parts = split_top_level_commas(content);
+                if parts.len() == 3 {
+                    let space_part = parts[0].trim();
+                    if let Some(stripped) = space_part.strip_prefix("in ") {
+                        let space_tokens: Vec<&str> = stripped.split_whitespace().collect();
+                        if !space_tokens.is_empty() {
+                            let colorspace = space_tokens[0];
+                            let hue_method = if space_tokens.len() >= 2 {
+                                Some(space_tokens[1])
+                            } else {
+                                None
+                            };
+
+                            let (color1, p1) = parse_color_mix_decl(&parts[1])?;
+                            let (color2, p2) = parse_color_mix_decl(&parts[2])?;
+
+                            let (w1, w2, alpha_scale) = match (p1, p2) {
+                                (None, None) => (50.0, 50.0, 1.0),
+                                (Some(val), None) => (val, 100.0 - val, 1.0),
+                                (None, Some(val)) => (100.0 - val, val, 1.0),
+                                (Some(v1), Some(v2)) => {
+                                    let sum = v1 + v2;
+                                    if sum <= 0.0001
+                                        || v1 < 0.0
+                                        || v2 < 0.0
+                                        || v1 > 100.0
+                                        || v2 > 100.0
+                                    {
+                                        return None;
+                                    }
+                                    if sum > 100.0 {
+                                        (v1, v2, 1.0)
+                                    } else {
+                                        (v1, v2, sum / 100.0)
+                                    }
+                                }
+                            };
+
+                            let total = w1 + w2;
+                            if total <= 0.0 {
+                                return None;
+                            }
+                            let weight = w2 / total;
+
+                            let mut mixed =
+                                mix_colors(color1, color2, weight, colorspace, hue_method)?;
+                            if alpha_scale < 1.0 {
+                                let Color::Rgba(r, g, b, a) = mixed;
+                                let a_new = ((a as f32 / 255.0) * alpha_scale * 255.0)
+                                    .round()
+                                    .clamp(0.0, 255.0)
+                                    as u8;
+                                mixed = Color::Rgba(r, g, b, a_new);
+                            }
+                            return Some(mixed);
+                        }
+                    }
+                }
+            } else if s_lower.starts_with("light-dark(") {
+                let content = s[11..s.len() - 1].trim();
+                let parts = split_top_level_commas(content);
+                if parts.len() == 2 {
+                    let first_color = parse_color(&parts[0])?;
+                    let _second_color = parse_color(&parts[1])?;
+                    return Some(first_color);
+                }
             }
         }
         named_color(s)
@@ -925,8 +993,150 @@ fn parse_predefined_color(
             let b = linear_to_srgb(b_lin as f32);
             Some(Color::Rgba(r, g, b, alpha_u8))
         }
+        "a98-rgb" => {
+            let lin = |val: f64| {
+                let sign = if val < 0.0 { -1.0 } else { 1.0 };
+                sign * val.abs().powf(563.0 / 256.0)
+            };
+            let r_lin = lin(c1);
+            let g_lin = lin(c2);
+            let b_lin = lin(c3);
+
+            let x = (573536.0 / 994567.0) * r_lin
+                + (263643.0 / 1420810.0) * g_lin
+                + (187206.0 / 994567.0) * b_lin;
+            let y = (591459.0 / 1989134.0) * r_lin
+                + (6239551.0 / 9945670.0) * g_lin
+                + (374412.0 / 4972835.0) * b_lin;
+            let z = (53769.0 / 1989134.0) * r_lin
+                + (351524.0 / 4972835.0) * g_lin
+                + (4929758.0 / 4972835.0) * b_lin;
+
+            let r_lin_srgb = 3.24096994 * x - 1.53738318 * y - 0.49861076 * z;
+            let g_lin_srgb = -0.96924364 * x + 1.87596750 * y + 0.04155506 * z;
+            let b_lin_srgb = 0.05563008 * x - 0.20397696 * y + 1.05697151 * z;
+
+            let r = linear_to_srgb(r_lin_srgb as f32);
+            let g = linear_to_srgb(g_lin_srgb as f32);
+            let b = linear_to_srgb(b_lin_srgb as f32);
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
+        "prophoto-rgb" => {
+            let lin = |val: f64| {
+                let et = 1.0 / 512.0;
+                let sign = if val < 0.0 { -1.0 } else { 1.0 };
+                let abs = val.abs();
+                if abs >= et {
+                    sign * abs.powf(1.8)
+                } else {
+                    val / 16.0
+                }
+            };
+            let r_lin = lin(c1);
+            let g_lin = lin(c2);
+            let b_lin = lin(c3);
+
+            let x = 0.7977666449006423 * r_lin
+                + 0.13518129740053308 * g_lin
+                + 0.0313477341283922 * b_lin;
+            let y = 0.2880748288194013 * r_lin
+                + 0.711835234241873 * g_lin
+                + 0.00008993693872564 * b_lin;
+            let z = 0.0 * r_lin + 0.0 * g_lin + 0.8251046025104602 * b_lin;
+
+            let r_lin_srgb = 3.1338561 * x - 1.6168667 * y - 0.4906146 * z;
+            let g_lin_srgb = -0.9787684 * x + 1.9161415 * y + 0.0334540 * z;
+            let b_lin_srgb = 0.0719453 * x - 0.2289914 * y + 1.4052427 * z;
+
+            let r = linear_to_srgb(r_lin_srgb as f32);
+            let g = linear_to_srgb(g_lin_srgb as f32);
+            let b = linear_to_srgb(b_lin_srgb as f32);
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
+        "rec2020" => {
+            let lin = |val: f64| {
+                let sign = if val < 0.0 { -1.0 } else { 1.0 };
+                sign * val.abs().powf(2.4)
+            };
+            let r_lin = lin(c1);
+            let g_lin = lin(c2);
+            let b_lin = lin(c3);
+
+            let x = 0.6369580483012914 * r_lin
+                + 0.14461690358620832 * g_lin
+                + 0.1688809751641721 * b_lin;
+            let y = 0.2627002120112671 * r_lin
+                + 0.6779980715188708 * g_lin
+                + 0.05930171646986196 * b_lin;
+            let z = 0.0 * r_lin + 0.028072693049087428 * g_lin + 1.060985057710791 * b_lin;
+
+            let r_lin_srgb = 3.24096994 * x - 1.53738318 * y - 0.49861076 * z;
+            let g_lin_srgb = -0.96924364 * x + 1.87596750 * y + 0.04155506 * z;
+            let b_lin_srgb = 0.05563008 * x - 0.20397696 * y + 1.05697151 * z;
+
+            let r = linear_to_srgb(r_lin_srgb as f32);
+            let g = linear_to_srgb(g_lin_srgb as f32);
+            let b = linear_to_srgb(b_lin_srgb as f32);
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
         _ => None,
     }
+}
+
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    for c in s.chars() {
+        if c == '(' {
+            depth += 1;
+            current.push(c);
+        } else if c == ')' {
+            if depth > 0 {
+                depth -= 1;
+            }
+            current.push(c);
+        } else if c == ',' && depth == 0 {
+            parts.push(current.trim().to_string());
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    parts.push(current.trim().to_string());
+    parts
+}
+
+fn parse_color_mix_decl(decl: &str) -> Option<(Color, Option<f32>)> {
+    let decl = decl.trim();
+    if decl.starts_with(|c: char| c.is_ascii_digit() || c == '.' || c == '-') {
+        let first_space_idx = decl.find(char::is_whitespace)?;
+        let pct_str = decl[..first_space_idx].trim();
+        let stripped = pct_str.strip_suffix('%')?;
+        let pct = stripped
+            .parse::<f32>()
+            .ok()
+            .filter(|&p| (0.0..=100.0).contains(&p))?;
+        let color_str = decl[first_space_idx..].trim();
+        let color = parse_color(color_str)?;
+        return Some((color, Some(pct)));
+    }
+
+    if let Some(last_space_idx) = decl.rfind(char::is_whitespace) {
+        let pct_str = decl[last_space_idx..].trim();
+        if let Some(stripped) = pct_str.strip_suffix('%') {
+            let pct = stripped
+                .parse::<f32>()
+                .ok()
+                .filter(|&p| (0.0..=100.0).contains(&p))?;
+            let color_str = decl[..last_space_idx].trim();
+            let color = parse_color(color_str)?;
+            return Some((color, Some(pct)));
+        }
+    }
+
+    let color = parse_color(decl)?;
+    Some((color, None))
 }
 
 fn parse_hue_angle(part: &str) -> Option<f32> {
@@ -1867,6 +2077,31 @@ mod tests {
         assert_eq!(
             parse_color("color(xyz-d65 0.95047 1.0 1.08883)"),
             Some(Color::Rgba(255, 255, 255, 255))
+        );
+        // a98-rgb, prophoto-rgb, and rec2020 predefined color spaces
+        assert_eq!(
+            parse_color("color(a98-rgb 1 1 1)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("color(a98-rgb 0 0 0)"),
+            Some(Color::Rgba(0, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("color(prophoto-rgb 1 1 1)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("color(prophoto-rgb 0 0 0)"),
+            Some(Color::Rgba(0, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("color(rec2020 1 1 1)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("color(rec2020 0 0 0)"),
+            Some(Color::Rgba(0, 0, 0, 255))
         );
         assert_eq!(
             parse_color("color(srgb none none none / none)"),
