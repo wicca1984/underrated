@@ -250,10 +250,16 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
             NestingLevelGuard { old_level }
         });
 
-        if let Some(callback_obj) = callback.as_object() {
-            let global_this = context.global_object().clone();
-            callback_obj.call(&JsValue::from(global_this), &callback_args, context)
-        } else if callback.is_string() {
+        if callback.is_callable() {
+            if let Some(callback_obj) = callback.as_object() {
+                let global_this = context.global_object().clone();
+                callback_obj.call(&JsValue::from(global_this), &callback_args, context)
+            } else {
+                Ok(JsValue::undefined())
+            }
+        } else {
+            // Per WebIDL TimerHandler DOMString/Function rules, convert to string and evaluate.
+            // This ensures non-callable objects (e.g. { toString() { return "code"; } }) are correctly evaluated.
             match callback.to_string(context) {
                 Ok(code_str) => {
                     let std_str = code_str.to_std_string().unwrap_or_default();
@@ -262,9 +268,6 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
                 }
                 Err(err) => Err(err),
             }
-        } else {
-            // No-op or ignore non-callable callbacks gracefully
-            Ok(JsValue::undefined())
         }
     };
 
@@ -2010,5 +2013,119 @@ mod tests {
             )))
             .unwrap();
         assert_eq!(get_timer_count(), 0);
+    }
+
+    #[test]
+    fn test_t1056_set_interval_clear_interval_and_clamping() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. Verify negative delays in setInterval are clamped to 0
+        let id_neg_val = context
+            .eval(Source::from_bytes("setInterval(() => {}, -50)"))
+            .unwrap();
+        let id_neg = id_neg_val.as_number().unwrap() as i32;
+        let timer_neg = get_timer(id_neg).unwrap();
+        assert_eq!(timer_neg.delay, 0);
+
+        // 2. Verify non-callable object with custom toString converts to code string and evaluates correctly
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.__test_val = 0;
+            var customObj = {
+                toString() {
+                    return "globalThis.__test_val = 42;";
+                }
+            };
+            var id_custom = setInterval(customObj, 100);
+            "#,
+            ))
+            .unwrap();
+        let id_custom = context
+            .eval(Source::from_bytes("id_custom"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        trigger_timer(id_custom, &mut context).unwrap();
+        let test_val = context
+            .eval(Source::from_bytes("globalThis.__test_val"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        assert_eq!(test_val, 42);
+
+        // 3. Verify various clearInterval argument types WebIDL long wrapping/coercion
+        clear_all_timers();
+        let id_t_val = context
+            .eval(Source::from_bytes("setInterval(() => {}, 100)"))
+            .unwrap();
+        let id_t = id_t_val.as_number().unwrap() as i32;
+        assert_eq!(id_t, 1);
+        assert_eq!(get_timer_count(), 1);
+
+        // Clear with float (1.5 converts to 1)
+        context
+            .eval(Source::from_bytes("clearInterval(1.5)"))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+
+        // Register again
+        let id_t2_val = context
+            .eval(Source::from_bytes("setInterval(() => {}, 100)"))
+            .unwrap();
+        let id_t2 = id_t2_val.as_number().unwrap() as i32;
+        assert_eq!(get_timer_count(), 1);
+
+        // Clear with string ("2" converts to 2)
+        context
+            .eval(Source::from_bytes(&format!("clearInterval('{}')", id_t2)))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+
+        // 4. Verify nested timeout clamping under depth > 5 inside setInterval callback
+        clear_all_timers();
+        // Set up a deeply nested timer tree inside setInterval:
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.__nested_delay = -1;
+            setInterval(() => {
+                setTimeout(() => {
+                    setTimeout(() => {
+                        setTimeout(() => {
+                            setTimeout(() => {
+                                var last_t = setTimeout(() => {}, 0);
+                                globalThis.__nested_delay = last_t;
+                            }, 0);
+                        }, 0);
+                    }, 0);
+                }, 0);
+            }, 100);
+            "#,
+            ))
+            .unwrap();
+
+        let interval_id = 1;
+        // Trigger interval execution (nesting level becomes 2 inside execution)
+        trigger_timer(interval_id, &mut context).unwrap();
+        // Now trigger timeout 2 (nesting level 3 inside execution)
+        trigger_timer(2, &mut context).unwrap();
+        // Now trigger timeout 3 (nesting level 4 inside execution)
+        trigger_timer(3, &mut context).unwrap();
+        // Now trigger timeout 4 (nesting level 5 inside execution)
+        trigger_timer(4, &mut context).unwrap();
+        // Now trigger timeout 5 (nesting level 6 inside execution)
+        trigger_timer(5, &mut context).unwrap();
+
+        // The scheduled timeout 6 should have nesting level 6, so delay clamped to 4!
+        let last_id_val = context
+            .eval(Source::from_bytes("globalThis.__nested_delay"))
+            .unwrap();
+        let last_id = last_id_val.as_number().unwrap() as i32;
+        let last_timer = get_timer(last_id).unwrap();
+        assert_eq!(last_timer.delay, 4);
+        assert_eq!(last_timer.nesting_level, 6);
     }
 }
