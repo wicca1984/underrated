@@ -171,7 +171,7 @@ impl Dom {
             return Err(DomError::IndexSize);
         }
 
-        let end = (offset + count).min(len);
+        let end = offset.checked_add(count).unwrap_or(len).min(len);
         let sub = &utf16[offset..end];
         Ok(String::from_utf16_lossy(sub))
     }
@@ -237,7 +237,8 @@ impl Dom {
                         return Err(DomError::IndexSize);
                     }
 
-                    if offset + count > len {
+                    let overflow_or_greater = offset.checked_add(count).is_none_or(|end| end > len);
+                    if overflow_or_greater {
                         count = len - offset;
                     }
 
@@ -487,6 +488,81 @@ impl Dom {
             };
             self.insert_before(parent, new_node, next);
             self.remove_child(parent, node);
+        }
+    }
+
+    /// Normalizes the subtree rooted at the given node.
+    ///
+    /// This removes empty Text nodes and merges contiguous Text nodes.
+    // spec: https://dom.spec.whatwg.org/#dom-node-normalize
+    pub fn normalize(&mut self, node: NodeId) {
+        // Post-order iterative traversal using a stack to avoid unbounded call stack recursion (I-6).
+        let mut stack = vec![(node, false)];
+        let mut post_order = Vec::new();
+
+        while let Some((n, visited)) = stack.pop() {
+            if visited {
+                post_order.push(n);
+            } else {
+                stack.push((n, true));
+                // Push children in reverse order to stack so they are popped in correct pre/post order
+                let children = self.children(n).to_vec();
+                for &child in children.iter().rev() {
+                    stack.push((child, false));
+                }
+            }
+        }
+
+        // Now process nodes in post-order.
+        for n in post_order {
+            let mut current_children = self.children(n).to_vec();
+            let mut i = 0;
+            while i < current_children.len() {
+                let child = current_children[i];
+                let is_text_opt = if let Some(NodeData::Text(text)) = self.data(child) {
+                    Some(text.clone())
+                } else {
+                    None
+                };
+
+                if let Some(text) = is_text_opt {
+                    if text.is_empty() {
+                        self.remove_child(n, child);
+                        current_children.remove(i);
+                        continue;
+                    }
+
+                    // Look ahead to collect contiguous adjacent Text siblings
+                    let mut next_idx = i + 1;
+                    let mut merged_text = text;
+                    let mut to_remove = Vec::new();
+                    while next_idx < current_children.len() {
+                        let next_child = current_children[next_idx];
+                        if let Some(NodeData::Text(next_text)) = self.data(next_child) {
+                            merged_text.push_str(next_text);
+                            to_remove.push(next_child);
+                            next_idx += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if !to_remove.is_empty() {
+                        if let Some(child_node) = self.arena.get_mut(child)
+                            && let NodeData::Text(ref mut s) = child_node.data
+                        {
+                            *s = merged_text;
+                        }
+                        self.mark_dirty(child);
+
+                        for rem_child in to_remove {
+                            self.remove_child(n, rem_child);
+                        }
+                        current_children.drain(i + 1..next_idx);
+                    }
+                }
+                i += 1;
+            }
         }
     }
 }
@@ -1015,6 +1091,32 @@ mod tests {
         assert_eq!(
             dom.children(parent),
             vec![a, before_node, replaced_node, after_node]
+        );
+    }
+
+    #[test]
+    fn test_dom_normalize_method() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        let t1 = dom.create_node(NodeData::Text("hello ".into()));
+        let t2 = dom.create_node(NodeData::Text("".into()));
+        let t3 = dom.create_node(NodeData::Text("world".into()));
+
+        dom.append_child(parent, t1);
+        dom.append_child(parent, t2);
+        dom.append_child(parent, t3);
+
+        assert_eq!(dom.children(parent).len(), 3);
+        dom.normalize(parent);
+
+        assert_eq!(dom.children(parent).len(), 1);
+        assert_eq!(
+            dom.character_data(dom.children(parent)[0]),
+            Some("hello world".into())
         );
     }
 }
