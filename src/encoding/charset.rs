@@ -33,6 +33,7 @@ pub enum Charset {
     Koi8R,
     Koi8U,
     Ibm866,
+    Macintosh,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -138,6 +139,9 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "ibm866" | "cp866" | "866" | "csibm866" => {
                 return Charset::Ibm866;
             }
+            "macintosh" | "csmacintosh" | "mac" | "x-mac-roman" => {
+                return Charset::Macintosh;
+            }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
     }
@@ -225,6 +229,9 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "koi8-r" => return Some(Charset::Koi8R),
                 "koi8-u" => return Some(Charset::Koi8U),
                 "ibm866" | "cp866" | "866" | "csibm866" => return Some(Charset::Ibm866),
+                "macintosh" | "csmacintosh" | "mac" | "x-mac-roman" => {
+                    return Some(Charset::Macintosh);
+                }
                 _ => {}
             }
         }
@@ -264,6 +271,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Koi8R => decode_koi8r(bytes),
         Charset::Koi8U => decode_koi8u(bytes),
         Charset::Ibm866 => decode_ibm866(bytes),
+        Charset::Macintosh => decode_macintosh(bytes),
     }
 }
 
@@ -3464,6 +3472,149 @@ fn decode_ibm866(bytes: &[u8]) -> String {
     result
 }
 
+const MACINTOSH_MAP: [char; 128] = [
+    '\u{00C4}', // 0x80
+    '\u{00C5}', // 0x81
+    '\u{00C7}', // 0x82
+    '\u{00C9}', // 0x83
+    '\u{00D1}', // 0x84
+    '\u{00D6}', // 0x85
+    '\u{00DC}', // 0x86
+    '\u{00E1}', // 0x87
+    '\u{00E0}', // 0x88
+    '\u{00E2}', // 0x89
+    '\u{00E4}', // 0x8A
+    '\u{00E3}', // 0x8B
+    '\u{00E5}', // 0x8C
+    '\u{00E7}', // 0x8D
+    '\u{00E9}', // 0x8E
+    '\u{00E8}', // 0x8F
+    '\u{00EA}', // 0x90
+    '\u{00EB}', // 0x91
+    '\u{00ED}', // 0x92
+    '\u{00EC}', // 0x93
+    '\u{00EE}', // 0x94
+    '\u{00EF}', // 0x95
+    '\u{00F1}', // 0x96
+    '\u{00F3}', // 0x97
+    '\u{00F2}', // 0x98
+    '\u{00F4}', // 0x99
+    '\u{00F6}', // 0x9A
+    '\u{00F5}', // 0x9B
+    '\u{00FA}', // 0x9C
+    '\u{00F9}', // 0x9D
+    '\u{00FB}', // 0x9E
+    '\u{00FC}', // 0x9F
+    '\u{2020}', // 0xA0
+    '\u{00B0}', // 0xA1
+    '\u{00A2}', // 0xA2
+    '\u{00A3}', // 0xA3
+    '\u{00A7}', // 0xA4
+    '\u{2022}', // 0xA5
+    '\u{00B6}', // 0xA6
+    '\u{00DF}', // 0xA7
+    '\u{00AE}', // 0xA8
+    '\u{00A9}', // 0xA9
+    '\u{2122}', // 0xAA
+    '\u{00B4}', // 0xAB
+    '\u{00A8}', // 0xAC
+    '\u{2260}', // 0xAD
+    '\u{00C6}', // 0xAE
+    '\u{00D8}', // 0xAF
+    '\u{221E}', // 0xB0
+    '\u{00B1}', // 0xB1
+    '\u{2264}', // 0xB2
+    '\u{2265}', // 0xB3
+    '\u{00A5}', // 0xB4
+    '\u{00B5}', // 0xB5
+    '\u{2202}', // 0xB6
+    '\u{2211}', // 0xB7
+    '\u{220F}', // 0xB8
+    '\u{03C0}', // 0xB9
+    '\u{222B}', // 0xBA
+    '\u{00AA}', // 0xBB
+    '\u{00BA}', // 0xBC
+    '\u{03A9}', // 0xBD
+    '\u{00E6}', // 0xBE
+    '\u{00F8}', // 0xBF
+    '\u{00BF}', // 0xC0
+    '\u{00A1}', // 0xC1
+    '\u{00AC}', // 0xC2
+    '\u{221A}', // 0xC3
+    '\u{0192}', // 0xC4
+    '\u{2248}', // 0xC5
+    '\u{2206}', // 0xC6
+    '\u{00AB}', // 0xC7
+    '\u{00BB}', // 0xC8
+    '\u{2026}', // 0xC9
+    '\u{00A0}', // 0xCA
+    '\u{00C0}', // 0xCB
+    '\u{00C3}', // 0xCC
+    '\u{00D5}', // 0xCD
+    '\u{0152}', // 0xCE
+    '\u{0153}', // 0xCF
+    '\u{2013}', // 0xD0
+    '\u{2014}', // 0xD1
+    '\u{201C}', // 0xD2
+    '\u{201D}', // 0xD3
+    '\u{2018}', // 0xD4
+    '\u{2019}', // 0xD5
+    '\u{00F7}', // 0xD6
+    '\u{25CA}', // 0xD7
+    '\u{00FF}', // 0xD8
+    '\u{0178}', // 0xD9
+    '\u{2044}', // 0xDA
+    '\u{20AC}', // 0xDB
+    '\u{2039}', // 0xDC
+    '\u{203A}', // 0xDD
+    '\u{FB01}', // 0xDE
+    '\u{FB02}', // 0xDF
+    '\u{2021}', // 0xE0
+    '\u{00B7}', // 0xE1
+    '\u{201A}', // 0xE2
+    '\u{201E}', // 0xE3
+    '\u{2030}', // 0xE4
+    '\u{00C2}', // 0xE5
+    '\u{00CA}', // 0xE6
+    '\u{00C1}', // 0xE7
+    '\u{00CB}', // 0xE8
+    '\u{00C8}', // 0xE9
+    '\u{00CD}', // 0xEA
+    '\u{00CE}', // 0xEB
+    '\u{00CF}', // 0xEC
+    '\u{00CC}', // 0xED
+    '\u{00D3}', // 0xEE
+    '\u{00D4}', // 0xEF
+    '\u{F8FF}', // 0xF0
+    '\u{00D2}', // 0xF1
+    '\u{00DA}', // 0xF2
+    '\u{00DB}', // 0xF3
+    '\u{00D9}', // 0xF4
+    '\u{0131}', // 0xF5
+    '\u{02C6}', // 0xF6
+    '\u{02DC}', // 0xF7
+    '\u{00AF}', // 0xF8
+    '\u{02D8}', // 0xF9
+    '\u{02D9}', // 0xFA
+    '\u{02DA}', // 0xFB
+    '\u{00B8}', // 0xFC
+    '\u{02DD}', // 0xFD
+    '\u{02DB}', // 0xFE
+    '\u{02C7}', // 0xFF
+];
+
+fn decode_macintosh(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(MACINTOSH_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4727,5 +4878,47 @@ mod tests {
         // П: 0x8F, р: 0xE0, и: 0xA8, в: 0xA2, е: 0xA5, т: 0xE2
         let bytes = &[0x8F, 0xE0, 0xA8, 0xA2, 0xA5, 0xE2];
         assert_eq!(decode(bytes, Charset::Ibm866), "Привет");
+    }
+
+    #[test]
+    fn test_macintosh_sniff() {
+        assert_eq!(sniff_charset(b"abc", Some("macintosh")), Charset::Macintosh);
+        assert_eq!(
+            sniff_charset(b"abc", Some("csmacintosh")),
+            Charset::Macintosh
+        );
+        assert_eq!(sniff_charset(b"abc", Some("mac")), Charset::Macintosh);
+        assert_eq!(
+            sniff_charset(b"abc", Some("x-mac-roman")),
+            Charset::Macintosh
+        );
+
+        // Case-insensitivity check
+        assert_eq!(sniff_charset(b"abc", Some("MACINTOSH")), Charset::Macintosh);
+        assert_eq!(
+            sniff_charset(b"abc", Some("X-MAC-ROMAN")),
+            Charset::Macintosh
+        );
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"macintosh\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Macintosh);
+    }
+
+    #[test]
+    fn test_macintosh_decode() {
+        // Pure-ASCII round-trip
+        assert_eq!(decode(b"Hello 123", Charset::Macintosh), "Hello 123");
+
+        // Macintosh specific bytes and other characters
+        assert_eq!(decode(&[0x80], Charset::Macintosh), "Ä"); // U+00C4
+        assert_eq!(decode(&[0x81], Charset::Macintosh), "Å"); // U+00C5
+        assert_eq!(decode(&[0x82], Charset::Macintosh), "Ç"); // U+00C7
+        assert_eq!(decode(&[0x83], Charset::Macintosh), "É"); // U+00C9
+        assert_eq!(decode(&[0xA0], Charset::Macintosh), "†"); // DAGGER (U+2020)
+        assert_eq!(decode(&[0xCA], Charset::Macintosh), "\u{00A0}"); // NBSP (U+00A0)
+        assert_eq!(decode(&[0xD0], Charset::Macintosh), "–"); // EN DASH (U+2013)
+        assert_eq!(decode(&[0xF0], Charset::Macintosh), ""); // APPLE LOGO (U+F8FF)
+        assert_eq!(decode(&[0xFF], Charset::Macintosh), "ˇ"); // CARON (U+02C7)
     }
 }
