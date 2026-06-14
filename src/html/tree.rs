@@ -681,22 +681,45 @@ impl TreeBuilder {
                     }
                 }
             }
-            Token::EndTag { name, .. } => {
-                let mut found_idx = None;
-                for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+            Token::EndTag {
+                name,
+                attrs,
+                self_closing,
+            } => {
+                if self.stack_of_open_elements.is_empty() {
+                    return;
+                }
+                let mut idx = self.stack_of_open_elements.len() - 1;
+                loop {
+                    if idx == 0 {
+                        self.process_token_in_current_mode(Token::EndTag {
+                            name,
+                            attrs,
+                            self_closing,
+                        });
+                        return;
+                    }
+                    let node_id = self.stack_of_open_elements[idx];
                     let node_name = match self.dom.data(node_id) {
                         Some(NodeData::Element { name: n, .. }) => n.as_str(),
                         _ => "",
                     };
                     if node_name.eq_ignore_ascii_case(&name) {
-                        found_idx = Some(idx);
-                        break;
+                        while self.stack_of_open_elements.len() > idx {
+                            self.open_elements_pop();
+                        }
+                        return;
                     }
-                }
-
-                if let Some(idx) = found_idx {
-                    while self.stack_of_open_elements.len() > idx {
-                        self.open_elements_pop();
+                    idx -= 1;
+                    let next_node_id = self.stack_of_open_elements[idx];
+                    let next_ns = self.get_node_namespace(next_node_id);
+                    if next_ns == Namespace::Html {
+                        self.process_token_in_current_mode(Token::EndTag {
+                            name,
+                            attrs,
+                            self_closing,
+                        });
+                        return;
                     }
                 }
             }
@@ -1378,7 +1401,7 @@ impl TreeBuilder {
                                 self.pop_until("li");
                                 break;
                             }
-                            if self.is_special_element(name)
+                            if self.is_special_node(id)
                                 && name != "address"
                                 && name != "div"
                                 && name != "p"
@@ -1400,7 +1423,7 @@ impl TreeBuilder {
                                 self.pop_until(&name_cloned);
                                 break;
                             }
-                            if self.is_special_element(name)
+                            if self.is_special_node(id)
                                 && name != "address"
                                 && name != "div"
                                 && name != "p"
@@ -1730,7 +1753,7 @@ impl TreeBuilder {
                                 found_node_idx = Some(idx);
                                 break;
                             }
-                            if self.is_special_element(el_name) {
+                            if self.is_special_node(node_id) {
                                 break;
                             }
                         }
@@ -2691,6 +2714,23 @@ impl TreeBuilder {
         }
     }
 
+    fn is_special_node(&self, node_id: NodeId) -> bool {
+        let ns = self.get_node_namespace(node_id);
+        let name = match self.dom.data(node_id) {
+            Some(NodeData::Element { name, .. }) => name.as_str(),
+            _ => return false,
+        };
+        match ns {
+            Namespace::Html => self.is_special_element(name),
+            Namespace::Mathml => {
+                matches!(name, "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml")
+            }
+            Namespace::Svg => {
+                matches!(name, "foreignObject" | "desc" | "title")
+            }
+        }
+    }
+
     fn is_special_element(&self, name: &str) -> bool {
         matches!(
             name,
@@ -3010,7 +3050,7 @@ impl TreeBuilder {
                                 found_node_idx = Some(idx);
                                 break;
                             }
-                            if self.is_special_element(el_name) {
+                            if self.is_special_node(node_id) {
                                 break;
                             }
                         }
@@ -3058,9 +3098,7 @@ impl TreeBuilder {
             let mut furthest_block_stack_idx = None;
             for idx in (in_stack_idx + 1)..self.stack_of_open_elements.len() {
                 let id = self.stack_of_open_elements[idx];
-                if let Some(NodeData::Element { name: n, .. }) = self.dom.data(id)
-                    && self.is_special_element(n)
-                {
+                if self.is_special_node(id) {
                     furthest_block = Some(id);
                     furthest_block_stack_idx = Some(idx);
                     break;
@@ -3446,6 +3484,7 @@ impl TreeBuilder {
             &[
                 "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
             ],
+            true,
         )
     }
 
@@ -3456,6 +3495,7 @@ impl TreeBuilder {
                 "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
                 "ol", "ul",
             ],
+            true,
         )
     }
 
@@ -3467,11 +3507,12 @@ impl TreeBuilder {
                 "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
                 "button",
             ],
+            true,
         )
     }
 
     fn is_in_table_scope(&self, target_name: &str) -> bool {
-        self.is_in_specific_scope(target_name, &["html", "table", "template"])
+        self.is_in_specific_scope(target_name, &["html", "table", "template"], false)
     }
 
     fn is_in_select_scope(&self, target_name: &str) -> bool {
@@ -3492,18 +3533,47 @@ impl TreeBuilder {
         false
     }
 
-    fn is_in_specific_scope(&self, target_name: &str, list: &[&str]) -> bool {
+    fn is_in_specific_scope(
+        &self,
+        target_name: &str,
+        list: &[&str],
+        include_foreign_scopes: bool,
+    ) -> bool {
         for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
             let ns = self.get_namespace_at_index(idx);
-            if ns != Namespace::Html {
-                continue;
-            }
             if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
-                if name == target_name {
-                    return true;
-                }
-                if list.contains(&name.as_str()) {
-                    return false;
+                match ns {
+                    Namespace::Html => {
+                        if name == target_name {
+                            return true;
+                        }
+                        if list.contains(&name.as_str()) {
+                            return false;
+                        }
+                    }
+                    Namespace::Mathml => {
+                        if name == target_name {
+                            return true;
+                        }
+                        if include_foreign_scopes
+                            && matches!(
+                                name.as_str(),
+                                "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml"
+                            )
+                        {
+                            return false;
+                        }
+                    }
+                    Namespace::Svg => {
+                        if name == target_name {
+                            return true;
+                        }
+                        if include_foreign_scopes
+                            && matches!(name.as_str(), "foreignObject" | "desc" | "title")
+                        {
+                            return false;
+                        }
+                    }
                 }
             }
         }
