@@ -298,6 +298,24 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :paused always returns false.
                         false
                     }
+                    "seeking" => {
+                        // TODO(spec): Real :seeking matching requires tracking HTMLMediaElement playback state / seeking status.
+                        // This engine has no media playback or HTMLMediaElement, so no element is ever seeking.
+                        // Thus, :seeking always returns false.
+                        false
+                    }
+                    "buffering" => {
+                        // TODO(spec): Real :buffering matching requires tracking HTMLMediaElement playback state / buffering status.
+                        // This engine has no media playback or HTMLMediaElement, so no element is ever buffering.
+                        // Thus, :buffering always returns false.
+                        false
+                    }
+                    "stalled" => {
+                        // TODO(spec): Real :stalled matching requires tracking HTMLMediaElement playback state / stalled status.
+                        // This engine has no media playback or HTMLMediaElement, so no element is ever stalled.
+                        // Thus, :stalled always returns false.
+                        false
+                    }
                     "current" => {
                         // TODO(spec): This engine has no time-dimensional / timed-media context (e.g. WebVTT cues),
                         // so no element is ever the currently-presented one and the :current pseudo-class always returns false.
@@ -3264,6 +3282,105 @@ mod tests {
         assert!(!matches(&sel_current, &dom, div_elem));
         assert!(!matches(&sel_current, &dom, video_elem));
         assert!(!matches(&sel_current, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_seeking_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <audio>
+        let audio_elem = dom.create_node(NodeData::Element {
+            name: "audio".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, audio_elem);
+
+        // Matches :seeking (should never match since we have no media playback / HTMLMediaElement playback state)
+        let sel_seeking = parse_selector_list(":seeking").unwrap();
+        assert!(!matches(&sel_seeking, &dom, div_elem));
+        assert!(!matches(&sel_seeking, &dom, video_elem));
+        assert!(!matches(&sel_seeking, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_buffering_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <audio>
+        let audio_elem = dom.create_node(NodeData::Element {
+            name: "audio".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, audio_elem);
+
+        // Matches :buffering (should never match since we have no media playback / HTMLMediaElement playback state)
+        let sel_buffering = parse_selector_list(":buffering").unwrap();
+        assert!(!matches(&sel_buffering, &dom, div_elem));
+        assert!(!matches(&sel_buffering, &dom, video_elem));
+        assert!(!matches(&sel_buffering, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_stalled_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <audio>
+        let audio_elem = dom.create_node(NodeData::Element {
+            name: "audio".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, audio_elem);
+
+        // Matches :stalled (should never match since we have no media playback / HTMLMediaElement playback state)
+        let sel_stalled = parse_selector_list(":stalled").unwrap();
+        assert!(!matches(&sel_stalled, &dom, div_elem));
+        assert!(!matches(&sel_stalled, &dom, video_elem));
+        assert!(!matches(&sel_stalled, &dom, audio_elem));
     }
 
     #[test]
