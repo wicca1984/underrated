@@ -388,6 +388,29 @@ impl Dom {
     pub fn class_list_values(&self, node: NodeId) -> Vec<String> {
         self.class_list(node)
     }
+
+    /// Normalizes the element's `class` attribute by collapsing consecutive whitespaces,
+    /// stripping leading/trailing whitespaces, and deduplicating tokens (preserving the first occurrence of each).
+    ///
+    /// If the node is not an Element or has no `class` attribute, this is a safe no-op.
+    pub fn class_list_normalize(&mut self, node: NodeId) {
+        if let Some(NodeData::Element { .. }) = self.data(node)
+            && let Some(class_attr) = self.get_attribute(node, "class")
+        {
+            let classes = self.class_list(node);
+            let new_value = classes.join(" ");
+            if class_attr != new_value {
+                self.set_attribute(node, "class", &new_value);
+            }
+        }
+    }
+
+    /// Returns an iterator over the unique class tokens of the element's `class` attribute.
+    ///
+    /// If the node is not an Element or has no `class` attribute, returns an empty iterator.
+    pub fn class_list_iter(&self, node: NodeId) -> std::vec::IntoIter<String> {
+        self.class_list(node).into_iter()
+    }
 }
 
 #[cfg(test)]
@@ -804,5 +827,42 @@ mod tests {
         assert_eq!(dom.get_attribute(el, "class"), Some("w y"));
         dom.class_list_remove_multiple(el, &["w", "y"]);
         assert_eq!(dom.get_attribute(el, "class"), Some(""));
+    }
+
+    #[test]
+    fn test_classlist_normalize_and_iter() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // Test normalizer on empty/absent class attribute
+        dom.class_list_normalize(el);
+        assert_eq!(dom.get_attribute(el, "class"), None);
+
+        // Test normalizer on non-element node
+        let text = dom.create_node(NodeData::Text("hello".into()));
+        dom.class_list_normalize(text);
+        assert_eq!(dom.get_attribute(text, "class"), None);
+
+        // Test normalizer with duplicates and multiple whitespaces
+        dom.set_attribute(el, "class", "  foo   bar   foo  baz\tbar  ");
+        dom.class_list_normalize(el);
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo bar baz"));
+
+        // Test iterator
+        dom.set_attribute(el, "class", "apple banana orange");
+        let tokens: Vec<String> = dom.class_list_iter(el).collect();
+        assert_eq!(
+            tokens,
+            vec![
+                "apple".to_string(),
+                "banana".to_string(),
+                "orange".to_string()
+            ]
+        );
+
+        // Test iterator on absent/non-element node
+        let text2 = dom.create_node(NodeData::Text("hello".into()));
+        let tokens_empty: Vec<String> = dom.class_list_iter(text2).collect();
+        assert!(tokens_empty.is_empty());
     }
 }
