@@ -1065,6 +1065,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
     },
     PropertyMetadata {
+        name: "overscroll-behavior-block",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "overscroll-behavior-inline",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "user-select",
         inherited: false,
         initial: "auto",
@@ -1750,6 +1760,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         longhands: &["overflow-x", "overflow-y"],
     },
     ShorthandExpansion {
+        name: "overscroll-behavior",
+        longhands: &["overscroll-behavior-x", "overscroll-behavior-y"],
+    },
+    ShorthandExpansion {
         name: "padding",
         longhands: &[
             "padding-top",
@@ -1781,6 +1795,40 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "position-try",
         longhands: &["position-try-order", "position-try-fallbacks"],
+    },
+    ShorthandExpansion {
+        name: "scroll-margin",
+        longhands: &[
+            "scroll-margin-top",
+            "scroll-margin-right",
+            "scroll-margin-bottom",
+            "scroll-margin-left",
+        ],
+    },
+    ShorthandExpansion {
+        name: "scroll-margin-block",
+        longhands: &["scroll-margin-block-start", "scroll-margin-block-end"],
+    },
+    ShorthandExpansion {
+        name: "scroll-margin-inline",
+        longhands: &["scroll-margin-inline-start", "scroll-margin-inline-end"],
+    },
+    ShorthandExpansion {
+        name: "scroll-padding",
+        longhands: &[
+            "scroll-padding-top",
+            "scroll-padding-right",
+            "scroll-padding-bottom",
+            "scroll-padding-left",
+        ],
+    },
+    ShorthandExpansion {
+        name: "scroll-padding-block",
+        longhands: &["scroll-padding-block-start", "scroll-padding-block-end"],
+    },
+    ShorthandExpansion {
+        name: "scroll-padding-inline",
+        longhands: &["scroll-padding-inline-start", "scroll-padding-inline-end"],
     },
     ShorthandExpansion {
         name: "scroll-timeline",
@@ -3372,5 +3420,88 @@ mod tests {
         assert_eq!(ta.name, "touch-action");
         assert!(!ta.inherited);
         assert_eq!(ta.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0834() {
+        // overscroll-behavior-block (not inherited; initial "auto")
+        let ob_b = lookup("overscroll-behavior-block")
+            .expect("overscroll-behavior-block must be registered");
+        assert_eq!(ob_b.name, "overscroll-behavior-block");
+        assert!(!ob_b.inherited);
+        assert_eq!(ob_b.initial, "auto");
+
+        // overscroll-behavior-inline (not inherited; initial "auto")
+        let ob_i = lookup("overscroll-behavior-inline")
+            .expect("overscroll-behavior-inline must be registered");
+        assert_eq!(ob_i.name, "overscroll-behavior-inline");
+        assert!(!ob_i.inherited);
+        assert_eq!(ob_i.initial, "auto");
+
+        // overscroll-behavior shorthand expansion
+        let ob_sh = shorthand_longhands("overscroll-behavior")
+            .expect("overscroll-behavior shorthand must be registered");
+        assert_eq!(
+            ob_sh,
+            &["overscroll-behavior-x", "overscroll-behavior-y"][..]
+        );
+
+        // scroll-margin shorthand expansion
+        let sm_sh = shorthand_longhands("scroll-margin")
+            .expect("scroll-margin shorthand must be registered");
+        assert_eq!(
+            sm_sh,
+            &[
+                "scroll-margin-top",
+                "scroll-margin-right",
+                "scroll-margin-bottom",
+                "scroll-margin-left"
+            ][..]
+        );
+
+        // scroll-margin-block shorthand expansion
+        let smb_sh = shorthand_longhands("scroll-margin-block")
+            .expect("scroll-margin-block shorthand must be registered");
+        assert_eq!(
+            smb_sh,
+            &["scroll-margin-block-start", "scroll-margin-block-end"][..]
+        );
+
+        // scroll-margin-inline shorthand expansion
+        let smi_sh = shorthand_longhands("scroll-margin-inline")
+            .expect("scroll-margin-inline shorthand must be registered");
+        assert_eq!(
+            smi_sh,
+            &["scroll-margin-inline-start", "scroll-margin-inline-end"][..]
+        );
+
+        // scroll-padding shorthand expansion
+        let sp_sh = shorthand_longhands("scroll-padding")
+            .expect("scroll-padding shorthand must be registered");
+        assert_eq!(
+            sp_sh,
+            &[
+                "scroll-padding-top",
+                "scroll-padding-right",
+                "scroll-padding-bottom",
+                "scroll-padding-left"
+            ][..]
+        );
+
+        // scroll-padding-block shorthand expansion
+        let spb_sh = shorthand_longhands("scroll-padding-block")
+            .expect("scroll-padding-block shorthand must be registered");
+        assert_eq!(
+            spb_sh,
+            &["scroll-padding-block-start", "scroll-padding-block-end"][..]
+        );
+
+        // scroll-padding-inline shorthand expansion
+        let spi_sh = shorthand_longhands("scroll-padding-inline")
+            .expect("scroll-padding-inline shorthand must be registered");
+        assert_eq!(
+            spi_sh,
+            &["scroll-padding-inline-start", "scroll-padding-inline-end"][..]
+        );
     }
 }
