@@ -2347,4 +2347,280 @@ mod tests {
             vec![div1, div2]
         );
     }
+
+    #[test]
+    fn test_t1023_selectors_exhaustive_coverage() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Let's build a rich tree for testing all Selectors L4 features:
+        // <html>
+        //   <head></head>
+        //   <body>
+        //     <div id="container">
+        //       <a id="link1" href="https://example.com">Link 1</a>
+        //       <a id="link2">Not a link (no href)</a>
+        //
+        //       <input id="input_enabled" type="text" />
+        //       <input id="input_disabled" type="text" disabled="" />
+        //
+        //       <input id="input_checked" type="checkbox" checked="" />
+        //       <input id="input_unchecked" type="checkbox" />
+        //
+        //       <input id="input_required" type="text" required="" />
+        //       <input id="input_optional" type="text" />
+        //
+        //       <input id="input_rw" type="text" />
+        //       <input id="input_ro" type="text" readonly="" />
+        //
+        //       <div id="empty_div"></div>
+        //       <div id="whitespace_div">   </div>
+        //       <div id="nonempty_div"><span></span></div>
+        //
+        //       <div id="sibling_parent">
+        //         <div id="sib1" class="box"></div>
+        //         <p id="sib2" class="text"></p>
+        //         <span id="sib3" class="marker"></span>
+        //       </div>
+        //     </div>
+        //   </body>
+        // </html>
+        let html = dom.create_node(NodeData::Element {
+            name: "html".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, html);
+
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(html, body);
+
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(body, container);
+
+        let link1 = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![
+                ("id".into(), "link1".into()),
+                ("href".into(), "https://example.com".into()),
+            ],
+        });
+        dom.append_child(container, link1);
+
+        let link2 = dom.create_node(NodeData::Element {
+            name: "a".into(),
+            attrs: vec![("id".into(), "link2".into())],
+        });
+        dom.append_child(container, link2);
+
+        let input_enabled = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_enabled".into()),
+                ("type".into(), "text".into()),
+            ],
+        });
+        dom.append_child(container, input_enabled);
+
+        let input_disabled = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_disabled".into()),
+                ("type".into(), "text".into()),
+                ("disabled".into(), "".into()),
+            ],
+        });
+        dom.append_child(container, input_disabled);
+
+        let input_checked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_checked".into()),
+                ("type".into(), "checkbox".into()),
+                ("checked".into(), "".into()),
+            ],
+        });
+        dom.append_child(container, input_checked);
+
+        let input_unchecked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_unchecked".into()),
+                ("type".into(), "checkbox".into()),
+            ],
+        });
+        dom.append_child(container, input_unchecked);
+
+        let input_required = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_required".into()),
+                ("type".into(), "text".into()),
+                ("required".into(), "".into()),
+            ],
+        });
+        dom.append_child(container, input_required);
+
+        let input_optional = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_optional".into()),
+                ("type".into(), "text".into()),
+            ],
+        });
+        dom.append_child(container, input_optional);
+
+        let input_rw = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_rw".into()),
+                ("type".into(), "text".into()),
+            ],
+        });
+        dom.append_child(container, input_rw);
+
+        let input_ro = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_ro".into()),
+                ("type".into(), "text".into()),
+                ("readonly".into(), "".into()),
+            ],
+        });
+        dom.append_child(container, input_ro);
+
+        let empty_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "empty_div".into())],
+        });
+        dom.append_child(container, empty_div);
+
+        let whitespace_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "whitespace_div".into())],
+        });
+        dom.append_child(container, whitespace_div);
+        let ws_text = dom.create_node(NodeData::Text("   ".into()));
+        dom.append_child(whitespace_div, ws_text);
+
+        let nonempty_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "nonempty_div".into())],
+        });
+        dom.append_child(container, nonempty_div);
+        let inner_span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(nonempty_div, inner_span);
+
+        let sibling_parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "sibling_parent".into())],
+        });
+        dom.append_child(container, sibling_parent);
+
+        let sib1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "sib1".into()), ("class".into(), "box".into())],
+        });
+        dom.append_child(sibling_parent, sib1);
+
+        let sib2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![
+                ("id".into(), "sib2".into()),
+                ("class".into(), "text".into()),
+            ],
+        });
+        dom.append_child(sibling_parent, sib2);
+
+        let sib3 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![
+                ("id".into(), "sib3".into()),
+                ("class".into(), "marker".into()),
+            ],
+        });
+        dom.append_child(sibling_parent, sib3);
+
+        // --- 1. Sibling Combinator matching ---
+        // div + p (sib1 is div, sib2 is p)
+        assert_eq!(dom.query_selector("div + p"), Some(sib2));
+        assert_eq!(dom.query_selector_all("div + p"), vec![sib2]);
+        // div ~ span (sib1 is div, sib3 is span)
+        assert_eq!(dom.query_selector("div ~ span"), Some(sib3));
+        assert_eq!(dom.query_selector_all("div ~ span"), vec![sib3]);
+        // p + span (sib2 is p, sib3 is span)
+        assert_eq!(dom.query_selector("p + span"), Some(sib3));
+
+        // --- 2. Pseudo-class: :link and :any-link ---
+        assert_eq!(dom.query_selector("a:link"), Some(link1));
+        assert_eq!(dom.query_selector("a:any-link"), Some(link1));
+        assert_eq!(dom.query_selector_all("a:link"), vec![link1]);
+
+        // --- 3. Pseudo-class: :disabled and :enabled ---
+        assert_eq!(dom.query_selector("input:disabled"), Some(input_disabled));
+        assert_eq!(
+            dom.query_selector_all("input:enabled"),
+            vec![
+                input_enabled,
+                input_checked,
+                input_unchecked,
+                input_required,
+                input_optional,
+                input_rw,
+                input_ro
+            ]
+        );
+
+        // --- 4. Pseudo-class: :checked ---
+        assert_eq!(dom.query_selector("input:checked"), Some(input_checked));
+
+        // --- 5. Pseudo-class: :required and :optional ---
+        assert_eq!(dom.query_selector("input:required"), Some(input_required));
+        assert_eq!(dom.query_selector("input:optional"), Some(input_enabled)); // first optional input is input_enabled
+
+        // --- 6. Pseudo-class: :read-only and :read-write ---
+        assert_eq!(dom.query_selector("input:read-only"), Some(input_disabled));
+        assert_eq!(
+            dom.query_selector_all("input:read-only"),
+            vec![input_disabled, input_ro]
+        );
+        assert_eq!(dom.query_selector("input:read-write"), Some(input_enabled)); // input_enabled is read-write
+
+        // --- 7. Pseudo-class: :empty ---
+        // empty_div is empty, whitespace_div has only whitespace so also considered empty by is_empty definition!
+        assert_eq!(dom.query_selector("div:empty"), Some(empty_div));
+        let empty_divs = dom.query_selector_all("div:empty");
+        assert!(empty_divs.contains(&empty_div));
+        assert!(empty_divs.contains(&whitespace_div));
+        assert!(!empty_divs.contains(&nonempty_div));
+
+        // --- 8. Pseudo-class: :root ---
+        assert_eq!(dom.query_selector(":root"), Some(html));
+        assert!(dom.matches(html, ":root"));
+        assert!(!dom.matches(body, ":root"));
+
+        // --- 9. Pseudo-class: :scope ---
+        // matches context root
+        assert_eq!(dom.query_selector_from(container, ":scope"), None); // because :scope is root itself and is excluded from descendants_iter
+        assert!(dom.matches(container, ":scope")); // but it matches itself via .matches()
+
+        // --- 10. Complex combination: :not(:has(...)) ---
+        // Get divs inside container that do not have a p as descendant
+        let divs_without_p = dom.query_selector_all_from(container, "div:not(:has(p))");
+        // empty_div, whitespace_div, nonempty_div, sib1 should be in this list (sibling_parent has a p sibling? No, p is child of sibling_parent, so sibling_parent has a p descendant, thus it is excluded).
+        assert!(divs_without_p.contains(&empty_div));
+        assert!(divs_without_p.contains(&whitespace_div));
+        assert!(divs_without_p.contains(&nonempty_div));
+        assert!(divs_without_p.contains(&sib1));
+        assert!(!divs_without_p.contains(&sibling_parent));
+        assert!(!divs_without_p.contains(&container));
+    }
 }
