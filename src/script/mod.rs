@@ -1807,6 +1807,7 @@ impl BoaHost {
                     });
 
                     Object.defineProperty(node, 'title', {
+                        // HTMLElement.title reflected IDL attribute (t0718)
                         get() {
                             return this.getAttribute('title') || '';
                         },
@@ -13193,6 +13194,42 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|rtl|rtl|ltr|12345|12345".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_title() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let el = document.createElement('div');
+            // 1. Getter returns '' when the attribute is absent
+            let res1 = el.title;
+
+            // 2. Getter returns the value of a preset 'title' content attribute
+            el.setAttribute('title', 'PresetValue');
+            let resPreset = el.title;
+
+            // 3. Setter writes the value to the 'title' content attribute and is read by the getter
+            el.title = 'Hello';
+            let resSetterGetter = el.title;
+            let resSetterContent = el.getAttribute('title');
+
+            // 4. Updating the 'title' content attribute via setAttribute is reflected by the getter
+            el.setAttribute('title', 'World');
+            let resUpdateGetter = el.title;
+
+            // 5. Coercion to string works correctly
+            el.title = 12345;
+            let resCoerceGetter = el.title;
+            let resCoerceContent = el.getAttribute('title');
+
+            [res1, resPreset, resSetterGetter, resSetterContent, resUpdateGetter, resCoerceGetter, resCoerceContent].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|PresetValue|Hello|Hello|World|12345|12345".to_string())
         );
     }
 
