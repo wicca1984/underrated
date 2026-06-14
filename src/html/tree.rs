@@ -986,11 +986,15 @@ impl TreeBuilder {
                 self.insertion_mode = InsertionMode::InBody;
             }
             Token::StartTag { name, attrs, .. } if name == "template" => {
-                self.handle_in_head(Token::StartTag {
-                    name,
-                    attrs,
-                    self_closing: false,
-                });
+                if let Some(head_id) = self.head_element_pointer {
+                    self.stack_of_open_elements.push(head_id);
+                    self.handle_in_head(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing: false,
+                    });
+                    self.stack_of_open_elements.retain(|&id| id != head_id);
+                }
             }
             Token::StartTag {
                 name,
@@ -1072,7 +1076,11 @@ impl TreeBuilder {
             Token::Doctype { .. } => {
                 // Parse error. Ignore the token.
             }
-            Token::StartTag { name, attrs, .. } => match name.as_str() {
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => match name.as_str() {
                 "html" | "head" | "body" => {
                     // Parse error. Ignore the token.
                 }
@@ -1283,8 +1291,9 @@ impl TreeBuilder {
                     self.stack_of_open_elements.push(node);
                 }
                 "table" => {
-                    // TODO(spec): quirks mode
-                    self.close_p_element_if_in_button_scope();
+                    if !matches!(self.quirks_mode, QuirksMode::Quirks) {
+                        self.close_p_element_if_in_button_scope();
+                    }
                     let node = self.create_and_insert_element(name, attrs);
                     self.stack_of_open_elements.push(node);
                     self.insertion_mode = InsertionMode::InTable;
@@ -1347,6 +1356,13 @@ impl TreeBuilder {
 
                         self.insertion_mode = InsertionMode::InFrameset;
                     }
+                }
+                "image" => {
+                    self.process_token(Token::StartTag {
+                        name: "img".to_string(),
+                        attrs,
+                        self_closing,
+                    });
                 }
                 "template" => {
                     self.handle_in_head(Token::StartTag {
@@ -2990,6 +3006,39 @@ impl TreeBuilder {
         if self.foster_parenting
             && matches!(self.dom.data(target), Some(NodeData::Element { name, .. }) if name == "table" || name == "tbody" || name == "tfoot" || name == "thead" || name == "tr")
         {
+            // Check if there is a template element in the stack of open elements, and
+            // if it is more recent than the last table element (or there is no table element).
+            let mut last_template_idx = None;
+            for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+                if matches!(self.dom.data(node_id), Some(NodeData::Element { name, .. }) if name == "template")
+                {
+                    last_template_idx = Some(idx);
+                    break;
+                }
+            }
+
+            let mut last_table_idx = None;
+            for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+                if matches!(self.dom.data(node_id), Some(NodeData::Element { name, .. }) if name == "table")
+                {
+                    last_table_idx = Some(idx);
+                    break;
+                }
+            }
+
+            if let Some(template_idx) = last_template_idx {
+                let is_more_recent = match last_table_idx {
+                    None => true,
+                    Some(table_idx) => template_idx > table_idx,
+                };
+                if is_more_recent {
+                    return InsertionPoint {
+                        parent: self.stack_of_open_elements[template_idx],
+                        reference: None,
+                    };
+                }
+            }
+
             // Find the last table element in the stack of open elements
             let mut foster_table_idx = None;
             for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
@@ -3289,8 +3338,11 @@ impl TreeBuilder {
                         self.insertion_mode = InsertionMode::InFrameset;
                     }
                     "html" => {
-                        // TODO(spec): head element pointer
-                        self.insertion_mode = InsertionMode::BeforeHead;
+                        if self.head_element_pointer.is_none() {
+                            self.insertion_mode = InsertionMode::BeforeHead;
+                        } else {
+                            self.insertion_mode = InsertionMode::AfterHead;
+                        }
                     }
                     _ if last => {
                         self.insertion_mode = InsertionMode::InBody;
