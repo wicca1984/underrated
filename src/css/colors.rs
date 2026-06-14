@@ -686,6 +686,364 @@ pub fn serialize_color(color: Color) -> String {
     }
 }
 
+fn replace_word(s: &str, target: &str, replacement: &str) -> String {
+    let mut result = String::new();
+    let target_len = target.len();
+    let target_chars: Vec<char> = target.chars().collect();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + target_len <= chars.len() {
+            let mut matches = true;
+            for j in 0..target_len {
+                if !chars[i + j].eq_ignore_ascii_case(&target_chars[j]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                let before_ok = if i > 0 {
+                    let c = chars[i - 1];
+                    !c.is_alphanumeric() && c != '_' && c != '-'
+                } else {
+                    true
+                };
+                let after_ok = if i + target_len < chars.len() {
+                    let c = chars[i + target_len];
+                    !c.is_alphanumeric() && c != '_' && c != '-'
+                } else {
+                    true
+                };
+                if before_ok && after_ok {
+                    result.push_str(replacement);
+                    i += target_len;
+                    continue;
+                }
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+fn split_color_components(s: &str) -> Vec<String> {
+    let s = s.trim();
+    let mut has_comma_at_depth_0 = false;
+    let mut depth = 0;
+    for c in s.chars() {
+        if c == '(' {
+            depth += 1;
+        } else if c == ')' {
+            if depth > 0 {
+                depth -= 1;
+            }
+        } else if c == ',' && depth == 0 {
+            has_comma_at_depth_0 = true;
+            break;
+        }
+    }
+
+    let mut initial_parts = Vec::new();
+    let mut current = String::new();
+    depth = 0;
+
+    if has_comma_at_depth_0 {
+        for c in s.chars() {
+            if c == '(' {
+                depth += 1;
+                current.push(c);
+            } else if c == ')' {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                current.push(c);
+            } else if c == ',' && depth == 0 {
+                initial_parts.push(current.trim().to_string());
+                current.clear();
+            } else {
+                current.push(c);
+            }
+        }
+        initial_parts.push(current.trim().to_string());
+    } else {
+        for c in s.chars() {
+            if c == '(' {
+                depth += 1;
+                current.push(c);
+            } else if c == ')' {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                current.push(c);
+            } else if c.is_ascii_whitespace() && depth == 0 {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    initial_parts.push(trimmed.to_string());
+                }
+                current.clear();
+            } else {
+                current.push(c);
+            }
+        }
+        let trimmed = current.trim();
+        if !trimmed.is_empty() {
+            initial_parts.push(trimmed.to_string());
+        }
+    }
+
+    let mut final_parts = Vec::new();
+    for part in initial_parts {
+        let mut depth = 0;
+        let mut current_sub = String::new();
+        for c in part.chars() {
+            if c == '(' {
+                depth += 1;
+                current_sub.push(c);
+            } else if c == ')' {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                current_sub.push(c);
+            } else if c == '/' && depth == 0 {
+                let trimmed = current_sub.trim();
+                if !trimmed.is_empty() {
+                    final_parts.push(trimmed.to_string());
+                }
+                current_sub.clear();
+            } else {
+                current_sub.push(c);
+            }
+        }
+        let trimmed = current_sub.trim();
+        if !trimmed.is_empty() {
+            final_parts.push(trimmed.to_string());
+        }
+    }
+
+    final_parts
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum CalcToken {
+    Num(f32, Option<String>),
+    Plus,
+    Minus,
+    Mul,
+    Div,
+    LParen,
+    RParen,
+}
+
+fn parse_calc_value(val_str: &str) -> Option<CalcToken> {
+    let mut num_part = String::new();
+    let mut unit_part = String::new();
+    let mut reading_unit = false;
+    for c in val_str.chars() {
+        if c.is_ascii_digit() || c == '.' || c == '-' {
+            if reading_unit {
+                return None;
+            }
+            num_part.push(c);
+        } else {
+            reading_unit = true;
+            unit_part.push(c);
+        }
+    }
+    let val = num_part.parse::<f32>().ok()?;
+    let unit = if unit_part.is_empty() {
+        None
+    } else {
+        Some(unit_part.to_ascii_lowercase())
+    };
+    Some(CalcToken::Num(val, unit))
+}
+
+fn tokenize_calc(s: &str) -> Option<Vec<CalcToken>> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        match c {
+            '(' => {
+                tokens.push(CalcToken::LParen);
+                i += 1;
+            }
+            ')' => {
+                tokens.push(CalcToken::RParen);
+                i += 1;
+            }
+            '+' => {
+                tokens.push(CalcToken::Plus);
+                i += 1;
+            }
+            '*' => {
+                tokens.push(CalcToken::Mul);
+                i += 1;
+            }
+            '/' => {
+                tokens.push(CalcToken::Div);
+                i += 1;
+            }
+            '-' => {
+                if i + 1 < chars.len() && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '.') {
+                    let mut val_str = String::new();
+                    val_str.push('-');
+                    i += 1;
+                    while i < chars.len()
+                        && (chars[i].is_ascii_digit()
+                            || chars[i] == '.'
+                            || chars[i].is_ascii_alphabetic()
+                            || chars[i] == '%')
+                    {
+                        val_str.push(chars[i]);
+                        i += 1;
+                    }
+                    let token = parse_calc_value(&val_str)?;
+                    tokens.push(token);
+                } else {
+                    tokens.push(CalcToken::Minus);
+                    i += 1;
+                }
+            }
+            _ if c.is_ascii_digit() || c == '.' => {
+                let mut val_str = String::new();
+                while i < chars.len()
+                    && (chars[i].is_ascii_digit()
+                        || chars[i] == '.'
+                        || chars[i].is_ascii_alphabetic()
+                        || chars[i] == '%')
+                {
+                    val_str.push(chars[i]);
+                    i += 1;
+                }
+                let token = parse_calc_value(&val_str)?;
+                tokens.push(token);
+            }
+            _ => {
+                return None;
+            }
+        }
+    }
+    Some(tokens)
+}
+
+fn evaluate_calc_tokens(tokens: &[CalcToken]) -> Option<(f32, Option<String>)> {
+    let mut values: Vec<(f32, Option<String>)> = Vec::new();
+    let mut operators: Vec<CalcToken> = Vec::new();
+
+    fn precedence(op: &CalcToken) -> i32 {
+        match op {
+            CalcToken::Plus | CalcToken::Minus => 1,
+            CalcToken::Mul | CalcToken::Div => 2,
+            _ => 0,
+        }
+    }
+
+    fn apply_op(op: &CalcToken, values: &mut Vec<(f32, Option<String>)>) -> Option<()> {
+        let (val2, unit2) = values.pop()?;
+        let (val1, unit1) = values.pop()?;
+
+        let (res_val, res_unit) = match op {
+            CalcToken::Plus | CalcToken::Minus => {
+                let resolved_unit = match (&unit1, &unit2) {
+                    (Some(u1), Some(u2)) if u1 == u2 => Some(u1.clone()),
+                    (None, None) => None,
+                    _ => return None,
+                };
+                let val = match op {
+                    CalcToken::Plus => val1 + val2,
+                    CalcToken::Minus => val1 - val2,
+                    _ => unreachable!(),
+                };
+                (val, resolved_unit)
+            }
+            CalcToken::Mul => match (&unit1, &unit2) {
+                (Some(u), None) => (val1 * val2, Some(u.clone())),
+                (None, Some(u)) => (val1 * val2, Some(u.clone())),
+                (None, None) => (val1 * val2, None),
+                _ => return None,
+            },
+            CalcToken::Div => {
+                if unit2.is_some() {
+                    return None;
+                }
+                if val2 == 0.0 {
+                    return None;
+                }
+                (val1 / val2, unit1)
+            }
+            _ => return None,
+        };
+        values.push((res_val, res_unit));
+        Some(())
+    }
+
+    for token in tokens {
+        match token {
+            CalcToken::Num(val, unit) => {
+                values.push((*val, unit.clone()));
+            }
+            CalcToken::LParen => {
+                operators.push(CalcToken::LParen);
+            }
+            CalcToken::RParen => {
+                while let Some(top) = operators.last() {
+                    if top == &CalcToken::LParen {
+                        break;
+                    }
+                    let op = operators.pop()?;
+                    apply_op(&op, &mut values)?;
+                }
+                if operators.pop() != Some(CalcToken::LParen) {
+                    return None;
+                }
+            }
+            CalcToken::Plus | CalcToken::Minus | CalcToken::Mul | CalcToken::Div => {
+                while let Some(top) = operators.last() {
+                    if precedence(top) >= precedence(token) {
+                        let op = operators.pop()?;
+                        apply_op(&op, &mut values)?;
+                    } else {
+                        break;
+                    }
+                }
+                operators.push(token.clone());
+            }
+        }
+    }
+
+    while let Some(op) = operators.pop() {
+        if op == CalcToken::LParen {
+            return None;
+        }
+        apply_op(&op, &mut values)?;
+    }
+
+    if values.len() == 1 {
+        values.pop()
+    } else {
+        None
+    }
+}
+
+fn parse_calc_expression(s: &str) -> Option<(f32, Option<String>)> {
+    let s = s.trim();
+    let s_lower = s.to_ascii_lowercase();
+    if s_lower.starts_with("calc(") && s_lower.ends_with(')') {
+        let content = &s[5..s.len() - 1];
+        let tokens = tokenize_calc(content)?;
+        evaluate_calc_tokens(&tokens)
+    } else {
+        None
+    }
+}
+
 fn extract_relative_origin_color(s: &str) -> Option<(&str, &str)> {
     let s = s.trim();
     if s.is_empty() {
@@ -725,105 +1083,103 @@ fn extract_relative_origin_color(s: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[&str]) -> Vec<String> {
+fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[String]) -> Vec<String> {
+    let mut resolved = tokens.to_vec();
     match func_name {
         "rgb" | "rgba" => {
             let Color::Rgba(r, g, b, a) = origin_color;
-            let r_val = r as f32;
-            let g_val = g as f32;
-            let b_val = b as f32;
-            let a_val = a as f32 / 255.0;
-            tokens
-                .iter()
-                .map(|&t| match t.to_ascii_lowercase().as_str() {
-                    "r" => format!("{}", r_val),
-                    "g" => format!("{}", g_val),
-                    "b" => format!("{}", b_val),
-                    "alpha" => format!("{}", a_val),
-                    other => other.to_string(),
-                })
-                .collect()
+            let r_val = format!("{}", r);
+            let g_val = format!("{}", g);
+            let b_val = format!("{}", b);
+            let a_val = format!("{}", a as f32 / 255.0);
+            for t in resolved.iter_mut() {
+                *t = replace_word(t, "r", &r_val);
+                *t = replace_word(t, "g", &g_val);
+                *t = replace_word(t, "b", &b_val);
+                *t = replace_word(t, "alpha", &a_val);
+            }
         }
         "hsl" | "hsla" => {
             let (h, s, l, a) = color_to_hsl(origin_color);
-            tokens
-                .iter()
-                .map(|&t| match t.to_ascii_lowercase().as_str() {
-                    "h" => format!("{}", h),
-                    "s" => format!("{}", s),
-                    "l" => format!("{}", l),
-                    "alpha" => format!("{}", a),
-                    other => other.to_string(),
-                })
-                .collect()
+            let h_val = format!("{}", h);
+            let s_val = format!("{}%", s * 100.0);
+            let l_val = format!("{}%", l * 100.0);
+            let a_val = format!("{}", a);
+            for t in resolved.iter_mut() {
+                *t = replace_word(t, "h", &h_val);
+                *t = replace_word(t, "s", &s_val);
+                *t = replace_word(t, "l", &l_val);
+                *t = replace_word(t, "alpha", &a_val);
+            }
         }
         "hwb" => {
             let (h, w, b, a) = color_to_hwb(origin_color);
-            tokens
-                .iter()
-                .map(|&t| match t.to_ascii_lowercase().as_str() {
-                    "h" => format!("{}", h),
-                    "w" => format!("{}", w),
-                    "b" => format!("{}", b),
-                    "alpha" => format!("{}", a),
-                    other => other.to_string(),
-                })
-                .collect()
+            let h_val = format!("{}", h);
+            let w_val = format!("{}%", w * 100.0);
+            let b_val = format!("{}%", b * 100.0);
+            let a_val = format!("{}", a);
+            for t in resolved.iter_mut() {
+                *t = replace_word(t, "h", &h_val);
+                *t = replace_word(t, "w", &w_val);
+                *t = replace_word(t, "b", &b_val);
+                *t = replace_word(t, "alpha", &a_val);
+            }
         }
         "lab" => {
             let (l, a, b_val, alpha) = color_to_lab(origin_color);
-            tokens
-                .iter()
-                .map(|&t| match t.to_ascii_lowercase().as_str() {
-                    "l" => format!("{}", l),
-                    "a" => format!("{}", a),
-                    "b" => format!("{}", b_val),
-                    "alpha" => format!("{}", alpha),
-                    other => other.to_string(),
-                })
-                .collect()
+            let l_val = format!("{}", l);
+            let a_val = format!("{}", a);
+            let b_val_str = format!("{}", b_val);
+            let alpha_str = format!("{}", alpha);
+            for t in resolved.iter_mut() {
+                *t = replace_word(t, "l", &l_val);
+                *t = replace_word(t, "a", &a_val);
+                *t = replace_word(t, "b", &b_val_str);
+                *t = replace_word(t, "alpha", &alpha_str);
+            }
         }
         "lch" => {
             let (l, c, h, alpha) = color_to_lch(origin_color);
-            tokens
-                .iter()
-                .map(|&t| match t.to_ascii_lowercase().as_str() {
-                    "l" => format!("{}", l),
-                    "c" => format!("{}", c),
-                    "h" => format!("{}", h),
-                    "alpha" => format!("{}", alpha),
-                    other => other.to_string(),
-                })
-                .collect()
+            let l_val = format!("{}", l);
+            let c_val = format!("{}", c);
+            let h_val = format!("{}", h);
+            let alpha_str = format!("{}", alpha);
+            for t in resolved.iter_mut() {
+                *t = replace_word(t, "l", &l_val);
+                *t = replace_word(t, "c", &c_val);
+                *t = replace_word(t, "h", &h_val);
+                *t = replace_word(t, "alpha", &alpha_str);
+            }
         }
         "oklab" => {
             let (l, a, b_val, alpha) = color_to_oklab(origin_color);
-            tokens
-                .iter()
-                .map(|&t| match t.to_ascii_lowercase().as_str() {
-                    "l" => format!("{}", l),
-                    "a" => format!("{}", a),
-                    "b" => format!("{}", b_val),
-                    "alpha" => format!("{}", alpha),
-                    other => other.to_string(),
-                })
-                .collect()
+            let l_val = format!("{}", l);
+            let a_val = format!("{}", a);
+            let b_val_str = format!("{}", b_val);
+            let alpha_str = format!("{}", alpha);
+            for t in resolved.iter_mut() {
+                *t = replace_word(t, "l", &l_val);
+                *t = replace_word(t, "a", &a_val);
+                *t = replace_word(t, "b", &b_val_str);
+                *t = replace_word(t, "alpha", &alpha_str);
+            }
         }
         "oklch" => {
             let (l, c, h, alpha) = color_to_oklch(origin_color);
-            tokens
-                .iter()
-                .map(|&t| match t.to_ascii_lowercase().as_str() {
-                    "l" => format!("{}", l),
-                    "c" => format!("{}", c),
-                    "h" => format!("{}", h),
-                    "alpha" => format!("{}", alpha),
-                    other => other.to_string(),
-                })
-                .collect()
+            let l_val = format!("{}", l);
+            let c_val = format!("{}", c);
+            let h_val = format!("{}", h);
+            let alpha_str = format!("{}", alpha);
+            for t in resolved.iter_mut() {
+                *t = replace_word(t, "l", &l_val);
+                *t = replace_word(t, "c", &c_val);
+                *t = replace_word(t, "h", &h_val);
+                *t = replace_word(t, "alpha", &alpha_str);
+            }
         }
-        _ => tokens.iter().map(|&t| t.to_string()).collect(),
+        _ => {}
     }
+    resolved
 }
 
 fn get_color_parts(func_name: &str, content: &str) -> Option<Vec<String>> {
@@ -832,24 +1188,11 @@ fn get_color_parts(func_name: &str, content: &str) -> Option<Vec<String>> {
         let from_content = &content_trimmed[5..].trim();
         let (origin_color_str, rest_str) = extract_relative_origin_color(from_content)?;
         let origin_color = parse_color(origin_color_str)?;
-        let rest_clean = rest_str.replace(['/', ','], " ");
-        let raw_tokens: Vec<&str> = rest_clean.split_whitespace().collect();
-        let resolved = resolve_relative_tokens(func_name, origin_color, &raw_tokens);
+        let rest_parts = split_color_components(rest_str);
+        let resolved = resolve_relative_tokens(func_name, origin_color, &rest_parts);
         Some(resolved)
     } else {
-        let content_clean = content_trimmed.replace('/', " ");
-        let parts: Vec<String> = if content_clean.contains(',') {
-            content_clean
-                .split(',')
-                .map(|p| p.trim().to_string())
-                .collect()
-        } else {
-            content_clean
-                .split_whitespace()
-                .map(|p| p.to_string())
-                .collect()
-        };
-        Some(parts)
+        Some(split_color_components(content_trimmed))
     }
 }
 
@@ -1306,7 +1649,17 @@ fn parse_hue_angle(part: &str) -> Option<f32> {
     if part == "none" {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix("deg") {
+    if part.starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(&part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "deg" => Some(val),
+            Some(ref u) if u == "rad" => Some(val.to_degrees()),
+            Some(ref u) if u == "grad" => Some(val * 0.9),
+            Some(ref u) if u == "turn" => Some(val * 360.0),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix("deg") {
         stripped.parse::<f32>().ok()
     } else if let Some(stripped) = part.strip_suffix("rad") {
         let rad = stripped.parse::<f32>().ok()?;
@@ -1327,7 +1680,14 @@ fn parse_rgb_component(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some((val / 100.0) * 255.0),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         let p = stripped.parse::<f32>().ok()?;
         Some((p / 100.0) * 255.0)
     } else {
@@ -1340,7 +1700,14 @@ fn parse_alpha_component(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some(val / 100.0),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         let p = stripped.parse::<f32>().ok()?;
         Some(p / 100.0)
     } else {
@@ -1353,7 +1720,14 @@ fn parse_percentage_or_number(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some(val / 100.0),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         let p = stripped.parse::<f32>().ok()?;
         Some(p / 100.0)
     } else {
@@ -1366,7 +1740,14 @@ fn parse_lab_lightness(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some(val),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         stripped.parse::<f32>().ok()
     } else {
         part.parse::<f32>().ok()
@@ -1378,7 +1759,14 @@ fn parse_oklab_ab(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some((val / 100.0) * 0.4),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         let p = stripped.parse::<f32>().ok()?;
         Some((p / 100.0) * 0.4)
     } else {
@@ -1391,7 +1779,14 @@ fn parse_lab_ab(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some((val / 100.0) * 125.0),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         let p = stripped.parse::<f32>().ok()?;
         Some((p / 100.0) * 125.0)
     } else {
@@ -1404,7 +1799,14 @@ fn parse_lch_chroma(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some((val / 100.0) * 150.0),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         let p = stripped.parse::<f32>().ok()?;
         Some((p / 100.0) * 150.0)
     } else {
@@ -1417,11 +1819,100 @@ fn parse_oklch_chroma(part: &str) -> Option<f32> {
     if part.eq_ignore_ascii_case("none") {
         return Some(0.0);
     }
-    if let Some(stripped) = part.strip_suffix('%') {
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        match unit {
+            None => Some(val),
+            Some(ref u) if u == "%" => Some((val / 100.0) * 0.4),
+            _ => None,
+        }
+    } else if let Some(stripped) = part.strip_suffix('%') {
         let p = stripped.parse::<f32>().ok()?;
         Some((p / 100.0) * 0.4)
     } else {
         part.parse::<f32>().ok()
+    }
+}
+
+fn srgb_gamma(c: f32) -> f32 {
+    let c = if c.is_finite() { c } else { 0.0 }.clamp(0.0, 1.0);
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn color_to_predefined(color: Color, colorspace: &str) -> (f32, f32, f32, f32) {
+    let Color::Rgba(r, g, b, a) = color;
+    let alpha = a as f32 / 255.0;
+
+    let r_lin = srgb_to_linear(r) as f64;
+    let g_lin = srgb_to_linear(g) as f64;
+    let b_lin = srgb_to_linear(b) as f64;
+
+    let x_d65 = 0.41239080 * r_lin + 0.35758434 * g_lin + 0.18048079 * b_lin;
+    let y_d65 = 0.21263901 * r_lin + 0.71516868 * g_lin + 0.07219232 * b_lin;
+    let z_d65 = 0.01933082 * r_lin + 0.11919478 * g_lin + 0.95053215 * b_lin;
+
+    let x_d50 = 0.4360747 * r_lin + 0.3850649 * g_lin + 0.1430804 * b_lin;
+    let y_d50 = 0.2225045 * r_lin + 0.7168786 * g_lin + 0.0606169 * b_lin;
+    let z_d50 = 0.0139322 * r_lin + 0.0971045 * g_lin + 0.7141733 * b_lin;
+
+    match colorspace.to_ascii_lowercase().as_str() {
+        "srgb" => (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, alpha),
+        "srgb-linear" | "linear-srgb" => (r_lin as f32, g_lin as f32, b_lin as f32, alpha),
+        "display-p3" => {
+            let r_lin_p3 = 0.8224621 * r_lin + 0.177538 * g_lin;
+            let g_lin_p3 = 0.0331941 * r_lin + 0.9668058 * g_lin;
+            let b_lin_p3 = 0.0170827 * r_lin + 0.0723974 * g_lin + 0.91052 * b_lin;
+            (
+                srgb_gamma(r_lin_p3 as f32),
+                srgb_gamma(g_lin_p3 as f32),
+                srgb_gamma(b_lin_p3 as f32),
+                alpha,
+            )
+        }
+        "xyz" | "xyz-d65" => (x_d65 as f32, y_d65 as f32, z_d65 as f32, alpha),
+        "xyz-d50" => (x_d50 as f32, y_d50 as f32, z_d50 as f32, alpha),
+        "a98-rgb" => {
+            let r_lin_a98 = 3.123951 * x_d65 - 1.385731 * y_d65 - 0.485984 * z_d65;
+            let g_lin_a98 = -0.978553 * x_d65 + 1.875225 * y_d65 + 0.033320 * z_d65;
+            let b_lin_a98 = 0.071853 * x_d65 - 0.203007 * y_d65 + 1.405106 * z_d65;
+            let gamma = 256.0 / 563.0;
+            let trans = |val: f64| {
+                let sign = if val < 0.0 { -1.0 } else { 1.0 };
+                (sign * val.abs().powf(gamma)) as f32
+            };
+            (trans(r_lin_a98), trans(g_lin_a98), trans(b_lin_a98), alpha)
+        }
+        "prophoto-rgb" => {
+            let r_lin_pro = 1.34594330 * x_d50 - 0.25580752 * y_d50 - 0.05445989 * z_d50;
+            let g_lin_pro = -0.54459890 * x_d50 + 1.50816730 * y_d50 + 0.02053514 * z_d50;
+            let b_lin_pro = 1.21197950 * z_d50;
+            let trans = |val: f64| {
+                let et_out = 1.0 / 8192.0;
+                let sign = if val < 0.0 { -1.0 } else { 1.0 };
+                let abs = val.abs();
+                if abs >= et_out {
+                    (sign * abs.powf(1.0 / 1.8)) as f32
+                } else {
+                    (val * 16.0) as f32
+                }
+            };
+            (trans(r_lin_pro), trans(g_lin_pro), trans(b_lin_pro), alpha)
+        }
+        "rec2020" => {
+            let r_lin_rec = 1.71665117 * x_d65 - 0.35567078 * y_d65 - 0.25336628 * z_d65;
+            let g_lin_rec = -0.66668435 * x_d65 + 1.61648124 * y_d65 + 0.01576854 * z_d65;
+            let b_lin_rec = 0.01763986 * x_d65 - 0.04277061 * y_d65 + 0.94210312 * z_d65;
+            let trans = |val: f64| {
+                let sign = if val < 0.0 { -1.0 } else { 1.0 };
+                (sign * val.abs().powf(1.0 / 2.4)) as f32
+            };
+            (trans(r_lin_rec), trans(g_lin_rec), trans(b_lin_rec), alpha)
+        }
+        _ => (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, alpha),
     }
 }
 
@@ -1486,87 +1977,32 @@ pub fn mix_colors(
     let hue_method = hue_method.unwrap_or("shorter");
 
     match colorspace.to_ascii_lowercase().as_str() {
-        "srgb" => {
-            let Color::Rgba(r1, g1, b1, a1) = color1;
-            let Color::Rgba(r2, g2, b2, a2) = color2;
+        "srgb" | "srgb-linear" | "linear-srgb" | "display-p3" | "xyz" | "xyz-d65" | "xyz-d50"
+        | "a98-rgb" | "prophoto-rgb" | "rec2020" => {
+            let (r1, g1, b1, alpha1) = color_to_predefined(color1, colorspace);
+            let (r2, g2, b2, alpha2) = color_to_predefined(color2, colorspace);
 
-            let r1 = r1 as f32 / 255.0;
-            let g1 = g1 as f32 / 255.0;
-            let b1 = b1 as f32 / 255.0;
-            let a1 = a1 as f32 / 255.0;
+            let pr1 = r1 * alpha1;
+            let pg1 = g1 * alpha1;
+            let pb1 = b1 * alpha1;
 
-            let r2 = r2 as f32 / 255.0;
-            let g2 = g2 as f32 / 255.0;
-            let b2 = b2 as f32 / 255.0;
-            let a2 = a2 as f32 / 255.0;
+            let pr2 = r2 * alpha2;
+            let pg2 = g2 * alpha2;
+            let pb2 = b2 * alpha2;
 
-            let pr1 = r1 * a1;
-            let pg1 = g1 * a1;
-            let pb1 = b1 * a1;
-
-            let pr2 = r2 * a2;
-            let pg2 = g2 * a2;
-            let pb2 = b2 * a2;
-
-            let a_mix = a1 * (1.0 - t) + a2 * t;
+            let a_mix = alpha1 * (1.0 - t) + alpha2 * t;
 
             let pr_mix = pr1 * (1.0 - t) + pr2 * t;
             let pg_mix = pg1 * (1.0 - t) + pg2 * t;
             let pb_mix = pb1 * (1.0 - t) + pb2 * t;
 
-            let (r, g, b) = if a_mix > 0.0 {
+            let (r_unpre, g_unpre, b_unpre) = if a_mix > 0.0 {
                 (pr_mix / a_mix, pg_mix / a_mix, pb_mix / a_mix)
             } else {
                 (0.0, 0.0, 0.0)
             };
 
-            Some(Color::Rgba(
-                (r * 255.0).round().clamp(0.0, 255.0) as u8,
-                (g * 255.0).round().clamp(0.0, 255.0) as u8,
-                (b * 255.0).round().clamp(0.0, 255.0) as u8,
-                (a_mix * 255.0).round().clamp(0.0, 255.0) as u8,
-            ))
-        }
-        "srgb-linear" | "linear-srgb" => {
-            let Color::Rgba(r1, g1, b1, a1) = color1;
-            let Color::Rgba(r2, g2, b2, a2) = color2;
-
-            let r1 = srgb_to_linear(r1);
-            let g1 = srgb_to_linear(g1);
-            let b1 = srgb_to_linear(b1);
-            let a1 = a1 as f32 / 255.0;
-
-            let r2 = srgb_to_linear(r2);
-            let g2 = srgb_to_linear(g2);
-            let b2 = srgb_to_linear(b2);
-            let a2 = a2 as f32 / 255.0;
-
-            let pr1 = r1 * a1;
-            let pg1 = g1 * a1;
-            let pb1 = b1 * a1;
-
-            let pr2 = r2 * a2;
-            let pg2 = g2 * a2;
-            let pb2 = b2 * a2;
-
-            let a_mix = a1 * (1.0 - t) + a2 * t;
-
-            let pr_mix = pr1 * (1.0 - t) + pr2 * t;
-            let pg_mix = pg1 * (1.0 - t) + pg2 * t;
-            let pb_mix = pb1 * (1.0 - t) + pb2 * t;
-
-            let (r_lin, g_lin, b_lin) = if a_mix > 0.0 {
-                (pr_mix / a_mix, pg_mix / a_mix, pb_mix / a_mix)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-
-            Some(Color::Rgba(
-                linear_to_srgb(r_lin),
-                linear_to_srgb(g_lin),
-                linear_to_srgb(b_lin),
-                (a_mix * 255.0).round().clamp(0.0, 255.0) as u8,
-            ))
+            parse_predefined_color(colorspace, r_unpre, g_unpre, b_unpre, a_mix)
         }
         "lab" => {
             let (l1, a1_val, b1_val, alpha1) = color_to_lab(color1);
@@ -2386,5 +2822,84 @@ mod tests {
             parse_color("oklch(from blue l c h)"),
             Some(Color::Rgba(0, 0, 255, 255))
         );
+    }
+
+    #[test]
+    fn test_calc_in_color_components() {
+        // Basic calc values in components
+        assert_eq!(
+            parse_color("rgb(calc(100 + 50) calc(200 - 150) calc(5 * 5))"),
+            Some(Color::Rgba(150, 50, 25, 255))
+        );
+        assert_eq!(
+            parse_color("rgb(calc(100% * 0.5) 0 0)"),
+            Some(Color::Rgba(128, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("hsl(calc(100deg + 20deg) 100% calc(25% * 2))"),
+            Some(Color::Rgba(0, 255, 0, 255)) // 120deg is pure green
+        );
+        assert_eq!(
+            parse_color("rgba(255 0 0 / calc(0.2 + 0.3))"),
+            Some(Color::Rgba(255, 0, 0, 128))
+        );
+        // Mismatched units inside calc should fail to parse
+        assert_eq!(parse_color("rgb(calc(100% + 50) 0 0)"), None);
+    }
+
+    #[test]
+    fn test_slash_combinations() {
+        // Modern slash combinations with/without spaces
+        assert_eq!(
+            parse_color("rgb(255 0 0/50%)"),
+            Some(Color::Rgba(255, 0, 0, 128))
+        );
+        assert_eq!(
+            parse_color("rgb(255, 0, 0 / 0.5)"),
+            Some(Color::Rgba(255, 0, 0, 128))
+        );
+        assert_eq!(
+            parse_color("rgb(255, 0, 0/0.5)"),
+            Some(Color::Rgba(255, 0, 0, 128))
+        );
+        assert_eq!(
+            parse_color("rgba(255,0,0/0.5)"),
+            Some(Color::Rgba(255, 0, 0, 128))
+        );
+    }
+
+    #[test]
+    fn test_relative_color_with_calc() {
+        // Testing channel variables replacement inside calc()
+        assert_eq!(
+            parse_color("rgb(from red calc(r - 55) g b)"),
+            Some(Color::Rgba(200, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("rgba(from #ff0000 r g b / calc(alpha - 0.5))"),
+            Some(Color::Rgba(255, 0, 0, 128))
+        );
+        assert_eq!(
+            parse_color("hsl(from green calc(h + 120) s l)"),
+            Some(Color::Rgba(0, 0, 128, 255)) // 120 (green) + 120 = 240 (blue) with green's 25% lightness
+        );
+    }
+
+    #[test]
+    fn test_predefined_color_mix_interpolation() {
+        let red = Color::Rgba(255, 0, 0, 255);
+        let blue = Color::Rgba(0, 0, 255, 255);
+
+        // Mix in display-p3
+        let mixed_p3 = mix_colors(red.clone(), blue.clone(), 0.5, "display-p3", None);
+        assert!(mixed_p3.is_some());
+
+        // Mix in rec2020
+        let mixed_rec = mix_colors(red.clone(), blue.clone(), 0.5, "rec2020", None);
+        assert!(mixed_rec.is_some());
+
+        // Mix in xyz-d65
+        let mixed_xyz = mix_colors(red.clone(), blue.clone(), 0.5, "xyz-d65", None);
+        assert!(mixed_xyz.is_some());
     }
 }
