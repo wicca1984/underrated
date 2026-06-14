@@ -1,6 +1,15 @@
 use crate::dom::{Dom, NodeData};
 use crate::infra::NodeId;
 
+/// Errors that can occur during DOM CharacterData operations.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum DomError {
+    /// The offset is greater than the node's length.
+    IndexSize,
+    /// The operation is not supported on this type of node.
+    NotSupported,
+}
+
 impl Dom {
     /// Returns the text content of the given node and its descendants.
     ///
@@ -86,6 +95,171 @@ impl Dom {
                 self.mark_dirty(node);
             }
         }
+    }
+
+    /// Returns the character data of a Text or Comment node.
+    ///
+    /// Returns `None` if the node is not a Text or Comment node, or if the node ID is invalid.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-data
+    pub fn character_data(&self, node: NodeId) -> Option<String> {
+        let data = self.data(node)?;
+        match data {
+            NodeData::Text(s) | NodeData::Comment(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// Replaces the character data of a Text or Comment node.
+    ///
+    /// Returns `Err(DomError::NotSupported)` if the node is not a Text or Comment node, or if the node ID is invalid.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-data
+    pub fn set_character_data(&mut self, node: NodeId, value: &str) -> Result<(), DomError> {
+        let mut changed = false;
+        if let Some(n) = self.arena.get_mut(node) {
+            match &mut n.data {
+                NodeData::Text(s) | NodeData::Comment(s) => {
+                    if *s != value {
+                        *s = value.to_string();
+                        changed = true;
+                    }
+                }
+                _ => return Err(DomError::NotSupported),
+            }
+        } else {
+            return Err(DomError::NotSupported);
+        }
+
+        if changed {
+            self.mark_dirty(node);
+        }
+        Ok(())
+    }
+
+    /// Returns the length of the character data in UTF-16 code units.
+    ///
+    /// Returns `None` if the node is not a Text or Comment node, or if the node ID is invalid.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-length
+    pub fn character_data_len(&self, node: NodeId) -> Option<usize> {
+        let data = self.data(node)?;
+        match data {
+            NodeData::Text(s) | NodeData::Comment(s) => Some(s.encode_utf16().count()),
+            _ => None,
+        }
+    }
+
+    /// Returns a substring of the character data from the given UTF-16 code unit offset and count.
+    ///
+    /// Clamps the count if it goes beyond the end of the data.
+    /// Returns `Err(DomError::IndexSize)` if the offset is greater than the data's length.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-substringdata
+    pub fn substring_data(
+        &self,
+        node: NodeId,
+        offset: usize,
+        count: usize,
+    ) -> Result<String, DomError> {
+        let data = self.data(node).ok_or(DomError::NotSupported)?;
+        let s = match data {
+            NodeData::Text(s) | NodeData::Comment(s) => s,
+            _ => return Err(DomError::NotSupported),
+        };
+
+        let utf16: Vec<u16> = s.encode_utf16().collect();
+        let len = utf16.len();
+
+        if offset > len {
+            return Err(DomError::IndexSize);
+        }
+
+        let end = (offset + count).min(len);
+        let sub = &utf16[offset..end];
+        Ok(String::from_utf16_lossy(sub))
+    }
+
+    /// Appends the given string data to the end of the character data.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-appenddata
+    pub fn append_data(&mut self, node: NodeId, data: &str) -> Result<(), DomError> {
+        let mut changed = false;
+        if let Some(n) = self.arena.get_mut(node) {
+            match &mut n.data {
+                NodeData::Text(s) | NodeData::Comment(s) => {
+                    if !data.is_empty() {
+                        s.push_str(data);
+                        changed = true;
+                    }
+                }
+                _ => return Err(DomError::NotSupported),
+            }
+        } else {
+            return Err(DomError::NotSupported);
+        }
+
+        if changed {
+            self.mark_dirty(node);
+        }
+        Ok(())
+    }
+
+    /// Inserts the given string data at the specified UTF-16 code unit offset.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-insertdata
+    pub fn insert_data(&mut self, node: NodeId, offset: usize, data: &str) -> Result<(), DomError> {
+        self.replace_data(node, offset, 0, data)
+    }
+
+    /// Deletes a range of character data starting from the specified UTF-16 code unit offset and count.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-deletedata
+    pub fn delete_data(
+        &mut self,
+        node: NodeId,
+        offset: usize,
+        count: usize,
+    ) -> Result<(), DomError> {
+        self.replace_data(node, offset, count, "")
+    }
+
+    /// Replaces a range of character data starting from the specified UTF-16 code unit offset and count with new string data.
+    // spec: https://dom.spec.whatwg.org/#dom-characterdata-replacedata
+    pub fn replace_data(
+        &mut self,
+        node: NodeId,
+        offset: usize,
+        mut count: usize,
+        data: &str,
+    ) -> Result<(), DomError> {
+        let mut changed = false;
+        if let Some(n) = self.arena.get_mut(node) {
+            match &mut n.data {
+                NodeData::Text(s) | NodeData::Comment(s) => {
+                    let mut utf16: Vec<u16> = s.encode_utf16().collect();
+                    let len = utf16.len();
+
+                    if offset > len {
+                        return Err(DomError::IndexSize);
+                    }
+
+                    if offset + count > len {
+                        count = len - offset;
+                    }
+
+                    let insert_utf16: Vec<u16> = data.encode_utf16().collect();
+                    utf16.splice(offset..(offset + count), insert_utf16);
+
+                    let new_s = String::from_utf16_lossy(&utf16);
+                    if *s != new_s {
+                        *s = new_s;
+                        changed = true;
+                    }
+                }
+                _ => return Err(DomError::NotSupported),
+            }
+        } else {
+            return Err(DomError::NotSupported);
+        }
+
+        if changed {
+            self.mark_dirty(node);
+        }
+        Ok(())
     }
 }
 
@@ -183,5 +357,171 @@ mod tests {
         assert_eq!(dom2.text_content(foreign), "");
         assert!(!dom2.is_dirty(foreign));
         assert!(!dom2.has_dirty());
+    }
+
+    #[test]
+    fn test_character_data_basic() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("foo".into()));
+        let comment_node = dom.create_node(NodeData::Comment("secret".into()));
+
+        // Text Node Getter
+        assert_eq!(dom.character_data(text_node), Some("foo".into()));
+        assert_eq!(dom.character_data_len(text_node), Some(3));
+
+        // Comment Node Getter
+        assert_eq!(dom.character_data(comment_node), Some("secret".into()));
+        assert_eq!(dom.character_data_len(comment_node), Some(6));
+
+        // Text Node Setter
+        dom.clear_dirty();
+        assert_eq!(dom.set_character_data(text_node, "bar"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("bar".into()));
+        assert!(dom.is_dirty(text_node));
+
+        // Comment Node Setter
+        dom.clear_dirty();
+        assert_eq!(dom.set_character_data(comment_node, "public"), Ok(()));
+        assert_eq!(dom.character_data(comment_node), Some("public".into()));
+        assert!(dom.is_dirty(comment_node));
+    }
+
+    #[test]
+    fn test_character_data_unsupported() {
+        let mut dom = Dom::new();
+        let element_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.character_data(element_node), None);
+        assert_eq!(dom.character_data_len(element_node), None);
+        assert_eq!(
+            dom.set_character_data(element_node, "test"),
+            Err(DomError::NotSupported)
+        );
+        assert_eq!(
+            dom.substring_data(element_node, 0, 1),
+            Err(DomError::NotSupported)
+        );
+        assert_eq!(
+            dom.append_data(element_node, "test"),
+            Err(DomError::NotSupported)
+        );
+        assert_eq!(
+            dom.insert_data(element_node, 0, "test"),
+            Err(DomError::NotSupported)
+        );
+        assert_eq!(
+            dom.delete_data(element_node, 0, 1),
+            Err(DomError::NotSupported)
+        );
+        assert_eq!(
+            dom.replace_data(element_node, 0, 1, "test"),
+            Err(DomError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn test_character_data_substring() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hello world".into()));
+
+        assert_eq!(dom.substring_data(text_node, 0, 5), Ok("hello".into()));
+        assert_eq!(dom.substring_data(text_node, 6, 5), Ok("world".into()));
+        assert_eq!(dom.substring_data(text_node, 6, 100), Ok("world".into()));
+        assert_eq!(dom.substring_data(text_node, 11, 0), Ok("".into()));
+        assert_eq!(
+            dom.substring_data(text_node, 12, 0),
+            Err(DomError::IndexSize)
+        );
+    }
+
+    #[test]
+    fn test_character_data_append() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+
+        dom.clear_dirty();
+        assert_eq!(dom.append_data(text_node, " world"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("hello world".into()));
+        assert!(dom.is_dirty(text_node));
+    }
+
+    #[test]
+    fn test_character_data_insert() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hllo".into()));
+
+        dom.clear_dirty();
+        assert_eq!(dom.insert_data(text_node, 1, "e"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("hello".into()));
+        assert!(dom.is_dirty(text_node));
+
+        assert_eq!(dom.insert_data(text_node, 5, "!"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("hello!".into()));
+
+        assert_eq!(dom.insert_data(text_node, 7, "?"), Err(DomError::IndexSize));
+    }
+
+    #[test]
+    fn test_character_data_delete() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+
+        dom.clear_dirty();
+        assert_eq!(dom.delete_data(text_node, 1, 3), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("ho".into()));
+        assert!(dom.is_dirty(text_node));
+
+        assert_eq!(dom.delete_data(text_node, 1, 10), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("h".into()));
+
+        assert_eq!(dom.delete_data(text_node, 2, 1), Err(DomError::IndexSize));
+    }
+
+    #[test]
+    fn test_character_data_replace() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+
+        dom.clear_dirty();
+        assert_eq!(dom.replace_data(text_node, 1, 3, "i"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("hio".into()));
+        assert!(dom.is_dirty(text_node));
+
+        assert_eq!(dom.replace_data(text_node, 2, 10, "!"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("hi!".into()));
+
+        assert_eq!(
+            dom.replace_data(text_node, 4, 1, "test"),
+            Err(DomError::IndexSize)
+        );
+    }
+
+    #[test]
+    fn test_character_data_utf16() {
+        let mut dom = Dom::new();
+        // Fox emoji "🦊" is surrogate pair in UTF-16, length 2
+        let text_node = dom.create_node(NodeData::Text("a🦊b".into()));
+
+        assert_eq!(dom.character_data_len(text_node), Some(4));
+
+        assert_eq!(dom.substring_data(text_node, 0, 1), Ok("a".into()));
+        assert_eq!(dom.substring_data(text_node, 1, 2), Ok("🦊".into()));
+        assert_eq!(dom.substring_data(text_node, 3, 1), Ok("b".into()));
+
+        // Split surrogate pair test
+        let half = dom.substring_data(text_node, 1, 1).unwrap();
+        assert_eq!(half, "\u{FFFD}"); // Standard replacement character for isolated surrogate in lossy UTF-8
+
+        // Delete UTF-16 surrogate pair
+        assert_eq!(dom.delete_data(text_node, 1, 2), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("ab".into()));
+
+        // Replace with new text
+        let foxy_node = dom.create_node(NodeData::Text("a🦊b".into()));
+        assert_eq!(dom.replace_data(foxy_node, 1, 2, "cat"), Ok(()));
+        assert_eq!(dom.character_data(foxy_node), Some("acatb".into()));
     }
 }
