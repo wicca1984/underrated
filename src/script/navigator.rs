@@ -583,6 +583,176 @@ fn media_capabilities_encoding_info(
     resolve_promise(info.into(), context)
 }
 
+/// Native implementation of `navigator.share()`.
+fn navigator_share(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    resolve_promise(JsValue::undefined(), context)
+}
+
+/// Native implementation of `navigator.canShare()`.
+fn navigator_can_share(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    Ok(JsValue::from(true))
+}
+
+/// Native implementation of `navigator.mediaDevices.enumerateDevices()`.
+fn media_devices_enumerate_devices(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    use boa_engine::object::builtins::JsArray;
+    let empty_array = JsArray::from_iter(std::iter::empty(), context);
+    resolve_promise(empty_array.into(), context)
+}
+
+/// Native implementation of `navigator.mediaDevices.getSupportedConstraints()`.
+fn media_devices_get_supported_constraints(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let constraints = ObjectInitializer::new(context)
+        .property(JsString::from("deviceId"), true, Attribute::all())
+        .property(JsString::from("groupId"), true, Attribute::all())
+        .property(JsString::from("facingMode"), true, Attribute::all())
+        .property(JsString::from("frameRate"), true, Attribute::all())
+        .property(JsString::from("width"), true, Attribute::all())
+        .property(JsString::from("height"), true, Attribute::all())
+        .property(JsString::from("aspectRatio"), true, Attribute::all())
+        .build();
+    Ok(constraints.into())
+}
+
+/// Native implementation of `navigator.mediaDevices.getUserMedia()`.
+fn media_devices_get_user_media(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let media_stream = ObjectInitializer::new(context)
+        .property(
+            JsString::from("id"),
+            JsString::from("dummy-stream-id"),
+            Attribute::all(),
+        )
+        .property(JsString::from("active"), true, Attribute::all())
+        .build();
+    resolve_promise(media_stream.into(), context)
+}
+
+/// Native implementation of `navigator.mediaDevices.getDisplayMedia()`.
+fn media_devices_get_display_media(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let media_stream = ObjectInitializer::new(context)
+        .property(
+            JsString::from("id"),
+            JsString::from("dummy-display-stream-id"),
+            Attribute::all(),
+        )
+        .property(JsString::from("active"), true, Attribute::all())
+        .build();
+    resolve_promise(media_stream.into(), context)
+}
+
+/// Native implementation of `navigator.locks.query()`.
+fn locks_query(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    use boa_engine::object::builtins::JsArray;
+    let pending = JsArray::from_iter(std::iter::empty(), context);
+    let held = JsArray::from_iter(std::iter::empty(), context);
+    let lock_manager_snapshot = ObjectInitializer::new(context)
+        .property(JsString::from("pending"), pending, Attribute::all())
+        .property(JsString::from("held"), held, Attribute::all())
+        .build();
+    resolve_promise(lock_manager_snapshot.into(), context)
+}
+
+/// Native implementation of `navigator.locks.request()`.
+fn locks_request(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let callback = match args.get(1) {
+        Some(val) => val.as_callable(),
+        None => match args.get(2) {
+            Some(val) => val.as_callable(),
+            None => None,
+        },
+    };
+
+    let name = args
+        .first()
+        .and_then(|v| v.to_string(context).ok())
+        .unwrap_or_else(|| JsString::from("default"));
+
+    if let Some(callback_fn) = callback {
+        let lock_obj = ObjectInitializer::new(context)
+            .property(JsString::from("name"), name, Attribute::all())
+            .property(
+                JsString::from("mode"),
+                JsString::from("exclusive"),
+                Attribute::all(),
+            )
+            .build();
+        let callback_res = callback_fn.call(&JsValue::undefined(), &[lock_obj.into()], context)?;
+        resolve_promise(callback_res, context)
+    } else {
+        resolve_promise(JsValue::undefined(), context)
+    }
+}
+
+/// Native implementation of `navigator.wakeLock.request()`.
+fn wake_lock_request(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let lock_type = args
+        .first()
+        .and_then(|v| v.to_string(context).ok())
+        .unwrap_or_else(|| JsString::from("screen"));
+
+    let sentinel = ObjectInitializer::new(context)
+        .property(JsString::from("released"), false, Attribute::all())
+        .property(JsString::from("type"), lock_type, Attribute::all())
+        .property(
+            JsString::from("onrelease"),
+            JsValue::null(),
+            Attribute::all(),
+        )
+        .function(
+            NativeFunction::from_fn_ptr(wake_lock_sentinel_release),
+            JsString::from("release"),
+            0,
+        )
+        .build();
+
+    resolve_promise(sentinel.into(), context)
+}
+
+/// Native implementation of `wakeLockSentinel.release()`.
+fn wake_lock_sentinel_release(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    resolve_promise(JsValue::undefined(), context)
+}
+
 /// Creates the standard `navigator` object with the required properties.
 ///
 /// Under the W3C and HTML specifications, `navigator` exposes client information.
@@ -743,6 +913,50 @@ pub fn create_navigator(context: &mut Context) -> JsObject {
         )
         .build();
 
+    let media_devices = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(media_devices_enumerate_devices),
+            JsString::from("enumerateDevices"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(media_devices_get_supported_constraints),
+            JsString::from("getSupportedConstraints"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(media_devices_get_user_media),
+            JsString::from("getUserMedia"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(media_devices_get_display_media),
+            JsString::from("getDisplayMedia"),
+            1,
+        )
+        .build();
+
+    let locks = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(locks_query),
+            JsString::from("query"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(locks_request),
+            JsString::from("request"),
+            2,
+        )
+        .build();
+
+    let wake_lock = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(wake_lock_request),
+            JsString::from("request"),
+            1,
+        )
+        .build();
+
     ObjectInitializer::new(context)
         .property(
             JsString::from("userAgent"),
@@ -861,6 +1075,13 @@ pub fn create_navigator(context: &mut Context) -> JsObject {
             media_capabilities,
             Attribute::all(),
         )
+        .property(
+            JsString::from("mediaDevices"),
+            media_devices,
+            Attribute::all(),
+        )
+        .property(JsString::from("locks"), locks, Attribute::all())
+        .property(JsString::from("wakeLock"), wake_lock, Attribute::all())
         .property(JsString::from("plugins"), plugins_array, Attribute::all())
         .property(
             JsString::from("mimeTypes"),
@@ -880,6 +1101,16 @@ pub fn create_navigator(context: &mut Context) -> JsObject {
         .function(
             NativeFunction::from_fn_ptr(navigator_send_beacon),
             JsString::from("sendBeacon"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(navigator_share),
+            JsString::from("share"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(navigator_can_share),
+            JsString::from("canShare"),
             1,
         )
         .build()
@@ -1105,6 +1336,104 @@ mod tests {
             media_encoding.supported === true &&
             media_encoding.smooth === true &&
             media_encoding.powerEfficient === true
+            "#,
+        );
+        let res_async = context.eval(check_async_results).unwrap();
+        assert_eq!(res_async.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_navigator_added_apis() {
+        let mut context = Context::default();
+        let navigator = create_navigator(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("navigator"),
+            navigator,
+            Attribute::all(),
+        );
+
+        let sync_checks = Source::from_bytes(
+            r#"
+            typeof navigator.share === 'function' &&
+            typeof navigator.canShare === 'function' &&
+            navigator.canShare({}) === true &&
+            typeof navigator.mediaDevices === 'object' &&
+            typeof navigator.mediaDevices.enumerateDevices === 'function' &&
+            typeof navigator.mediaDevices.getSupportedConstraints === 'function' &&
+            typeof navigator.mediaDevices.getUserMedia === 'function' &&
+            typeof navigator.mediaDevices.getDisplayMedia === 'function' &&
+            typeof navigator.locks === 'object' &&
+            typeof navigator.locks.query === 'function' &&
+            typeof navigator.locks.request === 'function' &&
+            typeof navigator.wakeLock === 'object' &&
+            typeof navigator.wakeLock.request === 'function'
+            "#,
+        );
+        let res_sync = context.eval(sync_checks).unwrap();
+        assert_eq!(res_sync.as_boolean(), Some(true));
+
+        let async_checks = Source::from_bytes(
+            r#"
+            let share_resolved = false;
+            let devices = null;
+            let constraints = null;
+            let stream = null;
+            let display_stream = null;
+            let lock_query_res = null;
+            let lock_request_called = false;
+            let wake_lock_sentinel = null;
+
+            navigator.share({ title: 'Test' })
+                .then(() => { share_resolved = true; });
+
+            navigator.mediaDevices.enumerateDevices()
+                .then(res => { devices = res; });
+
+            constraints = navigator.mediaDevices.getSupportedConstraints();
+
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then(res => { stream = res; });
+
+            navigator.mediaDevices.getDisplayMedia({ video: true })
+                .then(res => { display_stream = res; });
+
+            navigator.locks.query()
+                .then(res => { lock_query_res = res; });
+
+            navigator.locks.request('my-lock', (lock) => {
+                if (lock && lock.name === 'my-lock' && lock.mode === 'exclusive') {
+                    lock_request_called = true;
+                }
+            });
+
+            navigator.wakeLock.request('screen')
+                .then(res => { wake_lock_sentinel = res; });
+            "#,
+        );
+        context.eval(async_checks).unwrap();
+        let _ = context.run_jobs();
+
+        let check_async_results = Source::from_bytes(
+            r#"
+            share_resolved === true &&
+            Array.isArray(devices) &&
+            devices.length === 0 &&
+            constraints !== null &&
+            constraints.deviceId === true &&
+            stream !== null &&
+            stream.id === 'dummy-stream-id' &&
+            stream.active === true &&
+            display_stream !== null &&
+            display_stream.id === 'dummy-display-stream-id' &&
+            display_stream.active === true &&
+            lock_query_res !== null &&
+            Array.isArray(lock_query_res.pending) &&
+            Array.isArray(lock_query_res.held) &&
+            lock_request_called === true &&
+            wake_lock_sentinel !== null &&
+            wake_lock_sentinel.released === false &&
+            wake_lock_sentinel.type === 'screen' &&
+            typeof wake_lock_sentinel.release === 'function'
             "#,
         );
         let res_async = context.eval(check_async_results).unwrap();
