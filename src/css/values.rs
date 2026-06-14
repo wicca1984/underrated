@@ -4356,6 +4356,186 @@ fn parse_hex_color(s: &str) -> Option<Color> {
     }
 }
 
+fn srgb_to_linear_srgb(c_u: u8) -> f64 {
+    let c = c_u as f64 / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn srgb_to_xyz_d50(r_lin: f64, g_lin: f64, b_lin: f64) -> (f64, f64, f64) {
+    let x = 0.4360747 * r_lin + 0.3850649 * g_lin + 0.1430804 * b_lin;
+    let y = 0.2225045 * r_lin + 0.7168786 * g_lin + 0.0606169 * b_lin;
+    let z = 0.0139322 * r_lin + 0.0971045 * g_lin + 0.7141733 * b_lin;
+    (x, y, z)
+}
+
+fn linear_srgb_to_lms(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+    let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+    let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+    (l, m, s)
+}
+
+fn lms_to_oklab(l_: f64, m_: f64, s_: f64) -> (f64, f64, f64) {
+    let l = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_;
+    let a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_;
+    let b = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_;
+    (l, a, b)
+}
+
+fn color_to_lab(color: Color) -> (f32, f32, f32, f32) {
+    let Color::Rgba(r_u, g_u, b_u, a_u) = color;
+    let r_lin = srgb_to_linear_srgb(r_u);
+    let g_lin = srgb_to_linear_srgb(g_u);
+    let b_lin = srgb_to_linear_srgb(b_u);
+    let (x, y, z) = srgb_to_xyz_d50(r_lin, g_lin, b_lin);
+
+    let f = |t: f64| {
+        let d = 6.0 / 29.0;
+        if t > d * d * d {
+            t.powf(1.0 / 3.0)
+        } else {
+            t / (3.0 * d * d) + 4.0 / 29.0
+        }
+    };
+
+    let xr = x / 0.96422;
+    let yr = y / 1.0;
+    let zr = z / 0.82521;
+
+    let fx = f(xr);
+    let fy = f(yr);
+    let fz = f(zr);
+
+    let l = 116.0 * fy - 16.0;
+    let a = 500.0 * (fx - fy);
+    let b = 200.0 * (fy - fz);
+    let alpha = a_u as f32 / 255.0;
+
+    (l as f32, a as f32, b as f32, alpha)
+}
+
+fn color_to_lch(color: Color) -> (f32, f32, f32, f32) {
+    let (l, a, b, alpha) = color_to_lab(color);
+    let c = (a * a + b * b).sqrt();
+    let mut h = b.atan2(a).to_degrees();
+    if h < 0.0 {
+        h += 360.0;
+    }
+    (l, c, h, alpha)
+}
+
+fn color_to_oklab(color: Color) -> (f32, f32, f32, f32) {
+    let Color::Rgba(r_u, g_u, b_u, a_u) = color;
+    let r_lin = srgb_to_linear_srgb(r_u);
+    let g_lin = srgb_to_linear_srgb(g_u);
+    let b_lin = srgb_to_linear_srgb(b_u);
+    let (l_lms, m_lms, s_lms) = linear_srgb_to_lms(r_lin, g_lin, b_lin);
+
+    let l_ = l_lms.cbrt();
+    let m_ = m_lms.cbrt();
+    let s_ = s_lms.cbrt();
+
+    let (l, a, b) = lms_to_oklab(l_, m_, s_);
+    let alpha = a_u as f32 / 255.0;
+
+    (l as f32, a as f32, b as f32, alpha)
+}
+
+fn color_to_oklch(color: Color) -> (f32, f32, f32, f32) {
+    let (l, a, b, alpha) = color_to_oklab(color);
+    let c = (a * a + b * b).sqrt();
+    let mut h = b.atan2(a).to_degrees();
+    if h < 0.0 {
+        h += 360.0;
+    }
+    (l, c, h, alpha)
+}
+
+fn substitute_color_variables(
+    components: &[ComponentValue],
+    variables: &[(&str, f32)],
+) -> Vec<ComponentValue> {
+    components
+        .iter()
+        .map(|comp| match comp {
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                if let Some((_, val)) = variables
+                    .iter()
+                    .find(|(name, _)| s.eq_ignore_ascii_case(name))
+                {
+                    ComponentValue::Token(CssToken::Number(*val as f64))
+                } else if s.eq_ignore_ascii_case("none") {
+                    ComponentValue::Token(CssToken::Number(0.0))
+                } else {
+                    comp.clone()
+                }
+            }
+            ComponentValue::SimpleBlock { associated, value } => ComponentValue::SimpleBlock {
+                associated: *associated,
+                value: substitute_color_variables(value, variables),
+            },
+            ComponentValue::Function { name, value } => ComponentValue::Function {
+                name: name.clone(),
+                value: substitute_color_variables(value, variables),
+            },
+            _ => comp.clone(),
+        })
+        .collect()
+}
+
+fn evaluate_color_component(
+    comp: &ComponentValue,
+    variables: &[(&str, f32)],
+    pct_scale: f32,
+) -> Option<f32> {
+    match comp {
+        ComponentValue::Token(CssToken::Number(v)) => Some(*v as f32),
+        ComponentValue::Token(CssToken::Percentage(v)) => Some((*v as f32 / 100.0) * pct_scale),
+        ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+            let deg = match unit.to_ascii_lowercase().as_str() {
+                "deg" => *value,
+                "rad" => *value * 180.0 / std::f64::consts::PI,
+                "grad" => *value * 0.9,
+                "turn" => *value * 360.0,
+                _ => return None,
+            };
+            Some(deg as f32)
+        }
+        ComponentValue::Token(CssToken::Ident(s)) => {
+            if let Some((_, val)) = variables
+                .iter()
+                .find(|(name, _)| s.eq_ignore_ascii_case(name))
+            {
+                Some(*val)
+            } else if s.eq_ignore_ascii_case("none") {
+                Some(0.0)
+            } else {
+                None
+            }
+        }
+        ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("calc") => {
+            let substituted = substitute_color_variables(value, variables);
+            let vars_map = std::collections::HashMap::new();
+            if let Some(css_val) =
+                crate::css::resolve::evaluate_calc(&substituted, 16.0, 1000.0, 1000.0, &vars_map)
+            {
+                match css_val {
+                    CssValue::Number(num) => Some(num),
+                    CssValue::Length(px, _) => Some(px),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn evaluate_channel_expression(
     comp: &ComponentValue,
     br_f: f32,
@@ -4530,7 +4710,7 @@ fn parse_rgb_function(components: &[ComponentValue]) -> Option<Color> {
             1.0
         };
 
-        // TODO(spec): other color spaces' relative form is out of scope.
+        // Note: other color spaces' relative form is implemented below.
 
         return Some(Color::Rgba(
             r_val.clamp(0.0, 255.0) as u8,
@@ -4815,6 +4995,54 @@ fn parse_hwb_function(components: &[ComponentValue]) -> Option<Color> {
 }
 
 fn parse_oklab_function(components: &[ComponentValue]) -> Option<Color> {
+    // Filter out whitespace
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    let is_relative = match non_ws.first() {
+        Some(ComponentValue::Token(CssToken::Ident(s))) => s.eq_ignore_ascii_case("from"),
+        _ => false,
+    };
+
+    if is_relative {
+        if non_ws.len() != 5 && non_ws.len() != 7 {
+            return None;
+        }
+        let base_color_components = vec![non_ws[1].clone()];
+        let base_color = parse_color_argument(&base_color_components)?;
+
+        let (base_l, base_a, base_b, base_alpha) = color_to_oklab(base_color);
+
+        let variables = [
+            ("l", base_l),
+            ("a", base_a),
+            ("b", base_b),
+            ("alpha", base_alpha),
+        ];
+
+        let l_val = evaluate_color_component(non_ws[2], &variables, 1.0)?;
+        let a_val = evaluate_color_component(non_ws[3], &variables, 0.4)?;
+        let b_val = evaluate_color_component(non_ws[4], &variables, 0.4)?;
+
+        let alpha_val = if non_ws.len() == 7 {
+            if !matches!(non_ws[5], ComponentValue::Token(CssToken::Delim('/'))) {
+                return None;
+            }
+            evaluate_color_component(non_ws[6], &variables, 1.0)?
+        } else {
+            base_alpha
+        };
+
+        let l_val = (l_val.max(0.0)) as f64;
+        let a_val = a_val as f64;
+        let b_val = b_val as f64;
+        let alpha = (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+        return Some(oklab_to_color(l_val, a_val, b_val, alpha));
+    }
+
     enum OklArg {
         Number(f64),
         Percentage(f64),
@@ -4886,6 +5114,59 @@ fn parse_oklab_function(components: &[ComponentValue]) -> Option<Color> {
 }
 
 fn parse_oklch_function(components: &[ComponentValue]) -> Option<Color> {
+    // Filter out whitespace
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    let is_relative = match non_ws.first() {
+        Some(ComponentValue::Token(CssToken::Ident(s))) => s.eq_ignore_ascii_case("from"),
+        _ => false,
+    };
+
+    if is_relative {
+        if non_ws.len() != 5 && non_ws.len() != 7 {
+            return None;
+        }
+        let base_color_components = vec![non_ws[1].clone()];
+        let base_color = parse_color_argument(&base_color_components)?;
+
+        let (base_l, base_c, base_h, base_alpha) = color_to_oklch(base_color);
+
+        let variables = [
+            ("l", base_l),
+            ("c", base_c),
+            ("h", base_h),
+            ("alpha", base_alpha),
+        ];
+
+        let l_val = evaluate_color_component(non_ws[2], &variables, 1.0)?;
+        let c_val = evaluate_color_component(non_ws[3], &variables, 0.4)?;
+        let h_val = evaluate_color_component(non_ws[4], &variables, 360.0)?;
+
+        let alpha_val = if non_ws.len() == 7 {
+            if !matches!(non_ws[5], ComponentValue::Token(CssToken::Delim('/'))) {
+                return None;
+            }
+            evaluate_color_component(non_ws[6], &variables, 1.0)?
+        } else {
+            base_alpha
+        };
+
+        let l_val = (l_val.max(0.0)) as f64;
+        let c_val = (c_val.max(0.0)) as f64;
+        let h_deg = h_val as f64;
+        let h_deg = ((h_deg % 360.0) + 360.0) % 360.0;
+        let alpha = (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+        let h_rad = h_deg.to_radians();
+        let a_val = c_val * h_rad.cos();
+        let b_val = c_val * h_rad.sin();
+
+        return Some(oklab_to_color(l_val, a_val, b_val, alpha));
+    }
+
     enum OklArg {
         Number(f64),
         Percentage(f64),
@@ -4993,6 +5274,54 @@ fn linear_srgb_to_srgb(c: f64) -> u8 {
 }
 
 fn parse_lab_function(components: &[ComponentValue]) -> Option<Color> {
+    // Filter out whitespace
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    let is_relative = match non_ws.first() {
+        Some(ComponentValue::Token(CssToken::Ident(s))) => s.eq_ignore_ascii_case("from"),
+        _ => false,
+    };
+
+    if is_relative {
+        if non_ws.len() != 5 && non_ws.len() != 7 {
+            return None;
+        }
+        let base_color_components = vec![non_ws[1].clone()];
+        let base_color = parse_color_argument(&base_color_components)?;
+
+        let (base_l, base_a, base_b, base_alpha) = color_to_lab(base_color);
+
+        let variables = [
+            ("l", base_l),
+            ("a", base_a),
+            ("b", base_b),
+            ("alpha", base_alpha),
+        ];
+
+        let l_val = evaluate_color_component(non_ws[2], &variables, 100.0)?;
+        let a_val = evaluate_color_component(non_ws[3], &variables, 125.0)?;
+        let b_val = evaluate_color_component(non_ws[4], &variables, 125.0)?;
+
+        let alpha_val = if non_ws.len() == 7 {
+            if !matches!(non_ws[5], ComponentValue::Token(CssToken::Delim('/'))) {
+                return None;
+            }
+            evaluate_color_component(non_ws[6], &variables, 1.0)?
+        } else {
+            base_alpha
+        };
+
+        let l_val = (l_val.max(0.0)) as f64;
+        let a_val = a_val as f64;
+        let b_val = b_val as f64;
+        let alpha = (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+        return Some(lab_to_color(l_val, a_val, b_val, alpha));
+    }
+
     enum LabArg {
         Number(f64),
         Percentage(f64),
@@ -5064,6 +5393,59 @@ fn parse_lab_function(components: &[ComponentValue]) -> Option<Color> {
 }
 
 fn parse_lch_function(components: &[ComponentValue]) -> Option<Color> {
+    // Filter out whitespace
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    let is_relative = match non_ws.first() {
+        Some(ComponentValue::Token(CssToken::Ident(s))) => s.eq_ignore_ascii_case("from"),
+        _ => false,
+    };
+
+    if is_relative {
+        if non_ws.len() != 5 && non_ws.len() != 7 {
+            return None;
+        }
+        let base_color_components = vec![non_ws[1].clone()];
+        let base_color = parse_color_argument(&base_color_components)?;
+
+        let (base_l, base_c, base_h, base_alpha) = color_to_lch(base_color);
+
+        let variables = [
+            ("l", base_l),
+            ("c", base_c),
+            ("h", base_h),
+            ("alpha", base_alpha),
+        ];
+
+        let l_val = evaluate_color_component(non_ws[2], &variables, 100.0)?;
+        let c_val = evaluate_color_component(non_ws[3], &variables, 150.0)?;
+        let h_val = evaluate_color_component(non_ws[4], &variables, 360.0)?;
+
+        let alpha_val = if non_ws.len() == 7 {
+            if !matches!(non_ws[5], ComponentValue::Token(CssToken::Delim('/'))) {
+                return None;
+            }
+            evaluate_color_component(non_ws[6], &variables, 1.0)?
+        } else {
+            base_alpha
+        };
+
+        let l_val = (l_val.max(0.0)) as f64;
+        let c_val = (c_val.max(0.0)) as f64;
+        let h_deg = h_val as f64;
+        let h_deg = ((h_deg % 360.0) + 360.0) % 360.0;
+        let alpha = (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+        let h_rad = h_deg.to_radians();
+        let a_val = c_val * h_rad.cos();
+        let b_val = c_val * h_rad.sin();
+
+        return Some(lab_to_color(l_val, a_val, b_val, alpha));
+    }
+
     enum LchArg {
         Number(f64),
         Percentage(f64),
@@ -6992,6 +7374,78 @@ mod tests {
         assert_eq!(parse("hsl(from red)"), None);
         assert_eq!(parse("hsl(from red h s l /)"), None);
         assert_eq!(parse("hsl(from red h s l / 0.5 0.5)"), None);
+    }
+
+    #[test]
+    fn test_parse_relative_color_lab_lch_oklab_oklch() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // 1. lab relative color
+        // lab(from red l a b) should roundtrip to red (represented in lab)
+        // lab(from red 100 0 0) should resolve to white (255, 255, 255, 255)
+        assert_eq!(
+            parse("lab(from red 100 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+        // calc test for lab: lab(from red calc(l - 100) 0 0) should resolve to black (0, 0, 0, 255)
+        assert_eq!(
+            parse("lab(from red calc(l - 100) 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // 2. lch relative color
+        // lch(from red 100 0 h) should resolve to white (255, 255, 255, 255)
+        assert_eq!(
+            parse("lch(from red 100 0 h)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+        // calc test for lch: lch(from red l calc(c * 0) h) should resolve to gray
+        // Let's verify with copy-through: lch(from red l c h)
+        // Red is Color::Rgba(255, 0, 0, 255)
+        assert_eq!(
+            parse("lch(from red l c h)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // 3. oklab relative color
+        // oklab(from red 1 0 0) should resolve to white (255, 255, 255, 255)
+        assert_eq!(
+            parse("oklab(from red 1 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+        // oklab(from red l a b) should resolve to red
+        assert_eq!(
+            parse("oklab(from red l a b)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+        // calc test for oklab: oklab(from red calc(l * 0) 0 0) should resolve to black
+        assert_eq!(
+            parse("oklab(from red calc(l * 0) 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // 4. oklch relative color
+        // oklch(from red 1 0 h) should resolve to white (255, 255, 255, 255)
+        assert_eq!(
+            parse("oklch(from red 1 0 h)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+        // oklch(from red l c h) should resolve to red
+        assert_eq!(
+            parse("oklch(from red l c h)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+        // calc test for oklch: oklch(from red l calc(c * 0) h) should resolve to gray (neutral chroma)
+        // Red has L ~ 0.627
+        // So L=0.627, C=0 -> Oklab(0.627, 0, 0)
+        // Let's test if L=1, C=0 resolves to white
+        assert_eq!(
+            parse("oklch(from red 1 calc(c * 0) h)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
     }
 
     #[test]
