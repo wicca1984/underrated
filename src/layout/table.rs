@@ -1,3 +1,4 @@
+use crate::css::values::{CssValue, LengthUnit};
 use crate::dom::{Dom, NodeData};
 use crate::geom::Rect;
 use crate::infra::NodeId;
@@ -293,10 +294,19 @@ pub fn layout_table_container(
         });
     }
 
+    // TODO(spec): border-collapse: full border conflict resolution (shared edges, width/precedence) not implemented; here we only collapse inter-cell spacing to zero.
+    let (spacing_h, spacing_v) = if is_border_collapse(style) {
+        (0.0, 0.0)
+    } else {
+        get_border_spacing(style)
+    };
+    let total_spacing_h = (num_cols + 1) as f32 * spacing_h;
+    let avail_content_width = (content_width - total_spacing_h).max(0.0);
+
     // Determine the width of each column
     let mut col_widths = vec![0.0_f32; num_cols];
 
-    let col_element_widths = gather_col_widths(dom, styles, node);
+    let col_element_widths = gather_col_widths(dom, styles, node, avail_content_width);
 
     let mut col_is_explicit = vec![false; num_cols];
     for (c, item) in col_element_widths.iter().enumerate().take(num_cols) {
@@ -337,15 +347,6 @@ pub fn layout_table_container(
         }
     }
 
-    // TODO(spec): border-collapse: full border conflict resolution (shared edges, width/precedence) not implemented; here we only collapse inter-cell spacing to zero.
-    let (spacing_h, spacing_v) = if is_border_collapse(style) {
-        (0.0, 0.0)
-    } else {
-        get_border_spacing(style)
-    };
-    let total_spacing_h = (num_cols + 1) as f32 * spacing_h;
-    let avail_content_width = (content_width - total_spacing_h).max(0.0);
-
     let table_layout_fixed = style.reset_table.table_layout == "fixed";
 
     let final_content_width = if table_layout_fixed {
@@ -362,7 +363,7 @@ pub fn layout_table_container(
             if placement.row_idx == 0
                 && let Some(cell_style) = styles.get(&placement.node)
             {
-                let w_px = get_px(cell_style, "width", 0.0);
+                let w_px = get_resolved_width(cell_style, avail_content_width).unwrap_or(0.0);
                 if w_px > 0.0 {
                     let share = w_px / placement.colspan as f32;
                     for c in placement.col_idx..(placement.col_idx + placement.colspan) {
@@ -870,6 +871,35 @@ fn parse_span_attribute(dom: &Dom, node: NodeId, name: &str) -> usize {
     }
 }
 
+fn get_resolved_width(style: &CategorizedComputedStyle, avail_content_width: f32) -> Option<f32> {
+    if let Some(ref extra) = style.extra_values {
+        if let Some(CssValue::Length(v, LengthUnit::Percent)) = extra.get("width") {
+            return Some((*v / 100.0) * avail_content_width);
+        }
+        if let Some(CssValue::Length(v, LengthUnit::Percent)) = extra.get("min-width") {
+            return Some((*v / 100.0) * avail_content_width);
+        }
+    }
+    if style.reset_box.min_width >= crate::style::categorized::WIDTH_PERCENT_BAND {
+        let pct =
+            (style.reset_box.min_width - crate::style::categorized::WIDTH_PERCENT_BAND) as f32;
+        return Some((pct / 100.0) * avail_content_width);
+    }
+    if style.reset_box.width != -1 {
+        let w = get_px(style, "width", 0.0);
+        if w > 0.0 {
+            return Some(w);
+        }
+    }
+    if style.reset_box.min_width != -1 {
+        let w = get_px(style, "min-width", 0.0);
+        if w > 0.0 {
+            return Some(w);
+        }
+    }
+    None
+}
+
 fn get_cell_preferred_width(
     dom: &Dom,
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
@@ -879,9 +909,9 @@ fn get_cell_preferred_width(
 ) -> f32 {
     let mut width = 0.0_f32;
     if let Some(cs) = styles.get(&cell_node)
-        && cs.reset_box.width != -1
+        && let Some(w) = get_resolved_width(cs, content_width)
     {
-        width = cs.reset_box.width as f32;
+        width = w;
     }
     if width == 0.0
         && let Some(cell_box) = layout_node(dom, styles, cell_node, content_width, 0.0, 0.0, depth)
@@ -895,6 +925,7 @@ fn gather_col_widths(
     dom: &Dom,
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
     table_node: NodeId,
+    avail_content_width: f32,
 ) -> Vec<Option<f32>> {
     let mut col_widths = Vec::new();
     for &child in dom.children(table_node) {
@@ -923,8 +954,7 @@ fn gather_col_widths(
                             let span =
                                 parse_span_attribute(dom, colgroup_child, "span").clamp(1, 1000);
                             let width_opt = if let Some(style) = styles.get(&colgroup_child) {
-                                let w = get_px(style, "width", 0.0);
-                                if w > 0.0 { Some(w) } else { None }
+                                get_resolved_width(style, avail_content_width)
                             } else {
                                 None
                             };
@@ -937,8 +967,7 @@ fn gather_col_widths(
                     // colgroup without cols: check its span and its own style/width
                     let span = parse_span_attribute(dom, child, "span").clamp(1, 1000);
                     let width_opt = if let Some(style) = styles.get(&child) {
-                        let w = get_px(style, "width", 0.0);
-                        if w > 0.0 { Some(w) } else { None }
+                        get_resolved_width(style, avail_content_width)
                     } else {
                         None
                     };
@@ -949,8 +978,7 @@ fn gather_col_widths(
             } else if name == "col" {
                 let span = parse_span_attribute(dom, child, "span").clamp(1, 1000);
                 let width_opt = if let Some(style) = styles.get(&child) {
-                    let w = get_px(style, "width", 0.0);
-                    if w > 0.0 { Some(w) } else { None }
+                    get_resolved_width(style, avail_content_width)
                 } else {
                     None
                 };
@@ -3370,5 +3398,164 @@ mod tests {
 
         // Table height should be row_heights sum (35px, which includes cell borders 4px and 1px) + border_top (4px) + border_bottom (2px) = 41.0
         assert_eq!(table_box.rect.size.height, 41.0);
+    }
+
+    #[test]
+    fn test_percentage_column_widths_auto_layout() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        let cell1_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell1_node);
+
+        let cell2_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell2_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 400px
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(400.0, LengthUnit::Px));
+        styles.insert(table_node, table_style);
+
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Cell 1 style: width: 25% (resolved against 400px = 100px)
+        let mut cell1_style = style_with_display("table-cell");
+        let mut extra = HashMap::new();
+        extra.insert(
+            "width".to_string(),
+            CssValue::Length(25.0, LengthUnit::Percent),
+        );
+        cell1_style.extra_values = Some(std::sync::Arc::new(extra));
+        styles.insert(cell1_node, cell1_style);
+
+        // Cell 2 style: min-width: 75% (resolved against 400px = 300px)
+        let mut cell2_style = style_with_display("table-cell");
+        cell2_style.set_property("min-width", &CssValue::Length(75.0, LengthUnit::Percent));
+        styles.insert(cell2_node, cell2_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Table width should be 400.0
+        assert_eq!(table_box.rect.size.width, 400.0);
+
+        let r = &table_box.children[0];
+        assert_eq!(r.children.len(), 2);
+
+        let c1 = &r.children[0];
+        let c2 = &r.children[1];
+
+        // Column widths should be exactly 100px and 300px
+        assert_eq!(c1.rect.size.width, 100.0);
+        assert_eq!(c2.rect.size.width, 300.0);
+    }
+
+    #[test]
+    fn test_percentage_column_widths_fixed_layout() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        let cell1_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell1_node);
+
+        let cell2_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell2_node);
+
+        let cell3_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell3_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 500px, table-layout: fixed
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(500.0, LengthUnit::Px));
+        table_style.insert(
+            "table-layout".to_string(),
+            CssValue::Keyword("fixed".to_string()),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Cell 1 style: width: 40% (resolved against 500px = 200px)
+        let mut cell1_style = style_with_display("table-cell");
+        let mut extra = HashMap::new();
+        extra.insert(
+            "width".to_string(),
+            CssValue::Length(40.0, LengthUnit::Percent),
+        );
+        cell1_style.extra_values = Some(std::sync::Arc::new(extra));
+        styles.insert(cell1_node, cell1_style);
+
+        // Cell 2 style: width: 20% (resolved against 500px = 100px)
+        let mut cell2_style = style_with_display("table-cell");
+        let mut extra2 = HashMap::new();
+        extra2.insert(
+            "width".to_string(),
+            CssValue::Length(20.0, LengthUnit::Percent),
+        );
+        cell2_style.extra_values = Some(std::sync::Arc::new(extra2));
+        styles.insert(cell2_node, cell2_style);
+
+        // Cell 3 style: auto width (should get remaining 200px)
+        styles.insert(cell3_node, style_with_display("table-cell"));
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 600.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        assert_eq!(table_box.rect.size.width, 500.0);
+
+        let r = &table_box.children[0];
+        assert_eq!(r.children.len(), 3);
+
+        let c1 = &r.children[0];
+        let c2 = &r.children[1];
+        let c3 = &r.children[2];
+
+        // Column widths should be exactly 200px, 100px, and 200px
+        assert_eq!(c1.rect.size.width, 200.0);
+        assert_eq!(c2.rect.size.width, 100.0);
+        assert_eq!(c3.rect.size.width, 200.0);
     }
 }
