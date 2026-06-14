@@ -1899,6 +1899,7 @@ impl BoaHost {
                     });
 
                     Object.defineProperty(node, 'accessKey', {
+                        // accessKey reflected IDL attribute (t0715)
                         get() {
                             return this.getAttribute('accesskey') || '';
                         },
@@ -13226,6 +13227,40 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|stylesheet|stylesheet|alternate|54321|54321".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_accesskey() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. A freshly created element has accessKey === '' by default when 'accesskey' is absent.
+            let el = document.createElement('div');
+            let res1 = el.accessKey;
+
+            // 2. Setting el.accessKey = 'a' via setter returns 'a' via getter
+            el.accessKey = 'a';
+            let res2 = el.accessKey;
+
+            // 3. Setter also writes the value to the underlying 'accesskey' content attribute verbatim
+            let res3 = el.getAttribute('accesskey');
+
+            // 4. Updating the 'accesskey' content attribute via setAttribute is reflected by the getter
+            el.setAttribute('accesskey', 'b');
+            let res4 = el.accessKey;
+
+            // 5. Test coercion to string (e.g. numeric value is coerced to string)
+            el.accessKey = 98765;
+            let res5 = el.accessKey;
+            let res6 = el.getAttribute('accesskey');
+
+            [res1, res2, res3, res4, res5, res6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|a|a|b|98765|98765".to_string())
         );
     }
 
