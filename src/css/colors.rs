@@ -175,6 +175,30 @@ pub fn named_color(name: &str) -> Option<Color> {
         "graytext" => Some(Color::Rgba(128, 128, 128, 255)),
         "accentcolor" => Some(Color::Rgba(0, 120, 215, 255)),
         "accentcolortext" => Some(Color::Rgba(255, 255, 255, 255)),
+        // Deprecated CSS2 System Colors (CSS Color Module Level 4, Section 14.2)
+        "activeborder" => Some(Color::Rgba(118, 118, 118, 255)),
+        "activecaption" => Some(Color::Rgba(204, 204, 204, 255)),
+        "appworkspace" => Some(Color::Rgba(240, 240, 240, 255)),
+        "background" => Some(Color::Rgba(0, 120, 215, 255)),
+        "buttonhighlight" => Some(Color::Rgba(255, 255, 255, 255)),
+        "buttonshadow" => Some(Color::Rgba(128, 128, 128, 255)),
+        "captiontext" => Some(Color::Rgba(0, 0, 0, 255)),
+        "inactiveborder" => Some(Color::Rgba(244, 244, 244, 255)),
+        "inactivecaption" => Some(Color::Rgba(244, 244, 244, 255)),
+        "inactivecaptiontext" => Some(Color::Rgba(128, 128, 128, 255)),
+        "infobackground" => Some(Color::Rgba(255, 255, 225, 255)),
+        "infotext" => Some(Color::Rgba(0, 0, 0, 255)),
+        "menu" => Some(Color::Rgba(240, 240, 240, 255)),
+        "menutext" => Some(Color::Rgba(0, 0, 0, 255)),
+        "scrollbar" => Some(Color::Rgba(200, 200, 200, 255)),
+        "threeddarkshadow" => Some(Color::Rgba(0, 0, 0, 255)),
+        "threedface" => Some(Color::Rgba(240, 240, 240, 255)),
+        "threedhighlight" => Some(Color::Rgba(255, 255, 255, 255)),
+        "threedlightshadow" => Some(Color::Rgba(224, 224, 224, 255)),
+        "threedshadow" => Some(Color::Rgba(160, 160, 160, 255)),
+        "window" => Some(Color::Rgba(255, 255, 255, 255)),
+        "windowframe" => Some(Color::Rgba(118, 118, 118, 255)),
+        "windowtext" => Some(Color::Rgba(0, 0, 0, 255)),
         _ => None,
     }
 }
@@ -237,6 +261,179 @@ pub fn parse_hsl(h: f32, s: f32, l: f32, a: f32) -> Color {
         (b * 255.0).round() as u8,
         (a * 255.0).round() as u8,
     )
+}
+
+/// Converts a standard sRGB channel value (0 to 255) to a linear sRGB f32 value in the range [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#srgb-to-linear>
+pub fn srgb_to_linear(val: u8) -> f32 {
+    let c = val as f32 / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Converts a linear sRGB channel value in the range [0.0, 1.0] to a standard sRGB channel value (0 to 255).
+/// Spec: <https://www.w3.org/TR/css-color-4/#linear-to-srgb>
+pub fn linear_to_srgb(c: f32) -> u8 {
+    let c = if c.is_finite() { c } else { 0.0 }.clamp(0.0, 1.0);
+    let s = if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (s * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// Parses an HWB color into RGBA.
+/// h is in degrees, w, b, and a are in the range [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#hwb-to-rgb>
+pub fn parse_hwb(h: f32, w: f32, b: f32, a: f32) -> Color {
+    fn finite_or_zero(v: f32) -> f32 {
+        if v.is_finite() { v } else { 0.0 }
+    }
+    let w = finite_or_zero(w).clamp(0.0, 1.0);
+    let b = finite_or_zero(b).clamp(0.0, 1.0);
+    let a = finite_or_zero(a).clamp(0.0, 1.0);
+
+    // Normalize hue to [0, 360)
+    let h = finite_or_zero(h) % 360.0;
+    let h = if h < 0.0 { h + 360.0 } else { h };
+
+    // If w + b > 1.0, they are normalized by dividing both by (w + b)
+    let sum = w + b;
+    let (w_norm, b_norm) = if sum > 1.0 {
+        (w / sum, b / sum)
+    } else {
+        (w, b)
+    };
+
+    fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 1.0 / 2.0 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
+        p
+    }
+
+    let p = 0.0;
+    let q = 1.0;
+    let r1 = hue_to_rgb(p, q, h / 360.0 + 1.0 / 3.0);
+    let g1 = hue_to_rgb(p, q, h / 360.0);
+    let b1 = hue_to_rgb(p, q, h / 360.0 - 1.0 / 3.0);
+
+    // Blend with whiteness and blackness
+    let factor = 1.0 - w_norm - b_norm;
+    let r = r1 * factor + w_norm;
+    let g = g1 * factor + w_norm;
+    let b = b1 * factor + w_norm;
+
+    Color::Rgba(
+        (r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b * 255.0).round().clamp(0.0, 255.0) as u8,
+        (a * 255.0).round().clamp(0.0, 255.0) as u8,
+    )
+}
+
+/// Converts an RGBA Color to HSL components.
+/// Returns (h, s, l, a) where h is in [0.0, 360.0], s, l, a are in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#rgb-to-hsl>
+pub fn color_to_hsl(color: Color) -> (f32, f32, f32, f32) {
+    let Color::Rgba(r_u, g_u, b_u, a_u) = color;
+    let r = r_u as f32 / 255.0;
+    let g = g_u as f32 / 255.0;
+    let b = b_u as f32 / 255.0;
+    let a = a_u as f32 / 255.0;
+
+    let max = r.max(g.max(b));
+    let min = r.min(g.min(b));
+    let d = max - min;
+
+    let l = (max + min) / 2.0;
+
+    let s = if d == 0.0 {
+        0.0
+    } else {
+        let denom = 1.0 - (2.0 * l - 1.0).abs();
+        if denom == 0.0 { 0.0 } else { d / denom }
+    };
+
+    let mut h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        let mut val = (g - b) / d;
+        if val < 0.0 {
+            val += 6.0;
+        }
+        val % 6.0
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+
+    h *= 60.0;
+    if h < 0.0 {
+        h += 360.0;
+    } else if h >= 360.0 {
+        h -= 360.0;
+    }
+
+    (h, s, l, a)
+}
+
+/// Converts an RGBA Color to HWB components.
+/// Returns (h, w, b, a) where h is in [0.0, 360.0], w, b, a are in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#rgb-to-hwb>
+pub fn color_to_hwb(color: Color) -> (f32, f32, f32, f32) {
+    let Color::Rgba(r_u, g_u, b_u, a_u) = color;
+    let r = r_u as f32 / 255.0;
+    let g = g_u as f32 / 255.0;
+    let b = b_u as f32 / 255.0;
+    let a = a_u as f32 / 255.0;
+
+    let max = r.max(g.max(b));
+    let min = r.min(g.min(b));
+    let d = max - min;
+
+    let mut h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        let mut val = (g - b) / d;
+        if val < 0.0 {
+            val += 6.0;
+        }
+        val % 6.0
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+
+    h *= 60.0;
+    if h < 0.0 {
+        h += 360.0;
+    } else if h >= 360.0 {
+        h -= 360.0;
+    }
+
+    let w = min;
+    let b_val = 1.0 - max;
+
+    (h, w, b_val, a)
 }
 
 #[cfg(test)]
@@ -346,5 +543,115 @@ mod tests {
             Color::Rgba(255, 0, 0, 255)
         );
         assert_eq!(parse_hsl(720.0, 1.0, 0.5, 1.0), Color::Rgba(255, 0, 0, 255));
+    }
+
+    #[test]
+    fn test_deprecated_system_colors() {
+        assert_eq!(
+            named_color("activeborder"),
+            Some(Color::Rgba(118, 118, 118, 255))
+        );
+        assert_eq!(
+            named_color("infobackground"),
+            Some(Color::Rgba(255, 255, 225, 255))
+        );
+        assert_eq!(named_color("window"), Some(Color::Rgba(255, 255, 255, 255)));
+        assert_eq!(
+            named_color("activecaption"),
+            Some(Color::Rgba(204, 204, 204, 255))
+        );
+    }
+
+    #[test]
+    fn test_srgb_conversions() {
+        // srgb_to_linear and linear_to_srgb round-tripping or specific values
+        assert_eq!(linear_to_srgb(srgb_to_linear(128)), 128);
+        assert_eq!(linear_to_srgb(srgb_to_linear(0)), 0);
+        assert_eq!(linear_to_srgb(srgb_to_linear(255)), 255);
+
+        // check non-finite or out-of-range safety
+        assert_eq!(linear_to_srgb(f32::NAN), 0);
+        assert_eq!(linear_to_srgb(f32::INFINITY), 0);
+        assert_eq!(linear_to_srgb(-10.0), 0);
+        assert_eq!(linear_to_srgb(10.0), 255);
+    }
+
+    #[test]
+    fn test_parse_hwb() {
+        // hwb(0 0% 0%) -> red
+        assert_eq!(parse_hwb(0.0, 0.0, 0.0, 1.0), Color::Rgba(255, 0, 0, 255));
+        // hwb(120 0% 0%) -> green
+        assert_eq!(parse_hwb(120.0, 0.0, 0.0, 1.0), Color::Rgba(0, 255, 0, 255));
+        // hwb(240 0% 0%) -> blue
+        assert_eq!(parse_hwb(240.0, 0.0, 0.0, 1.0), Color::Rgba(0, 0, 255, 255));
+        // hwb(0 100% 0%) -> white
+        assert_eq!(
+            parse_hwb(0.0, 1.0, 0.0, 1.0),
+            Color::Rgba(255, 255, 255, 255)
+        );
+        // hwb(0 0% 100%) -> black
+        assert_eq!(parse_hwb(0.0, 0.0, 1.0, 1.0), Color::Rgba(0, 0, 0, 255));
+
+        // Clamping and normalization
+        // w + b > 1.0 (e.g. w=0.4, b=0.7) -> sum = 1.1 -> w_norm = 0.4/1.1, b_norm = 0.7/1.1
+        let clamped = parse_hwb(0.0, 0.4, 0.7, 1.0);
+        let expected_gray = ((0.4f32 / 1.1f32) * 255.0f32).round() as u8;
+        assert_eq!(
+            clamped,
+            Color::Rgba(expected_gray, expected_gray, expected_gray, 255)
+        );
+
+        // Non-finite values
+        assert_eq!(
+            parse_hwb(f32::NAN, f32::INFINITY, f32::NAN, 1.0),
+            Color::Rgba(255, 0, 0, 255)
+        );
+    }
+
+    #[test]
+    fn test_color_to_hsl_and_back() {
+        let colors = [
+            Color::Rgba(255, 0, 0, 255),
+            Color::Rgba(0, 255, 0, 255),
+            Color::Rgba(0, 0, 255, 255),
+            Color::Rgba(128, 128, 128, 255),
+            Color::Rgba(255, 255, 255, 255),
+            Color::Rgba(0, 0, 0, 255),
+        ];
+
+        for color in colors {
+            let Color::Rgba(r1, g1, b1, a1) = color;
+            let (h, s, l, a) = color_to_hsl(Color::Rgba(r1, g1, b1, a1));
+            let converted = parse_hsl(h, s, l, a);
+            // Allow tiny rounding tolerance
+            let Color::Rgba(r2, g2, b2, a2) = converted;
+            assert!((r1 as i32 - r2 as i32).abs() <= 1);
+            assert!((g1 as i32 - g2 as i32).abs() <= 1);
+            assert!((b1 as i32 - b2 as i32).abs() <= 1);
+            assert_eq!(a1, a2);
+        }
+    }
+
+    #[test]
+    fn test_color_to_hwb_and_back() {
+        let colors = [
+            Color::Rgba(255, 0, 0, 255),
+            Color::Rgba(0, 255, 0, 255),
+            Color::Rgba(0, 0, 255, 255),
+            Color::Rgba(128, 128, 128, 255),
+            Color::Rgba(255, 255, 255, 255),
+            Color::Rgba(0, 0, 0, 255),
+        ];
+
+        for color in colors {
+            let Color::Rgba(r1, g1, b1, a1) = color;
+            let (h, w, b, a) = color_to_hwb(Color::Rgba(r1, g1, b1, a1));
+            let converted = parse_hwb(h, w, b, a);
+            let Color::Rgba(r2, g2, b2, a2) = converted;
+            assert!((r1 as i32 - r2 as i32).abs() <= 1);
+            assert!((g1 as i32 - g2 as i32).abs() <= 1);
+            assert!((b1 as i32 - b2 as i32).abs() <= 1);
+            assert_eq!(a1, a2);
+        }
     }
 }
