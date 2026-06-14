@@ -1527,6 +1527,7 @@ impl Dom {
     }
 
     /// Returns the value of the `size` content attribute of a valid form control element
+    /// Returns the value of the `size` content attribute of a valid form control element
     /// (input, select).
     /// Returns `None` if the node is not one of these elements, has no `size` attribute,
     /// or if the `NodeId` is invalid.
@@ -1541,6 +1542,195 @@ impl Dom {
                 .map(|(_, v)| v.as_str());
         }
         None
+    }
+
+    /// Returns the value of the `loading` content attribute of a valid `img` or `iframe` element.
+    /// Returns `None` if the node is not one of these elements, has no `loading` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_loading(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("iframe"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("loading"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `loading` content attribute on a valid `img` or `iframe` element.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_loading(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("iframe"))
+        {
+            self.set_attribute(node, "loading", value);
+        }
+    }
+
+    /// Returns the value of the `ping` content attribute of a valid `a` or `area` element.
+    /// Returns `None` if the node is not one of these elements, has no `ping` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_ping(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("a") || name.eq_ignore_ascii_case("area"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("ping"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `ping` content attribute on a valid `a` or `area` element.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_ping(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("a") || name.eq_ignore_ascii_case("area"))
+        {
+            self.set_attribute(node, "ping", value);
+        }
+    }
+
+    /// Returns the value of the `coords` content attribute of a valid `area` element.
+    /// Returns `None` if the node is not an `area` element, has no `coords` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_coords(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("area")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("coords"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `coords` content attribute on a valid `area` element.
+    /// No-op if the node is not an `area` element, or if the `NodeId` is invalid.
+    pub fn set_coords(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("area")
+        {
+            self.set_attribute(node, "coords", value);
+        }
+    }
+
+    /// Returns the value of the `shape` content attribute of a valid `area` element.
+    /// Returns `None` if the node is not an `area` element, has no `shape` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_shape(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("area")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("shape"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `shape` content attribute on a valid `area` element.
+    /// No-op if the node is not an `area` element, or if the `NodeId` is invalid.
+    pub fn set_shape(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("area")
+        {
+            self.set_attribute(node, "shape", value);
+        }
+    }
+
+    /// Returns the value of the `as` content attribute of a valid `link` element.
+    /// Returns `None` if the node is not a `link` element, has no `as` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_as(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("link")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("as"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `as` content attribute on a valid `link` element.
+    /// No-op if the node is not a `link` element, or if the `NodeId` is invalid.
+    pub fn set_as(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("link")
+        {
+            self.set_attribute(node, "as", value);
+        }
+    }
+
+    /// Returns the value of the `imagesrcset` content attribute of a valid `link` element.
+    /// Returns `None` if the node is not a `link` element, has no `imagesrcset` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_image_srcset(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("link")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("imagesrcset"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `imagesrcset` content attribute on a valid `link` element.
+    /// No-op if the node is not a `link` element, or if the `NodeId` is invalid.
+    pub fn set_image_srcset(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("link")
+        {
+            self.set_attribute(node, "imagesrcset", value);
+        }
+    }
+
+    /// Returns the value of the `imagesizes` content attribute of a valid `link` element.
+    /// Returns `None` if the node is not a `link` element, has no `imagesizes` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_image_sizes(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("link")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("imagesizes"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `imagesizes` content attribute on a valid `link` element.
+    /// No-op if the node is not a `link` element, or if the `NodeId` is invalid.
+    pub fn set_image_sizes(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("link")
+        {
+            self.set_attribute(node, "imagesizes", value);
+        }
     }
 
     // TODO(spec): muted reflects defaultMuted
@@ -3710,5 +3900,133 @@ mod tests {
         assert_eq!(dom.get_maxlength(foreign_node), None);
         assert_eq!(dom.get_minlength(foreign_node), None);
         assert_eq!(dom.get_size(foreign_node), None);
+    }
+
+    #[test]
+    fn test_reflected_content_attribute_accessors_t0780() {
+        let mut dom = Dom::new();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![],
+        });
+
+        // 1. loading (img, iframe)
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![("loading".to_string(), "lazy".to_string())],
+        });
+        let iframe_id = dom.create_node(NodeData::Element {
+            name: "iframe".to_string(),
+            attrs: vec![("loading".to_string(), "eager".to_string())],
+        });
+        assert_eq!(dom.get_loading(img_id), Some("lazy"));
+        assert_eq!(dom.get_loading(iframe_id), Some("eager"));
+        assert_eq!(dom.get_loading(div_id), None);
+
+        dom.set_loading(img_id, "eager");
+        assert_eq!(dom.get_loading(img_id), Some("eager"));
+        dom.set_loading(div_id, "lazy");
+        assert_eq!(dom.get_loading(div_id), None);
+
+        // 2. ping (a, area)
+        let a_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("ping".to_string(), "https://tracker.com/ping".to_string())],
+        });
+        let area_id = dom.create_node(NodeData::Element {
+            name: "area".to_string(),
+            attrs: vec![("ping".to_string(), "https://tracker2.com/ping".to_string())],
+        });
+        assert_eq!(dom.get_ping(a_id), Some("https://tracker.com/ping"));
+        assert_eq!(dom.get_ping(area_id), Some("https://tracker2.com/ping"));
+        assert_eq!(dom.get_ping(div_id), None);
+
+        dom.set_ping(a_id, "https://other.com");
+        assert_eq!(dom.get_ping(a_id), Some("https://other.com"));
+        dom.set_ping(div_id, "https://other.com");
+        assert_eq!(dom.get_ping(div_id), None);
+
+        // 3. coords (area)
+        let area_coords_id = dom.create_node(NodeData::Element {
+            name: "area".to_string(),
+            attrs: vec![("coords".to_string(), "0,0,82,126".to_string())],
+        });
+        assert_eq!(dom.get_coords(area_coords_id), Some("0,0,82,126"));
+        assert_eq!(dom.get_coords(div_id), None);
+
+        dom.set_coords(area_coords_id, "1,2,3,4");
+        assert_eq!(dom.get_coords(area_coords_id), Some("1,2,3,4"));
+        dom.set_coords(div_id, "1,2,3,4");
+        assert_eq!(dom.get_coords(div_id), None);
+
+        // 4. shape (area)
+        let area_shape_id = dom.create_node(NodeData::Element {
+            name: "area".to_string(),
+            attrs: vec![("shape".to_string(), "circle".to_string())],
+        });
+        assert_eq!(dom.get_shape(area_shape_id), Some("circle"));
+        assert_eq!(dom.get_shape(div_id), None);
+
+        dom.set_shape(area_shape_id, "rect");
+        assert_eq!(dom.get_shape(area_shape_id), Some("rect"));
+        dom.set_shape(div_id, "rect");
+        assert_eq!(dom.get_shape(div_id), None);
+
+        // 5. as, imagesrcset, imagesizes (link)
+        let link_id = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![
+                ("as".to_string(), "image".to_string()),
+                ("imagesrcset".to_string(), "logo-2x.png 2x".to_string()),
+                ("imagesizes".to_string(), "50vw".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_as(link_id), Some("image"));
+        assert_eq!(dom.get_image_srcset(link_id), Some("logo-2x.png 2x"));
+        assert_eq!(dom.get_image_sizes(link_id), Some("50vw"));
+        assert_eq!(dom.get_as(div_id), None);
+        assert_eq!(dom.get_image_srcset(div_id), None);
+        assert_eq!(dom.get_image_sizes(div_id), None);
+
+        dom.set_as(link_id, "script");
+        dom.set_image_srcset(link_id, "logo-3x.png 3x");
+        dom.set_image_sizes(link_id, "100vw");
+        assert_eq!(dom.get_as(link_id), Some("script"));
+        assert_eq!(dom.get_image_srcset(link_id), Some("logo-3x.png 3x"));
+        assert_eq!(dom.get_image_sizes(link_id), Some("100vw"));
+
+        dom.set_as(div_id, "script");
+        dom.set_image_srcset(div_id, "logo-3x.png 3x");
+        dom.set_image_sizes(div_id, "100vw");
+        assert_eq!(dom.get_as(div_id), None);
+        assert_eq!(dom.get_image_srcset(div_id), None);
+        assert_eq!(dom.get_image_sizes(div_id), None);
+
+        // 6. Non-element node / foreign NodeId
+        let foreign_node = dom.create_node(NodeData::Text("some text".to_string()));
+        assert_eq!(dom.get_loading(foreign_node), None);
+        assert_eq!(dom.get_ping(foreign_node), None);
+        assert_eq!(dom.get_coords(foreign_node), None);
+        assert_eq!(dom.get_shape(foreign_node), None);
+        assert_eq!(dom.get_as(foreign_node), None);
+        assert_eq!(dom.get_image_srcset(foreign_node), None);
+        assert_eq!(dom.get_image_sizes(foreign_node), None);
+
+        dom.set_loading(foreign_node, "lazy");
+        dom.set_ping(foreign_node, "url");
+        dom.set_coords(foreign_node, "0");
+        dom.set_shape(foreign_node, "default");
+        dom.set_as(foreign_node, "style");
+        dom.set_image_srcset(foreign_node, "srcset");
+        dom.set_image_sizes(foreign_node, "sizes");
+
+        assert_eq!(dom.get_loading(foreign_node), None);
+        assert_eq!(dom.get_ping(foreign_node), None);
+        assert_eq!(dom.get_coords(foreign_node), None);
+        assert_eq!(dom.get_shape(foreign_node), None);
+        assert_eq!(dom.get_as(foreign_node), None);
+        assert_eq!(dom.get_image_srcset(foreign_node), None);
+        assert_eq!(dom.get_image_sizes(foreign_node), None);
     }
 }
