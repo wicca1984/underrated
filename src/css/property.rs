@@ -547,6 +547,42 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "normal",
         animatable: false,
     },
+    PropertyMetadata {
+        name: "text-size-adjust",
+        inherited: true,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "fill",
+        inherited: true,
+        initial: "black",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "stroke",
+        inherited: true,
+        initial: "none",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "stroke-width",
+        inherited: true,
+        initial: "1",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "paint-order",
+        inherited: true,
+        initial: "normal",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "image-orientation",
+        inherited: true,
+        initial: "from-image",
+        animatable: false,
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -2108,6 +2144,18 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "running",
         animatable: false,
     },
+    PropertyMetadata {
+        name: "content",
+        inherited: false,
+        initial: "normal",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "transition-behavior",
+        inherited: false,
+        initial: "normal",
+        animatable: false,
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -2214,6 +2262,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "border-bottom-width",
             "border-left-width",
         ],
+    },
+    ShorthandExpansion {
+        name: "caret",
+        longhands: &["caret-color", "caret-shape"],
     },
     ShorthandExpansion {
         name: "column-rule",
@@ -4254,5 +4306,36 @@ mod tests {
                 "grid-auto-flow",
             ]
         );
+    }
+
+    #[test]
+    fn test_additive_properties_t0924() {
+        let props = [
+            ("content", false, "normal", false),
+            ("text-size-adjust", true, "auto", false),
+            ("transition-behavior", false, "normal", false),
+            ("fill", true, "black", true),
+            ("stroke", true, "none", true),
+            ("stroke-width", true, "1", true),
+            ("paint-order", true, "normal", false),
+            ("image-orientation", true, "from-image", false),
+        ];
+
+        for (name, inherited, initial, animatable) in props {
+            let meta =
+                lookup(name).unwrap_or_else(|| panic!("property {} must be registered", name));
+            assert_eq!(meta.name, name);
+            assert_eq!(meta.inherited, inherited, "inherited mismatch for {}", name);
+            assert_eq!(meta.initial, initial, "initial mismatch for {}", name);
+            assert_eq!(
+                meta.animatable, animatable,
+                "animatable mismatch for {}",
+                name
+            );
+        }
+
+        // Test caret shorthand
+        let caret_lh = shorthand_longhands("caret").expect("caret shorthand must be registered");
+        assert_eq!(caret_lh, &["caret-color", "caret-shape"][..]);
     }
 }
