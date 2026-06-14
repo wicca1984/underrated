@@ -40,6 +40,7 @@ pub struct Event {
     pub(crate) time_stamp: f64,
     pub(crate) dispatch_flag: GcRefCell<bool>,
     pub(crate) path: GcRefCell<Vec<JsValue>>,
+    pub(crate) in_passive_listener: GcRefCell<bool>,
 }
 
 impl Class for Event {
@@ -96,6 +97,7 @@ impl Class for Event {
             time_stamp: get_event_timestamp(),
             dispatch_flag: GcRefCell::new(false),
             path: GcRefCell::new(Vec::new()),
+            in_passive_listener: GcRefCell::new(false),
         })
     }
 
@@ -398,6 +400,9 @@ fn prevent_default(this: &JsValue, _args: &[JsValue], _context: &mut Context) ->
     let event = obj.downcast_ref::<Event>().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
     })?;
+    if *event.in_passive_listener.borrow() {
+        return Ok(JsValue::undefined());
+    }
     // TODO(spec): Standard DOM says we should only set default_prevented if cancelable is true,
     // but the existing test suite expects unconditionally setting it.
     *event.default_prevented.borrow_mut() = true;
@@ -481,6 +486,9 @@ fn set_return_value(this: &JsValue, args: &[JsValue], _context: &mut Context) ->
     let event = obj.downcast_ref::<Event>().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
     })?;
+    if *event.in_passive_listener.borrow() {
+        return Ok(JsValue::undefined());
+    }
     let val = args.first().cloned().unwrap_or(JsValue::undefined());
     let boolean_val = val.to_boolean();
     if !boolean_val {
@@ -837,6 +845,31 @@ impl<'a> Drop for EventDispatchGuard<'a> {
     }
 }
 
+struct PassiveListenerGuard<'a> {
+    in_passive_listener: &'a GcRefCell<bool>,
+    active: bool,
+}
+
+impl<'a> PassiveListenerGuard<'a> {
+    fn new(in_passive_listener: &'a GcRefCell<bool>, active: bool) -> Self {
+        if active {
+            *in_passive_listener.borrow_mut() = true;
+        }
+        Self {
+            in_passive_listener,
+            active,
+        }
+    }
+}
+
+impl<'a> Drop for PassiveListenerGuard<'a> {
+    fn drop(&mut self) {
+        if self.active {
+            *self.in_passive_listener.borrow_mut() = false;
+        }
+    }
+}
+
 fn invoke_listeners_on(
     curr_node: &JsValue,
     event: &Event,
@@ -912,6 +945,8 @@ fn invoke_listeners_on(
             continue;
         }
 
+        let _passive_guard =
+            PassiveListenerGuard::new(&event.in_passive_listener, listener.passive);
         if let Some(callable) = listener.callback.as_object() {
             if callable.is_callable() {
                 callable.call(curr_node, std::slice::from_ref(event_val), context)?;
@@ -1938,5 +1973,71 @@ mod tests {
                 "parent_bubble_phase_3"
             ]
         );
+    }
+
+    #[test]
+    fn test_passive_event_listeners() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        // 1. Verify that preventDefault is a no-op inside a passive listener
+        let script = "{
+            let target = new EventTarget();
+            let ev = new Event('click');
+            let called_passive = false;
+            let called_normal = false;
+
+            target.addEventListener('click', (e) => {
+                called_passive = true;
+                e.preventDefault(); // Should be a no-op because it's registered as passive
+            }, { passive: true });
+
+            target.addEventListener('click', (e) => {
+                called_normal = true;
+                // At this stage, defaultPrevented should still be false
+                if (e.defaultPrevented) {
+                    throw new Error('Should not be prevented yet!');
+                }
+            });
+
+            let dispatch_result = target.dispatchEvent(ev);
+            [called_passive, called_normal, ev.defaultPrevented, dispatch_result];
+        }";
+
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true)); // called_passive
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true)); // called_normal
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(false)); // ev.defaultPrevented (should still be false)
+        assert_eq!(arr.get(3, &mut context).unwrap().as_boolean(), Some(true)); // dispatch_result (true means not prevented)
+
+        // 2. Verify that a subsequent normal listener CAN prevent the event
+        let script = "{
+            let target = new EventTarget();
+            let ev = new Event('click');
+            let called_passive = false;
+            let called_normal = false;
+
+            target.addEventListener('click', (e) => {
+                called_passive = true;
+                e.preventDefault(); // Should be a no-op because it's registered as passive
+            }, { passive: true });
+
+            target.addEventListener('click', (e) => {
+                called_normal = true;
+                e.preventDefault(); // Should work!
+            });
+
+            let dispatch_result = target.dispatchEvent(ev);
+            [called_passive, called_normal, ev.defaultPrevented, dispatch_result];
+        }";
+
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true)); // called_passive
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true)); // called_normal
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true)); // ev.defaultPrevented (now true)
+        assert_eq!(arr.get(3, &mut context).unwrap().as_boolean(), Some(false)); // dispatch_result (false means prevented)
     }
 }
