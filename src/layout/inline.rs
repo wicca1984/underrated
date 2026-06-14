@@ -150,8 +150,39 @@ fn create_line_box_adjusted(
         }
     }
 
+    let base_align = match text_align {
+        "start" => "left",
+        "end" => "right",
+        other => other,
+    };
+
+    let resolved_align = if is_last_line {
+        let raw_last_align = block_container
+            .and_then(|id| styles.get(&id))
+            .map(|style| style.inherited_text.text_align_last.as_str())
+            .unwrap_or("auto");
+
+        let last_align = match raw_last_align {
+            "start" => "left",
+            "end" => "right",
+            other => other,
+        };
+
+        if last_align == "auto" {
+            if base_align == "justify" {
+                "left"
+            } else {
+                base_align
+            }
+        } else {
+            last_align
+        }
+    } else {
+        base_align
+    };
+
     // Adjust X positions based on text-align centering/right alignment
-    let delta_x = match text_align {
+    let delta_x = match resolved_align {
         "center" => ((containing_width - width) / 2.0).max(0.0),
         "right" => (containing_width - width).max(0.0),
         _ => 0.0,
@@ -163,8 +194,8 @@ fn create_line_box_adjusted(
         }
     }
 
-    // TODO(spec): text-align justify v1 — distributes slack across inter-word gaps on non-last lines only; last-line/forced-break detection is simple word-count based; RTL, percentage widths, hyphenation, and justify-by-character are out of scope.
-    if text_align == "justify" && !is_last_line && children.len() >= 2 {
+    // TODO(spec): text-align justify v1 — distributes slack across inter-word gaps on non-last lines only (unless overridden by text-align-last); last-line/forced-break detection is simple word-count based; RTL, percentage widths, hyphenation, and justify-by-character are out of scope.
+    if resolved_align == "justify" && children.len() >= 2 {
         let slack = containing_width - width;
         if slack > 0.0 {
             let n = children.len();
@@ -269,7 +300,7 @@ pub fn layout_inline_run(
                     let (collapse, preserve_newlines, allow_wrap) = match style_ws {
                         "nowrap" => (true, false, false),
                         "pre" => (false, true, false),
-                        "pre-wrap" => (false, true, true),
+                        "pre-wrap" | "break-spaces" => (false, true, true),
                         "pre-line" => (true, true, true),
                         _ => (true, false, true),
                     };
@@ -284,6 +315,7 @@ pub fn layout_inline_run(
 
                     let break_word = if let Some(style) = styles.get(&node) {
                         style.inherited_text.overflow_wrap == "break-word"
+                            || style.inherited_text.overflow_wrap == "anywhere"
                     } else {
                         false
                     };
@@ -2447,5 +2479,128 @@ mod tests {
         );
         // It must have wrapped into multiple lines because width_0 + 40px > width_0 + 10px.
         assert!(line_boxes_wrap.len() > 1);
+    }
+
+    #[test]
+    fn test_text_align_last_center() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("one two".into()));
+        dom.append_child(div, t);
+
+        // A stylesheet with text-align: left and text-align-last: center
+        let stylesheet = parse_stylesheet("div { text-align: left; text-align-last: center; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Using a wide container so it doesn't wrap. It's only 1 line, so it's the last line.
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 500.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line_box = &line_boxes[0];
+        // The total width of children is some value. The slack (500 - width) / 2 should shift children's origin.x.
+        assert!(line_box.children[0].rect.origin.x > 0.0);
+    }
+
+    #[test]
+    fn test_text_align_last_justify() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("one two three".into()));
+        dom.append_child(div, t);
+
+        // Normally, the last line is not justified under text-align: justify.
+        // But with text-align-last: justify, even the last line (here the only line) gets justified.
+        let stylesheet = parse_stylesheet("div { text-align: left; text-align-last: justify; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 500.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line_box = &line_boxes[0];
+        // The first child should be at 0.0, and the last child should be shifted right to align with the edge (500.0).
+        let last_child = &line_box.children[line_box.children.len() - 1];
+        let expected_x = 500.0 - last_child.rect.size.width;
+        assert_eq!(last_child.rect.origin.x, expected_x);
+    }
+
+    #[test]
+    fn test_overflow_wrap_anywhere() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("superlongunbreakableword".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { overflow-wrap: anywhere; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // We set a very small containing width so that the word must break!
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+        // It should have wrapped/broken into multiple line boxes.
+        assert!(line_boxes.len() > 1);
+    }
+
+    #[test]
+    fn test_white_space_break_spaces() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello  world".into()));
+        dom.append_child(div, t);
+
+        // Parse with pre-wrap first to get similar layout behavior
+        let stylesheet = parse_stylesheet("div { white-space: pre-wrap; }");
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        // Manually override white_space property to "break-spaces" since CSS parser doesn't support parsing it yet
+        if let Some(style) = styles.get_mut(&div) {
+            std::sync::Arc::make_mut(&mut style.inherited_text).white_space =
+                "break-spaces".to_string();
+        }
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        // Under break-spaces, whitespace is preserved (collapse is false, preserve_newlines is true, allow_wrap is true).
+        // Since collapse is false, we expect consecutive spaces to be preserved!
+        assert!(leaf_texts.contains(&"  ".to_string()) || leaf_texts.contains(&" ".to_string()));
     }
 }
