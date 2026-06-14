@@ -485,6 +485,7 @@ pub fn sniff_response(
             crate::encoding::Charset::Koi8U => Some("koi8-u".to_string()),
             crate::encoding::Charset::Ibm866 => Some("ibm866".to_string()),
             crate::encoding::Charset::Macintosh => Some("macintosh".to_string()),
+            crate::encoding::Charset::XMacCyrillic => Some("x-mac-cyrillic".to_string()),
         };
     }
 
