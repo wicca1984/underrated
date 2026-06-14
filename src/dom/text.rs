@@ -150,14 +150,20 @@ impl Dom {
     /// Returns a substring of the character data from the given UTF-16 code unit offset and count.
     ///
     /// Clamps the count if it goes beyond the end of the data.
-    /// Returns `Err(DomError::IndexSize)` if the offset is greater than the data's length.
+    /// Returns `Err(DomError::IndexSize)` if the offset is greater than the data's length or if offset or count is negative.
     // spec: https://dom.spec.whatwg.org/#dom-characterdata-substringdata
     pub fn substring_data(
         &self,
         node: NodeId,
-        offset: usize,
-        count: usize,
+        offset: isize,
+        count: isize,
     ) -> Result<String, DomError> {
+        if offset < 0 || count < 0 {
+            return Err(DomError::IndexSize);
+        }
+        let offset = offset as usize;
+        let count = count as usize;
+
         let data = self.data(node).ok_or(DomError::NotSupported)?;
         let s = match data {
             NodeData::Text(s) | NodeData::Comment(s) => s,
@@ -202,7 +208,10 @@ impl Dom {
 
     /// Inserts the given string data at the specified UTF-16 code unit offset.
     // spec: https://dom.spec.whatwg.org/#dom-characterdata-insertdata
-    pub fn insert_data(&mut self, node: NodeId, offset: usize, data: &str) -> Result<(), DomError> {
+    pub fn insert_data(&mut self, node: NodeId, offset: isize, data: &str) -> Result<(), DomError> {
+        if offset < 0 {
+            return Err(DomError::IndexSize);
+        }
         self.replace_data(node, offset, 0, data)
     }
 
@@ -211,9 +220,12 @@ impl Dom {
     pub fn delete_data(
         &mut self,
         node: NodeId,
-        offset: usize,
-        count: usize,
+        offset: isize,
+        count: isize,
     ) -> Result<(), DomError> {
+        if offset < 0 || count < 0 {
+            return Err(DomError::IndexSize);
+        }
         self.replace_data(node, offset, count, "")
     }
 
@@ -222,10 +234,16 @@ impl Dom {
     pub fn replace_data(
         &mut self,
         node: NodeId,
-        offset: usize,
-        mut count: usize,
+        offset: isize,
+        count: isize,
         data: &str,
     ) -> Result<(), DomError> {
+        if offset < 0 || count < 0 {
+            return Err(DomError::IndexSize);
+        }
+        let offset = offset as usize;
+        let mut count = count as usize;
+
         let mut changed = false;
         if let Some(n) = self.arena.get_mut(node) {
             match &mut n.data {
@@ -267,9 +285,14 @@ impl Dom {
     ///
     /// Both nodes remain in the tree as siblings, and the new Text node is returned.
     /// Returns `Err(DomError::NotSupported)` if the node is not a Text node.
-    /// Returns `Err(DomError::IndexSize)` if the offset is greater than the data's length.
+    /// Returns `Err(DomError::IndexSize)` if the offset is greater than the data's length or if the offset is negative.
     // spec: https://dom.spec.whatwg.org/#dom-text-splittext
-    pub fn split_text(&mut self, node: NodeId, offset: usize) -> Result<NodeId, DomError> {
+    pub fn split_text(&mut self, node: NodeId, offset: isize) -> Result<NodeId, DomError> {
+        if offset < 0 {
+            return Err(DomError::IndexSize);
+        }
+        let offset = offset as usize;
+
         let data = self.data(node).ok_or(DomError::NotSupported)?;
         let length = match data {
             NodeData::Text(s) => s.encode_utf16().count(),
@@ -280,8 +303,8 @@ impl Dom {
             return Err(DomError::IndexSize);
         }
 
-        let count = length - offset;
-        let new_data = self.substring_data(node, offset, count)?;
+        let count = (length - offset) as isize;
+        let new_data = self.substring_data(node, offset as isize, count)?;
         let new_node = self.create_node(NodeData::Text(new_data));
 
         if let Some(parent) = self.parent(node) {
@@ -294,7 +317,7 @@ impl Dom {
             self.insert_before(parent, new_node, reference);
         }
 
-        self.replace_data(node, offset, count, "")?;
+        self.replace_data(node, offset as isize, count, "")?;
 
         Ok(new_node)
     }
@@ -1287,21 +1310,84 @@ mod tests {
         let mut dom = Dom::new();
         let text_node = dom.create_node(NodeData::Text("hello".into()));
 
-        // substring_data with count = usize::MAX
+        // substring_data with count = isize::MAX
         assert_eq!(
-            dom.substring_data(text_node, 2, usize::MAX),
+            dom.substring_data(text_node, 2, isize::MAX),
             Ok("llo".into())
         );
 
-        // replace_data with count = usize::MAX
+        // replace_data with count = isize::MAX
         assert_eq!(
-            dom.replace_data(text_node, 1, usize::MAX, "ippopotamus"),
+            dom.replace_data(text_node, 1, isize::MAX, "ippopotamus"),
             Ok(())
         );
         assert_eq!(dom.character_data(text_node), Some("hippopotamus".into()));
 
-        // delete_data with count = usize::MAX
-        assert_eq!(dom.delete_data(text_node, 1, usize::MAX), Ok(()));
+        // delete_data with count = isize::MAX
+        assert_eq!(dom.delete_data(text_node, 1, isize::MAX), Ok(()));
         assert_eq!(dom.character_data(text_node), Some("h".into()));
+    }
+
+    #[test]
+    fn test_negative_and_out_of_range_error_handling() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+
+        // Negative offsets and counts
+        assert_eq!(
+            dom.substring_data(text_node, -1, 5),
+            Err(DomError::IndexSize)
+        );
+        assert_eq!(
+            dom.substring_data(text_node, 2, -1),
+            Err(DomError::IndexSize)
+        );
+        assert_eq!(
+            dom.substring_data(text_node, -5, -10),
+            Err(DomError::IndexSize)
+        );
+
+        assert_eq!(
+            dom.insert_data(text_node, -1, "foo"),
+            Err(DomError::IndexSize)
+        );
+
+        assert_eq!(dom.delete_data(text_node, -1, 2), Err(DomError::IndexSize));
+        assert_eq!(dom.delete_data(text_node, 2, -1), Err(DomError::IndexSize));
+
+        assert_eq!(
+            dom.replace_data(text_node, -1, 2, "foo"),
+            Err(DomError::IndexSize)
+        );
+        assert_eq!(
+            dom.replace_data(text_node, 2, -1, "foo"),
+            Err(DomError::IndexSize)
+        );
+
+        assert_eq!(dom.split_text(text_node, -1), Err(DomError::IndexSize));
+
+        // Out-of-range positive offsets
+        assert_eq!(
+            dom.substring_data(text_node, 6, 1),
+            Err(DomError::IndexSize)
+        );
+        assert_eq!(
+            dom.insert_data(text_node, 6, "foo"),
+            Err(DomError::IndexSize)
+        );
+        assert_eq!(dom.delete_data(text_node, 6, 1), Err(DomError::IndexSize));
+        assert_eq!(
+            dom.replace_data(text_node, 6, 1, "foo"),
+            Err(DomError::IndexSize)
+        );
+        assert_eq!(dom.split_text(text_node, 6), Err(DomError::IndexSize));
+
+        // Extreme clamping with signed boundary limits
+        let count_overflow = isize::MAX;
+        let large_offset = 3isize;
+        assert_eq!(
+            dom.substring_data(text_node, large_offset, count_overflow),
+            Ok("lo".into())
+        );
     }
 }
