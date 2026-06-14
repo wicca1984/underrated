@@ -4281,6 +4281,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("lch") {
                 return parse_lch_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("color") {
+                return parse_color_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -4900,6 +4903,113 @@ fn lab_to_color(l_val: f64, a_val: f64, b_val: f64, alpha: u8) -> Color {
     let b = gamma_encode(b_lin);
 
     Color::Rgba(r, g, b, alpha)
+}
+
+fn parse_color_function(components: &[ComponentValue]) -> Option<Color> {
+    enum ColorArg {
+        Number(f64),
+        Percentage(f64),
+    }
+
+    let mut colorspace_ident: Option<String> = None;
+    let mut args = Vec::new();
+
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                if colorspace_ident.is_none() {
+                    colorspace_ident = Some(s.clone());
+                } else {
+                    return None;
+                }
+            }
+            ComponentValue::Token(CssToken::Number(v)) => {
+                colorspace_ident.as_ref()?;
+                args.push(ColorArg::Number(*v));
+            }
+            ComponentValue::Token(CssToken::Percentage(v)) => {
+                colorspace_ident.as_ref()?;
+                args.push(ColorArg::Percentage(*v));
+            }
+            _ => return None,
+        }
+    }
+
+    let colorspace = colorspace_ident?;
+
+    if args.len() != 3 && args.len() != 4 {
+        return None;
+    }
+
+    let to_f64_channel = |arg: &ColorArg| match arg {
+        ColorArg::Number(v) => *v,
+        ColorArg::Percentage(v) => *v / 100.0,
+    };
+
+    let c1 = to_f64_channel(&args[0]);
+    let c2 = to_f64_channel(&args[1]);
+    let c3 = to_f64_channel(&args[2]);
+
+    let alpha_val = if args.len() == 4 {
+        match args[3] {
+            ColorArg::Number(v) => v,
+            ColorArg::Percentage(v) => v / 100.0,
+        }
+    } else {
+        1.0
+    };
+    let alpha = (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    let (r, g, b) = match colorspace.to_ascii_lowercase().as_str() {
+        "srgb" => {
+            let r = (c1 * 255.0).round().clamp(0.0, 255.0) as u8;
+            let g = (c2 * 255.0).round().clamp(0.0, 255.0) as u8;
+            let b = (c3 * 255.0).round().clamp(0.0, 255.0) as u8;
+            (r, g, b)
+        }
+        "srgb-linear" => {
+            let r = linear_srgb_to_srgb(c1);
+            let g = linear_srgb_to_srgb(c2);
+            let b = linear_srgb_to_srgb(c3);
+            (r, g, b)
+        }
+        "display-p3" => {
+            let r_lin = 1.2249401 * c1 - 0.2249404 * c2 + 0.0000000 * c3;
+            let g_lin = -0.0420569 * c1 + 1.0420571 * c2 + 0.0000000 * c3;
+            let b_lin = -0.0197376 * c1 - 0.0786361 * c2 + 1.0983735 * c3;
+            let r = linear_srgb_to_srgb(r_lin);
+            let g = linear_srgb_to_srgb(g_lin);
+            let b = linear_srgb_to_srgb(b_lin);
+            (r, g, b)
+        }
+        "xyz" | "xyz-d65" => {
+            let r_lin = 3.24096994 * c1 - 1.53738318 * c2 - 0.49861076 * c3;
+            let g_lin = -0.96924364 * c1 + 1.87596750 * c2 + 0.04155506 * c3;
+            let b_lin = 0.05563008 * c1 - 0.20397696 * c2 + 1.05697151 * c3;
+            let r = linear_srgb_to_srgb(r_lin);
+            let g = linear_srgb_to_srgb(g_lin);
+            let b = linear_srgb_to_srgb(b_lin);
+            (r, g, b)
+        }
+        "xyz-d50" => {
+            let r_lin = 3.1338561 * c1 - 1.6168667 * c2 - 0.4906146 * c3;
+            let g_lin = -0.9787684 * c1 + 1.9161415 * c2 + 0.0334540 * c3;
+            let b_lin = 0.0719453 * c1 - 0.2289914 * c2 + 1.4052427 * c3;
+            let r = linear_srgb_to_srgb(r_lin);
+            let g = linear_srgb_to_srgb(g_lin);
+            let b = linear_srgb_to_srgb(b_lin);
+            (r, g, b)
+        }
+        _ => {
+            // TODO(spec): Support other predefined RGB/XYZ color spaces (e.g. rec2020, a98-rgb, prophoto-rgb)
+            return None;
+        }
+    };
+
+    Some(Color::Rgba(r, g, b, alpha))
 }
 
 fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
@@ -6015,6 +6125,83 @@ mod tests {
             parse("lch(100% 0% 0deg)"),
             Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
         );
+    }
+
+    #[test]
+    fn test_parse_color_function() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // srgb: color(srgb 1 0 0) -> red
+        assert_eq!(
+            parse("color(srgb 1 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // srgb: color(srgb 0 0 0) -> black
+        assert_eq!(
+            parse("color(srgb 0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // srgb: color(srgb 1 1 1) -> white
+        assert_eq!(
+            parse("color(srgb 1 1 1)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // srgb with alpha: color(srgb 1 0 0 / 0.5)
+        let alpha_srgb = parse("color(srgb 1 0 0 / 0.5)");
+        match alpha_srgb {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 0);
+                assert_eq!(b, 0);
+                assert!((alpha as i32 - 128).abs() <= 1);
+            }
+            _ => panic!("Expected color(srgb 1 0 0 / 0.5) to parse with alpha"),
+        }
+
+        // srgb percentage: color(srgb 100% 0% 0%) -> red
+        assert_eq!(
+            parse("color(srgb 100% 0% 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // xyz-d65: color(xyz-d65 0 0 0) -> black
+        assert_eq!(
+            parse("color(xyz-d65 0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // xyz: color(xyz 0 0 0) -> black
+        assert_eq!(
+            parse("color(xyz 0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // xyz-d50: color(xyz-d50 0 0 0) -> black
+        assert_eq!(
+            parse("color(xyz-d50 0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // srgb-linear: color(srgb-linear 1 1 1) -> white
+        assert_eq!(
+            parse("color(srgb-linear 1 1 1)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // display-p3: color(display-p3 1 1 1) -> white
+        assert_eq!(
+            parse("color(display-p3 1 1 1)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // Unsupported color space: color(rec2020 1 0 0) -> None
+        assert_eq!(parse("color(rec2020 1 0 0)"), None);
     }
 
     #[test]
