@@ -194,6 +194,7 @@ pub struct TreeBuilder {
     namespace_stack: Vec<Namespace>,
     list_of_active_formatting_elements: Vec<FormattingElement>,
     head_element_pointer: Option<NodeId>,
+    form_element_pointer: Option<NodeId>,
     template_insertion_modes: Vec<InsertionMode>,
     foster_parenting: bool,
     pub quirks_mode: QuirksMode,
@@ -419,6 +420,7 @@ impl TreeBuilder {
             namespace_stack: Vec::new(),
             list_of_active_formatting_elements: Vec::new(),
             head_element_pointer: None,
+            form_element_pointer: None,
             template_insertion_modes: Vec::new(),
             foster_parenting: false,
             quirks_mode: QuirksMode::default(),
@@ -430,6 +432,13 @@ impl TreeBuilder {
 
     fn run(&mut self) {
         loop {
+            let is_xml = if let Some(&top_id) = self.stack_of_open_elements.last() {
+                self.get_node_namespace(top_id) != Namespace::Html
+            } else {
+                false
+            };
+            self.tokenizer.set_xml_mode(is_xml);
+
             let token = self.tokenizer.next_token();
             let is_eof = matches!(token, Token::Eof);
             self.process_token(token);
@@ -1356,13 +1365,18 @@ impl TreeBuilder {
                     }
                 }
                 "form" => {
-                    let has_form = self.stack_of_open_elements.iter().any(|&id| {
-                        matches!(self.dom.data(id), Some(NodeData::Element { name: n, .. }) if n == "form")
+                    let has_template = self.stack_of_open_elements.iter().any(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "template")
                     });
-                    if !has_form {
+                    if self.form_element_pointer.is_some() && !has_template {
+                        // Parse error. Ignore.
+                    } else {
                         self.close_p_element_if_in_button_scope();
                         let node = self.create_and_insert_element(name.clone(), attrs);
                         self.open_elements_push(node);
+                        if !has_template {
+                            self.form_element_pointer = Some(node);
+                        }
                     }
                 }
                 "rb" | "rtc" => {
@@ -1629,28 +1643,77 @@ impl TreeBuilder {
                 } else if name == "p" {
                     if !self.is_in_button_scope("p") {
                         // Parse error.
-                        let node = self.create_and_insert_element("p".to_string(), Vec::new());
-                        self.open_elements_push(node);
+                        self.process_token(Token::StartTag {
+                            name: "p".to_string(),
+                            attrs: Vec::new(),
+                            self_closing: false,
+                        });
                     }
                     self.pop_until("p");
                 } else if name == "form" {
-                    let mut form_idx = None;
-                    for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
-                        if matches!(self.dom.data(node_id), Some(NodeData::Element { name: n, .. }) if n == "form")
+                    let has_template = self.stack_of_open_elements.iter().any(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "template")
+                    });
+                    if !has_template {
+                        let node = self.form_element_pointer;
+                        self.form_element_pointer = None;
+                        if let Some(node_id) = node {
+                            let mut on_stack_and_in_scope = false;
+                            let list = &[
+                                "applet", "caption", "html", "table", "td", "th", "marquee",
+                                "object", "template",
+                            ];
+                            for (idx, &el_id) in
+                                self.stack_of_open_elements.iter().enumerate().rev()
+                            {
+                                let ns = self.get_namespace_at_index(idx);
+                                if ns == Namespace::Html {
+                                    if el_id == node_id {
+                                        on_stack_and_in_scope = true;
+                                        break;
+                                    }
+                                    if let Some(NodeData::Element { name: el_name, .. }) =
+                                        self.dom.data(el_id)
+                                        && list.contains(&el_name.as_str())
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                            if on_stack_and_in_scope {
+                                self.generate_implied_end_tags(None);
+                                if let Some(idx) = self
+                                    .stack_of_open_elements
+                                    .iter()
+                                    .position(|&id| id == node_id)
+                                {
+                                    self.open_elements_remove(idx);
+                                }
+                            }
+                        }
+                    } else {
+                        let mut form_idx = None;
+                        for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev()
                         {
-                            form_idx = Some(idx);
-                            break;
+                            if matches!(self.dom.data(node_id), Some(NodeData::Element { name: n, .. }) if n == "form")
+                            {
+                                form_idx = Some(idx);
+                                break;
+                            }
+                        }
+                        if let Some(idx) = form_idx
+                            && self.is_in_scope("form")
+                        {
+                            self.generate_implied_end_tags(None);
+                            self.open_elements_remove(idx);
                         }
                     }
-                    if let Some(idx) = form_idx
-                        && self.is_in_scope("form")
-                    {
-                        self.generate_implied_end_tags(None);
-                        self.open_elements_remove(idx);
-                    }
                 } else if name == "br" {
-                    self.reconstruct_active_formatting_elements();
-                    self.create_and_insert_element("br".to_string(), Vec::new());
+                    self.process_token(Token::StartTag {
+                        name: "br".to_string(),
+                        attrs: Vec::new(),
+                        self_closing: false,
+                    });
                 } else if name == "ruby" {
                     if self.is_in_scope("ruby") {
                         self.generate_implied_end_tags(None);
@@ -1739,6 +1802,18 @@ impl TreeBuilder {
                     if self.is_in_scope(&name) {
                         self.generate_implied_end_tags(Some(&name));
                         self.pop_until(&name);
+                    }
+                } else if matches!(name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+                    if self.is_heading_in_scope() {
+                        self.generate_implied_end_tags(None);
+                        if let Some(&top_id) = self.stack_of_open_elements.last()
+                            && let Some(NodeData::Element { name: top_name, .. }) =
+                                self.dom.data(top_id)
+                            && !matches!(top_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+                        {
+                            // Parse error.
+                        }
+                        self.pop_until_heading();
                     }
                 } else if self.is_special_element(&name) {
                     if self.is_in_scope(&name) {
@@ -2174,7 +2249,17 @@ impl TreeBuilder {
                     self.handle_in_head(token);
                 }
                 "form" => {
-                    self.create_and_insert_element(name.clone(), attrs.clone());
+                    let has_template = self.stack_of_open_elements.iter().any(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "template")
+                    });
+                    if self.form_element_pointer.is_some() && !has_template {
+                        // Parse error. Ignore.
+                    } else {
+                        let node = self.create_and_insert_element(name.clone(), attrs.clone());
+                        if !has_template {
+                            self.form_element_pointer = Some(node);
+                        }
+                    }
                 }
                 "input" => {
                     let is_hidden = attrs.iter().any(|(k, v)| {
@@ -2854,6 +2939,25 @@ impl TreeBuilder {
         }
     }
 
+    fn pop_until_heading(&mut self) {
+        while let Some(&top_id) = self.stack_of_open_elements.last() {
+            let idx = self.stack_of_open_elements.len() - 1;
+            let ns = self.get_namespace_at_index(idx);
+            let is_match = match self.dom.data(top_id) {
+                Some(NodeData::Element { name, .. }) => {
+                    ns == Namespace::Html
+                        && matches!(name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+                }
+                _ => false,
+            };
+            if is_match {
+                self.open_elements_pop();
+                break;
+            }
+            self.open_elements_pop();
+        }
+    }
+
     // Helper: insert a comment into current node
     fn insert_comment(&mut self, data: String) {
         let node = self.dom.create_node(NodeData::Comment(data));
@@ -3483,6 +3587,41 @@ impl TreeBuilder {
             parent: target,
             reference: None,
         }
+    }
+
+    fn is_heading_in_scope(&self) -> bool {
+        let list = &[
+            "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
+        ];
+        for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+            let ns = self.get_namespace_at_index(idx);
+            if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
+                match ns {
+                    Namespace::Html => {
+                        if matches!(name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+                            return true;
+                        }
+                        if list.contains(&name.as_str()) {
+                            return false;
+                        }
+                    }
+                    Namespace::Mathml => {
+                        if matches!(
+                            name.as_str(),
+                            "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml"
+                        ) {
+                            return false;
+                        }
+                    }
+                    Namespace::Svg => {
+                        if matches!(name.as_str(), "foreignObject" | "desc" | "title") {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn is_in_scope(&self, target_name: &str) -> bool {
