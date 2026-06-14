@@ -893,6 +893,77 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `cite` content attribute of a valid `<blockquote>`, `<q>`, `<ins>`, or `<del>` element.
+    /// Returns `None` if the node is not a matching element, has no `cite` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_cite(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("blockquote")
+                || name.eq_ignore_ascii_case("q")
+                || name.eq_ignore_ascii_case("ins")
+                || name.eq_ignore_ascii_case("del"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("cite"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `datetime` content attribute of a valid `<time>`, `<ins>`, or `<del>` element.
+    /// Returns `None` if the node is not a matching element, has no `datetime` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_datetime(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("time")
+                || name.eq_ignore_ascii_case("ins")
+                || name.eq_ignore_ascii_case("del"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("datetime"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `media` content attribute of a valid `<link>`, `<style>`, or `<source>` element.
+    /// Returns `None` if the node is not a matching element, has no `media` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_media(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("style")
+                || name.eq_ignore_ascii_case("source"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("media"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `wrap` content attribute of a valid `<textarea>` element.
+    /// Returns `None` if the node is not a `<textarea>` element, has no `wrap` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_wrap(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("wrap"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -3081,5 +3152,118 @@ mod tests {
         assert_eq!(foreign_dom.get_loop(foreign_node), None);
         assert_eq!(foreign_dom.get_preload(foreign_node), None);
         assert_eq!(foreign_dom.get_poster(foreign_node), None);
+    }
+
+    #[test]
+    fn test_reflected_content_attribute_accessors_t0766() {
+        let mut dom = Dom::new();
+
+        // 1. Test get_cite (blockquote, q, ins, del)
+        let blockquote_id = dom.create_node(NodeData::Element {
+            name: "blockquote".to_string(),
+            attrs: vec![("cite".to_string(), "http://cite1.com".to_string())],
+        });
+        let q_id = dom.create_node(NodeData::Element {
+            name: "Q".to_string(),
+            attrs: vec![("CITE".to_string(), "http://cite2.com".to_string())],
+        });
+        let ins_id = dom.create_node(NodeData::Element {
+            name: "ins".to_string(),
+            attrs: vec![("cite".to_string(), "http://cite3.com".to_string())],
+        });
+        let del_id = dom.create_node(NodeData::Element {
+            name: "del".to_string(),
+            attrs: vec![("cite".to_string(), "http://cite4.com".to_string())],
+        });
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("cite".to_string(), "http://cite5.com".to_string())],
+        });
+        let blockquote_absent = dom.create_node(NodeData::Element {
+            name: "blockquote".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_cite(blockquote_id), Some("http://cite1.com"));
+        assert_eq!(dom.get_cite(q_id), Some("http://cite2.com"));
+        assert_eq!(dom.get_cite(ins_id), Some("http://cite3.com"));
+        assert_eq!(dom.get_cite(del_id), Some("http://cite4.com"));
+        assert_eq!(dom.get_cite(div_id), None);
+        assert_eq!(dom.get_cite(blockquote_absent), None);
+
+        // 2. Test get_datetime (time, ins, del)
+        let time_id = dom.create_node(NodeData::Element {
+            name: "time".to_string(),
+            attrs: vec![("datetime".to_string(), "2026-06-14".to_string())],
+        });
+        let ins_dt_id = dom.create_node(NodeData::Element {
+            name: "INS".to_string(),
+            attrs: vec![("DATETIME".to_string(), "2026-06-15".to_string())],
+        });
+        let del_dt_id = dom.create_node(NodeData::Element {
+            name: "del".to_string(),
+            attrs: vec![("datetime".to_string(), "2026-06-16".to_string())],
+        });
+        let time_absent = dom.create_node(NodeData::Element {
+            name: "time".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_datetime(time_id), Some("2026-06-14"));
+        assert_eq!(dom.get_datetime(ins_dt_id), Some("2026-06-15"));
+        assert_eq!(dom.get_datetime(del_dt_id), Some("2026-06-16"));
+        assert_eq!(dom.get_datetime(div_id), None);
+        assert_eq!(dom.get_datetime(time_absent), None);
+
+        // 3. Test get_media (link, style, source)
+        let link_id = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![("media".to_string(), "screen".to_string())],
+        });
+        let style_id = dom.create_node(NodeData::Element {
+            name: "STYLE".to_string(),
+            attrs: vec![("MEDIA".to_string(), "print".to_string())],
+        });
+        let source_id = dom.create_node(NodeData::Element {
+            name: "source".to_string(),
+            attrs: vec![("media".to_string(), "all".to_string())],
+        });
+        let link_absent = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_media(link_id), Some("screen"));
+        assert_eq!(dom.get_media(style_id), Some("print"));
+        assert_eq!(dom.get_media(source_id), Some("all"));
+        assert_eq!(dom.get_media(div_id), None);
+        assert_eq!(dom.get_media(link_absent), None);
+
+        // 4. Test get_wrap (textarea)
+        let textarea_id = dom.create_node(NodeData::Element {
+            name: "textarea".to_string(),
+            attrs: vec![("wrap".to_string(), "hard".to_string())],
+        });
+        let textarea_caps_id = dom.create_node(NodeData::Element {
+            name: "TEXTAREA".to_string(),
+            attrs: vec![("WRAP".to_string(), "soft".to_string())],
+        });
+        let textarea_absent = dom.create_node(NodeData::Element {
+            name: "textarea".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_wrap(textarea_id), Some("hard"));
+        assert_eq!(dom.get_wrap(textarea_caps_id), Some("soft"));
+        assert_eq!(dom.get_wrap(div_id), None);
+        assert_eq!(dom.get_wrap(textarea_absent), None);
+
+        // 5. Test invalid NodeId / non-element returns None for all new getters
+        let foreign_dom = Dom::new();
+        let foreign_node = dom.create_node(NodeData::Text("text node".to_string()));
+        assert_eq!(foreign_dom.get_cite(foreign_node), None);
+        assert_eq!(foreign_dom.get_datetime(foreign_node), None);
+        assert_eq!(foreign_dom.get_media(foreign_node), None);
+        assert_eq!(foreign_dom.get_wrap(foreign_node), None);
     }
 }
