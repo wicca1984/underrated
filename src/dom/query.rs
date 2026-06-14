@@ -197,6 +197,39 @@ impl Dom {
             .collect()
     }
 
+    /// Returns descendants of the document root that have the given namespace and local name.
+    /// If `namespace` is `*`, matches any namespace. If `namespace` is `""`, matches elements with no namespace.
+    /// If `local_name` is `*`, matches any local name.
+    // spec: https://dom.spec.whatwg.org/#dom-document-getelementsbytagnamens
+    pub fn get_elements_by_tag_name_ns(&self, namespace: &str, local_name: &str) -> Vec<NodeId> {
+        self.get_elements_by_tag_name_ns_from(self.document(), namespace, local_name)
+    }
+
+    /// Returns descendants of the given `root` node that have the given namespace and local name.
+    /// If `namespace` is `*`, matches any namespace. If `namespace` is `""`, matches elements with no namespace.
+    /// If `local_name` is `*`, matches any local name.
+    // spec: https://dom.spec.whatwg.org/#dom-element-getelementsbytagnamens
+    pub fn get_elements_by_tag_name_ns_from(
+        &self,
+        root: NodeId,
+        namespace: &str,
+        local_name: &str,
+    ) -> Vec<NodeId> {
+        self.descendants_iter(root)
+            .filter(|&node_id| {
+                if let Some(NodeData::Element { name, .. }) = self.data(node_id) {
+                    // In our simplified DOM, all elements are in the "http://www.w3.org/1999/xhtml" namespace.
+                    let el_ns = "http://www.w3.org/1999/xhtml";
+                    let ns_match = namespace == "*" || namespace == el_ns;
+                    let local_match = local_name == "*" || name.eq_ignore_ascii_case(local_name);
+                    ns_match && local_match
+                } else {
+                    false
+                }
+            })
+            .collect()
+    }
+
     /// Returns descendants of the document root that have all the given space-separated class names.
     // spec: https://dom.spec.whatwg.org/#dom-document-getelementsbyclassname
     pub fn get_elements_by_class_name(&self, class_name: &str) -> Vec<NodeId> {
@@ -1490,5 +1523,44 @@ mod tests {
             dom.query_selector_from(child, "[data-val=\"val1,val2\"]"),
             Some(element_with_comma_attr)
         );
+    }
+
+    #[test]
+    fn test_get_elements_by_tag_name_ns_gaps() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, span);
+
+        // 1. Matches "*" namespace and "*" local name
+        let all = dom.get_elements_by_tag_name_ns("*", "*");
+        assert_eq!(all, vec![div, span]);
+
+        // 2. Matches "http://www.w3.org/1999/xhtml" namespace and specific tag name
+        let divs = dom.get_elements_by_tag_name_ns("http://www.w3.org/1999/xhtml", "div");
+        assert_eq!(divs, vec![div]);
+
+        // 3. Matches "*" namespace and specific tag name
+        let spans = dom.get_elements_by_tag_name_ns("*", "span");
+        assert_eq!(spans, vec![span]);
+
+        // 4. Non-matching namespace
+        let empty = dom.get_elements_by_tag_name_ns("http://www.w3.org/2000/svg", "div");
+        assert!(empty.is_empty());
+
+        // 5. Query from root
+        let sub_spans =
+            dom.get_elements_by_tag_name_ns_from(div, "http://www.w3.org/1999/xhtml", "span");
+        assert_eq!(sub_spans, vec![span]);
     }
 }
