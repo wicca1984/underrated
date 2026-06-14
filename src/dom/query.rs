@@ -83,7 +83,8 @@ impl Dom {
         &self,
         selector: &str,
     ) -> Result<selector::SelectorList, selector::SelectorParseError> {
-        let preprocessed = preprocess_relative_selector(selector);
+        let preprocessed_not = preprocess_not_selectors(selector);
+        let preprocessed = preprocess_relative_selector(&preprocessed_not);
         selector::parse_selector_list(&preprocessed)
     }
 
@@ -403,6 +404,109 @@ fn split_selector_list(selector: &str) -> Vec<String> {
         parts.push(current);
     }
     parts
+}
+
+fn preprocess_not_selectors(selector: &str) -> String {
+    let chars: Vec<char> = selector.chars().collect();
+    let mut result = String::new();
+    let mut i = 0;
+
+    let mut parens_depth = 0;
+    let mut brackets_depth = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
+
+    // A stack of parenthesis depths at which we should output an extra ')' when closing.
+    let mut extra_close_at_depth = Vec::new();
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if escaped {
+            result.push(c);
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        match c {
+            '\\' => {
+                result.push(c);
+                escaped = true;
+                i += 1;
+            }
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                result.push(c);
+                i += 1;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                result.push(c);
+                i += 1;
+            }
+            _ if in_single_quote || in_double_quote => {
+                result.push(c);
+                i += 1;
+            }
+            '[' => {
+                brackets_depth += 1;
+                result.push(c);
+                i += 1;
+            }
+            ']' => {
+                if brackets_depth > 0 {
+                    brackets_depth -= 1;
+                }
+                result.push(c);
+                i += 1;
+            }
+            ':' if brackets_depth == 0 && i + 4 < chars.len() => {
+                // Check if it matches :not(
+                let is_not = (chars[i + 1] == 'n' || chars[i + 1] == 'N')
+                    && (chars[i + 2] == 'o' || chars[i + 2] == 'O')
+                    && (chars[i + 3] == 't' || chars[i + 3] == 'T')
+                    && chars[i + 4] == '(';
+
+                if is_not {
+                    // Rewrite :not( to :not(:is(
+                    result.push_str(":not(:is(");
+                    parens_depth += 2; // We opened both :not( and :is(
+                    extra_close_at_depth.push(parens_depth); // Record that at this depth we need double closing
+                    i += 5; // Skip past ":not("
+                } else {
+                    result.push(c);
+                    i += 1;
+                }
+            }
+            '(' => {
+                parens_depth += 1;
+                result.push(c);
+                i += 1;
+            }
+            ')' => {
+                if parens_depth > 0 {
+                    if Some(&parens_depth) == extra_close_at_depth.last() {
+                        extra_close_at_depth.pop();
+                        result.push_str("))");
+                        parens_depth -= 2;
+                    } else {
+                        result.push(c);
+                        parens_depth -= 1;
+                    }
+                } else {
+                    result.push(c);
+                }
+                i += 1;
+            }
+            _ => {
+                result.push(c);
+                i += 1;
+            }
+        }
+    }
+    result
 }
 
 fn preprocess_relative_selector(selector: &str) -> String {
@@ -1795,5 +1899,95 @@ mod tests {
         // type, lang, dir, etc.
         assert_eq!(dom.query_selector_from(host, "[lang=\"en-us\"]"), Some(btn)); // "en-US" matches "en-us"
         assert_eq!(dom.query_selector_from(host, "[lang|=\"en\"]"), Some(btn)); // dash-match
+    }
+
+    #[test]
+    fn test_t0980_not_selector_with_complex_and_multiple_arguments() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Build a DOM tree:
+        // <div id="wrapper">
+        //   <div id="div1">
+        //     <p id="p1" class="foo">p1</p>
+        //     <span id="s1">s1</span>
+        //     <p id="p2">p2</p>
+        //   </div>
+        //   <div id="div2">
+        //     <p id="p3" class="foo">p3</p>
+        //   </div>
+        // </div>
+        let wrapper = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "wrapper".into())],
+        });
+        dom.append_child(doc, wrapper);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div1".into())],
+        });
+        dom.append_child(wrapper, div1);
+
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p1".into()), ("class".into(), "foo".into())],
+        });
+        dom.append_child(div1, p1);
+
+        let s1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("id".into(), "s1".into())],
+        });
+        dom.append_child(div1, s1);
+
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p2".into())],
+        });
+        dom.append_child(div1, p2);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div2".into())],
+        });
+        dom.append_child(wrapper, div2);
+
+        let p3 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p3".into()), ("class".into(), "foo".into())],
+        });
+        dom.append_child(div2, p3);
+
+        // 1. :not(A, B) multiple argument (selector list) matching
+        // In div1, children are p1, s1, p2.
+        // Elements in div1 that are NOT p1 or s1 should be p2.
+        // Let's test with selector list: "div > div > :not(#p1, span)"
+        let matches = dom.query_selector_all_from(wrapper, "div > div > :not(#p1, span)");
+        // Expected elements matching 'div > div > :not(#p1, span)':
+        // - p1: matches #p1, so excluded.
+        // - s1: matches span, so excluded.
+        // - p2: matches neither, so included.
+        // - p3: matches neither, so included.
+        // Total matched: p2, p3.
+        assert_eq!(matches, vec![p2, p3]);
+
+        // 2. :not(A B) complex selector argument matching
+        // Elements under wrapper that are NOT (div with id=div1 followed by any p)
+        // div1 p matches p1 and p2, but not p3.
+        // So :not(#div1 p) on all p elements should select p3 but not p1 or p2.
+        let matches_p = dom.query_selector_all_from(wrapper, "p:not(#div1 p)");
+        assert_eq!(matches_p, vec![p3]);
+
+        // 3. :not(A + B) sibling combinator argument matching
+        // p2 is preceded by s1. So "span + p" matches p2.
+        // Therefore, p:not(span + p) should match p1, p3, but NOT p2.
+        let matches_sib = dom.query_selector_all_from(wrapper, "p:not(span + p)");
+        assert_eq!(matches_sib, vec![p1, p3]);
+
+        // 4. Nested `:not` and case insensitivity
+        // :nOt(:NoT(#p1)) should match p1.
+        let matches_nested = dom.query_selector_all_from(wrapper, "p:nOt(:NoT(#p1))");
+        assert_eq!(matches_nested, vec![p1]);
     }
 }
