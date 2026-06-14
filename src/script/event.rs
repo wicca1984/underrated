@@ -564,6 +564,7 @@ pub struct EventListenerEntry {
     pub capture: bool,
     pub once: bool,
     pub passive: bool,
+    pub signal: Option<JsValue>,
 }
 
 /// The `EventTarget` interface is implemented by objects that can receive events and may have listeners for them.
@@ -613,10 +614,11 @@ impl Class for EventTarget {
 fn get_listener_options(
     options_val: Option<&JsValue>,
     context: &mut Context,
-) -> (bool, bool, bool) {
+) -> (bool, bool, bool, Option<JsValue>) {
     let mut capture = false;
     let mut once = false;
     let mut passive = false;
+    let mut signal = None;
 
     if let Some(val) = options_val {
         if let Some(obj) = val.as_object() {
@@ -629,12 +631,18 @@ fn get_listener_options(
             if let Ok(pass_prop) = obj.get(JsString::from("passive"), context) {
                 passive = pass_prop.to_boolean();
             }
+            if let Ok(sig_prop) = obj.get(JsString::from("signal"), context)
+                && !sig_prop.is_undefined()
+                && !sig_prop.is_null()
+            {
+                signal = Some(sig_prop);
+            }
         } else {
             capture = val.to_boolean();
         }
     }
 
-    (capture, once, passive)
+    (capture, once, passive, signal)
 }
 
 fn get_remove_options(options_val: Option<&JsValue>, context: &mut Context) -> bool {
@@ -668,9 +676,18 @@ pub fn add_event_listener(
 
     let listener = args.get(1).cloned().unwrap_or(JsValue::undefined());
 
+    let (capture, once, passive, signal_val) = get_listener_options(args.get(2), context);
+
+    if let Some(ref sig) = signal_val
+        && let Some(sig_obj) = sig.as_object()
+        && let Some(abort_signal) = sig_obj.downcast_ref::<crate::script::AbortSignal>()
+        && *abort_signal.aborted.borrow()
+    {
+        return Ok(JsValue::undefined());
+    }
+
     if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
         if listener.is_callable() || listener.is_object() {
-            let (capture, once, passive) = get_listener_options(args.get(2), context);
             let mut listeners = event_target.listeners.borrow_mut();
             let entry = listeners.entry(event_type).or_insert_with(Vec::new);
             if let Some(existing) = entry.iter_mut().find(|existing| {
@@ -684,6 +701,7 @@ pub fn add_event_listener(
                     capture,
                     once,
                     passive,
+                    signal: signal_val,
                 });
             }
         }
@@ -865,6 +883,22 @@ pub fn dispatch_event(
         let mut listeners_to_call = Vec::new();
         if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
             let mut listeners = event_target.listeners.borrow_mut();
+
+            // Filter out aborted listeners
+            for (_type_str, list) in listeners.iter_mut() {
+                list.retain(|l| {
+                    if let Some(ref sig) = l.signal
+                        && let Some(sig_obj) = sig.as_object()
+                        && let Some(abort_signal) =
+                            sig_obj.downcast_ref::<crate::script::AbortSignal>()
+                        && *abort_signal.aborted.borrow()
+                    {
+                        return false;
+                    }
+                    true
+                });
+            }
+
             let event_type_ref = event.r#type.borrow();
             if let Some(list) = listeners.get_mut(&*event_type_ref) {
                 listeners_to_call = list.clone();
@@ -889,6 +923,7 @@ pub fn dispatch_event(
                                 capture: false,
                                 once: false,
                                 passive: false,
+                                signal: None,
                             });
                         }
                     }
@@ -966,6 +1001,22 @@ pub fn dispatch_event(
             let mut listeners_to_call = Vec::new();
             if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
                 let mut listeners = event_target.listeners.borrow_mut();
+
+                // Filter out aborted listeners
+                for (_type_str, list) in listeners.iter_mut() {
+                    list.retain(|l| {
+                        if let Some(ref sig) = l.signal
+                            && let Some(sig_obj) = sig.as_object()
+                            && let Some(abort_signal) =
+                                sig_obj.downcast_ref::<crate::script::AbortSignal>()
+                            && *abort_signal.aborted.borrow()
+                        {
+                            return false;
+                        }
+                        true
+                    });
+                }
+
                 if let Some(list) = listeners.get_mut(&event_type) {
                     listeners_to_call = list.clone();
                     list.retain(|l| !l.once);
@@ -987,6 +1038,7 @@ pub fn dispatch_event(
                                     capture: false,
                                     once: false,
                                     passive: false,
+                                    signal: None,
                                 });
                             }
                         }
@@ -1453,5 +1505,41 @@ mod tests {
         }";
         let res = context.eval(Source::from_bytes(script)).unwrap();
         assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_t0901_event_listener_signal() {
+        use crate::script::ScriptHost;
+        let mut host = crate::script::BoaHost::new();
+
+        // 1. Verify standard addEventListener with signal option works
+        host.eval(
+            r#"{
+            const target = new EventTarget();
+            let count = 0;
+            const controller = new AbortController();
+            target.addEventListener('click', () => { count++; }, { signal: controller.signal });
+            target.dispatchEvent(new Event('click'));
+            if (count !== 1) throw new Error("Should be called once");
+            controller.abort();
+            target.dispatchEvent(new Event('click'));
+            if (count !== 1) throw new Error("Should still be called once after abort");
+        }"#,
+        )
+        .unwrap();
+
+        // 2. Verify that if signal is already aborted, listener is not added at all
+        host.eval(
+            r#"{
+            const target = new EventTarget();
+            let count = 0;
+            const controller = new AbortController();
+            controller.abort();
+            target.addEventListener('click', () => { count++; }, { signal: controller.signal });
+            target.dispatchEvent(new Event('click'));
+            if (count !== 0) throw new Error("Should not be called if signal was already aborted");
+        }"#,
+        )
+        .unwrap();
     }
 }
