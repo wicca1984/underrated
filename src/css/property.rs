@@ -2840,7 +2840,15 @@ pub fn expand_shorthand_values(
         return Err(ShorthandError::InvalidValue);
     }
 
-    match lower_shorthand.as_str() {
+    let mut clean_shorthand = lower_shorthand.clone();
+    for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
+        if clean_shorthand.starts_with(prefix) {
+            clean_shorthand = clean_shorthand[prefix.len()..].to_string();
+            break;
+        }
+    }
+
+    match clean_shorthand.as_str() {
         "margin" | "padding" | "border-width" | "border-style" | "border-color" | "inset"
         | "scroll-margin" | "scroll-padding" => {
             let longhands =
@@ -5535,6 +5543,8 @@ fn is_color_token(s: &str) -> bool {
         || s_trimmed.starts_with("color(")
         || s_trimmed.starts_with("light-dark(")
         || s_trimmed.starts_with("device-cmyk(")
+        || s_trimmed.starts_with("color-mix(")
+        || s_trimmed.starts_with("color-contrast(")
     {
         return s_trimmed.ends_with(')');
     }
@@ -8735,5 +8745,46 @@ mod tests {
         assert!(!is_valid_css_identifier("-"));
         assert!(is_valid_css_identifier("a-"));
         assert!(is_valid_css_identifier("-a"));
+    }
+
+    #[test]
+    fn test_property_parsing_improvements_t1084() {
+        // 1. Verify vendor-prefixed shorthand expansion works robustly
+        let webkit_margin_1 = expand_shorthand_values("-webkit-margin", &["15px"]).unwrap();
+        assert_eq!(webkit_margin_1.len(), 4);
+        assert_eq!(webkit_margin_1[0].name, "margin-top");
+        assert_eq!(webkit_margin_1[0].value, "15px");
+        assert_eq!(webkit_margin_1[1].name, "margin-right");
+        assert_eq!(webkit_margin_1[1].value, "15px");
+        assert_eq!(webkit_margin_1[2].name, "margin-bottom");
+        assert_eq!(webkit_margin_1[2].value, "15px");
+        assert_eq!(webkit_margin_1[3].name, "margin-left");
+        assert_eq!(webkit_margin_1[3].value, "15px");
+
+        let webkit_margin_2 = expand_shorthand_values("-webkit-margin", &["10px", "20px"]).unwrap();
+        assert_eq!(webkit_margin_2[0].value, "10px");
+        assert_eq!(webkit_margin_2[1].value, "20px");
+        assert_eq!(webkit_margin_2[2].value, "10px");
+        assert_eq!(webkit_margin_2[3].value, "20px");
+
+        let moz_radius =
+            expand_shorthand_values("-moz-border-radius", &["10px", "20px", "/", "30px"]).unwrap();
+        assert_eq!(moz_radius.len(), 4);
+        assert_eq!(moz_radius[0].name, "border-top-left-radius");
+        assert_eq!(moz_radius[0].value, "10px 30px");
+
+        let ms_border_top =
+            expand_shorthand_values("-ms-border-top", &["2px", "dashed", "blue"]).unwrap();
+        assert_eq!(ms_border_top.len(), 3);
+        assert_eq!(ms_border_top[0].name, "border-top-width");
+        assert_eq!(ms_border_top[0].value, "2px");
+        assert_eq!(ms_border_top[1].name, "border-top-style");
+        assert_eq!(ms_border_top[1].value, "dashed");
+        assert_eq!(ms_border_top[2].name, "border-top-color");
+        assert_eq!(ms_border_top[2].value, "blue");
+
+        // 2. Verify modern CSS color-mix and color-contrast notation is accepted as valid color tokens
+        assert!(is_color_token("color-mix(in srgb, red 50%, blue)"));
+        assert!(is_color_token("color-contrast(white vs black, gray)"));
     }
 }
