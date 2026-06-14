@@ -163,7 +163,7 @@ impl Dom {
         };
         let mut curr = Some(node);
         while let Some(curr_node) = curr {
-            if matches_with_scope(&selector_list, self, curr_node, curr_node) {
+            if matches_with_scope(&selector_list, self, curr_node, node) {
                 return Some(curr_node);
             }
             curr = self.parent(curr_node);
@@ -297,21 +297,56 @@ impl Dom {
 fn split_selector_list(selector: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
-    let mut depth = 0;
+    let mut parens_depth = 0;
+    let mut brackets_depth = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escaped = false;
 
     for c in selector.chars() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+            continue;
+        }
+
         match c {
+            '\\' => {
+                current.push(c);
+                escaped = true;
+            }
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                current.push(c);
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                current.push(c);
+            }
+            _ if in_single_quote || in_double_quote => {
+                current.push(c);
+            }
             '(' => {
-                depth += 1;
+                parens_depth += 1;
                 current.push(c);
             }
             ')' => {
-                if depth > 0 {
-                    depth -= 1;
+                if parens_depth > 0 {
+                    parens_depth -= 1;
                 }
                 current.push(c);
             }
-            ',' if depth == 0 => {
+            '[' => {
+                brackets_depth += 1;
+                current.push(c);
+            }
+            ']' => {
+                if brackets_depth > 0 {
+                    brackets_depth -= 1;
+                }
+                current.push(c);
+            }
+            ',' if parens_depth == 0 && brackets_depth == 0 => {
                 parts.push(current);
                 current = String::new();
             }
@@ -484,7 +519,7 @@ fn matches_component_with_scope(
             .0
             .iter()
             .any(|sel| matches_complex_with_scope(sel, dom, node, scope)),
-        selector::Component::Has(list) => matches_has_with_scope(list, dom, node),
+        selector::Component::Has(list) => matches_has_with_scope(list, dom, node, scope),
         selector::Component::PseudoElement(_) => false, // Pseudo-elements do not match DOM element nodes under querySelector or matches()
         _ => {
             // For all other components, match using standard selector::matches_complex
@@ -508,7 +543,12 @@ fn has_sibling_combinator(parts: &[(selector::Combinator, selector::CompoundSele
     })
 }
 
-fn matches_has_with_scope(list: &selector::SelectorList, dom: &Dom, node: NodeId) -> bool {
+fn matches_has_with_scope(
+    list: &selector::SelectorList,
+    dom: &Dom,
+    node: NodeId,
+    scope: NodeId,
+) -> bool {
     list.0.iter().any(|sel| {
         if sel.parts.is_empty() {
             return false;
@@ -541,7 +581,7 @@ fn matches_has_with_scope(list: &selector::SelectorList, dom: &Dom, node: NodeId
         // Filter starting nodes that match first_compound
         let matched_starts: Vec<NodeId> = starting_nodes
             .into_iter()
-            .filter(|&start| matches_compound_with_scope(first_compound, dom, start, node))
+            .filter(|&start| matches_compound_with_scope(first_compound, dom, start, scope))
             .collect();
 
         if matched_starts.is_empty() {
@@ -553,29 +593,129 @@ fn matches_has_with_scope(list: &selector::SelectorList, dom: &Dom, node: NodeId
             return true;
         }
 
-        // For len > 1, check if there is a descendant or sibling matching the rest of the selector,
-        // with the starting node matching the first part (enforced via :scope).
-        let mut modified_parts = sel.parts.clone();
-        modified_parts[0].1 = selector::CompoundSelector {
-            components: vec![selector::Component::PseudoClass("scope".to_string())],
-        };
-        let modified_sel = selector::ComplexSelector {
-            parts: modified_parts,
-        };
-
         let has_sibling_comb = has_sibling_combinator(&sel.parts[1..]);
 
         matched_starts.into_iter().any(|start_node| {
             if has_sibling_comb {
                 let root = dom.get_root_node(start_node);
                 dom.descendants_iter(root)
-                    .any(|desc| matches_complex_with_scope(&modified_sel, dom, desc, start_node))
+                    .any(|desc| matches_complex_relative(sel, dom, desc, start_node, scope))
             } else {
                 dom.descendants_iter(start_node)
-                    .any(|desc| matches_complex_with_scope(&modified_sel, dom, desc, start_node))
+                    .any(|desc| matches_complex_relative(sel, dom, desc, start_node, scope))
             }
         })
     })
+}
+
+fn matches_complex_relative(
+    sel: &selector::ComplexSelector,
+    dom: &Dom,
+    node: NodeId,
+    start_node: NodeId,
+    scope: NodeId,
+) -> bool {
+    if sel.parts.is_empty() {
+        return false;
+    }
+
+    let last_part_idx = sel.parts.len() - 1;
+    let (_, compound) = &sel.parts[last_part_idx];
+
+    if !matches_compound_with_scope(compound, dom, node, scope) {
+        return false;
+    }
+
+    if last_part_idx == 0 {
+        return node == start_node;
+    }
+
+    matches_rest_relative(
+        &sel.parts[..last_part_idx],
+        dom,
+        node,
+        sel.parts[last_part_idx].0,
+        start_node,
+        scope,
+    )
+}
+
+fn matches_rest_relative(
+    parts: &[(selector::Combinator, selector::CompoundSelector)],
+    dom: &Dom,
+    node: NodeId,
+    comb: selector::Combinator,
+    start_node: NodeId,
+    scope: NodeId,
+) -> bool {
+    match comb {
+        selector::Combinator::Descendant => {
+            let mut current = dom.parent(node);
+            while let Some(ancestor) = current {
+                if matches_complex_relative_at_part(parts, dom, ancestor, start_node, scope) {
+                    return true;
+                }
+                current = dom.parent(ancestor);
+            }
+            false
+        }
+        selector::Combinator::Child => {
+            if let Some(parent) = dom.parent(node) {
+                matches_complex_relative_at_part(parts, dom, parent, start_node, scope)
+            } else {
+                false
+            }
+        }
+        selector::Combinator::NextSibling => {
+            if let Some(prev) = dom.previous_element_sibling(node) {
+                matches_complex_relative_at_part(parts, dom, prev, start_node, scope)
+            } else {
+                false
+            }
+        }
+        selector::Combinator::SubsequentSibling => {
+            let mut current = dom.previous_element_sibling(node);
+            while let Some(sibling) = current {
+                if matches_complex_relative_at_part(parts, dom, sibling, start_node, scope) {
+                    return true;
+                }
+                current = dom.previous_element_sibling(sibling);
+            }
+            false
+        }
+    }
+}
+
+fn matches_complex_relative_at_part(
+    parts: &[(selector::Combinator, selector::CompoundSelector)],
+    dom: &Dom,
+    node: NodeId,
+    start_node: NodeId,
+    scope: NodeId,
+) -> bool {
+    if parts.is_empty() {
+        return false;
+    }
+
+    let last_idx = parts.len() - 1;
+    let (_, compound) = &parts[last_idx];
+
+    if !matches_compound_with_scope(compound, dom, node, scope) {
+        return false;
+    }
+
+    if last_idx == 0 {
+        return node == start_node;
+    }
+
+    matches_rest_relative(
+        &parts[..last_idx],
+        dom,
+        node,
+        parts[last_idx].0,
+        start_node,
+        scope,
+    )
 }
 
 fn any_descendant_matches_with_scope(
@@ -1288,5 +1428,67 @@ mod tests {
         // 4. NextSibling relative selector in :has() with next sibling + descendant
         assert_eq!(dom.query_selector("div:has(+ p span)"), Some(first_child));
         assert!(dom.matches(first_child, "div:has(+ p span)"));
+    }
+
+    #[test]
+    fn test_t0898_closest_and_split_selector_list_gaps() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Build a tree:
+        // <div id="grandparent">
+        //   <div id="parent">
+        //     <span id="child" class="target"></span>
+        //   </div>
+        // </div>
+        let grandparent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "grandparent".into())],
+        });
+        dom.append_child(doc, grandparent);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "parent".into())],
+        });
+        dom.append_child(grandparent, parent);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![
+                ("id".into(), "child".into()),
+                ("class".into(), "target".into()),
+            ],
+        });
+        dom.append_child(parent, child);
+
+        // 1. Test closest with relative selector in :has() referring to :scope (which is original child node)
+        // Ancestor "parent" should match "div:has(> :scope)" where :scope is "child"
+        assert_eq!(dom.closest(child, "div:has(> :scope)"), Some(parent));
+
+        // Ancestor "grandparent" should match "div:has(> div > :scope)"
+        assert_eq!(
+            dom.closest(child, "div:has(> div > :scope)"),
+            Some(grandparent)
+        );
+
+        // 2. Test split_selector_list robust preprocessing with commas inside attribute strings
+        // e.g., '[class="a,b"]' should not be split on the comma
+        let comma_attr_selector = "[data-val=\"val1,val2\"]";
+        let parts = split_selector_list(comma_attr_selector);
+        assert_eq!(parts, vec![comma_attr_selector.to_string()]);
+
+        // Add matching element to DOM with comma in attribute
+        let element_with_comma_attr = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("data-val".into(), "val1,val2".into())],
+        });
+        dom.append_child(child, element_with_comma_attr);
+
+        // Make sure it parses and matches correctly!
+        assert_eq!(
+            dom.query_selector_from(child, "[data-val=\"val1,val2\"]"),
+            Some(element_with_comma_attr)
+        );
     }
 }
