@@ -1932,6 +1932,21 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'writingSuggestions', {
+                        get() {
+                            const attr = this.getAttribute('writingsuggestions');
+                            if (attr !== null && attr.toLowerCase() === 'false') {
+                                return false;
+                            }
+                            return true;
+                        },
+                        set(val) {
+                            this.setAttribute('writingsuggestions', val ? 'true' : 'false');
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'draggable', {
                         get() {
                             return this.getAttribute('draggable') || '';
@@ -13127,6 +13142,38 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("true|false|false|off|on|true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_reflected_writing_suggestions() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            let ws1 = div.writingSuggestions; // absent default, should be true
+            
+            div.setAttribute('writingsuggestions', 'false');
+            let ws2 = div.writingSuggestions; // setting to 'false' makes it false
+            
+            div.setAttribute('writingsuggestions', 'FaLse');
+            let ws3 = div.writingSuggestions; // case-insensitive 'false' makes it false
+            
+            div.writingSuggestions = false;
+            let ws4 = div.getAttribute('writingsuggestions'); // setting to false writes 'false'
+            
+            div.writingSuggestions = true;
+            let ws5 = div.getAttribute('writingsuggestions'); // setting to true writes 'true'
+            
+            div.setAttribute('writingsuggestions', 'foo');
+            let ws6 = div.writingSuggestions; // non-'false' value is true
+
+            [ws1, ws2, ws3, ws4, ws5, ws6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("true|false|false|false|true|true".to_string())
         );
     }
 
