@@ -554,11 +554,31 @@ fn resolve_mark_or_value(
                         .unwrap_or(0.0);
                     Ok(st)
                 }
-                None => Err(throw_dom_exception(
-                    "SyntaxError",
-                    &format!("performance.measure: mark '{}' not found", name),
-                    context,
-                )),
+                None => {
+                    // 3. Check if name is in performance.measures (User Timing L3)
+                    let measures_borrow = performance.measures.borrow();
+                    let measure_opt = measures_borrow.iter().rev().find(|m_obj| {
+                        if let Some(m) = m_obj.downcast_ref::<PerformanceMeasure>() {
+                            m.name == name
+                        } else {
+                            false
+                        }
+                    });
+                    match measure_opt {
+                        Some(m_obj) => {
+                            let st = m_obj
+                                .downcast_ref::<PerformanceMeasure>()
+                                .map(|m| m.start_time)
+                                .unwrap_or(0.0);
+                            Ok(st)
+                        }
+                        None => Err(throw_dom_exception(
+                            "SyntaxError",
+                            &format!("performance.measure: mark or measure '{}' not found", name),
+                            context,
+                        )),
+                    }
+                }
             }
         }
     }
@@ -3285,6 +3305,20 @@ pub fn create_performance(context: &mut Context) -> JsObject {
     let _ = context.register_global_class::<PerformanceResourceTiming>();
     let _ = context.register_global_class::<PerformanceNavigationTiming>();
 
+    // Link prototype chain so subclasses of PerformanceEntry inherit correctly.
+    let inheritance_js = r#"
+        if (typeof PerformanceEntry === "function") {
+            const classes = [PerformanceMark, PerformanceMeasure, PerformanceResourceTiming, PerformanceNavigationTiming];
+            for (const cls of classes) {
+                if (typeof cls === "function") {
+                    Object.setPrototypeOf(cls, PerformanceEntry);
+                    Object.setPrototypeOf(cls.prototype, PerformanceEntry.prototype);
+                }
+            }
+        }
+    "#;
+    let _ = context.eval(boa_engine::Source::from_bytes(inheritance_js));
+
     let performance_obj = context
         .global_object()
         .get(boa_engine::JsString::from("Performance"), context)
@@ -4187,6 +4221,74 @@ mod tests {
                 r#"
                 performance.clearResourceTimings();
                 performance.getEntriesByType("resource").length === 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_entry_subclassing_and_prototype_chain() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // Verify PerformanceMark inherits from PerformanceEntry
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const mark = performance.mark("test-subclass");
+                mark instanceof PerformanceEntry &&
+                Object.getPrototypeOf(PerformanceMark) === PerformanceEntry &&
+                Object.getPrototypeOf(PerformanceMark.prototype) === PerformanceEntry.prototype
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // Verify PerformanceMeasure inherits from PerformanceEntry
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const measure = performance.measure("test-meas-subclass", "test-subclass");
+                measure instanceof PerformanceEntry &&
+                Object.getPrototypeOf(PerformanceMeasure) === PerformanceEntry &&
+                Object.getPrototypeOf(PerformanceMeasure.prototype) === PerformanceEntry.prototype
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_measure_resolving_measures() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // 1. Create a measure directly with timestamps (which is valid under options)
+        context
+            .eval(Source::from_bytes(
+                r#"
+                performance.measure("meas-base", { start: 100, duration: 50 });
+                "#,
+            ))
+            .unwrap();
+
+        // 2. Resolve "meas-base" as the start mark in a subsequent measure
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m = performance.measure("meas-derived", "meas-base", 150);
+                m.startTime === 100 && m.duration === 50
                 "#,
             ))
             .unwrap();
