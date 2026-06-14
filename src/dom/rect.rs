@@ -133,25 +133,42 @@ impl DomRectReadOnly {
         })
     }
 
-    /// Static-like factory to create a new `DomRectReadOnly` from a dictionary-like JSON representation.
+    /// Static-like factory to create a new `DomRectReadOnly` from a dictionary-like JSON representation
+    /// or a JSON Array representation (e.g., `[x, y, width, height]` or `[width, height]`).
     pub fn from_rect(other: Option<&serde_json::Value>) -> Self {
         let mut x = 0.0;
         let mut y = 0.0;
         let mut width = 0.0;
         let mut height = 0.0;
 
-        if let Some(obj) = other.and_then(|v| v.as_object()) {
-            if let Some(val) = obj.get("x") {
-                x = coerce_to_f64(val);
-            }
-            if let Some(val) = obj.get("y") {
-                y = coerce_to_f64(val);
-            }
-            if let Some(val) = obj.get("width") {
-                width = coerce_to_f64(val);
-            }
-            if let Some(val) = obj.get("height") {
-                height = coerce_to_f64(val);
+        if let Some(val) = other {
+            if let Some(obj) = val.as_object() {
+                if let Some(val) = obj.get("x") {
+                    x = coerce_to_f64(val);
+                }
+                if let Some(val) = obj.get("y") {
+                    y = coerce_to_f64(val);
+                }
+                if let Some(val) = obj.get("width") {
+                    width = coerce_to_f64(val);
+                }
+                if let Some(val) = obj.get("height") {
+                    height = coerce_to_f64(val);
+                }
+            } else if let Some(arr) = val.as_array() {
+                if arr.len() >= 4 {
+                    x = coerce_to_f64(&arr[0]);
+                    y = coerce_to_f64(&arr[1]);
+                    width = coerce_to_f64(&arr[2]);
+                    height = coerce_to_f64(&arr[3]);
+                } else if arr.len() == 2 {
+                    width = coerce_to_f64(&arr[0]);
+                    height = coerce_to_f64(&arr[1]);
+                } else if arr.len() == 3 {
+                    x = coerce_to_f64(&arr[0]);
+                    y = coerce_to_f64(&arr[1]);
+                    width = coerce_to_f64(&arr[2]);
+                }
             }
         }
 
@@ -265,6 +282,48 @@ impl DomRectReadOnly {
     /// Scales both the position and the size of the rectangle by `sx` and `sy`, returning a new `DomRectReadOnly`.
     pub fn scale(&self, sx: f64, sy: f64) -> Self {
         Self::new(self.x * sx, self.y * sy, self.width * sx, self.height * sy)
+    }
+
+    /// Returns true if the rectangle is empty (i.e. has a width or height less than or equal to 0.0, or is NaN).
+    pub fn is_empty(&self) -> bool {
+        self.width <= 0.0 || self.height <= 0.0 || self.width.is_nan() || self.height.is_nan()
+    }
+
+    /// Returns a normalized copy of the rectangle where the width and height are guaranteed to be non-negative,
+    /// while preserving the same spatial boundary coordinates.
+    pub fn normalize(&self) -> Self {
+        if self.width.is_nan() || self.height.is_nan() {
+            Self::new(self.x, self.y, self.width, self.height)
+        } else {
+            Self::new(self.left(), self.top(), self.width.abs(), self.height.abs())
+        }
+    }
+
+    /// Returns the intersection of this rectangle and another rectangle.
+    /// If they do not intersect, or if any coordinate is NaN, returns a default (zeroed) rectangle.
+    pub fn intersection(&self, other: &Self) -> Self {
+        if !self.intersects(other) {
+            return Self::default();
+        }
+        let s_left = self.left();
+        let s_right = self.right();
+        let s_top = self.top();
+        let s_bottom = self.bottom();
+        let o_left = other.left();
+        let o_right = other.right();
+        let o_top = other.top();
+        let o_bottom = other.bottom();
+
+        let left = s_left.max(o_left);
+        let right = s_right.min(o_right);
+        let top = s_top.max(o_top);
+        let bottom = s_bottom.min(o_bottom);
+
+        if left > right || top > bottom {
+            Self::default()
+        } else {
+            Self::new(left, top, right - left, bottom - top)
+        }
     }
 }
 
@@ -407,31 +466,10 @@ impl DomRect {
         })
     }
 
-    /// Static-like factory to create a new `DomRect` from a dictionary-like JSON representation.
-    /// It takes an optional DOMRectInit-like object `{x, y, width, height}` (each defaulting to 0.0 when absent)
-    /// and returns a new `DomRect` with those values.
+    /// Static-like factory to create a new `DomRect` from a dictionary-like JSON representation
+    /// or a JSON Array representation (e.g., `[x, y, width, height]` or `[width, height]`).
     pub fn from_rect(other: Option<&serde_json::Value>) -> Self {
-        let mut x = 0.0;
-        let mut y = 0.0;
-        let mut width = 0.0;
-        let mut height = 0.0;
-
-        if let Some(obj) = other.and_then(|v| v.as_object()) {
-            if let Some(val) = obj.get("x") {
-                x = coerce_to_f64(val);
-            }
-            if let Some(val) = obj.get("y") {
-                y = coerce_to_f64(val);
-            }
-            if let Some(val) = obj.get("width") {
-                width = coerce_to_f64(val);
-            }
-            if let Some(val) = obj.get("height") {
-                height = coerce_to_f64(val);
-            }
-        }
-
-        Self::new(x, y, width, height)
+        DomRectReadOnly::from_rect(other).to_mutable()
     }
 
     /// Non-snake-case alias of `from_rect` for compatibility.
@@ -542,6 +580,25 @@ impl DomRect {
     pub fn scale(&self, sx: f64, sy: f64) -> Self {
         Self::new(self.x * sx, self.y * sy, self.width * sx, self.height * sy)
     }
+
+    /// Returns true if the rectangle is empty (i.e. has a width or height less than or equal to 0.0, or is NaN).
+    pub fn is_empty(&self) -> bool {
+        self.width <= 0.0 || self.height <= 0.0 || self.width.is_nan() || self.height.is_nan()
+    }
+
+    /// Returns a normalized copy of the rectangle where the width and height are guaranteed to be non-negative,
+    /// while preserving the same spatial boundary coordinates.
+    pub fn normalize(&self) -> Self {
+        self.to_readonly().normalize().to_mutable()
+    }
+
+    /// Returns the intersection of this rectangle and another rectangle.
+    /// If they do not intersect, or if any coordinate is NaN, returns a default (zeroed) rectangle.
+    pub fn intersection(&self, other: &Self) -> Self {
+        self.to_readonly()
+            .intersection(&other.to_readonly())
+            .to_mutable()
+    }
 }
 
 impl From<DomRect> for DomRectReadOnly {
@@ -633,6 +690,17 @@ impl DomRectList {
     pub fn iter(&self) -> std::slice::Iter<'_, DomRect> {
         self.rects.iter()
     }
+
+    /// Returns a plain JSON array of rect objects.
+    pub fn to_json(&self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Non-snake-case alias of `to_json` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn toJSON(&self) -> serde_json::Value {
+        self.serialize()
+    }
 }
 
 impl std::ops::Index<usize> for DomRectList {
@@ -670,6 +738,18 @@ impl<'a> IntoIterator for &'a DomRectList {
 impl Extend<DomRect> for DomRectList {
     fn extend<T: IntoIterator<Item = DomRect>>(&mut self, iter: T) {
         self.rects.extend(iter);
+    }
+}
+
+impl From<Vec<DomRect>> for DomRectList {
+    fn from(rects: Vec<DomRect>) -> Self {
+        Self::new(rects)
+    }
+}
+
+impl From<DomRectList> for Vec<DomRect> {
+    fn from(list: DomRectList) -> Self {
+        list.rects
     }
 }
 
@@ -942,6 +1022,54 @@ impl From<DomPointReadOnly> for crate::geom::Point {
     }
 }
 
+impl From<(f64, f64)> for DomPoint {
+    fn from(coords: (f64, f64)) -> Self {
+        Self::new(coords.0, coords.1, 0.0, 1.0)
+    }
+}
+
+impl From<(f64, f64)> for DomPointReadOnly {
+    fn from(coords: (f64, f64)) -> Self {
+        Self::new(coords.0, coords.1, 0.0, 1.0)
+    }
+}
+
+impl From<(f64, f64, f64, f64)> for DomPoint {
+    fn from(coords: (f64, f64, f64, f64)) -> Self {
+        Self::new(coords.0, coords.1, coords.2, coords.3)
+    }
+}
+
+impl From<(f64, f64, f64, f64)> for DomPointReadOnly {
+    fn from(coords: (f64, f64, f64, f64)) -> Self {
+        Self::new(coords.0, coords.1, coords.2, coords.3)
+    }
+}
+
+impl From<DomPoint> for (f64, f64) {
+    fn from(pt: DomPoint) -> Self {
+        (pt.x, pt.y)
+    }
+}
+
+impl From<DomPointReadOnly> for (f64, f64) {
+    fn from(pt: DomPointReadOnly) -> Self {
+        (pt.x, pt.y)
+    }
+}
+
+impl From<DomPoint> for (f64, f64, f64, f64) {
+    fn from(pt: DomPoint) -> Self {
+        (pt.x, pt.y, pt.z, pt.w)
+    }
+}
+
+impl From<DomPointReadOnly> for (f64, f64, f64, f64) {
+    fn from(pt: DomPointReadOnly) -> Self {
+        (pt.x, pt.y, pt.z, pt.w)
+    }
+}
+
 /// `DomQuad` represents a quadrilateral with four corners (p1, p2, p3, p4),
 /// which is a standard interface per the CSS Geometry Interfaces standard.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1045,6 +1173,25 @@ impl DomQuad {
     #[allow(non_snake_case)]
     pub fn toJSON(self) -> serde_json::Value {
         self.serialize()
+    }
+}
+
+impl From<DomRectReadOnly> for DomQuad {
+    fn from(rect: DomRectReadOnly) -> Self {
+        Self::from_rect_readonly(rect)
+    }
+}
+
+impl From<DomRect> for DomQuad {
+    fn from(rect: DomRect) -> Self {
+        Self::from_rect_readonly(rect.to_readonly())
+    }
+}
+
+impl From<crate::geom::Rect> for DomQuad {
+    fn from(rect: crate::geom::Rect) -> Self {
+        let dom_rect = DomRectReadOnly::from(rect);
+        Self::from_rect_readonly(dom_rect)
     }
 }
 
@@ -1661,5 +1808,132 @@ mod tests {
         assert!(bounds.width().is_nan());
         assert_eq!(bounds.y(), 0.0);
         assert_eq!(bounds.height(), 20.0);
+    }
+
+    #[test]
+    fn test_is_empty() {
+        let r1 = DomRect::new(0.0, 0.0, 10.0, 10.0);
+        assert!(!r1.is_empty());
+
+        let r2 = DomRect::new(0.0, 0.0, 0.0, 10.0);
+        assert!(r2.is_empty());
+
+        let r3 = DomRectReadOnly::new(0.0, 0.0, 10.0, -5.0);
+        assert!(r3.is_empty());
+
+        let r4 = DomRect::new(0.0, 0.0, f64::NAN, 10.0);
+        assert!(r4.is_empty());
+    }
+
+    #[test]
+    fn test_normalize() {
+        let r = DomRect::new(10.0, 20.0, -100.0, -50.0);
+        let norm = r.normalize();
+        assert_eq!(norm.x(), -90.0);
+        assert_eq!(norm.y(), -30.0);
+        assert_eq!(norm.width(), 100.0);
+        assert_eq!(norm.height(), 50.0);
+        assert!(!norm.is_empty());
+
+        let ro = DomRectReadOnly::new(10.0, 20.0, -100.0, -50.0);
+        let norm_ro = ro.normalize();
+        assert_eq!(norm_ro.x(), -90.0);
+        assert_eq!(norm_ro.width(), 100.0);
+    }
+
+    #[test]
+    fn test_intersection() {
+        let r1 = DomRect::new(0.0, 0.0, 10.0, 10.0);
+        let r2 = DomRect::new(5.0, 5.0, 10.0, 10.0);
+        let inter = r1.intersection(&r2);
+        assert_eq!(inter.x(), 5.0);
+        assert_eq!(inter.y(), 5.0);
+        assert_eq!(inter.width(), 5.0);
+        assert_eq!(inter.height(), 5.0);
+
+        let r3 = DomRect::new(20.0, 20.0, 10.0, 10.0);
+        let inter_empty = r1.intersection(&r3);
+        assert_eq!(inter_empty, DomRect::default());
+    }
+
+    #[test]
+    fn test_from_rect_array_parsing() {
+        let arr_4 = serde_json::json!([10.0, 20.0, 30.0, 40.0]);
+        let r4 = DomRect::from_rect(Some(&arr_4));
+        assert_eq!(r4.x(), 10.0);
+        assert_eq!(r4.y(), 20.0);
+        assert_eq!(r4.width(), 30.0);
+        assert_eq!(r4.height(), 40.0);
+
+        let arr_2 = serde_json::json!([50.0, 60.0]);
+        let r2 = DomRectReadOnly::from_rect(Some(&arr_2));
+        assert_eq!(r2.x(), 0.0);
+        assert_eq!(r2.y(), 0.0);
+        assert_eq!(r2.width(), 50.0);
+        assert_eq!(r2.height(), 60.0);
+
+        let arr_3 = serde_json::json!([5.0, 10.0, 15.0]);
+        let r3 = DomRect::from_rect(Some(&arr_3));
+        assert_eq!(r3.x(), 5.0);
+        assert_eq!(r3.y(), 10.0);
+        assert_eq!(r3.width(), 15.0);
+        assert_eq!(r3.height(), 0.0);
+    }
+
+    #[test]
+    fn test_domrectlist_conversions_and_json() {
+        let r1 = DomRect::new(0.0, 0.0, 10.0, 10.0);
+        let r2 = DomRect::new(5.0, 5.0, 5.0, 5.0);
+        let list = DomRectList::from(vec![r1, r2]);
+        assert_eq!(list.length(), 2);
+
+        let vec_back = Vec::<DomRect>::from(list.clone());
+        assert_eq!(vec_back.len(), 2);
+
+        let json = list.to_json();
+        assert!(json.is_array());
+        assert_eq!(json[0]["width"], 10.0);
+
+        let json_camel = list.toJSON();
+        assert_eq!(json_camel[1]["width"], 5.0);
+    }
+
+    #[test]
+    fn test_domquad_from_conversions() {
+        let r = DomRect::new(10.0, 20.0, 30.0, 40.0);
+        let quad1: DomQuad = DomQuad::from(r);
+        assert_eq!(quad1.bounds().x(), 10.0);
+        assert_eq!(quad1.bounds().width(), 30.0);
+
+        let ro = DomRectReadOnly::new(5.0, 15.0, 25.0, 35.0);
+        let quad2: DomQuad = DomQuad::from(ro);
+        assert_eq!(quad2.bounds().x(), 5.0);
+        assert_eq!(quad2.bounds().width(), 25.0);
+
+        let geom_r = crate::geom::Rect::new(2.0, 4.0, 6.0, 8.0);
+        let quad3: DomQuad = DomQuad::from(geom_r);
+        assert_eq!(quad3.bounds().x(), 2.0);
+        assert_eq!(quad3.bounds().width(), 6.0);
+    }
+
+    #[test]
+    fn test_dompoint_tuple_conversions() {
+        let pt1 = DomPoint::from((3.0, 4.0));
+        assert_eq!(pt1.x(), 3.0);
+        assert_eq!(pt1.y(), 4.0);
+        assert_eq!(pt1.z(), 0.0);
+        assert_eq!(pt1.w(), 1.0);
+
+        let tuple_2: (f64, f64) = pt1.into();
+        assert_eq!(tuple_2, (3.0, 4.0));
+
+        let pt2 = DomPointReadOnly::from((1.0, 2.0, 3.0, 4.0));
+        assert_eq!(pt2.x(), 1.0);
+        assert_eq!(pt2.y(), 2.0);
+        assert_eq!(pt2.z(), 3.0);
+        assert_eq!(pt2.w(), 4.0);
+
+        let tuple_4: (f64, f64, f64, f64) = pt2.into();
+        assert_eq!(tuple_4, (1.0, 2.0, 3.0, 4.0));
     }
 }
