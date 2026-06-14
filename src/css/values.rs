@@ -4341,6 +4341,12 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             {
                 return Some(CssValue::Keyword(serialize_component_value(components[0])));
             }
+            if name.eq_ignore_ascii_case("anchor") {
+                return parse_anchor_function(value);
+            }
+            if name.eq_ignore_ascii_case("anchor-size") {
+                return parse_anchor_size_function(value);
+            }
             None // TODO(spec): other functions
         }
         _ => None,
@@ -4656,6 +4662,243 @@ fn parse_linear_function(components: &[ComponentValue]) -> Option<CssValue> {
         }
     }
     Some(CssValue::Keyword(format!("linear({})", parts.join(", "))))
+}
+
+fn is_length_percentage(cv: &ComponentValue) -> bool {
+    match cv {
+        ComponentValue::Token(CssToken::Percentage(_)) => true,
+        ComponentValue::Token(CssToken::Dimension { value: _, unit }) => {
+            let lower_unit = unit.to_ascii_lowercase();
+            matches!(
+                lower_unit.as_str(),
+                "px" | "em" | "rem" | "pt" | "vw" | "vh"
+            )
+        }
+        ComponentValue::Token(CssToken::Number(v)) => *v == 0.0,
+        ComponentValue::Function { name: _, value: _ } => {
+            // E.g. calc(), anchor(), anchor-size(), etc.
+            true
+        }
+        _ => false,
+    }
+}
+
+fn parse_anchor_side(cv: &ComponentValue) -> Option<String> {
+    match cv {
+        ComponentValue::Token(CssToken::Ident(s)) => {
+            let s_lower = s.to_ascii_lowercase();
+            if matches!(
+                s_lower.as_str(),
+                "top"
+                    | "left"
+                    | "right"
+                    | "bottom"
+                    | "start"
+                    | "end"
+                    | "self-start"
+                    | "self-end"
+                    | "center"
+                    | "inside"
+                    | "outside"
+            ) {
+                Some(s_lower)
+            } else {
+                None
+            }
+        }
+        ComponentValue::Token(CssToken::Percentage(v)) => Some(format!("{}%", v)),
+        _ => None,
+    }
+}
+
+fn parse_anchor_function(components: &[ComponentValue]) -> Option<CssValue> {
+    // Filter out whitespace
+    let args: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    // Find the first top-level comma to separate the anchor parts and the optional fallback
+    let mut comma_index = None;
+    for (idx, arg) in args.iter().enumerate() {
+        if matches!(arg, ComponentValue::Token(CssToken::Comma)) {
+            comma_index = Some(idx);
+            break;
+        }
+    }
+
+    let (anchor_parts, fallback_part) = match comma_index {
+        Some(idx) => {
+            let first = &args[..idx];
+            let second = &args[idx + 1..];
+            (first, Some(second))
+        }
+        None => (&args[..], None),
+    };
+
+    // Validate anchor_parts:
+    // [ <anchor-name> ]? <anchor-side>
+    // Can be 1 or 2 items
+    let mut anchor_name: Option<String> = None;
+    let anchor_side_comp: &ComponentValue;
+
+    match anchor_parts.len() {
+        1 => {
+            anchor_side_comp = anchor_parts[0];
+        }
+        2 => {
+            let first = anchor_parts[0];
+            if let ComponentValue::Token(CssToken::Ident(s)) = first {
+                if s.starts_with("--") {
+                    anchor_name = Some(s.clone());
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+            anchor_side_comp = anchor_parts[1];
+        }
+        _ => return None,
+    }
+
+    // Validate <anchor-side>
+    let anchor_side_str = parse_anchor_side(anchor_side_comp)?;
+
+    // Validate optional fallback
+    let fallback_str = match fallback_part {
+        Some(fallback_args) => {
+            // Must have exactly 1 component for <length-percentage>
+            if fallback_args.len() != 1 {
+                return None;
+            }
+            let fb = fallback_args[0];
+            if is_length_percentage(fb) {
+                Some(serialize_component_value(fb))
+            } else {
+                return None;
+            }
+        }
+        None => None,
+    };
+
+    // Construct the serialized representation
+    let mut res = String::from("anchor(");
+    if let Some(name) = anchor_name {
+        res.push_str(&name);
+        res.push(' ');
+    }
+    res.push_str(&anchor_side_str);
+    if let Some(fb) = fallback_str {
+        res.push_str(", ");
+        res.push_str(&fb);
+    }
+    res.push(')');
+
+    // TODO(spec): layout resolution against an actual anchor element would plug in here.
+    Some(CssValue::Keyword(res))
+}
+
+fn parse_anchor_size_function(components: &[ComponentValue]) -> Option<CssValue> {
+    // Filter out whitespace
+    let args: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    // Find the first top-level comma to separate the anchor parts and the optional fallback
+    let mut comma_index = None;
+    for (idx, arg) in args.iter().enumerate() {
+        if matches!(arg, ComponentValue::Token(CssToken::Comma)) {
+            comma_index = Some(idx);
+            break;
+        }
+    }
+
+    let (anchor_parts, fallback_part) = match comma_index {
+        Some(idx) => {
+            let first = &args[..idx];
+            let second = &args[idx + 1..];
+            (first, Some(second))
+        }
+        None => (&args[..], None),
+    };
+
+    // Validate anchor_parts:
+    // [ <anchor-name> ]? <anchor-size>
+    // Can be 1 or 2 items
+    let mut anchor_name: Option<String> = None;
+    let anchor_size_comp: &ComponentValue;
+
+    match anchor_parts.len() {
+        1 => {
+            anchor_size_comp = anchor_parts[0];
+        }
+        2 => {
+            let first = anchor_parts[0];
+            if let ComponentValue::Token(CssToken::Ident(s)) = first {
+                if s.starts_with("--") {
+                    anchor_name = Some(s.clone());
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+            anchor_size_comp = anchor_parts[1];
+        }
+        _ => return None,
+    }
+
+    // Validate <anchor-size>
+    // where <anchor-size> is one of: width, height, block, inline, self-block, self-inline.
+    let anchor_size_str = match anchor_size_comp {
+        ComponentValue::Token(CssToken::Ident(s)) => {
+            let s_lower = s.to_ascii_lowercase();
+            if matches!(
+                s_lower.as_str(),
+                "width" | "height" | "block" | "inline" | "self-block" | "self-inline"
+            ) {
+                s_lower
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+
+    // Validate optional fallback
+    let fallback_str = match fallback_part {
+        Some(fallback_args) => {
+            // Must have exactly 1 component for <length-percentage>
+            if fallback_args.len() != 1 {
+                return None;
+            }
+            let fb = fallback_args[0];
+            if is_length_percentage(fb) {
+                Some(serialize_component_value(fb))
+            } else {
+                return None;
+            }
+        }
+        None => None,
+    };
+
+    // Construct the serialized representation
+    let mut res = String::from("anchor-size(");
+    if let Some(name) = anchor_name {
+        res.push_str(&name);
+        res.push(' ');
+    }
+    res.push_str(&anchor_size_str);
+    if let Some(fb) = fallback_str {
+        res.push_str(", ");
+        res.push_str(&fb);
+    }
+    res.push(')');
+
+    // TODO(spec): layout resolution against an actual anchor element would plug in here.
+    Some(CssValue::Keyword(res))
 }
 
 fn parse_named_color(name: &str) -> Option<Color> {
@@ -6722,6 +6965,209 @@ mod tests {
             value: vec![token(CssToken::Number(0.0))],
         };
         assert_eq!(parse_value(&[linear_invalid_len]), None);
+    }
+
+    #[test]
+    fn test_parse_anchor_functions() {
+        // anchor(top)
+        let a_top = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![token(CssToken::Ident("top".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[a_top]),
+            Some(CssValue::Keyword("anchor(top)".to_string()))
+        );
+
+        // anchor(--my-anchor left)
+        let a_with_name = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("--my-anchor".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("left".to_string())),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[a_with_name]),
+            Some(CssValue::Keyword("anchor(--my-anchor left)".to_string()))
+        );
+
+        // anchor(right, 10px)
+        let a_with_fallback = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("right".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[a_with_fallback]),
+            Some(CssValue::Keyword("anchor(right, 10px)".to_string()))
+        );
+
+        // anchor(--my-anchor bottom, 50%)
+        let a_all = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("--my-anchor".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("bottom".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(50.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[a_all]),
+            Some(CssValue::Keyword(
+                "anchor(--my-anchor bottom, 50%)".to_string()
+            ))
+        );
+
+        // anchor(--my-anchor 10%)
+        let a_pct = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("--my-anchor".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Percentage(10.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[a_pct]),
+            Some(CssValue::Keyword("anchor(--my-anchor 10%)".to_string()))
+        );
+
+        // anchor(top, 0)
+        let a_zero = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("top".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[a_zero]),
+            Some(CssValue::Keyword("anchor(top, 0)".to_string()))
+        );
+
+        // anchor(top, calc(10% + 5px))
+        let a_calc = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("top".to_string())),
+                token(CssToken::Comma),
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Percentage(10.0)),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('+')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Dimension {
+                            value: 5.0,
+                            unit: "px".to_string(),
+                        }),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[a_calc]),
+            Some(CssValue::Keyword(
+                "anchor(top, calc(10% + 5px))".to_string()
+            ))
+        );
+
+        // Malformed anchor
+        let a_empty = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![],
+        };
+        assert_eq!(parse_value(&[a_empty]), None);
+
+        let a_missing_side = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![token(CssToken::Ident("--my-anchor".to_string()))],
+        };
+        assert_eq!(parse_value(&[a_missing_side]), None);
+
+        let a_invalid_two_sides = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("top".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("left".to_string())),
+            ],
+        };
+        assert_eq!(parse_value(&[a_invalid_two_sides]), None);
+
+        let a_multiple_fallbacks = ComponentValue::Function {
+            name: "anchor".to_string(),
+            value: vec![
+                token(CssToken::Ident("top".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(10.0)),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(20.0)),
+            ],
+        };
+        assert_eq!(parse_value(&[a_multiple_fallbacks]), None);
+
+        // anchor-size(width)
+        let as_width = ComponentValue::Function {
+            name: "anchor-size".to_string(),
+            value: vec![token(CssToken::Ident("width".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[as_width]),
+            Some(CssValue::Keyword("anchor-size(width)".to_string()))
+        );
+
+        // anchor-size(--my-anchor height)
+        let as_with_name = ComponentValue::Function {
+            name: "anchor-size".to_string(),
+            value: vec![
+                token(CssToken::Ident("--my-anchor".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("height".to_string())),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[as_with_name]),
+            Some(CssValue::Keyword(
+                "anchor-size(--my-anchor height)".to_string()
+            ))
+        );
+
+        // anchor-size(block, 20px)
+        let as_with_fallback = ComponentValue::Function {
+            name: "anchor-size".to_string(),
+            value: vec![
+                token(CssToken::Ident("block".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[as_with_fallback]),
+            Some(CssValue::Keyword("anchor-size(block, 20px)".to_string()))
+        );
+
+        // Malformed anchor-size
+        let as_invalid_side = ComponentValue::Function {
+            name: "anchor-size".to_string(),
+            value: vec![token(CssToken::Ident("top".to_string()))],
+        };
+        assert_eq!(parse_value(&[as_invalid_side]), None);
     }
 
     #[test]
