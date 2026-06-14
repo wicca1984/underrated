@@ -111,6 +111,21 @@ impl Class for Performance {
                 JsString::from("clearMeasures"),
                 0,
                 NativeFunction::from_fn_ptr(performance_clear_measures),
+            )
+            .method(
+                JsString::from("getEntries"),
+                0,
+                NativeFunction::from_fn_ptr(performance_get_entries),
+            )
+            .method(
+                JsString::from("getEntriesByType"),
+                1,
+                NativeFunction::from_fn_ptr(performance_get_entries_by_type),
+            )
+            .method(
+                JsString::from("getEntriesByName"),
+                1,
+                NativeFunction::from_fn_ptr(performance_get_entries_by_name),
             );
 
         Ok(())
@@ -303,6 +318,174 @@ fn performance_clear_measures(
     Ok(JsValue::undefined())
 }
 
+fn performance_get_entries(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let performance = obj.downcast_ref::<Performance>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Performance object"))
+    })?;
+
+    let mut entries = Vec::new();
+
+    for mark in performance.marks.borrow().iter() {
+        entries.push((
+            mark.start_time,
+            create_performance_mark_object(&mark.name, mark.start_time, context),
+        ));
+    }
+
+    for measure in performance.measures.borrow().iter() {
+        entries.push((
+            measure.start_time,
+            create_performance_measure_object(
+                &measure.name,
+                measure.start_time,
+                measure.duration,
+                context,
+            ),
+        ));
+    }
+
+    entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let js_entries: Vec<JsValue> = entries.into_iter().map(|(_, val)| val).collect();
+    let array = boa_engine::object::builtins::JsArray::from_iter(js_entries, context);
+
+    Ok(JsValue::from(array))
+}
+
+fn performance_get_entries_by_type(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let performance = obj.downcast_ref::<Performance>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Performance object"))
+    })?;
+
+    let type_val = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("performance.getEntriesByType: type is required"),
+        )
+    })?;
+    let entry_type = type_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let mut entries = Vec::new();
+
+    if entry_type == "mark" {
+        for mark in performance.marks.borrow().iter() {
+            entries.push((
+                mark.start_time,
+                create_performance_mark_object(&mark.name, mark.start_time, context),
+            ));
+        }
+    } else if entry_type == "measure" {
+        for measure in performance.measures.borrow().iter() {
+            entries.push((
+                measure.start_time,
+                create_performance_measure_object(
+                    &measure.name,
+                    measure.start_time,
+                    measure.duration,
+                    context,
+                ),
+            ));
+        }
+    }
+
+    entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let js_entries: Vec<JsValue> = entries.into_iter().map(|(_, val)| val).collect();
+    let array = boa_engine::object::builtins::JsArray::from_iter(js_entries, context);
+
+    Ok(JsValue::from(array))
+}
+
+fn performance_get_entries_by_name(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let performance = obj.downcast_ref::<Performance>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Performance object"))
+    })?;
+
+    let name_val = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("performance.getEntriesByName: name is required"),
+        )
+    })?;
+    let name = name_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let entry_type_opt = args.get(1).filter(|v| !v.is_undefined() && !v.is_null());
+    let entry_type = if let Some(type_val) = entry_type_opt {
+        Some(
+            type_val
+                .to_string(context)?
+                .to_std_string()
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
+
+    let mut entries = Vec::new();
+
+    let check_mark = entry_type.as_deref().is_none_or(|t| t == "mark");
+    let check_measure = entry_type.as_deref().is_none_or(|t| t == "measure");
+
+    if check_mark {
+        for mark in performance.marks.borrow().iter() {
+            if mark.name == name {
+                entries.push((
+                    mark.start_time,
+                    create_performance_mark_object(&mark.name, mark.start_time, context),
+                ));
+            }
+        }
+    }
+
+    if check_measure {
+        for measure in performance.measures.borrow().iter() {
+            if measure.name == name {
+                entries.push((
+                    measure.start_time,
+                    create_performance_measure_object(
+                        &measure.name,
+                        measure.start_time,
+                        measure.duration,
+                        context,
+                    ),
+                ));
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let js_entries: Vec<JsValue> = entries.into_iter().map(|(_, val)| val).collect();
+    let array = boa_engine::object::builtins::JsArray::from_iter(js_entries, context);
+
+    Ok(JsValue::from(array))
+}
+
 fn create_performance_mark_object(name: &str, start_time: f64, context: &mut Context) -> JsValue {
     let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
     let mark_obj = ObjectInitializer::new(context)
@@ -489,6 +672,109 @@ mod tests {
             "#,
         );
         let res = context.eval(source).unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_get_entries_api() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // Add some marks and measures
+        context
+            .eval(Source::from_bytes("performance.mark('mark1');"))
+            .unwrap();
+        context
+            .eval(Source::from_bytes("performance.mark('mark2');"))
+            .unwrap();
+        context
+            .eval(Source::from_bytes(
+                "performance.measure('measure1', 'mark1', 'mark2');",
+            ))
+            .unwrap();
+
+        // 1. Check getEntries returns all 3 entries
+        let res = context
+            .eval(Source::from_bytes("performance.getEntries().length === 3"))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // Check chronological ordering of getEntries()
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const entries = performance.getEntries();
+                entries[0].name === "mark1" && entries[1].name === "measure1" && entries[2].name === "mark2"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. Check getEntriesByType('mark') returns only marks
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const marks = performance.getEntriesByType("mark");
+                marks.length === 2 && marks[0].name === "mark1" && marks[1].name === "mark2"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // Check getEntriesByType('measure') returns only measures
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const measures = performance.getEntriesByType("measure");
+                measures.length === 1 && measures[0].name === "measure1"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // Check getEntriesByType with unsupported type returns empty array
+        let res = context
+            .eval(Source::from_bytes(
+                "performance.getEntriesByType('invalid_type').length === 0",
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 3. Check getEntriesByName('mark1') returns the specific mark
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const named = performance.getEntriesByName("mark1");
+                named.length === 1 && named[0].name === "mark1" && named[0].entryType === "mark"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // Check getEntriesByName with correct type
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const named_typed = performance.getEntriesByName("mark1", "mark");
+                named_typed.length === 1 && named_typed[0].name === "mark1"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // Check getEntriesByName with non-matching type returns empty array
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                performance.getEntriesByName("mark1", "measure").length === 0
+                "#,
+            ))
+            .unwrap();
         assert_eq!(res.as_boolean(), Some(true));
     }
 }
