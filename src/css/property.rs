@@ -1034,6 +1034,46 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "0",
     },
+    PropertyMetadata {
+        name: "anchor-name",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "view-transition-name",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "contain-intrinsic-width",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "contain-intrinsic-height",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "content-visibility",
+        inherited: false,
+        initial: "visible",
+    },
+    PropertyMetadata {
+        name: "animation-timeline",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-timeline-name",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "scroll-timeline-axis",
+        inherited: false,
+        initial: "block",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1146,6 +1186,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         longhands: &["column-width", "column-count"],
     },
     ShorthandExpansion {
+        name: "contain-intrinsic-size",
+        longhands: &["contain-intrinsic-width", "contain-intrinsic-height"],
+    },
+    ShorthandExpansion {
         name: "flex",
         longhands: &["flex-grow", "flex-shrink", "flex-basis"],
     },
@@ -1241,6 +1285,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "place-self",
         longhands: &["align-self", "justify-self"],
+    },
+    ShorthandExpansion {
+        name: "scroll-timeline",
+        longhands: &["scroll-timeline-name", "scroll-timeline-axis"],
     },
     ShorthandExpansion {
         name: "text-decoration",
@@ -1953,6 +2001,65 @@ mod tests {
     }
 
     #[test]
+    fn test_additive_properties_t0753() {
+        let anchor_name = lookup("anchor-name");
+        assert!(anchor_name.is_some());
+        let anchor_name = anchor_name.unwrap();
+        assert_eq!(anchor_name.name, "anchor-name");
+        assert!(!anchor_name.inherited);
+        assert_eq!(anchor_name.initial, "none");
+
+        let view_transition_name = lookup("view-transition-name");
+        assert!(view_transition_name.is_some());
+        let view_transition_name = view_transition_name.unwrap();
+        assert_eq!(view_transition_name.name, "view-transition-name");
+        assert!(!view_transition_name.inherited);
+        assert_eq!(view_transition_name.initial, "none");
+
+        let contain_intrinsic_width = lookup("contain-intrinsic-width");
+        assert!(contain_intrinsic_width.is_some());
+        let contain_intrinsic_width = contain_intrinsic_width.unwrap();
+        assert_eq!(contain_intrinsic_width.name, "contain-intrinsic-width");
+        assert!(!contain_intrinsic_width.inherited);
+        assert_eq!(contain_intrinsic_width.initial, "none");
+
+        let contain_intrinsic_height = lookup("contain-intrinsic-height");
+        assert!(contain_intrinsic_height.is_some());
+        let contain_intrinsic_height = contain_intrinsic_height.unwrap();
+        assert_eq!(contain_intrinsic_height.name, "contain-intrinsic-height");
+        assert!(!contain_intrinsic_height.inherited);
+        assert_eq!(contain_intrinsic_height.initial, "none");
+
+        let content_visibility = lookup("content-visibility");
+        assert!(content_visibility.is_some());
+        let content_visibility = content_visibility.unwrap();
+        assert_eq!(content_visibility.name, "content-visibility");
+        assert!(!content_visibility.inherited);
+        assert_eq!(content_visibility.initial, "visible");
+
+        let animation_timeline = lookup("animation-timeline");
+        assert!(animation_timeline.is_some());
+        let animation_timeline = animation_timeline.unwrap();
+        assert_eq!(animation_timeline.name, "animation-timeline");
+        assert!(!animation_timeline.inherited);
+        assert_eq!(animation_timeline.initial, "auto");
+
+        let scroll_timeline_name = lookup("scroll-timeline-name");
+        assert!(scroll_timeline_name.is_some());
+        let scroll_timeline_name = scroll_timeline_name.unwrap();
+        assert_eq!(scroll_timeline_name.name, "scroll-timeline-name");
+        assert!(!scroll_timeline_name.inherited);
+        assert_eq!(scroll_timeline_name.initial, "none");
+
+        let scroll_timeline_axis = lookup("scroll-timeline-axis");
+        assert!(scroll_timeline_axis.is_some());
+        let scroll_timeline_axis = scroll_timeline_axis.unwrap();
+        assert_eq!(scroll_timeline_axis.name, "scroll-timeline-axis");
+        assert!(!scroll_timeline_axis.inherited);
+        assert_eq!(scroll_timeline_axis.initial, "block");
+    }
+
+    #[test]
     fn test_no_duplicate_names() {
         let mut names = HashSet::new();
         for prop in PROPERTY_METADATA {
@@ -2125,6 +2232,14 @@ mod tests {
         assert_eq!(
             shorthand_longhands("grid-row"),
             Some(&["grid-row-start", "grid-row-end"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("contain-intrinsic-size"),
+            Some(&["contain-intrinsic-width", "contain-intrinsic-height"][..])
+        );
+        assert_eq!(
+            shorthand_longhands("scroll-timeline"),
+            Some(&["scroll-timeline-name", "scroll-timeline-axis"][..])
         );
         assert_eq!(shorthand_longhands("completely-unknown"), None);
     }
