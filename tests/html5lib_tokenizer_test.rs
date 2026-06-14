@@ -172,6 +172,7 @@ fn test_html5lib_tokenizer_conformance() {
         "tests/html5lib-tests/tokenizer/escapeFlag.test",
         "tests/html5lib-tests/tokenizer/domjs.test",
         "tests/html5lib-tests/tokenizer/entities.test",
+        "tests/html5lib-tests/tokenizer/namedEntities.test",
         "tests/html5lib-tests/tokenizer/numericEntities.test",
         "tests/html5lib-tests/tokenizer/unicodeChars.test",
         "tests/html5lib-tests/tokenizer/unicodeCharsProblematic.test",
@@ -336,7 +337,7 @@ fn test_html5lib_tokenizer_conformance() {
     // Future regressions (more failures) will turn the test red. If the tokenizer
     // improves and failure count drops, this constant should be lowered accordingly,
     // never raised.
-    // Loaded files: test1, test2, test3, test4, contentModelFlags, escapeFlag, domjs, entities, numericEntities, unicodeChars, unicodeCharsProblematic. Observed: PASS=2821, FAIL=0, SKIP=0.
+    // Loaded files: test1, test2, test3, test4, contentModelFlags, escapeFlag, domjs, entities, namedEntities, numericEntities, unicodeChars, unicodeCharsProblematic. Observed: PASS=7031, FAIL=0, SKIP=0.
     const BASELINE_MAX_FAILURES: usize = 0;
 
     // Print summary to stderr as required
