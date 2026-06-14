@@ -441,13 +441,19 @@ impl<'a> Parser<'a> {
                             let mut sub_tokenizer = CssTokenizer::new(&block_css);
                             let mut sub_parser = Parser::new(&mut sub_tokenizer);
                             let sub_decls = sub_parser.consume_list_of_declarations(parent_prelude);
-                            self.nested_rules.extend(sub_parser.nested_rules);
 
-                            let nested_qual = QualifiedRule {
-                                prelude: parent_prelude.to_vec(),
-                                declarations: sub_decls,
-                            };
-                            let nested_css = serialize_rule(&Rule::Qualified(nested_qual));
+                            let mut nested_css = String::new();
+                            if !sub_decls.is_empty() {
+                                let nested_qual = QualifiedRule {
+                                    prelude: parent_prelude.to_vec(),
+                                    declarations: sub_decls,
+                                };
+                                nested_css.push_str(&serialize_rule(&Rule::Qualified(nested_qual)));
+                            }
+                            for nested_rule in &sub_parser.nested_rules {
+                                nested_css.push_str(&serialize_rule(nested_rule));
+                            }
+
                             let mut token_stream = CssTokenizer::new(&nested_css);
                             let mut parser = Parser::new(&mut token_stream);
                             let mut block_cvs = Vec::new();
@@ -1564,5 +1570,56 @@ mod tests {
 
         let invalid_dash = parse_component_values("U+26-25-24");
         assert!(parse_unicode_range(&invalid_dash).is_none());
+    }
+
+    #[test]
+    fn test_parse_nested_at_rule_with_nested_style_rule() {
+        let input = "
+            div {
+                @media (min-width: 100px) {
+                    color: yellow;
+                    span {
+                        color: blue;
+                    }
+                }
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(
+            stylesheet.rules.len(),
+            2,
+            "Should only have div and @media rule at the top level"
+        );
+
+        if let Rule::Qualified(r) = &stylesheet.rules[0] {
+            assert_eq!(serialize_component_values(&r.prelude).trim(), "div");
+            assert_eq!(r.declarations.len(), 0);
+        } else {
+            panic!("Expected qualified rule 1 to be div");
+        }
+
+        if let Rule::At(r) = &stylesheet.rules[1] {
+            assert_eq!(r.name, "media");
+            assert_eq!(
+                serialize_component_values(&r.prelude).trim(),
+                "(min-width: 100px)"
+            );
+            assert!(r.block.is_some());
+            let block_str = serialize_component_values(r.block.as_ref().unwrap())
+                .trim()
+                .to_string();
+            assert!(
+                block_str.contains("div {color: yellow;}"),
+                "Block should contain div's yellow declaration: {}",
+                block_str
+            );
+            assert!(
+                block_str.contains("div span{color: blue;}"),
+                "Block should contain nested style rule div span: {}",
+                block_str
+            );
+        } else {
+            panic!("Expected at-rule @media");
+        }
     }
 }
