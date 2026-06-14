@@ -3024,6 +3024,249 @@ impl Dom {
         }
     }
 
+    /// Returns the value of the `formenctype` content attribute of a valid submit button element
+    /// (input, button).
+    /// Returns `None` if the node is not one of these elements, has no `formenctype` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_formenctype(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("formenctype"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `formenctype` content attribute on a valid submit button element
+    /// (input, button).
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_formenctype(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            self.set_attribute(node, "formenctype", value);
+        }
+    }
+
+    /// Returns whether the `novalidate` content attribute is present on a valid `form` element.
+    /// Returns `None` if the node is not a `form` element, or if the `NodeId` is invalid.
+    pub fn get_novalidate(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("novalidate")),
+            );
+        }
+        None
+    }
+
+    /// Sets or removes the `novalidate` content attribute on a valid `form` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a `form` element, or if the `NodeId` is invalid.
+    pub fn set_novalidate(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            if value {
+                self.set_attribute(node, "novalidate", "");
+            } else {
+                self.remove_attribute(node, "novalidate");
+            }
+        }
+    }
+
+    /// Returns the value of the `autocomplete` content attribute of a valid element node
+    /// (form, input, select, textarea).
+    /// Returns `None` if the node is not one of these elements, has no `autocomplete` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_autocomplete(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("form")
+                || name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("autocomplete"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `autocomplete` content attribute on a valid element node
+    /// (form, input, select, textarea).
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_autocomplete(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("form")
+                || name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea"))
+        {
+            self.set_attribute(node, "autocomplete", value);
+        }
+    }
+
+    /// Returns the value of the `srcdoc` content attribute of a valid `iframe` element.
+    /// Returns `None` if the node is not an `iframe` element, has no `srcdoc` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_srcdoc(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("srcdoc"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `srcdoc` content attribute on a valid `iframe` element.
+    /// No-op if the node is not an `iframe` element, or if the `NodeId` is invalid.
+    pub fn set_srcdoc(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            self.set_attribute(node, "srcdoc", value);
+        }
+    }
+
+    /// Returns whether the `allowfullscreen` content attribute is present on a valid `iframe` element.
+    /// Returns `None` if the node is not an `iframe` element, or if the `NodeId` is invalid.
+    pub fn get_allow_fullscreen(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("allowfullscreen")),
+            );
+        }
+        None
+    }
+
+    /// Sets or removes the `allowfullscreen` content attribute on a valid `iframe` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an `iframe` element, or if the `NodeId` is invalid.
+    pub fn set_allow_fullscreen(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            if value {
+                self.set_attribute(node, "allowfullscreen", "");
+            } else {
+                self.remove_attribute(node, "allowfullscreen");
+            }
+        }
+    }
+
+    /// Returns whether the `async` content attribute is present on a valid `script` element.
+    /// Returns `None` if the node is not a `script` element, or if the `NodeId` is invalid.
+    pub fn get_async(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("script")
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("async")));
+        }
+        None
+    }
+
+    /// Sets or removes the `async` content attribute on a valid `script` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a `script` element, or if the `NodeId` is invalid.
+    pub fn set_async(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("script")
+        {
+            if value {
+                self.set_attribute(node, "async", "");
+            } else {
+                self.remove_attribute(node, "async");
+            }
+        }
+    }
+
+    /// Returns whether the `defer` content attribute is present on a valid `script` element.
+    /// Returns `None` if the node is not a `script` element, or if the `NodeId` is invalid.
+    pub fn get_defer(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("script")
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("defer")));
+        }
+        None
+    }
+
+    /// Sets or removes the `defer` content attribute on a valid `script` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a `script` element, or if the `NodeId` is invalid.
+    pub fn set_defer(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("script")
+        {
+            if value {
+                self.set_attribute(node, "defer", "");
+            } else {
+                self.remove_attribute(node, "defer");
+            }
+        }
+    }
+
+    /// Returns whether the `autoplay` content attribute is present on a valid media element (audio, video).
+    /// Returns `None` if the node is not a media element, or if the `NodeId` is invalid.
+    pub fn get_autoplay(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("autoplay")),
+            );
+        }
+        None
+    }
+
+    /// Sets or removes the `autoplay` content attribute on a valid media element (audio, video).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a media element, or if the `NodeId` is invalid.
+    pub fn set_autoplay(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            if value {
+                self.set_attribute(node, "autoplay", "");
+            } else {
+                self.remove_attribute(node, "autoplay");
+            }
+        }
+    }
+
     // TODO(spec): muted reflects defaultMuted
 }
 
@@ -5976,5 +6219,135 @@ mod tests {
         assert_eq!(dom.get_item_id(div_id), None);
         dom.set_item_id(div_id, "urn:isbn:096139210x");
         assert_eq!(dom.get_item_id(div_id), Some("urn:isbn:096139210x"));
+    }
+
+    #[test]
+    fn test_reflected_attribute_accessors_t0863() {
+        let mut dom = Dom::new();
+        let input_id = elem(&mut dom, "input");
+        let button_id = elem(&mut dom, "button");
+        let form_id = elem(&mut dom, "form");
+        let select_id = elem(&mut dom, "select");
+        let textarea_id = elem(&mut dom, "textarea");
+        let iframe_id = elem(&mut dom, "iframe");
+        let script_id = elem(&mut dom, "script");
+        let audio_id = elem(&mut dom, "audio");
+        let video_id = elem(&mut dom, "video");
+        let div_id = elem(&mut dom, "div");
+
+        // 1. formenctype (input, button)
+        assert_eq!(dom.get_formenctype(input_id), None);
+        assert_eq!(dom.get_formenctype(button_id), None);
+        assert_eq!(dom.get_formenctype(div_id), None);
+
+        dom.set_formenctype(input_id, "multipart/form-data");
+        dom.set_formenctype(button_id, "multipart/form-data");
+        dom.set_formenctype(div_id, "multipart/form-data"); // no-op
+
+        assert_eq!(dom.get_formenctype(input_id), Some("multipart/form-data"));
+        assert_eq!(dom.get_formenctype(button_id), Some("multipart/form-data"));
+        assert_eq!(dom.get_formenctype(div_id), None);
+
+        // 2. novalidate (form)
+        assert_eq!(dom.get_novalidate(form_id), Some(false));
+        assert_eq!(dom.get_novalidate(div_id), None);
+
+        dom.set_novalidate(form_id, true);
+        dom.set_novalidate(div_id, true); // no-op
+
+        assert_eq!(dom.get_novalidate(form_id), Some(true));
+        assert_eq!(dom.get_novalidate(div_id), None);
+
+        dom.set_novalidate(form_id, false);
+        assert_eq!(dom.get_novalidate(form_id), Some(false));
+
+        // 3. autocomplete (form, input, select, textarea)
+        assert_eq!(dom.get_autocomplete(form_id), None);
+        assert_eq!(dom.get_autocomplete(input_id), None);
+        assert_eq!(dom.get_autocomplete(select_id), None);
+        assert_eq!(dom.get_autocomplete(textarea_id), None);
+        assert_eq!(dom.get_autocomplete(div_id), None);
+
+        dom.set_autocomplete(form_id, "on");
+        dom.set_autocomplete(input_id, "username");
+        dom.set_autocomplete(select_id, "country");
+        dom.set_autocomplete(textarea_id, "off");
+        dom.set_autocomplete(div_id, "on"); // no-op
+
+        assert_eq!(dom.get_autocomplete(form_id), Some("on"));
+        assert_eq!(dom.get_autocomplete(input_id), Some("username"));
+        assert_eq!(dom.get_autocomplete(select_id), Some("country"));
+        assert_eq!(dom.get_autocomplete(textarea_id), Some("off"));
+        assert_eq!(dom.get_autocomplete(div_id), None);
+
+        // 4. srcdoc (iframe)
+        assert_eq!(dom.get_srcdoc(iframe_id), None);
+        assert_eq!(dom.get_srcdoc(div_id), None);
+
+        dom.set_srcdoc(iframe_id, "<html><body>Hello</body></html>");
+        dom.set_srcdoc(div_id, "<html><body>Hello</body></html>"); // no-op
+
+        assert_eq!(
+            dom.get_srcdoc(iframe_id),
+            Some("<html><body>Hello</body></html>")
+        );
+        assert_eq!(dom.get_srcdoc(div_id), None);
+
+        // 5. allowfullscreen (iframe)
+        assert_eq!(dom.get_allow_fullscreen(iframe_id), Some(false));
+        assert_eq!(dom.get_allow_fullscreen(div_id), None);
+
+        dom.set_allow_fullscreen(iframe_id, true);
+        dom.set_allow_fullscreen(div_id, true); // no-op
+
+        assert_eq!(dom.get_allow_fullscreen(iframe_id), Some(true));
+        assert_eq!(dom.get_allow_fullscreen(div_id), None);
+
+        dom.set_allow_fullscreen(iframe_id, false);
+        assert_eq!(dom.get_allow_fullscreen(iframe_id), Some(false));
+
+        // 6. async (script)
+        assert_eq!(dom.get_async(script_id), Some(false));
+        assert_eq!(dom.get_async(div_id), None);
+
+        dom.set_async(script_id, true);
+        dom.set_async(div_id, true); // no-op
+
+        assert_eq!(dom.get_async(script_id), Some(true));
+        assert_eq!(dom.get_async(div_id), None);
+
+        dom.set_async(script_id, false);
+        assert_eq!(dom.get_async(script_id), Some(false));
+
+        // 7. defer (script)
+        assert_eq!(dom.get_defer(script_id), Some(false));
+        assert_eq!(dom.get_defer(div_id), None);
+
+        dom.set_defer(script_id, true);
+        dom.set_defer(div_id, true); // no-op
+
+        assert_eq!(dom.get_defer(script_id), Some(true));
+        assert_eq!(dom.get_defer(div_id), None);
+
+        dom.set_defer(script_id, false);
+        assert_eq!(dom.get_defer(script_id), Some(false));
+
+        // 8. autoplay (audio, video)
+        assert_eq!(dom.get_autoplay(audio_id), Some(false));
+        assert_eq!(dom.get_autoplay(video_id), Some(false));
+        assert_eq!(dom.get_autoplay(div_id), None);
+
+        dom.set_autoplay(audio_id, true);
+        dom.set_autoplay(video_id, true);
+        dom.set_autoplay(div_id, true); // no-op
+
+        assert_eq!(dom.get_autoplay(audio_id), Some(true));
+        assert_eq!(dom.get_autoplay(video_id), Some(true));
+        assert_eq!(dom.get_autoplay(div_id), None);
+
+        dom.set_autoplay(audio_id, false);
+        dom.set_autoplay(video_id, false);
+        assert_eq!(dom.get_autoplay(audio_id), Some(false));
+        assert_eq!(dom.get_autoplay(video_id), Some(false));
     }
 }
