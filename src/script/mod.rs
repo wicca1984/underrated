@@ -13162,6 +13162,40 @@ mod tests {
     }
 
     #[test]
+    fn test_element_dir() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. A freshly created element has dir === '' by default when 'dir' is absent.
+            let el = document.createElement('div');
+            let res1 = el.dir;
+
+            // 2. Setting el.dir = 'rtl' via setter returns 'rtl' via getter
+            el.dir = 'rtl';
+            let res2 = el.dir;
+
+            // 3. Setter also writes the value to the underlying 'dir' content attribute verbatim
+            let res3 = el.getAttribute('dir');
+
+            // 4. Updating the 'dir' content attribute via setAttribute is reflected by the getter
+            el.setAttribute('dir', 'ltr');
+            let res4 = el.dir;
+
+            // 5. Test coercion to string (e.g. numeric value is coerced to string)
+            el.dir = 12345;
+            let res5 = el.dir;
+            let res6 = el.getAttribute('dir');
+
+            [res1, res2, res3, res4, res5, res6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|rtl|rtl|ltr|12345|12345".to_string())
+        );
+    }
+
+    #[test]
     fn test_element_rel() {
         let mut dom = Dom::new();
         let mut host = BoaHost::new();
