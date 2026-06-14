@@ -165,6 +165,86 @@ impl Dom {
             false
         }
     }
+
+    /// Returns the number of tokens in the class list of the given element.
+    ///
+    /// If the node is not an Element or has no `class` attribute, returns `0`.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-length
+    pub fn class_list_length(&self, node: NodeId) -> usize {
+        self.class_list(node).len()
+    }
+
+    /// Returns the class token at the specified zero-based index.
+    ///
+    /// If the index is out of bounds, or if the node is not an Element, returns `None`.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-item
+    pub fn class_list_item(&self, node: NodeId, index: usize) -> Option<String> {
+        let list = self.class_list(node);
+        if index < list.len() {
+            Some(list[index].clone())
+        } else {
+            None
+        }
+    }
+
+    /// Returns the serialized value of the element's `class` attribute.
+    ///
+    /// If the node is not an Element or has no `class` attribute, returns an empty string.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-value
+    pub fn class_list_value(&self, node: NodeId) -> String {
+        self.get_attribute(node, "class")
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    }
+
+    /// Sets the serialized value of the element's `class` attribute.
+    ///
+    /// If the node is not an Element, this is a no-op.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-value
+    pub fn set_class_list_value(&mut self, node: NodeId, value: &str) {
+        if let Some(NodeData::Element { .. }) = self.data(node) {
+            self.set_attribute(node, "class", value);
+        }
+    }
+
+    /// Returns `true` if the element has the given class `name`.
+    ///
+    /// If the node is not an Element, returns `false`. This is equivalent to `has_class`.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-contains
+    pub fn contains_class(&self, node: NodeId, name: &str) -> bool {
+        self.has_class(node, name)
+    }
+
+    /// Returns whether the token is supported. For `classList`, this always returns `false`
+    /// since there are no supported tokens defined for the `class` attribute.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-supports
+    pub fn class_list_supports(&self, _node: NodeId, _token: &str) -> bool {
+        false
+    }
+
+    /// Returns a vector of zero-based index and class token pairs.
+    ///
+    /// If the node is not an Element or has no `class` attribute, returns an empty vector.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-entries
+    pub fn class_list_entries(&self, node: NodeId) -> Vec<(usize, String)> {
+        self.class_list(node).into_iter().enumerate().collect()
+    }
+
+    /// Returns a vector of zero-based indices of the classes in the list.
+    ///
+    /// If the node is not an Element or has no `class` attribute, returns an empty vector.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-keys
+    pub fn class_list_keys(&self, node: NodeId) -> Vec<usize> {
+        (0..self.class_list(node).len()).collect()
+    }
+
+    /// Returns a vector of class tokens in the list.
+    ///
+    /// If the node is not an Element or has no `class` attribute, returns an empty vector.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-values
+    pub fn class_list_values(&self, node: NodeId) -> Vec<String> {
+        self.class_list(node)
+    }
 }
 
 #[cfg(test)]
@@ -385,5 +465,65 @@ mod tests {
         // Replace on non-element -> returns false (no-op)
         let text = dom.create_node(NodeData::Text("hello".into()));
         assert!(!dom.replace_class(text, "foo", "bar"));
+    }
+
+    #[test]
+    fn test_new_classlist_methods() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. Initial empty state
+        assert_eq!(dom.class_list_length(el), 0);
+        assert!(dom.class_list_item(el, 0).is_none());
+        assert_eq!(dom.class_list_value(el), "");
+        assert!(!dom.contains_class(el, "foo"));
+        assert!(!dom.class_list_supports(el, "foo"));
+        assert!(dom.class_list_entries(el).is_empty());
+        assert!(dom.class_list_keys(el).is_empty());
+        assert!(dom.class_list_values(el).is_empty());
+
+        // 2. Setting value directly
+        dom.set_class_list_value(el, "foo bar baz");
+        assert_eq!(dom.class_list_value(el), "foo bar baz");
+        assert_eq!(dom.class_list_length(el), 3);
+
+        // 3. Testing contains and item
+        assert!(dom.contains_class(el, "foo"));
+        assert!(dom.contains_class(el, "bar"));
+        assert!(!dom.contains_class(el, "qux"));
+        assert_eq!(dom.class_list_item(el, 0), Some("foo".to_string()));
+        assert_eq!(dom.class_list_item(el, 1), Some("bar".to_string()));
+        assert_eq!(dom.class_list_item(el, 2), Some("baz".to_string()));
+        assert_eq!(dom.class_list_item(el, 3), None);
+
+        // 4. Testing supports (always false for classList)
+        assert!(!dom.class_list_supports(el, "foo"));
+
+        // 5. Testing entries, keys, values
+        assert_eq!(
+            dom.class_list_entries(el),
+            vec![
+                (0, "foo".to_string()),
+                (1, "bar".to_string()),
+                (2, "baz".to_string())
+            ]
+        );
+        assert_eq!(dom.class_list_keys(el), vec![0, 1, 2]);
+        assert_eq!(
+            dom.class_list_values(el),
+            vec!["foo".to_string(), "bar".to_string(), "baz".to_string()]
+        );
+
+        // 6. Non-element safety
+        let text = dom.create_node(NodeData::Text("hello".into()));
+        assert_eq!(dom.class_list_length(text), 0);
+        assert!(dom.class_list_item(text, 0).is_none());
+        assert_eq!(dom.class_list_value(text), "");
+        assert!(!dom.contains_class(text, "foo"));
+        dom.set_class_list_value(text, "foo");
+        assert_eq!(dom.class_list_value(text), "");
+        assert!(dom.class_list_entries(text).is_empty());
+        assert!(dom.class_list_keys(text).is_empty());
+        assert!(dom.class_list_values(text).is_empty());
     }
 }
