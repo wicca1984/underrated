@@ -837,12 +837,200 @@ impl<'a> Drop for EventDispatchGuard<'a> {
     }
 }
 
+fn invoke_listeners_on(
+    curr_node: &JsValue,
+    event: &Event,
+    event_val: &JsValue,
+    context: &mut Context,
+) -> JsResult<()> {
+    let mut listeners_to_call = Vec::new();
+    if let Some(curr_obj) = curr_node.as_object() {
+        if let Some(event_target) = curr_obj.downcast_ref::<EventTarget>() {
+            let mut listeners = event_target.listeners.borrow_mut();
+
+            // Filter out aborted listeners
+            for (_type_str, list) in listeners.iter_mut() {
+                list.retain(|l| {
+                    if let Some(ref sig) = l.signal
+                        && let Some(sig_obj) = sig.as_object()
+                        && let Some(abort_signal) =
+                            sig_obj.downcast_ref::<crate::script::AbortSignal>()
+                        && *abort_signal.aborted.borrow()
+                    {
+                        return false;
+                    }
+                    true
+                });
+            }
+
+            let event_type_ref = event.r#type.borrow();
+            if let Some(list) = listeners.get_mut(&*event_type_ref) {
+                listeners_to_call = list.clone();
+                // Remove once listeners immediately
+                list.retain(|l| !l.once);
+            }
+        } else {
+            // Legacy/Fallback DOM bridge path: read from JS property `__events__`
+            let events_prop = JsString::from("__events__");
+            let events_val = curr_obj.get(events_prop.clone(), context)?;
+            if let Some(events_obj) = events_val.as_object() {
+                let event_type_ref = event.r#type.borrow();
+                let type_prop = JsString::from(event_type_ref.as_str());
+                let handlers_val = events_obj.get(type_prop.clone(), context)?;
+                if let Some(handlers_obj) = handlers_val.as_object() {
+                    let length_val = handlers_obj.get(JsString::from("length"), context)?;
+                    let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+                    for i in 0..length {
+                        if let Ok(handler) = handlers_obj.get(i, context) {
+                            listeners_to_call.push(EventListenerEntry {
+                                callback: handler,
+                                capture: false,
+                                once: false,
+                                passive: false,
+                                signal: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for listener in listeners_to_call {
+        if *event.propagation_stopped.borrow() || *event.immediate_propagation_stopped.borrow() {
+            break;
+        }
+
+        // Phase check
+        let phase = *event.event_phase.borrow();
+        if phase == 1 && !listener.capture {
+            // CAPTURING_PHASE
+            continue;
+        }
+        if phase == 3 && listener.capture {
+            // BUBBLING_PHASE
+            continue;
+        }
+
+        if let Some(callable) = listener.callback.as_object() {
+            if callable.is_callable() {
+                callable.call(curr_node, std::slice::from_ref(event_val), context)?;
+            } else if let Ok(handle_event_val) =
+                callable.get(JsString::from("handleEvent"), context)
+                && let Some(handle_event_callable) = handle_event_val.as_object()
+                && handle_event_callable.is_callable()
+            {
+                handle_event_callable.call(
+                    &listener.callback,
+                    std::slice::from_ref(event_val),
+                    context,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn invoke_listeners_on_plain(
+    curr_node: &JsValue,
+    event_obj: &boa_engine::object::JsObject,
+    event_val: &JsValue,
+    event_type: &str,
+    context: &mut Context,
+) -> JsResult<()> {
+    let mut listeners_to_call = Vec::new();
+    if let Some(curr_obj) = curr_node.as_object() {
+        if let Some(event_target) = curr_obj.downcast_ref::<EventTarget>() {
+            let mut listeners = event_target.listeners.borrow_mut();
+
+            // Filter out aborted listeners
+            for (_type_str, list) in listeners.iter_mut() {
+                list.retain(|l| {
+                    if let Some(ref sig) = l.signal
+                        && let Some(sig_obj) = sig.as_object()
+                        && let Some(abort_signal) =
+                            sig_obj.downcast_ref::<crate::script::AbortSignal>()
+                        && *abort_signal.aborted.borrow()
+                    {
+                        return false;
+                    }
+                    true
+                });
+            }
+
+            if let Some(list) = listeners.get_mut(event_type) {
+                listeners_to_call = list.clone();
+                list.retain(|l| !l.once);
+            }
+        } else {
+            // Legacy path
+            let events_prop = JsString::from("__events__");
+            let events_val = curr_obj.get(events_prop.clone(), context)?;
+            if let Some(events_obj) = events_val.as_object() {
+                let type_prop = JsString::from(event_type);
+                let handlers_val = events_obj.get(type_prop.clone(), context)?;
+                if let Some(handlers_obj) = handlers_val.as_object() {
+                    let length_val = handlers_obj.get(JsString::from("length"), context)?;
+                    let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+                    for i in 0..length {
+                        if let Ok(handler) = handlers_obj.get(i, context) {
+                            listeners_to_call.push(EventListenerEntry {
+                                callback: handler,
+                                capture: false,
+                                once: false,
+                                passive: false,
+                                signal: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for listener in listeners_to_call {
+        let stopped_val = event_obj.get(JsString::from("propagationStopped"), context)?;
+        if stopped_val.as_boolean().unwrap_or(false) {
+            break;
+        }
+
+        // Phase check
+        let phase_val = event_obj.get(JsString::from("eventPhase"), context)?;
+        let phase = phase_val.as_number().map(|n| n as u16).unwrap_or(0);
+        if phase == 1 && !listener.capture {
+            continue;
+        }
+        if phase == 3 && listener.capture {
+            continue;
+        }
+
+        if let Some(callable) = listener.callback.as_object() {
+            if callable.is_callable() {
+                callable.call(curr_node, std::slice::from_ref(event_val), context)?;
+            } else if let Ok(handle_event_val) =
+                callable.get(JsString::from("handleEvent"), context)
+                && let Some(handle_event_callable) = handle_event_val.as_object()
+                && handle_event_callable.is_callable()
+            {
+                handle_event_callable.call(
+                    &listener.callback,
+                    std::slice::from_ref(event_val),
+                    context,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn dispatch_event(
     this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| {
+    let _obj = this.as_object().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
     })?;
 
@@ -865,11 +1053,9 @@ pub fn dispatch_event(
 
         // Set dispatch flag and phase
         *event.dispatch_flag.borrow_mut() = true;
-        *event.event_phase.borrow_mut() = 2; // AT_TARGET
 
-        // Set target and current_target
+        // Set target
         *event.target.borrow_mut() = Some(this.clone());
-        *event.current_target.borrow_mut() = Some(this.clone());
 
         // Build standard dispatch path from this element up to root
         let mut path_list = Vec::new();
@@ -903,89 +1089,44 @@ pub fn dispatch_event(
             path: &event.path,
         };
 
-        // Get list of listeners (either native or legacy)
-        let mut listeners_to_call = Vec::new();
-        if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
-            let mut listeners = event_target.listeners.borrow_mut();
+        let path = event.path.borrow().clone();
 
-            // Filter out aborted listeners
-            for (_type_str, list) in listeners.iter_mut() {
-                list.retain(|l| {
-                    if let Some(ref sig) = l.signal
-                        && let Some(sig_obj) = sig.as_object()
-                        && let Some(abort_signal) =
-                            sig_obj.downcast_ref::<crate::script::AbortSignal>()
-                        && *abort_signal.aborted.borrow()
-                    {
-                        return false;
-                    }
-                    true
-                });
-            }
-
-            let event_type_ref = event.r#type.borrow();
-            if let Some(list) = listeners.get_mut(&*event_type_ref) {
-                listeners_to_call = list.clone();
-                // Remove once listeners immediately
-                list.retain(|l| !l.once);
-            }
-        } else {
-            // Legacy/Fallback DOM bridge path: read from JS property `__events__`
-            let events_prop = JsString::from("__events__");
-            let events_val = obj.get(events_prop.clone(), context)?;
-            if let Some(events_obj) = events_val.as_object() {
-                let event_type_ref = event.r#type.borrow();
-                let type_prop = JsString::from(event_type_ref.as_str());
-                let handlers_val = events_obj.get(type_prop.clone(), context)?;
-                if let Some(handlers_obj) = handlers_val.as_object() {
-                    let length_val = handlers_obj.get(JsString::from("length"), context)?;
-                    let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
-                    for i in 0..length {
-                        if let Ok(handler) = handlers_obj.get(i, context) {
-                            listeners_to_call.push(EventListenerEntry {
-                                callback: handler,
-                                capture: false,
-                                once: false,
-                                passive: false,
-                                signal: None,
-                            });
-                        }
-                    }
+        // Phase 1: Capturing Phase
+        if path.len() > 1 {
+            for curr_node in path.iter().skip(1).rev() {
+                if *event.propagation_stopped.borrow()
+                    || *event.immediate_propagation_stopped.borrow()
+                {
+                    break;
                 }
+                *event.event_phase.borrow_mut() = 1; // CAPTURING_PHASE
+                *event.current_target.borrow_mut() = Some(curr_node.clone());
+                invoke_listeners_on(curr_node, &event, event_val, context)?;
             }
         }
 
-        for listener in listeners_to_call {
-            if *event.propagation_stopped.borrow() || *event.immediate_propagation_stopped.borrow()
-            {
-                break;
-            }
+        // Phase 2: At Target Phase
+        if !path.is_empty()
+            && !*event.propagation_stopped.borrow()
+            && !*event.immediate_propagation_stopped.borrow()
+        {
+            let curr_node = &path[0];
+            *event.event_phase.borrow_mut() = 2; // AT_TARGET
+            *event.current_target.borrow_mut() = Some(curr_node.clone());
+            invoke_listeners_on(curr_node, &event, event_val, context)?;
+        }
 
-            // Phase check
-            let phase = *event.event_phase.borrow();
-            if phase == 1 && !listener.capture {
-                // CAPTURING_PHASE
-                continue;
-            }
-            if phase == 3 && listener.capture {
-                // BUBBLING_PHASE
-                continue;
-            }
-
-            if let Some(callable) = listener.callback.as_object() {
-                if callable.is_callable() {
-                    callable.call(this, std::slice::from_ref(event_val), context)?;
-                } else if let Ok(handle_event_val) =
-                    callable.get(JsString::from("handleEvent"), context)
-                    && let Some(handle_event_callable) = handle_event_val.as_object()
-                    && handle_event_callable.is_callable()
+        // Phase 3: Bubbling Phase
+        if *event.bubbles.borrow() && path.len() > 1 {
+            for curr_node in path.iter().skip(1) {
+                if *event.propagation_stopped.borrow()
+                    || *event.immediate_propagation_stopped.borrow()
                 {
-                    handle_event_callable.call(
-                        &listener.callback,
-                        std::slice::from_ref(event_val),
-                        context,
-                    )?;
+                    break;
                 }
+                *event.event_phase.borrow_mut() = 3; // BUBBLING_PHASE
+                *event.current_target.borrow_mut() = Some(curr_node.clone());
+                invoke_listeners_on(curr_node, &event, event_val, context)?;
             }
         }
 
@@ -1012,8 +1153,6 @@ pub fn dispatch_event(
             context,
         )?;
         event_obj.set(target_prop.clone(), this.clone(), false, context)?;
-        event_obj.set(current_target_prop.clone(), this.clone(), false, context)?;
-        event_obj.set(event_phase_prop.clone(), JsValue::from(2), false, context)?; // AT_TARGET
 
         let event_type_val = event_obj.get(JsString::from("type"), context)?;
         let event_type = event_type_val
@@ -1021,87 +1160,105 @@ pub fn dispatch_event(
             .to_std_string()
             .unwrap_or_default();
 
-        let res = (|| -> JsResult<()> {
-            let mut listeners_to_call = Vec::new();
-            if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
-                let mut listeners = event_target.listeners.borrow_mut();
+        let bubbles_val = event_obj.get(JsString::from("bubbles"), context)?;
+        let bubbles = bubbles_val.as_boolean().unwrap_or(false);
 
-                // Filter out aborted listeners
-                for (_type_str, list) in listeners.iter_mut() {
-                    list.retain(|l| {
-                        if let Some(ref sig) = l.signal
-                            && let Some(sig_obj) = sig.as_object()
-                            && let Some(abort_signal) =
-                                sig_obj.downcast_ref::<crate::script::AbortSignal>()
-                            && *abort_signal.aborted.borrow()
-                        {
-                            return false;
-                        }
-                        true
-                    });
-                }
-
-                if let Some(list) = listeners.get_mut(&event_type) {
-                    listeners_to_call = list.clone();
-                    list.retain(|l| !l.once);
-                }
-            } else {
-                // Legacy path
-                let events_prop = JsString::from("__events__");
-                let events_val = obj.get(events_prop.clone(), context)?;
-                if let Some(events_obj) = events_val.as_object() {
-                    let type_prop = JsString::from(event_type.as_str());
-                    let handlers_val = events_obj.get(type_prop.clone(), context)?;
-                    if let Some(handlers_obj) = handlers_val.as_object() {
-                        let length_val = handlers_obj.get(JsString::from("length"), context)?;
-                        let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
-                        for i in 0..length {
-                            if let Ok(handler) = handlers_obj.get(i, context) {
-                                listeners_to_call.push(EventListenerEntry {
-                                    callback: handler,
-                                    capture: false,
-                                    once: false,
-                                    passive: false,
-                                    signal: None,
-                                });
-                            }
-                        }
-                    }
-                }
+        // Build standard dispatch path from this element up to root
+        let mut path_list = Vec::new();
+        let mut curr = this.clone();
+        while let Some(curr_obj) = curr.as_object() {
+            path_list.push(curr.clone());
+            if let Ok(default_view) = curr_obj.get(JsString::from("defaultView"), context)
+                && !default_view.is_undefined()
+                && !default_view.is_null()
+            {
+                path_list.push(default_view);
+                break;
             }
-
-            for listener in listeners_to_call {
-                let stopped_val = event_obj.get(JsString::from("propagationStopped"), context)?;
-                if stopped_val.as_boolean().unwrap_or(false) {
+            if let Ok(parent) = curr_obj.get(JsString::from("parentNode"), context) {
+                if !parent.is_undefined() && !parent.is_null() {
+                    curr = parent;
+                } else {
                     break;
                 }
+            } else {
+                break;
+            }
+        }
 
-                // Phase check
-                let phase_val = event_obj.get(JsString::from("eventPhase"), context)?;
-                let phase = phase_val.as_number().map(|n| n as u16).unwrap_or(0);
-                if phase == 1 && !listener.capture {
-                    continue;
-                }
-                if phase == 3 && listener.capture {
-                    continue;
-                }
-
-                if let Some(callable) = listener.callback.as_object() {
-                    if callable.is_callable() {
-                        callable.call(this, std::slice::from_ref(event_val), context)?;
-                    } else if let Ok(handle_event_val) =
-                        callable.get(JsString::from("handleEvent"), context)
-                        && let Some(handle_event_callable) = handle_event_val.as_object()
-                        && handle_event_callable.is_callable()
-                    {
-                        handle_event_callable.call(
-                            &listener.callback,
-                            std::slice::from_ref(event_val),
-                            context,
-                        )?;
+        let res = (|| -> JsResult<()> {
+            // Phase 1: Capturing Phase
+            if path_list.len() > 1 {
+                for curr_node in path_list.iter().skip(1).rev() {
+                    let stopped_val =
+                        event_obj.get(JsString::from("propagationStopped"), context)?;
+                    if stopped_val.as_boolean().unwrap_or(false) {
+                        break;
                     }
+                    event_obj.set(event_phase_prop.clone(), JsValue::from(1), false, context)?; // CAPTURING_PHASE
+                    event_obj.set(
+                        current_target_prop.clone(),
+                        curr_node.clone(),
+                        false,
+                        context,
+                    )?;
+                    invoke_listeners_on_plain(
+                        curr_node,
+                        &event_obj,
+                        event_val,
+                        &event_type,
+                        context,
+                    )?;
                 }
             }
+
+            // Phase 2: At Target Phase
+            if !path_list.is_empty() {
+                let stopped_val = event_obj.get(JsString::from("propagationStopped"), context)?;
+                if !stopped_val.as_boolean().unwrap_or(false) {
+                    let curr_node = &path_list[0];
+                    event_obj.set(event_phase_prop.clone(), JsValue::from(2), false, context)?; // AT_TARGET
+                    event_obj.set(
+                        current_target_prop.clone(),
+                        curr_node.clone(),
+                        false,
+                        context,
+                    )?;
+                    invoke_listeners_on_plain(
+                        curr_node,
+                        &event_obj,
+                        event_val,
+                        &event_type,
+                        context,
+                    )?;
+                }
+            }
+
+            // Phase 3: Bubbling Phase
+            if bubbles && path_list.len() > 1 {
+                for curr_node in path_list.iter().skip(1) {
+                    let stopped_val =
+                        event_obj.get(JsString::from("propagationStopped"), context)?;
+                    if stopped_val.as_boolean().unwrap_or(false) {
+                        break;
+                    }
+                    event_obj.set(event_phase_prop.clone(), JsValue::from(3), false, context)?; // BUBBLING_PHASE
+                    event_obj.set(
+                        current_target_prop.clone(),
+                        curr_node.clone(),
+                        false,
+                        context,
+                    )?;
+                    invoke_listeners_on_plain(
+                        curr_node,
+                        &event_obj,
+                        event_val,
+                        &event_type,
+                        context,
+                    )?;
+                }
+            }
+
             Ok(())
         })();
 
@@ -1597,5 +1754,189 @@ mod tests {
         assert_eq!(arr.get(0, &mut context).unwrap().as_number(), Some(1.0));
         assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true));
         assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true)); // cleared after dispatch!
+    }
+
+    #[test]
+    fn test_t0962_dom_event_propagation_phases() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        // 1. Verify standard capturing, at-target, and bubbling phase order with eventPhase and currentTarget
+        let script = "{
+            const root = new EventTarget();
+            const parent = new EventTarget();
+            const child = new EventTarget();
+
+            child.parentNode = parent;
+            parent.parentNode = root;
+
+            const log = [];
+
+            // Add capture listeners
+            root.addEventListener('click', (e) => {
+                log.push(`root_capture_phase_${e.eventPhase}_ct_${e.currentTarget === root}`);
+            }, { capture: true });
+
+            parent.addEventListener('click', (e) => {
+                log.push(`parent_capture_phase_${e.eventPhase}_ct_${e.currentTarget === parent}`);
+            }, { capture: true });
+
+            child.addEventListener('click', (e) => {
+                log.push(`child_capture_phase_${e.eventPhase}_ct_${e.currentTarget === child}`);
+            }, { capture: true });
+
+            // Add bubbling/target listeners
+            root.addEventListener('click', (e) => {
+                log.push(`root_bubble_phase_${e.eventPhase}_ct_${e.currentTarget === root}`);
+            });
+
+            parent.addEventListener('click', (e) => {
+                log.push(`parent_bubble_phase_${e.eventPhase}_ct_${e.currentTarget === parent}`);
+            });
+
+            child.addEventListener('click', (e) => {
+                log.push(`child_bubble_phase_${e.eventPhase}_ct_${e.currentTarget === child}`);
+            });
+
+            const ev = new Event('click', { bubbles: true });
+            child.dispatchEvent(ev);
+            log;
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        let length = arr
+            .get(JsString::from("length"), &mut context)
+            .unwrap()
+            .as_number()
+            .unwrap() as usize;
+        let mut items = Vec::new();
+        for i in 0..length {
+            let item = arr
+                .get(i, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap();
+            items.push(item);
+        }
+        assert_eq!(
+            items,
+            vec![
+                "root_capture_phase_1_ct_true",
+                "parent_capture_phase_1_ct_true",
+                "child_capture_phase_2_ct_true",
+                "child_bubble_phase_2_ct_true",
+                "parent_bubble_phase_3_ct_true",
+                "root_bubble_phase_3_ct_true"
+            ]
+        );
+
+        // 2. Verify stopPropagation during capturing phase stops further propagation
+        let script = "{
+            const root = new EventTarget();
+            const parent = new EventTarget();
+            const child = new EventTarget();
+
+            child.parentNode = parent;
+            parent.parentNode = root;
+
+            const log = [];
+
+            root.addEventListener('click', (e) => {
+                log.push('root_capture');
+                e.stopPropagation();
+            }, { capture: true });
+
+            parent.addEventListener('click', (e) => {
+                log.push('parent_capture');
+            }, { capture: true });
+
+            child.addEventListener('click', (e) => {
+                log.push('child_target');
+            });
+
+            child.dispatchEvent(new Event('click', { bubbles: true }));
+            log;
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        let length = arr
+            .get(JsString::from("length"), &mut context)
+            .unwrap()
+            .as_number()
+            .unwrap() as usize;
+        let mut items = Vec::new();
+        for i in 0..length {
+            let item = arr
+                .get(i, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap();
+            items.push(item);
+        }
+        assert_eq!(items, vec!["root_capture"]);
+
+        // 3. Verify plain object dispatching also supports capturing, target, and bubbling propagation
+        let script = "{
+            const root = new EventTarget();
+            const parent = new EventTarget();
+            const child = new EventTarget();
+
+            child.parentNode = parent;
+            parent.parentNode = root;
+
+            const log = [];
+
+            root.addEventListener('click', (e) => {
+                log.push(`root_capture_phase_${e.eventPhase}`);
+            }, { capture: true });
+
+            parent.addEventListener('click', (e) => {
+                log.push(`parent_capture_phase_${e.eventPhase}`);
+            }, { capture: true });
+
+            child.addEventListener('click', (e) => {
+                log.push(`child_target_phase_${e.eventPhase}`);
+            });
+
+            parent.addEventListener('click', (e) => {
+                log.push(`parent_bubble_phase_${e.eventPhase}`);
+            });
+
+            const ev = { type: 'click', bubbles: true };
+            child.dispatchEvent(ev);
+            log;
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        let length = arr
+            .get(JsString::from("length"), &mut context)
+            .unwrap()
+            .as_number()
+            .unwrap() as usize;
+        let mut items = Vec::new();
+        for i in 0..length {
+            let item = arr
+                .get(i, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap();
+            items.push(item);
+        }
+        assert_eq!(
+            items,
+            vec![
+                "root_capture_phase_1",
+                "parent_capture_phase_1",
+                "child_target_phase_2",
+                "parent_bubble_phase_3"
+            ]
+        );
     }
 }
