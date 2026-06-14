@@ -598,6 +598,11 @@ impl TreeBuilder {
             }
         }
 
+        if matches!(token, Token::Eof) && !self.template_insertion_modes.is_empty() {
+            self.handle_in_template(token);
+            return;
+        }
+
         let use_foreign_content = if let Some(adjusted_current_node) =
             self.stack_of_open_elements.last().copied()
         {
@@ -1115,7 +1120,7 @@ impl TreeBuilder {
                 "address" | "article" | "aside" | "blockquote" | "center" | "details"
                 | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure"
                 | "footer" | "header" | "hgroup" | "main" | "menu" | "nav" | "ol" | "pre"
-                | "listing" | "section" | "summary" | "ul" | "form" => {
+                | "listing" | "search" | "section" | "summary" | "ul" | "form" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name.clone(), attrs);
                     self.stack_of_open_elements.push(node);
@@ -1359,7 +1364,13 @@ impl TreeBuilder {
                 }
             },
             Token::EndTag { name, .. } => {
-                if name == "body" {
+                if name == "template" {
+                    self.handle_in_head(Token::EndTag {
+                        name,
+                        attrs: Vec::new(),
+                        self_closing: false,
+                    });
+                } else if name == "body" {
                     if self.is_in_scope("body") {
                         self.insertion_mode = InsertionMode::AfterBody;
                     }
@@ -2196,6 +2207,41 @@ impl TreeBuilder {
             Token::EndTag { ref name, .. } if name == "template" => {
                 self.handle_in_head(token);
             }
+            Token::StartTag { ref name, .. }
+                if matches!(
+                    name.as_str(),
+                    "base"
+                        | "basefont"
+                        | "bgsound"
+                        | "link"
+                        | "meta"
+                        | "noframes"
+                        | "script"
+                        | "style"
+                        | "title"
+                ) =>
+            {
+                self.handle_in_head(token);
+            }
+            Token::StartTag { ref name, .. } => {
+                let next_mode = match name.as_str() {
+                    "caption" | "colgroup" | "tbody" | "tfoot" | "thead" => InsertionMode::InTable,
+                    "col" => InsertionMode::InColumnGroup,
+                    "tr" => InsertionMode::InTableBody,
+                    "td" | "th" => InsertionMode::InRow,
+                    _ => InsertionMode::InBody,
+                };
+                self.template_insertion_modes.pop();
+                self.template_insertion_modes.push(next_mode);
+                self.reset_insertion_mode_appropriately();
+                self.process_token(token);
+            }
+            Token::EndTag { .. } => {
+                self.template_insertion_modes.pop();
+                self.template_insertion_modes.push(InsertionMode::InBody);
+                self.reset_insertion_mode_appropriately();
+                self.process_token(token);
+            }
             Token::Eof => {
                 if !self.stack_of_open_elements.iter().any(|&id| {
                     matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "template")
@@ -2209,8 +2255,6 @@ impl TreeBuilder {
                 self.process_token(token);
             }
             _ => {
-                // Simplified template handling: push a new mode if needed
-                // For now, just forward to in body or whatever was appropriate
                 self.handle_in_body(token);
             }
         }
@@ -2237,7 +2281,7 @@ impl TreeBuilder {
                 attrs,
                 self_closing,
             } => match name.as_str() {
-                "html" => {
+                "html" | "template" => {
                     self.handle_in_body(Token::StartTag {
                         name,
                         attrs,
@@ -2295,7 +2339,14 @@ impl TreeBuilder {
                     // Parse error. Ignore.
                 }
             },
-            Token::EndTag { name, .. } => match name.as_str() {
+            Token::EndTag { name, attrs, self_closing } => match name.as_str() {
+                "template" => {
+                    self.handle_in_body(Token::EndTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                }
                 "option" => {
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
@@ -2447,6 +2498,7 @@ impl TreeBuilder {
                 | "plaintext"
                 | "pre"
                 | "script"
+                | "search"
                 | "section"
                 | "select"
                 | "source"
