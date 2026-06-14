@@ -426,3 +426,214 @@ fn test_t1016_special_states() {
         assert_eq!(get_chars(&tokens), "<!--<script>hello</script>-->");
     }
 }
+
+#[test]
+fn test_t1040_tokenizer_edge_cases() {
+    let run_case = |input: &str, initial_state: &str, last_start_tag: Option<&str>| -> Vec<Token> {
+        let stream = InputStream::from_utf8(input.as_bytes());
+        let mut tokenizer = Tokenizer::new(stream);
+        tokenizer.set_initial_state(initial_state);
+        if let Some(tag) = last_start_tag {
+            tokenizer.set_last_start_tag(tag);
+        }
+        let mut tokens = Vec::new();
+        loop {
+            let tok = tokenizer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push(tok);
+        }
+        tokens
+    };
+
+    let get_chars = |tokens: &[Token]| -> String {
+        let mut s = String::new();
+        for tok in tokens {
+            if let Token::Character(c) = tok {
+                s.push(*c);
+            } else {
+                panic!("Expected only character tokens, but got: {:?}", tok);
+            }
+        }
+        s
+    };
+
+    // 1. RCDATA mixed case appropriate end tag
+    {
+        let tokens = run_case("hello</TiTlE>", "RCDATA state", Some("title"));
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(get_chars(&tokens[0..5]), "hello");
+        assert_eq!(
+            tokens[5],
+            Token::EndTag {
+                name: "title".to_string(),
+                attrs: vec![],
+                self_closing: false
+            }
+        );
+    }
+
+    // 2. RCDATA end tag with attributes
+    {
+        let tokens = run_case(
+            "hello</title id=\"main\" class='box'>",
+            "RCDATA state",
+            Some("title"),
+        );
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(get_chars(&tokens[0..5]), "hello");
+        if let Token::EndTag {
+            name,
+            mut attrs,
+            self_closing,
+        } = tokens[5].clone()
+        {
+            attrs.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(name, "title");
+            assert_eq!(
+                attrs,
+                vec![
+                    ("class".to_string(), "box".to_string()),
+                    ("id".to_string(), "main".to_string())
+                ]
+            );
+            assert!(!self_closing);
+        } else {
+            panic!("Expected EndTag, got: {:?}", tokens[5]);
+        }
+    }
+
+    // 3. RCDATA end tag with trailing solidus
+    {
+        let tokens = run_case("hello</title/>", "RCDATA state", Some("title"));
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(get_chars(&tokens[0..5]), "hello");
+        assert_eq!(
+            tokens[5],
+            Token::EndTag {
+                name: "title".to_string(),
+                attrs: vec![],
+                self_closing: true
+            }
+        );
+    }
+
+    // 4. RAWTEXT mixed case appropriate end tag
+    {
+        let tokens = run_case(
+            "body { color: red; }</StYlE>",
+            "RAWTEXT state",
+            Some("style"),
+        );
+        assert_eq!(tokens.len(), 21);
+        assert_eq!(get_chars(&tokens[0..20]), "body { color: red; }");
+        assert_eq!(
+            tokens[20],
+            Token::EndTag {
+                name: "style".to_string(),
+                attrs: vec![],
+                self_closing: false
+            }
+        );
+    }
+
+    // 5. RAWTEXT end tag with trailing solidus
+    {
+        let tokens = run_case(
+            "body { color: red; }</style/>",
+            "RAWTEXT state",
+            Some("style"),
+        );
+        assert_eq!(tokens.len(), 21);
+        assert_eq!(get_chars(&tokens[0..20]), "body { color: red; }");
+        assert_eq!(
+            tokens[20],
+            Token::EndTag {
+                name: "style".to_string(),
+                attrs: vec![],
+                self_closing: true
+            }
+        );
+    }
+
+    // 6. RAWTEXT end tag with attributes
+    {
+        let tokens = run_case(
+            "body { color: red; }</style class=\"main\">",
+            "RAWTEXT state",
+            Some("style"),
+        );
+        assert_eq!(tokens.len(), 21);
+        assert_eq!(get_chars(&tokens[0..20]), "body { color: red; }");
+        if let Token::EndTag {
+            name,
+            attrs,
+            self_closing,
+        } = tokens[20].clone()
+        {
+            assert_eq!(name, "style");
+            assert_eq!(attrs, vec![("class".to_string(), "main".to_string())]);
+            assert!(!self_closing);
+        } else {
+            panic!("Expected EndTag, got: {:?}", tokens[20]);
+        }
+    }
+
+    // 7. ScriptData mixed case and attributes
+    {
+        let tokens = run_case(
+            "hello</ScRiPt type=\"module\">",
+            "Script data state",
+            Some("script"),
+        );
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(get_chars(&tokens[0..5]), "hello");
+        if let Token::EndTag {
+            name,
+            attrs,
+            self_closing,
+        } = tokens[5].clone()
+        {
+            assert_eq!(name, "script");
+            assert_eq!(attrs, vec![("type".to_string(), "module".to_string())]);
+            assert!(!self_closing);
+        } else {
+            panic!("Expected EndTag, got: {:?}", tokens[5]);
+        }
+    }
+
+    // 8. ScriptData escaped appropriate end tag with mixed casing
+    {
+        let tokens = run_case("<!--</ScRiPt>-->", "Script data state", Some("script"));
+        let end_tag_idx = tokens
+            .iter()
+            .position(|t| matches!(t, Token::EndTag { .. }))
+            .expect("Should find EndTag");
+        assert_eq!(get_chars(&tokens[0..end_tag_idx]), "<!--");
+        assert_eq!(
+            tokens[end_tag_idx],
+            Token::EndTag {
+                name: "script".to_string(),
+                attrs: vec![],
+                self_closing: false
+            }
+        );
+        assert_eq!(get_chars(&tokens[end_tag_idx + 1..]), "-->");
+    }
+
+    // 9. ScriptData double escape transition with mixed casing
+    {
+        let tokens = run_case(
+            "<!--<sCrIpT>hello</ScRiPt>-->",
+            "Script data state",
+            Some("script"),
+        );
+        let has_end_tag = tokens.iter().any(|t| matches!(t, Token::EndTag { .. }));
+        assert!(
+            !has_end_tag,
+            "Should not contain any EndTag token in double escaped state"
+        );
+        assert_eq!(get_chars(&tokens), "<!--<sCrIpT>hello</ScRiPt>-->");
+    }
+}
