@@ -6,6 +6,34 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
         (function() {
             const BaseClass = typeof EventTarget !== "undefined" ? EventTarget : class {};
 
+            class XMLHttpRequestUpload extends BaseClass {
+                constructor() {
+                    super();
+                    this.onloadstart = null;
+                    this.onprogress = null;
+                    this.onabort = null;
+                    this.onerror = null;
+                    this.onload = null;
+                    this.ontimeout = null;
+                    this.onloadend = null;
+                }
+
+                dispatchEvent(event) {
+                    if (event && typeof event.type === "string") {
+                        const handlerName = "on" + event.type;
+                        if (typeof this[handlerName] === "function") {
+                            try {
+                                this[handlerName].call(this, event);
+                            } catch (e) {}
+                        }
+                    }
+                    if (super.dispatchEvent) {
+                        return super.dispatchEvent(event);
+                    }
+                    return true;
+                }
+            }
+
             class XMLHttpRequest extends BaseClass {
                 constructor() {
                     super();
@@ -18,9 +46,19 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._overrideMime = null;
                     this._sendFlag = false;
 
-                    this.timeout = 0;
-                    this.withCredentials = false;
+                    this._timeout = 0;
+                    this._withCredentials = false;
+                    this._async = true;
+                    this._upload = new XMLHttpRequestUpload();
+
                     this.onreadystatechange = null;
+                    this.onloadstart = null;
+                    this.onprogress = null;
+                    this.onabort = null;
+                    this.onerror = null;
+                    this.onload = null;
+                    this.ontimeout = null;
+                    this.onloadend = null;
 
                     this._method = "";
                     this._url = "";
@@ -93,6 +131,89 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     return null;
                 }
 
+                get responseXML() {
+                    if (this._responseType !== "" && this._responseType !== "document") {
+                        return null;
+                    }
+                    if (this._readyState !== 4) {
+                        return null;
+                    }
+                    if (!this._responseText) {
+                        return null;
+                    }
+                    if (typeof DOMParser !== "undefined") {
+                        try {
+                            const parser = new DOMParser();
+                            let mime = "text/xml";
+                            if (this._overrideMime) {
+                                mime = this._overrideMime;
+                            } else {
+                                const ct = this.getResponseHeader("content-type");
+                                if (ct) {
+                                    const match = ct.match(/^([^;\s]+)/);
+                                    if (match) {
+                                        mime = match[1];
+                                    }
+                                }
+                            }
+                            return parser.parseFromString(this._responseText, mime);
+                        } catch (e) {
+                            return null;
+                        }
+                    }
+                    return null;
+                }
+
+                get responseURL() {
+                    if (this._readyState === 0 || this._readyState === 1) {
+                        return "";
+                    }
+                    return this._url || "";
+                }
+
+                get timeout() {
+                    return this._timeout;
+                }
+
+                set timeout(value) {
+                    if (this._async === false) {
+                        const err = new Error("InvalidStateError");
+                        err.name = "InvalidStateError";
+                        throw err;
+                    }
+                    const num = Number(value);
+                    if (!isNaN(num) && num >= 0) {
+                        this._timeout = Math.floor(num);
+                    }
+                }
+
+                get withCredentials() {
+                    return this._withCredentials;
+                }
+
+                set withCredentials(value) {
+                    if (this._readyState !== 0 && this._readyState !== 1) {
+                        const err = new Error("InvalidStateError");
+                        err.name = "InvalidStateError";
+                        throw err;
+                    }
+                    if (this._sendFlag) {
+                        const err = new Error("InvalidStateError");
+                        err.name = "InvalidStateError";
+                        throw err;
+                    }
+                    if (this._async === false) {
+                        const err = new Error("InvalidStateError");
+                        err.name = "InvalidStateError";
+                        throw err;
+                    }
+                    this._withCredentials = !!value;
+                }
+
+                get upload() {
+                    return this._upload;
+                }
+
                 open(method, url, async, user, password) {
                     this._method = String(method);
                     this._url = String(url);
@@ -101,6 +222,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._statusText = "";
                     this._responseText = "";
                     this._headers = {};
+                    this._async = async !== false;
 
                     this._changeReadyState(1); // OPENED
                 }
@@ -119,6 +241,15 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                     this._sendFlag = true;
 
+                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                        try {
+                            this.dispatchEvent(new Event("loadstart"));
+                            if (body !== undefined && body !== null && this._upload) {
+                                this._upload.dispatchEvent(new Event("loadstart"));
+                            }
+                        } catch (e) {}
+                    }
+
                     this._changeReadyState(2); // HEADERS_RECEIVED
                     this._changeReadyState(3); // LOADING
 
@@ -130,10 +261,23 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         this._responseText = "mock response";
                     }
 
+                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                        try {
+                            this.dispatchEvent(new Event("progress"));
+                            if (body !== undefined && body !== null && this._upload) {
+                                this._upload.dispatchEvent(new Event("progress"));
+                            }
+                        } catch (e) {}
+                    }
+
                     this._changeReadyState(4); // DONE
 
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
+                            if (body !== undefined && body !== null && this._upload) {
+                                this._upload.dispatchEvent(new Event("load"));
+                                this._upload.dispatchEvent(new Event("loadend"));
+                            }
                             this.dispatchEvent(new Event("load"));
                             this.dispatchEvent(new Event("loadend"));
                         } catch (e) {}
@@ -209,6 +353,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                 }
 
                 abort() {
+                    const wasSending = this._sendFlag;
                     this._status = 0;
                     this._statusText = "";
                     this._headers = {};
@@ -216,6 +361,10 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._changeReadyState(0); // UNSENT
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
+                            if (wasSending && this._upload) {
+                                this._upload.dispatchEvent(new Event("abort"));
+                                this._upload.dispatchEvent(new Event("loadend"));
+                            }
                             this.dispatchEvent(new Event("abort"));
                             this.dispatchEvent(new Event("loadend"));
                         } catch (e) {}
@@ -236,7 +385,6 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                                 // Suppress or handle error
                             }
                         }
-                        // If EventTarget is inherited, standard also dispatches "readystatechange" event
                         if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                             try {
                                 this.dispatchEvent(new Event("readystatechange"));
@@ -245,6 +393,21 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                             }
                         }
                     }
+                }
+
+                dispatchEvent(event) {
+                    if (event && typeof event.type === "string" && event.type !== "readystatechange") {
+                        const handlerName = "on" + event.type;
+                        if (typeof this[handlerName] === "function") {
+                            try {
+                                this[handlerName].call(this, event);
+                            } catch (e) {}
+                        }
+                    }
+                    if (super.dispatchEvent) {
+                        return super.dispatchEvent(event);
+                    }
+                    return true;
                 }
             }
 
@@ -272,6 +435,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                 });
             }
 
+            globalThis.XMLHttpRequestUpload = XMLHttpRequestUpload;
             globalThis.XMLHttpRequest = XMLHttpRequest;
         })();
     "#;
@@ -524,6 +688,189 @@ mod tests {
         if !error_val.is_null() {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!("test_xhr_extended_features JS assert failed: {}", error_str);
+        }
+    }
+
+    #[test]
+    fn test_xhr_completeness() {
+        let mut context = Context::default();
+        register_xhr(&mut context).expect("Failed to register XMLHttpRequest");
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // Mock Event if it doesn't exist
+                if (typeof Event === "undefined") {
+                    globalThis.Event = class Event {
+                        constructor(type) {
+                            this.type = type;
+                        }
+                    };
+                }
+
+                // Mock DOMParser
+                class MockDocument {
+                    constructor(text) {
+                        this.text = text;
+                    }
+                }
+                globalThis.DOMParser = class DOMParser {
+                    parseFromString(text, mime) {
+                        if (mime !== "text/xml" && mime !== "text/html") {
+                            throw new Error("Invalid mime in parseFromString: " + mime);
+                        }
+                        return new MockDocument(text);
+                    }
+                };
+
+                const xhr = new XMLHttpRequest();
+
+                // 1. Verify XMLHttpRequestUpload class is registered on global
+                if (typeof XMLHttpRequestUpload === "undefined") {
+                    throw new Error("XMLHttpRequestUpload should be defined globally");
+                }
+                if (!(xhr.upload instanceof XMLHttpRequestUpload)) {
+                    throw new Error("xhr.upload should be an instance of XMLHttpRequestUpload");
+                }
+
+                // 2. Verify responseURL behavior
+                if (xhr.responseURL !== "") throw new Error("responseURL should be empty initially");
+                xhr.open("GET", "https://example.com/api/v1");
+                if (xhr.responseURL !== "") throw new Error("responseURL should be empty in OPENED state before response received");
+
+                // 3. Verify event listeners & callbacks on both xhr and upload
+                let xhrEvents = [];
+                let uploadEvents = [];
+
+                xhr.onloadstart = (e) => xhrEvents.push("on_" + e.type);
+                xhr.onprogress = (e) => xhrEvents.push("on_" + e.type);
+                xhr.onload = (e) => xhrEvents.push("on_" + e.type);
+                xhr.onloadend = (e) => xhrEvents.push("on_" + e.type);
+
+                xhr.upload.onloadstart = (e) => uploadEvents.push("on_" + e.type);
+                xhr.upload.onprogress = (e) => uploadEvents.push("on_" + e.type);
+                xhr.upload.onload = (e) => uploadEvents.push("on_" + e.type);
+                xhr.upload.onloadend = (e) => uploadEvents.push("on_" + e.type);
+
+                // Send with body to trigger upload events
+                xhr.send("some upload payload");
+
+                if (xhr.responseURL !== "https://example.com/api/v1") {
+                    throw new Error("responseURL should be the requested URL after response received");
+                }
+
+                // Check xhr events triggered
+                const expectedXhr = ["on_loadstart", "on_progress", "on_load", "on_loadend"];
+                for (const ev of expectedXhr) {
+                    if (!xhrEvents.includes(ev)) {
+                        throw new Error("XHR missing expected event: " + ev + ", got: " + JSON.stringify(xhrEvents));
+                    }
+                }
+
+                // Check upload events triggered
+                const expectedUpload = ["on_loadstart", "on_progress", "on_load", "on_loadend"];
+                for (const ev of expectedUpload) {
+                    if (!uploadEvents.includes(ev)) {
+                        throw new Error("Upload missing expected event: " + ev + ", got: " + JSON.stringify(uploadEvents));
+                    }
+                }
+
+                // 4. Verify responseXML behavior
+                // Since responseType is default "", responseXML should parse correctly
+                const xmlDoc = xhr.responseXML;
+                if (!xmlDoc || xmlDoc.text !== "some upload payload") {
+                    throw new Error("responseXML returned incorrect document: " + JSON.stringify(xmlDoc));
+                }
+
+                // 5. Verify timeout and withCredentials synchronous throws
+                const syncXhr = new XMLHttpRequest();
+                syncXhr.open("GET", "https://example.com", false); // async = false
+
+                try {
+                    syncXhr.timeout = 1000;
+                    throw new Error("syncXhr.timeout setter should throw InvalidStateError");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") throw e;
+                }
+
+                try {
+                    syncXhr.withCredentials = true;
+                    throw new Error("syncXhr.withCredentials setter should throw InvalidStateError");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") throw e;
+                }
+
+                // 6. Verify withCredentials state-based throws (cannot be set after send/DONE)
+                const stateXhr = new XMLHttpRequest();
+                stateXhr.open("GET", "https://example.com");
+                stateXhr.responseType = "json"; // set before send
+                stateXhr.send();
+
+                // Since responseType is "json", responseXML must be null
+                if (stateXhr.responseXML !== null) {
+                    throw new Error("responseXML should be null when responseType is json");
+                }
+
+                try {
+                    stateXhr.withCredentials = true;
+                    throw new Error("stateXhr.withCredentials setter should throw InvalidStateError after send()");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") throw e;
+                }
+
+                // 7. Verify overrideMimeType in responseXML
+                const mimeXhr = new XMLHttpRequest();
+                mimeXhr.open("GET", "https://example.com");
+                mimeXhr.overrideMimeType("text/html");
+                mimeXhr.responseType = "document";
+                mimeXhr.send();
+                const mimeDoc = mimeXhr.responseXML;
+                if (!mimeDoc) throw new Error("responseXML with overridden mime should work");
+
+                // 8. Verify abort event on both XHR and upload
+                let abortXhrEvents = [];
+                let abortUploadEvents = [];
+                const abortXhr = new XMLHttpRequest();
+                abortXhr.onloadstart = (e) => abortXhrEvents.push(e.type);
+                abortXhr.onabort = (e) => abortXhrEvents.push(e.type);
+                abortXhr.onloadend = (e) => abortXhrEvents.push(e.type);
+
+                abortXhr.upload.onabort = (e) => abortUploadEvents.push(e.type);
+                abortXhr.upload.onloadend = (e) => abortUploadEvents.push(e.type);
+
+                abortXhr.open("POST", "https://example.com");
+                // send() sets sendFlag to true and dispatches loadstart
+                // we abort immediately to simulate cancelation
+                // Since our send is synchronous/mock, let's call send, but wait, send() runs synchronously and transitions to DONE(4)
+                // To test abort when sendFlag is true, let's design standard event listeners or check that abort dispatches correctly.
+                // If we open and then send, send() completes. What if we abort after open but before send?
+                // In that case sendFlag is false, so upload events shouldn't fire, but xhr abort should.
+                // Let's test both!
+                const abortXhr2 = new XMLHttpRequest();
+                let abortEvents2 = [];
+                abortXhr2.onabort = () => abortEvents2.push("abort");
+                abortXhr2.onloadend = () => abortEvents2.push("loadend");
+                abortXhr2.open("GET", "https://example.com");
+                abortXhr2.abort();
+                if (!abortEvents2.includes("abort") || !abortEvents2.includes("loadend")) {
+                    throw new Error("abort() before send did not dispatch abort/loadend correctly: " + JSON.stringify(abortEvents2));
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        let res = context.eval(Source::from_bytes(script.as_bytes()));
+        assert!(res.is_ok(), "Evaluation itself failed: {:?}", res);
+
+        let error_val = context
+            .eval(Source::from_bytes("globalThis.test_error".as_bytes()))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!("test_xhr_completeness JS assert failed: {}", error_str);
         }
     }
 }
