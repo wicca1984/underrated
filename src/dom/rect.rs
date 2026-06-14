@@ -1,10 +1,145 @@
 use crate::dom::Dom;
 use crate::infra::NodeId;
 
+/// `DomRectReadOnly` represents a read-only rectangle, which is a standard base
+/// interface for `DOMRect` per the CSS Geometry Interfaces standard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DomRectReadOnly {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl DomRectReadOnly {
+    /// Creates a new `DomRectReadOnly` with the given coordinates and dimensions.
+    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Returns the x-coordinate of the origin of the rectangle.
+    pub fn x(&self) -> f64 {
+        self.x
+    }
+
+    /// Returns the y-coordinate of the origin of the rectangle.
+    pub fn y(&self) -> f64 {
+        self.y
+    }
+
+    /// Returns the width of the rectangle.
+    pub fn width(&self) -> f64 {
+        self.width
+    }
+
+    /// Returns the height of the rectangle.
+    pub fn height(&self) -> f64 {
+        self.height
+    }
+
+    /// Returns the top coordinate value of the rectangle.
+    ///
+    /// According to the DOMRect spec, for a possibly-negative height,
+    /// this is normalized as: `min(y, y + height)`.
+    pub fn top(&self) -> f64 {
+        self.y.min(self.y + self.height)
+    }
+
+    /// Returns the right coordinate value of the rectangle.
+    ///
+    /// According to the DOMRect spec, for a possibly-negative width,
+    /// this is normalized as: `max(x, x + width)`.
+    pub fn right(&self) -> f64 {
+        self.x.max(self.x + self.width)
+    }
+
+    /// Returns the bottom coordinate value of the rectangle.
+    ///
+    /// According to the DOMRect spec, for a possibly-negative height,
+    /// this is normalized as: `max(y, y + height)`.
+    pub fn bottom(&self) -> f64 {
+        self.y.max(self.y + self.height)
+    }
+
+    /// Returns the left coordinate value of the rectangle.
+    ///
+    /// According to the DOMRect spec, for a possibly-negative width,
+    /// this is normalized as: `min(x, x + width)`.
+    pub fn left(&self) -> f64 {
+        self.x.min(self.x + self.width)
+    }
+
+    /// Serializes this `DomRectReadOnly` to a JSON object.
+    pub fn serialize(&self) -> serde_json::Value {
+        serde_json::json!({
+            "x": self.x(),
+            "y": self.y(),
+            "width": self.width(),
+            "height": self.height(),
+            "top": self.top(),
+            "right": self.right(),
+            "bottom": self.bottom(),
+            "left": self.left(),
+        })
+    }
+
+    /// Static-like factory to create a new `DomRectReadOnly` from a dictionary-like JSON representation.
+    pub fn from_rect(other: Option<&serde_json::Value>) -> Self {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut width = 0.0;
+        let mut height = 0.0;
+
+        if let Some(obj) = other.and_then(|v| v.as_object()) {
+            if let Some(val) = obj.get("x").and_then(|v| v.as_f64()) {
+                x = val;
+            }
+            if let Some(val) = obj.get("y").and_then(|v| v.as_f64()) {
+                y = val;
+            }
+            if let Some(val) = obj.get("width").and_then(|v| v.as_f64()) {
+                width = val;
+            }
+            if let Some(val) = obj.get("height").and_then(|v| v.as_f64()) {
+                height = val;
+            }
+        }
+
+        Self::new(x, y, width, height)
+    }
+
+    /// Non-snake-case alias of `from_rect` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn fromRect(other: Option<&serde_json::Value>) -> Self {
+        Self::from_rect(other)
+    }
+
+    /// Returns a plain JSON object with keys x, y, width, height, top, right, bottom, left holding current numeric values.
+    pub fn to_json(self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Non-snake-case alias of `to_json` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn toJSON(self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Returns a mutable `DomRect` copy.
+    pub fn to_mutable(self) -> DomRect {
+        DomRect::new(self.x, self.y, self.width, self.height)
+    }
+}
+
 /// `DomRect` represents a rectangle, which is the type of object returned by
 /// `Element.getBoundingClientRect()`.
 ///
-/// It provides read-only properties describing the size and position of a rectangle.
+/// It provides read-write properties describing the size and position of a rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DomRect {
     x: f64,
@@ -42,6 +177,26 @@ impl DomRect {
     /// Returns the height of the rectangle.
     pub fn height(&self) -> f64 {
         self.height
+    }
+
+    /// Sets the x-coordinate of the origin of the rectangle.
+    pub fn set_x(&mut self, val: f64) {
+        self.x = val;
+    }
+
+    /// Sets the y-coordinate of the origin of the rectangle.
+    pub fn set_y(&mut self, val: f64) {
+        self.y = val;
+    }
+
+    /// Sets the width of the rectangle.
+    pub fn set_width(&mut self, val: f64) {
+        self.width = val;
+    }
+
+    /// Sets the height of the rectangle.
+    pub fn set_height(&mut self, val: f64) {
+        self.height = val;
     }
 
     /// Returns the top coordinate value of the rectangle.
@@ -126,14 +281,31 @@ impl DomRect {
     }
 
     /// Returns a plain JSON object with keys x, y, width, height, top, right, bottom, left holding current numeric values.
-    pub fn to_json(&self) -> serde_json::Value {
+    pub fn to_json(self) -> serde_json::Value {
         self.serialize()
     }
 
     /// Non-snake-case alias of `to_json` for compatibility.
     #[allow(non_snake_case)]
-    pub fn toJSON(&self) -> serde_json::Value {
+    pub fn toJSON(self) -> serde_json::Value {
         self.serialize()
+    }
+
+    /// Returns a read-only `DomRectReadOnly` copy.
+    pub fn to_readonly(self) -> DomRectReadOnly {
+        DomRectReadOnly::new(self.x, self.y, self.width, self.height)
+    }
+}
+
+impl From<DomRect> for DomRectReadOnly {
+    fn from(rect: DomRect) -> Self {
+        Self::new(rect.x, rect.y, rect.width, rect.height)
+    }
+}
+
+impl From<DomRectReadOnly> for DomRect {
+    fn from(rect: DomRectReadOnly) -> Self {
+        Self::new(rect.x, rect.y, rect.width, rect.height)
     }
 }
 
@@ -349,5 +521,120 @@ mod tests {
         assert_eq!(json_camel["right"], 110.0);
         assert_eq!(json_camel["bottom"], 70.0);
         assert_eq!(json_camel["left"], 10.0);
+    }
+
+    #[test]
+    fn test_domrect_setters_and_derived() {
+        let mut rect = DomRect::new(10.0, 20.0, 100.0, 50.0);
+        assert_eq!(rect.x(), 10.0);
+        assert_eq!(rect.y(), 20.0);
+        assert_eq!(rect.width(), 100.0);
+        assert_eq!(rect.height(), 50.0);
+
+        // Test mutators
+        rect.set_x(15.0);
+        rect.set_y(25.0);
+        rect.set_width(120.0);
+        rect.set_height(60.0);
+
+        assert_eq!(rect.x(), 15.0);
+        assert_eq!(rect.y(), 25.0);
+        assert_eq!(rect.width(), 120.0);
+        assert_eq!(rect.height(), 60.0);
+
+        assert_eq!(rect.left(), 15.0);
+        assert_eq!(rect.top(), 25.0);
+        assert_eq!(rect.right(), 135.0);
+        assert_eq!(rect.bottom(), 85.0);
+
+        // Test mutators with negative dimensions
+        rect.set_width(-120.0);
+        rect.set_height(-60.0);
+
+        assert_eq!(rect.left(), -105.0); // min(15.0, -105.0)
+        assert_eq!(rect.top(), -35.0); // min(25.0, -35.0)
+        assert_eq!(rect.right(), 15.0); // max(15.0, -105.0)
+        assert_eq!(rect.bottom(), 25.0); // max(25.0, -35.0)
+    }
+
+    #[test]
+    fn test_domrectreadonly_basic() {
+        let readonly = DomRectReadOnly::new(5.0, 10.0, 50.0, 30.0);
+        assert_eq!(readonly.x(), 5.0);
+        assert_eq!(readonly.y(), 10.0);
+        assert_eq!(readonly.width(), 50.0);
+        assert_eq!(readonly.height(), 30.0);
+
+        assert_eq!(readonly.left(), 5.0);
+        assert_eq!(readonly.top(), 10.0);
+        assert_eq!(readonly.right(), 55.0);
+        assert_eq!(readonly.bottom(), 40.0);
+
+        // Test serialization
+        let s = readonly.serialize();
+        assert_eq!(s["x"], 5.0);
+        assert_eq!(s["y"], 10.0);
+        assert_eq!(s["width"], 50.0);
+        assert_eq!(s["height"], 30.0);
+
+        // Test JSON aliases
+        let json_val = readonly.to_json();
+        assert_eq!(json_val["x"], 5.0);
+        let json_camel = readonly.toJSON();
+        assert_eq!(json_camel["x"], 5.0);
+
+        // Test negative dimensions
+        let readonly_neg = DomRectReadOnly::new(5.0, 10.0, -50.0, -30.0);
+        assert_eq!(readonly_neg.left(), -45.0);
+        assert_eq!(readonly_neg.top(), -20.0);
+        assert_eq!(readonly_neg.right(), 5.0);
+        assert_eq!(readonly_neg.bottom(), 10.0);
+
+        // Test from_rect
+        let init = serde_json::json!({
+            "x": 8.0,
+            "y": 12.0,
+            "width": 80.0,
+            "height": 40.0
+        });
+        let from_json = DomRectReadOnly::from_rect(Some(&init));
+        assert_eq!(from_json.x(), 8.0);
+        assert_eq!(from_json.y(), 12.0);
+        assert_eq!(from_json.width(), 80.0);
+        assert_eq!(from_json.height(), 40.0);
+
+        // Test fromRect alias
+        let from_json_camel = DomRectReadOnly::fromRect(Some(&init));
+        assert_eq!(from_json_camel.x(), 8.0);
+
+        // Test empty/None from_rect
+        let from_none = DomRectReadOnly::from_rect(None);
+        assert_eq!(from_none.x(), 0.0);
+        assert_eq!(from_none.y(), 0.0);
+        assert_eq!(from_none.width(), 0.0);
+        assert_eq!(from_none.height(), 0.0);
+    }
+
+    #[test]
+    fn test_conversions() {
+        let rect = DomRect::new(2.0, 4.0, 20.0, 10.0);
+        let readonly = rect.to_readonly();
+        assert_eq!(readonly.x(), 2.0);
+        assert_eq!(readonly.y(), 4.0);
+        assert_eq!(readonly.width(), 20.0);
+        assert_eq!(readonly.height(), 10.0);
+
+        let mutable = readonly.to_mutable();
+        assert_eq!(mutable.x(), 2.0);
+        assert_eq!(mutable.y(), 4.0);
+        assert_eq!(mutable.width(), 20.0);
+        assert_eq!(mutable.height(), 10.0);
+
+        // Test From traits
+        let from_mutable: DomRectReadOnly = DomRectReadOnly::from(rect);
+        assert_eq!(from_mutable.x(), 2.0);
+
+        let from_readonly: DomRect = DomRect::from(readonly);
+        assert_eq!(from_readonly.x(), 2.0);
     }
 }
