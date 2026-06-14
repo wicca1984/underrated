@@ -4290,6 +4290,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("color-mix") {
                 return parse_color_mix_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("light-dark") {
+                return parse_light_dark_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -5188,6 +5191,26 @@ fn parse_color_mix_function(components: &[ComponentValue]) -> Option<Color> {
     let a_out = (final_a * 255.0).round().clamp(0.0, 255.0) as u8;
 
     Some(Color::Rgba(r_out, g_out, b_out, a_out))
+}
+
+fn parse_color_argument(components: &[ComponentValue]) -> Option<Color> {
+    let (color, p) = parse_color_with_optional_percentage(components)?;
+    if p.is_some() {
+        return None;
+    }
+    Some(color)
+}
+
+fn parse_light_dark_function(components: &[ComponentValue]) -> Option<Color> {
+    let args = split_by_comma(components);
+    if args.len() != 2 {
+        return None;
+    }
+
+    let first_color = parse_color_argument(args[0])?;
+    let _second_color = parse_color_argument(args[1])?;
+
+    Some(first_color)
 }
 
 fn parse_device_cmyk_function(components: &[ComponentValue]) -> Option<Color> {
@@ -6537,6 +6560,50 @@ mod tests {
         assert_eq!(
             parse("color-mix(in srgb, red 20%, blue 30%)"),
             Some(CssValue::Color(Color::Rgba(102, 0, 153, 128)))
+        );
+    }
+
+    #[test]
+    fn test_parse_color_light_dark() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // a. light-dark(white, black) resolves to the light color (white / rgb 255,255,255)
+        assert_eq!(
+            parse("light-dark(white, black)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // b. light-dark with a different first color (e.g. light-dark(#ff0000, #0000ff)) resolves to the first (red)
+        assert_eq!(
+            parse("light-dark(#ff0000, #0000ff)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // c. a malformed call with the wrong number of arguments (e.g. one or three colors) returns None
+        assert_eq!(parse("light-dark(white)"), None);
+        assert_eq!(parse("light-dark(white, black, blue)"), None);
+        assert_eq!(parse("light-dark(white, black, )"), None);
+        assert_eq!(parse("light-dark(white,)"), None);
+        assert_eq!(parse("light-dark(,black)"), None);
+        assert_eq!(parse("light-dark()"), None);
+
+        // Nested cases
+        assert_eq!(
+            parse("light-dark(light-dark(red, blue), black)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+        assert_eq!(
+            parse("light-dark(rgb(0, 255, 0), light-dark(white, black))"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+
+        // Case insensitivity
+        assert_eq!(
+            parse("LIGHT-DARK(White, Black)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
         );
     }
 
