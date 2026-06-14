@@ -395,6 +395,63 @@ fn js_value_to_i32(val: &JsValue, context: &mut Context) -> Result<i32, JsError>
     }
 }
 
+fn next_timer_id() -> i32 {
+    NEXT_TIMER_ID.with(|cell| {
+        let mut next_id = cell.borrow_mut();
+        loop {
+            let cur = *next_id;
+            if cur == i32::MAX {
+                *next_id = 1;
+            } else {
+                *next_id += 1;
+            }
+            // Check if cur is already in use
+            let in_use = TIMERS.with(|timers_cell| timers_cell.borrow().contains_key(&cur));
+            if !in_use {
+                break cur;
+            }
+        }
+    })
+}
+
+fn next_raf_id() -> i32 {
+    NEXT_RAF_ID.with(|cell| {
+        let mut next_id = cell.borrow_mut();
+        loop {
+            let cur = *next_id;
+            if cur == i32::MAX {
+                *next_id = 1;
+            } else {
+                *next_id += 1;
+            }
+            // Check if cur is already in use
+            let in_use = ANIMATION_FRAMES.with(|cell_raf| cell_raf.borrow().contains_key(&cur));
+            if !in_use {
+                break cur;
+            }
+        }
+    })
+}
+
+fn next_idle_id() -> i32 {
+    NEXT_IDLE_ID.with(|cell| {
+        let mut next_id = cell.borrow_mut();
+        loop {
+            let cur = *next_id;
+            if cur == i32::MAX {
+                *next_id = 1;
+            } else {
+                *next_id += 1;
+            }
+            // Check if cur is already in use
+            let in_use = IDLE_CALLBACKS.with(|cell_idle| cell_idle.borrow().contains_key(&cur));
+            if !in_use {
+                break cur;
+            }
+        }
+    })
+}
+
 pub fn set_timeout(
     _this: &JsValue,
     args: &[JsValue],
@@ -420,12 +477,7 @@ pub fn set_timeout(
         Vec::new()
     };
 
-    let id = NEXT_TIMER_ID.with(|cell| {
-        let mut next_id = cell.borrow_mut();
-        let cur = *next_id;
-        *next_id += 1;
-        cur
-    });
+    let id = next_timer_id();
 
     // Store in Rust side
     let timer = Timer {
@@ -475,16 +527,15 @@ pub fn clear_timeout(
     args: &[JsValue],
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
-    if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context)?;
-        // Remove from Rust side
-        TIMERS.with(|cell| {
-            cell.borrow_mut().remove(&id);
-        });
-        // Remove from JS side
-        if let Ok(timers_obj) = get_or_create_timers_obj(context) {
-            let _ = timers_obj.delete_property_or_throw(id, context)?;
-        }
+    let id_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let id = js_value_to_i32(&id_val, context)?;
+    // Remove from Rust side
+    TIMERS.with(|cell| {
+        cell.borrow_mut().remove(&id);
+    });
+    // Remove from JS side
+    if let Ok(timers_obj) = get_or_create_timers_obj(context) {
+        let _ = timers_obj.delete_property_or_throw(id, context)?;
     }
     Ok(JsValue::undefined())
 }
@@ -514,12 +565,7 @@ pub fn set_interval(
         Vec::new()
     };
 
-    let id = NEXT_TIMER_ID.with(|cell| {
-        let mut next_id = cell.borrow_mut();
-        let cur = *next_id;
-        *next_id += 1;
-        cur
-    });
+    let id = next_timer_id();
 
     // Store in Rust side
     let timer = Timer {
@@ -569,16 +615,15 @@ pub fn clear_interval(
     args: &[JsValue],
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
-    if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context)?;
-        // Remove from Rust side
-        TIMERS.with(|cell| {
-            cell.borrow_mut().remove(&id);
-        });
-        // Remove from JS side
-        if let Ok(timers_obj) = get_or_create_timers_obj(context) {
-            let _ = timers_obj.delete_property_or_throw(id, context)?;
-        }
+    let id_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let id = js_value_to_i32(&id_val, context)?;
+    // Remove from Rust side
+    TIMERS.with(|cell| {
+        cell.borrow_mut().remove(&id);
+    });
+    // Remove from JS side
+    if let Ok(timers_obj) = get_or_create_timers_obj(context) {
+        let _ = timers_obj.delete_property_or_throw(id, context)?;
     }
     Ok(JsValue::undefined())
 }
@@ -589,13 +634,14 @@ pub fn request_animation_frame(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+    if !callback.is_callable() {
+        return Err(JsError::from(
+            boa_engine::JsNativeError::typ()
+                .with_message("requestAnimationFrame callback must be a function"),
+        ));
+    }
 
-    let id = NEXT_RAF_ID.with(|cell| {
-        let mut next_id = cell.borrow_mut();
-        let cur = *next_id;
-        *next_id += 1;
-        cur
-    });
+    let id = next_raf_id();
 
     // Store in Rust side
     let frame = AnimationFrame { id };
@@ -620,16 +666,15 @@ pub fn cancel_animation_frame(
     args: &[JsValue],
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
-    if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context)?;
-        // Remove from Rust side
-        ANIMATION_FRAMES.with(|cell| {
-            cell.borrow_mut().remove(&id);
-        });
-        // Remove from JS side
-        if let Ok(raf_obj) = get_or_create_animation_frames_obj(context) {
-            let _ = raf_obj.delete_property_or_throw(id, context)?;
-        }
+    let id_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let id = js_value_to_i32(&id_val, context)?;
+    // Remove from Rust side
+    ANIMATION_FRAMES.with(|cell| {
+        cell.borrow_mut().remove(&id);
+    });
+    // Remove from JS side
+    if let Ok(raf_obj) = get_or_create_animation_frames_obj(context) {
+        let _ = raf_obj.delete_property_or_throw(id, context)?;
     }
     Ok(JsValue::undefined())
 }
@@ -640,6 +685,12 @@ pub fn request_idle_callback(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     let callback = args.first().cloned().unwrap_or(JsValue::undefined());
+    if !callback.is_callable() {
+        return Err(JsError::from(
+            boa_engine::JsNativeError::typ()
+                .with_message("requestIdleCallback callback must be a function"),
+        ));
+    }
 
     let timeout = if let Some(options_val) = args.get(1) {
         if let Some(options_obj) = options_val.as_object() {
@@ -661,12 +712,7 @@ pub fn request_idle_callback(
         None
     };
 
-    let id = NEXT_IDLE_ID.with(|cell| {
-        let mut next_id = cell.borrow_mut();
-        let cur = *next_id;
-        *next_id += 1;
-        cur
-    });
+    let id = next_idle_id();
 
     // Store in Rust side
     let idle = IdleCallback { id, timeout };
@@ -702,16 +748,15 @@ pub fn cancel_idle_callback(
     args: &[JsValue],
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
-    if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context)?;
-        // Remove from Rust side
-        IDLE_CALLBACKS.with(|cell| {
-            cell.borrow_mut().remove(&id);
-        });
-        // Remove from JS side
-        if let Ok(idle_obj) = get_or_create_idle_callbacks_obj(context) {
-            let _ = idle_obj.delete_property_or_throw(id, context)?;
-        }
+    let id_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let id = js_value_to_i32(&id_val, context)?;
+    // Remove from Rust side
+    IDLE_CALLBACKS.with(|cell| {
+        cell.borrow_mut().remove(&id);
+    });
+    // Remove from JS side
+    if let Ok(idle_obj) = get_or_create_idle_callbacks_obj(context) {
+        let _ = idle_obj.delete_property_or_throw(id, context)?;
     }
     Ok(JsValue::undefined())
 }
@@ -1421,5 +1466,82 @@ mod tests {
         assert!(idle_opt.is_some());
         let idle = idle_opt.unwrap();
         assert_eq!(idle.timeout, Some(150));
+    }
+
+    #[test]
+    fn test_timer_id_wrapping_and_collision() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // Let's populate some active timers
+        let id1_val = context
+            .eval(Source::from_bytes(r#"setTimeout(() => {}, 100)"#))
+            .unwrap();
+        let id1 = id1_val.as_number().unwrap() as i32;
+        assert_eq!(id1, 1);
+
+        // Manually set NEXT_TIMER_ID to i32::MAX
+        NEXT_TIMER_ID.with(|cell| {
+            *cell.borrow_mut() = i32::MAX;
+        });
+
+        // Register a new timer when NEXT_TIMER_ID is i32::MAX
+        let id2_val = context
+            .eval(Source::from_bytes(r#"setTimeout(() => {}, 100)"#))
+            .unwrap();
+        let id2 = id2_val.as_number().unwrap() as i32;
+        // Since cur was i32::MAX, it should be registered with ID = i32::MAX
+        assert_eq!(id2, i32::MAX);
+
+        // After registering id2, NEXT_TIMER_ID would wrap around to 1.
+        // But ID 1 is currently in use!
+        // Therefore, registering the next timer should skip 1 and get 2!
+        let id3_val = context
+            .eval(Source::from_bytes(r#"setTimeout(() => {}, 100)"#))
+            .unwrap();
+        let id3 = id3_val.as_number().unwrap() as i32;
+        assert_eq!(id3, 2);
+    }
+
+    #[test]
+    fn test_raf_and_idle_callback_non_callable_throws_type_error() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // requestAnimationFrame with string
+        let res_raf = context.eval(Source::from_bytes(
+            r#"requestAnimationFrame("non-callable")"#,
+        ));
+        assert!(res_raf.is_err());
+        let err_raf = res_raf.err().unwrap().to_string();
+        assert!(err_raf.contains("TypeError") || err_raf.contains("must be a function"));
+
+        // requestIdleCallback with number
+        let res_idle = context.eval(Source::from_bytes(r#"requestIdleCallback(123)"#));
+        assert!(res_idle.is_err());
+        let err_idle = res_idle.err().unwrap().to_string();
+        assert!(err_idle.contains("TypeError") || err_idle.contains("must be a function"));
+    }
+
+    #[test]
+    fn test_clear_and_cancel_no_arguments_safe_no_ops() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        assert!(context.eval(Source::from_bytes("clearTimeout()")).is_ok());
+        assert!(context.eval(Source::from_bytes("clearInterval()")).is_ok());
+        assert!(
+            context
+                .eval(Source::from_bytes("cancelAnimationFrame()"))
+                .is_ok()
+        );
+        assert!(
+            context
+                .eval(Source::from_bytes("cancelIdleCallback()"))
+                .is_ok()
+        );
     }
 }
