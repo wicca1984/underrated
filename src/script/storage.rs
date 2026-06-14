@@ -125,7 +125,25 @@ pub fn setup_storage(context: &mut Context) {
                     if (arguments.length < 2) {
                         throw new TypeError("Failed to execute 'setItem' on 'Storage': 2 arguments required, but only " + arguments.length + " present.");
                     }
-                    bridge.setItem(this[typeSymbol], String(key), String(value));
+                    const keyStr = String(key);
+                    const valueStr = String(value);
+                    const oldValue = this.getItem(keyStr);
+                    if (oldValue === valueStr) {
+                        return; // No-op, do not set or fire events
+                    }
+                    bridge.setItem(this[typeSymbol], keyStr, valueStr);
+
+                    // Dispatch StorageEvent on window
+                    if (typeof window.dispatchEvent === 'function' && typeof window.StorageEvent === 'function') {
+                        const event = new window.StorageEvent('storage', {
+                            key: keyStr,
+                            oldValue: oldValue,
+                            newValue: valueStr,
+                            url: window.location ? window.location.href : '',
+                            storageArea: this[typeSymbol] === 'local' ? window.localStorage : window.sessionStorage
+                        });
+                        window.dispatchEvent(event);
+                    }
                 }
 
                 removeItem(key) {
@@ -135,14 +153,46 @@ pub fn setup_storage(context: &mut Context) {
                     if (arguments.length < 1) {
                         throw new TypeError("Failed to execute 'removeItem' on 'Storage': 1 argument required, but only 0 present.");
                     }
-                    bridge.removeItem(this[typeSymbol], String(key));
+                    const keyStr = String(key);
+                    const oldValue = this.getItem(keyStr);
+                    if (oldValue === null) {
+                        return; // No-op, do not fire events
+                    }
+                    bridge.removeItem(this[typeSymbol], keyStr);
+
+                    // Dispatch StorageEvent on window
+                    if (typeof window.dispatchEvent === 'function' && typeof window.StorageEvent === 'function') {
+                        const event = new window.StorageEvent('storage', {
+                            key: keyStr,
+                            oldValue: oldValue,
+                            newValue: null,
+                            url: window.location ? window.location.href : '',
+                            storageArea: this[typeSymbol] === 'local' ? window.localStorage : window.sessionStorage
+                        });
+                        window.dispatchEvent(event);
+                    }
                 }
 
                 clear() {
                     if (!(this instanceof Storage) || (this[typeSymbol] !== 'local' && this[typeSymbol] !== 'session')) {
                         throw new TypeError("Failed to execute 'clear' on 'Storage': Value of 'this' is not a Storage object.");
                     }
+                    if (this.length === 0) {
+                        return; // No-op
+                    }
                     bridge.clear(this[typeSymbol]);
+
+                    // Dispatch StorageEvent on window
+                    if (typeof window.dispatchEvent === 'function' && typeof window.StorageEvent === 'function') {
+                        const event = new window.StorageEvent('storage', {
+                            key: null,
+                            oldValue: null,
+                            newValue: null,
+                            url: window.location ? window.location.href : '',
+                            storageArea: this[typeSymbol] === 'local' ? window.localStorage : window.sessionStorage
+                        });
+                        window.dispatchEvent(event);
+                    }
                 }
 
                 key(index) {
@@ -278,6 +328,9 @@ pub fn setup_storage(context: &mut Context) {
                         if (arguments.length < 1) {
                             throw new TypeError("Failed to construct 'StorageEvent': 1 argument required, but only 0 present.");
                         }
+                        if (eventInitDict === null || eventInitDict === undefined) {
+                            eventInitDict = {};
+                        }
                         super(type, eventInitDict);
                         this._key = (eventInitDict.key !== undefined && eventInitDict.key !== null) ? String(eventInitDict.key) : null;
                         this._oldValue = (eventInitDict.oldValue !== undefined && eventInitDict.oldValue !== null) ? String(eventInitDict.oldValue) : null;
@@ -324,6 +377,9 @@ pub fn setup_storage(context: &mut Context) {
                     initStorageEvent(type, bubbles = false, cancelable = false, key = null, oldValue = null, newValue = null, url = "", storageArea = null) {
                         if (!(this instanceof StorageEvent)) {
                             throw new TypeError("Failed to execute 'initStorageEvent' on 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
+                        }
+                        if (arguments.length < 1) {
+                            throw new TypeError("Failed to execute 'initStorageEvent' on 'StorageEvent': 1 argument required, but only 0 present.");
                         }
                         this.initEvent(type, bubbles, cancelable);
                         this._key = (key !== null && key !== undefined) ? String(key) : null;
@@ -1296,6 +1352,78 @@ mod tests {
                 if (evInit.key !== '456') throw new Error("Expected key to be coerced to '456'");
                 if (evInit.oldValue !== 'false') throw new Error("Expected oldValue to be coerced to 'false'");
                 if (evInit.newValue !== 'abc') throw new Error("Expected newValue to be 'abc'");
+            })()
+        "#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_storage_event_dispatch_on_mutation() {
+        let mut host = new_host();
+
+        assert!(
+            host.eval(
+                r#"
+            (function() {
+                const events = [];
+                window.addEventListener('storage', (e) => {
+                    events.push({
+                        key: e.key,
+                        oldValue: e.oldValue,
+                        newValue: e.newValue,
+                        storageArea: e.storageArea
+                    });
+                });
+
+                // 1. setItem new key
+                localStorage.setItem('user', 'alice');
+                if (events.length !== 1) throw new Error("Expected 1 event on first setItem, got " + events.length);
+                let ev = events[0];
+                if (ev.key !== 'user') throw new Error("Expected key to be 'user'");
+                if (ev.oldValue !== null) throw new Error("Expected oldValue to be null");
+                if (ev.newValue !== 'alice') throw new Error("Expected newValue to be 'alice'");
+                if (ev.storageArea !== localStorage) throw new Error("Expected storageArea to be localStorage");
+
+                // 2. setItem update key
+                localStorage.setItem('user', 'bob');
+                if (events.length !== 2) throw new Error("Expected 2 events on second setItem");
+                ev = events[1];
+                if (ev.key !== 'user') throw new Error("Expected key to be 'user'");
+                if (ev.oldValue !== 'alice') throw new Error("Expected oldValue to be 'alice'");
+                if (ev.newValue !== 'bob') throw new Error("Expected newValue to be 'bob'");
+
+                // 3. setItem no-op (same value)
+                localStorage.setItem('user', 'bob');
+                if (events.length !== 2) throw new Error("Expected NO new events on no-op setItem");
+
+                // 4. removeItem existing key
+                localStorage.removeItem('user');
+                if (events.length !== 3) throw new Error("Expected 3 events after removeItem");
+                ev = events[2];
+                if (ev.key !== 'user') throw new Error("Expected key to be 'user'");
+                if (ev.oldValue !== 'bob') throw new Error("Expected oldValue to be 'bob'");
+                if (ev.newValue !== null) throw new Error("Expected newValue to be null");
+
+                // 5. removeItem non-existent key (no-op)
+                localStorage.removeItem('user');
+                if (events.length !== 3) throw new Error("Expected NO new events on non-existent removeItem");
+
+                // 6. clear (no-op because empty)
+                localStorage.clear();
+                if (events.length !== 3) throw new Error("Expected NO new events on empty clear");
+
+                // 7. clear with data
+                localStorage.setItem('somekey', 'someval');
+                // (this setItem added 1 event, length becomes 4)
+                if (events.length !== 4) throw new Error("Expected 4 events");
+                localStorage.clear();
+                if (events.length !== 5) throw new Error("Expected 5 events after clear with data");
+                ev = events[4];
+                if (ev.key !== null) throw new Error("Expected key to be null on clear");
+                if (ev.oldValue !== null) throw new Error("Expected oldValue to be null on clear");
+                if (ev.newValue !== null) throw new Error("Expected newValue to be null on clear");
             })()
         "#
             )
