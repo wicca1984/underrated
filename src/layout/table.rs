@@ -1552,9 +1552,41 @@ fn is_table_cell_element(dom: &Dom, node: NodeId) -> bool {
     }
 }
 
+fn parse_html_non_negative_integer(s: &str) -> Option<i32> {
+    let mut chars = s.chars().peekable();
+    // Skip leading ASCII whitespace (space, tab, LF, FF, CR)
+    while let Some(&c) = chars.peek() {
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0C' {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    // Optional leading plus sign
+    if let Some(&c) = chars.peek()
+        && c == '+'
+    {
+        chars.next();
+    }
+    let mut digits = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<i32>().ok()
+    }
+}
+
 fn parse_span_attribute(dom: &Dom, node: NodeId, name: &str) -> usize {
     if let Some(s) = dom.get_attribute(node, name) {
-        if let Ok(val) = s.trim().parse::<i32>() {
+        if let Some(val) = parse_html_non_negative_integer(s) {
             if val < 0 {
                 1
             } else if val == 0 {
@@ -2408,6 +2440,128 @@ mod tests {
             assert_eq!(cell.rect.origin.x, (i as f32) * 25.0);
             assert_eq!(cell.rect.size.width, 25.0);
         }
+    }
+
+    #[test]
+    fn test_relaxed_spans_parsing() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Row 1: sets the column widths
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row1_node);
+
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        let cell12_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell12_node);
+
+        let cell13_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell13_node);
+
+        let cell14_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell14_node);
+
+        // Row 2: contains relaxed spans
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row2_node);
+
+        let cell21_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: vec![("colspan".to_string(), "2px".to_string())],
+        });
+        dom.append_child(row2_node, cell21_node);
+
+        let cell22_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: vec![("colspan".to_string(), "2abc".to_string())],
+        });
+        dom.append_child(row2_node, cell22_node);
+
+        let mut styles = HashMap::new();
+        styles.insert(table_node, style_with_display("table"));
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+
+        // Setup row 1 cell widths (10, 10, 15, 15)
+        let mut s11 = style_with_display("table-cell");
+        s11.set_width(10);
+        s11.set_height(10);
+        styles.insert(cell11_node, s11);
+
+        let mut s12 = style_with_display("table-cell");
+        s12.set_width(10);
+        s12.set_height(10);
+        styles.insert(cell12_node, s12);
+
+        let mut s13 = style_with_display("table-cell");
+        s13.set_width(15);
+        s13.set_height(10);
+        styles.insert(cell13_node, s13);
+
+        let mut s14 = style_with_display("table-cell");
+        s14.set_width(15);
+        s14.set_height(10);
+        styles.insert(cell14_node, s14);
+
+        // Row 2 cell styles with explicit widths (but larger colspan/spanning than 1)
+        let mut s21 = style_with_display("table-cell");
+        s21.set_width(20);
+        s21.set_height(10);
+        styles.insert(cell21_node, s21);
+
+        let mut s22 = style_with_display("table-cell");
+        s22.set_width(30);
+        s22.set_height(10);
+        styles.insert(cell22_node, s22);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Table width should be 10 + 10 + 15 + 15 = 50.
+        assert_eq!(table_box.rect.size.width, 50.0);
+        assert_eq!(table_box.children.len(), 2);
+
+        let r1 = &table_box.children[0];
+        assert_eq!(r1.children.len(), 4);
+        assert_eq!(r1.children[0].rect.size.width, 10.0);
+        assert_eq!(r1.children[1].rect.size.width, 10.0);
+        assert_eq!(r1.children[2].rect.size.width, 15.0);
+        assert_eq!(r1.children[3].rect.size.width, 15.0);
+
+        let r2 = &table_box.children[1];
+        assert_eq!(r2.children.len(), 2);
+        // Cell 2.1 spans columns 0 and 1 -> width is 10 + 10 = 20
+        assert_eq!(r2.children[0].rect.origin.x, 0.0);
+        assert_eq!(r2.children[0].rect.size.width, 20.0);
+        // Cell 2.2 spans columns 2 and 3 -> width is 15 + 15 = 30
+        assert_eq!(r2.children[1].rect.origin.x, 20.0);
+        assert_eq!(r2.children[1].rect.size.width, 30.0);
     }
 
     #[test]
