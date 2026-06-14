@@ -1863,6 +1863,18 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'hreflang', {
+                        // hreflang reflected IDL attribute (t0704)
+                        get() {
+                            return this.getAttribute('hreflang') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('hreflang', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'nonce', {
                         get() {
                             return this.getAttribute('nonce') || '';
@@ -13100,6 +13112,40 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|file.txt|file.txt|new-file.txt|98765|98765".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_hreflang() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. A freshly created element has hreflang === '' by default when 'hreflang' is absent.
+            let el = document.createElement('a');
+            let res1 = el.hreflang;
+
+            // 2. Setting el.hreflang = 'en' via setter returns 'en' via getter
+            el.hreflang = 'en';
+            let res2 = el.hreflang;
+
+            // 3. Setter also writes the value to the underlying 'hreflang' content attribute verbatim
+            let res3 = el.getAttribute('hreflang');
+
+            // 4. Updating the 'hreflang' content attribute via setAttribute is reflected by the getter
+            el.setAttribute('hreflang', 'fr');
+            let res4 = el.hreflang;
+
+            // 5. Test coercion to string (e.g. numeric value is coerced to string)
+            el.hreflang = 12345;
+            let res5 = el.hreflang;
+            let res6 = el.getAttribute('hreflang');
+
+            [res1, res2, res3, res4, res5, res6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|en|en|fr|12345|12345".to_string())
         );
     }
 
