@@ -247,10 +247,6 @@ fn populate_layout_box_rects(layout_box: &LayoutBox, map: &mut HashMap<NodeId, c
     }
 }
 
-fn safe_clamp(val: f32, min: f32, max: f32) -> f32 {
-    if min > max { min } else { val.clamp(min, max) }
-}
-
 fn calculate_sticky_offset(
     node_id: NodeId,
     sticky_rect: crate::geom::Rect,
@@ -378,36 +374,100 @@ fn calculate_sticky_offset(
     if style.reset_surround.top != -1 {
         let t_val = style.reset_surround.top as f32;
         let wanted_y = sc_rect.origin.y + scroll_y + t_val;
-        let max_y = parent_content_bottom - sticky_rect.size.height;
-        let limit_y = if max_y > static_y { max_y } else { wanted_y };
-        target_y = safe_clamp(wanted_y, static_y, limit_y);
+        if scroll_y == 0.0 {
+            target_y = wanted_y;
+        } else if wanted_y > static_y {
+            let max_y = parent_content_bottom - sticky_rect.size.height;
+            target_y = if max_y > static_y {
+                wanted_y.clamp(static_y, max_y)
+            } else {
+                static_y
+            };
+        } else {
+            let min_y = parent_content_top;
+            target_y = if min_y < static_y {
+                wanted_y.clamp(min_y, static_y)
+            } else {
+                static_y
+            };
+        }
     } else if style.reset_surround.bottom != -1 {
         let b_val = style.reset_surround.bottom as f32;
         let wanted_y =
             sc_rect.origin.y + scroll_y + sc_rect.size.height - b_val - sticky_rect.size.height;
-        let min_y = parent_content_top;
-        let limit_y = if min_y < static_y { min_y } else { wanted_y };
-        target_y = safe_clamp(wanted_y, limit_y, static_y);
+        if scroll_y == 0.0 {
+            target_y = wanted_y;
+        } else if wanted_y > static_y {
+            let max_y = parent_content_bottom - sticky_rect.size.height;
+            target_y = if max_y > static_y {
+                wanted_y.clamp(static_y, max_y)
+            } else {
+                static_y
+            };
+        } else {
+            let min_y = parent_content_top;
+            target_y = if min_y < static_y {
+                wanted_y.clamp(min_y, static_y)
+            } else {
+                static_y
+            };
+        }
     }
 
     // Horizontal sticky
-    if style.reset_surround.left != -1 {
+    let has_left = style.reset_surround.left != -1;
+    let has_right = style.reset_surround.right != -1;
+    let is_rtl = style.inherited_text.direction == "rtl";
+
+    let use_left = has_left && (!has_right || !is_rtl);
+    let use_right = has_right && (!has_left || is_rtl);
+
+    if use_left {
         let l_val = style.reset_surround.left as f32;
         let wanted_x = sc_rect.origin.x + scroll_x + l_val;
-        let max_x = parent_content_right - sticky_rect.size.width;
-        let limit_x = if max_x > static_x { max_x } else { wanted_x };
-        target_x = safe_clamp(wanted_x, static_x, limit_x);
-    } else if style.reset_surround.right != -1 {
+        if scroll_x == 0.0 {
+            target_x = wanted_x;
+        } else if wanted_x > static_x {
+            let max_x = parent_content_right - sticky_rect.size.width;
+            target_x = if max_x > static_x {
+                wanted_x.clamp(static_x, max_x)
+            } else {
+                static_x
+            };
+        } else {
+            let min_x = parent_content_left;
+            target_x = if min_x < static_x {
+                wanted_x.clamp(min_x, static_x)
+            } else {
+                static_x
+            };
+        }
+    } else if use_right {
         let r_val = style.reset_surround.right as f32;
         let wanted_x =
             sc_rect.origin.x + scroll_x + sc_rect.size.width - r_val - sticky_rect.size.width;
-        let min_x = parent_content_left;
-        let limit_x = if min_x < static_x { min_x } else { wanted_x };
-        target_x = safe_clamp(wanted_x, limit_x, static_x);
+        if scroll_x == 0.0 {
+            target_x = wanted_x;
+        } else if wanted_x > static_x {
+            let max_x = parent_content_right - sticky_rect.size.width;
+            target_x = if max_x > static_x {
+                wanted_x.clamp(static_x, max_x)
+            } else {
+                static_x
+            };
+        } else {
+            let min_x = parent_content_left;
+            target_x = if min_x < static_x {
+                wanted_x.clamp(min_x, static_x)
+            } else {
+                static_x
+            };
+        }
     }
 
     let dx = target_x - static_x;
     let dy = target_y - static_y;
+
     (dx, dy)
 }
 
@@ -1014,9 +1074,9 @@ pub fn layout_absolute_and_fixed_elements(
             // Solve horizontal constraint and target_x
             let target_x = if !has_left && !has_right {
                 if is_parent_rtl {
-                    parent_right_padding_edge - border_box_width
+                    parent_right_padding_edge - border_box_width - margin_right_val
                 } else {
-                    static_pos.0
+                    static_pos.0 + margin_left_val
                 }
             } else if !has_left && has_right {
                 ancestor_origin.0 + container_width
@@ -2817,5 +2877,177 @@ mod tests {
 
         // Clean up
         clear_scroll_offsets();
+    }
+
+    #[test]
+    fn test_sticky_position_rtl_both_offsets() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let scroll_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "scroll-container".into())],
+        });
+        dom.append_child(body, scroll_container);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(scroll_container, parent);
+
+        let sticky_item = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "sticky-item".into())],
+        });
+        dom.append_child(parent, sticky_item);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .scroll-container {
+                display: block;
+                overflow-x: scroll;
+                height: 200px;
+                width: 300px;
+            }
+            .parent {
+                display: block;
+                direction: rtl; /* RTL direction! */
+                height: 100px;
+                width: 600px;
+            }
+            .sticky-item {
+                display: block;
+                position: sticky;
+                left: 10px;
+                right: 20px; /* Both left and right specified! */
+                height: 50px;
+                width: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Case: scroll_x = 50.0
+        set_scroll_offset(scroll_container, 50.0, 0.0);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let item_box = find_layout_box(&layout_tree, sticky_item, 0).unwrap();
+
+        // Under RTL direction, when both left and right are specified, right should win.
+        // wanted_x = sc_rect.origin.x + scroll_x + sc_rect.size.width - r_val - sticky_rect.size.width
+        // Since sc_rect starts at 0.0, size.width is 300.0, r_val is 20.0, item width is 100.0, scroll_x is 50.0:
+        // wanted_x = 0.0 + 50.0 + 300.0 - 20.0 - 100.0 = 230.0.
+        assert_eq!(item_box.rect.origin.x, 230.0);
+
+        clear_scroll_offsets();
+    }
+
+    #[test]
+    fn test_sticky_clamping_when_parent_is_too_small() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let scroll_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "scroll-container".into())],
+        });
+        dom.append_child(body, scroll_container);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(scroll_container, parent);
+
+        let sticky_item = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "sticky-item".into())],
+        });
+        dom.append_child(parent, sticky_item);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .scroll-container {
+                display: block;
+                overflow-y: scroll;
+                height: 200px;
+                width: 500px;
+            }
+            .parent {
+                display: block;
+                height: 30px; /* Parent is smaller than sticky-item's height (50px)! */
+                width: 500px;
+            }
+            .sticky-item {
+                display: block;
+                position: sticky;
+                top: 10px;
+                height: 50px;
+                width: 500px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Case: scroll_y = 50.0
+        set_scroll_offset(scroll_container, 0.0, 50.0);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let item_box = find_layout_box(&layout_tree, sticky_item, 0).unwrap();
+
+        // Parent bottom is 30.0, sticky height is 50.0, so max_y is 30.0 - 50.0 = -20.0.
+        // Static y is 0.0.
+        // Since max_y (-20.0) is smaller than static_y (0.0), the element should be clamped to static_y (0.0).
+        assert_eq!(item_box.rect.origin.y, 0.0);
+
+        clear_scroll_offsets();
+    }
+
+    #[test]
+    fn test_absolute_auto_offsets_with_margins_t1067() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(body, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .child {
+                display: block;
+                position: absolute;
+                top: 10px; /* Real absolute out-of-flow! */
+                left: auto;
+                right: auto;
+                margin-left: 25px; /* Margin should still apply when left is auto! */
+                width: 50px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let child_box = find_layout_box(&layout_tree, child, 0).unwrap();
+        assert_eq!(child_box.rect.origin.x, 25.0);
     }
 }
