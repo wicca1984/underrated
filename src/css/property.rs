@@ -203,6 +203,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "text-wrap",
+        inherited: true,
+        initial: "wrap",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1059,6 +1064,8 @@ mod tests {
         assert!(is_inherited("text-indent"));
         assert!(is_inherited("color-interpolation"));
         assert!(!is_inherited("max-width"));
+        assert!(is_inherited("text-wrap"));
+        assert!(is_inherited("TEXT-WRAP"));
     }
 
     #[test]
@@ -1071,6 +1078,7 @@ mod tests {
         assert_eq!(initial_value("border-collapse"), Some("separate"));
         assert_eq!(initial_value("color-interpolation"), Some("sRGB"));
         assert_eq!(initial_value("background-repeat"), Some("repeat"));
+        assert_eq!(initial_value("text-wrap"), Some("wrap"));
     }
 
     #[test]
@@ -1213,6 +1221,16 @@ mod tests {
         assert_eq!(scrollbar_gutter.name, "scrollbar-gutter");
         assert!(!scrollbar_gutter.inherited);
         assert_eq!(scrollbar_gutter.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0706() {
+        let text_wrap = lookup("text-wrap");
+        assert!(text_wrap.is_some());
+        let text_wrap = text_wrap.unwrap();
+        assert_eq!(text_wrap.name, "text-wrap");
+        assert!(text_wrap.inherited);
+        assert_eq!(text_wrap.initial, "wrap");
     }
 
     #[test]
