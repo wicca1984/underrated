@@ -470,6 +470,8 @@ impl<'a> Parser<'a> {
                                 block: Some(block_cvs),
                             };
                             self.nested_rules.push(Rule::At(nested_at));
+                        } else {
+                            self.nested_rules.push(Rule::At(at_rule));
                         }
                     } else {
                         self.nested_rules.push(Rule::At(at_rule));
@@ -616,16 +618,7 @@ impl<'a> Parser<'a> {
         // spec: https://www.w3.org/TR/css-syntax-3/#consume-declaration
         // If any of the component values of the declaration is a <bad-string-token>, <bad-url-token>,
         // <right-paren-token>, <right-bracket-token>, or <right-curly-bracket-token>, the declaration is invalid.
-        let is_invalid = value_components.iter().any(|v| {
-            matches!(
-                v,
-                ComponentValue::Token(CssToken::BadString)
-                    | ComponentValue::Token(CssToken::BadUrl)
-                    | ComponentValue::Token(CssToken::RightParen)
-                    | ComponentValue::Token(CssToken::RightBracket)
-                    | ComponentValue::Token(CssToken::RightBrace)
-            )
-        });
+        let is_invalid = value_components.iter().any(has_invalid_token);
         if is_invalid {
             return None;
         }
@@ -735,6 +728,17 @@ impl<'a> Parser<'a> {
             value.push(self.consume_component_value());
         }
     }
+}
+
+fn has_invalid_token(cv: &ComponentValue) -> bool {
+    matches!(
+        cv,
+        ComponentValue::Token(CssToken::BadString)
+            | ComponentValue::Token(CssToken::BadUrl)
+            | ComponentValue::Token(CssToken::RightParen)
+            | ComponentValue::Token(CssToken::RightBracket)
+            | ComponentValue::Token(CssToken::RightBrace)
+    )
 }
 
 fn has_var_or_calc(components: &[ComponentValue]) -> bool {
@@ -1849,6 +1853,72 @@ mod tests {
             let val_str = serialize_component_values(&rule.declarations[0].value);
             assert!(val_str.contains("var"));
             assert!(val_str.contains("color: red;"));
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_css_parser_robustness_t1027() {
+        // 1. Blockless nested at-rules (e.g. @import or @charset) inside a style rule
+        let input_blockless_at = "
+            div {
+                @import url(\"foo.css\");
+                color: red;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input_blockless_at);
+        // Should produce two rules: the qualified rule (div { color: red; }) and the hoisted nested at-rule (@import)
+        assert_eq!(stylesheet.rules.len(), 2);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            assert_eq!(serialize_component_values(&rule.prelude).trim(), "div");
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule");
+        }
+        if let Rule::At(rule) = &stylesheet.rules[1] {
+            assert_eq!(rule.name, "import");
+            assert!(rule.block.is_none());
+            let prelude_str = serialize_component_values(&rule.prelude);
+            assert!(prelude_str.contains("url"));
+        } else {
+            panic!("Expected at-rule");
+        }
+
+        // 2. Bad-declaration recovery & stray brackets
+        let input_stray_brackets = "
+            div {
+                color: rgb(255, 0, 0) );
+                background: blue;
+            }
+        ";
+        let stylesheet_stray = parse_stylesheet(input_stray_brackets);
+        assert_eq!(stylesheet_stray.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet_stray.rules[0] {
+            // "color" has a stray top-level RightParen, so it is discarded as invalid. "background" is preserved.
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "background");
+        } else {
+            panic!("Expected qualified rule");
+        }
+
+        // 3. Balanced blocks containing various nested brackets inside custom properties
+        let input_mismatched_inner = "
+            div {
+                --mismatched: ( [ ] );
+                --another: { [ ] };
+                color: green;
+            }
+        ";
+        let stylesheet_mismatched = parse_stylesheet(input_mismatched_inner);
+        assert_eq!(stylesheet_mismatched.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet_mismatched.rules[0] {
+            // These nested brackets are balanced and considered valid components at top level
+            assert_eq!(rule.declarations.len(), 3);
+            assert_eq!(rule.declarations[0].name, "--mismatched");
+            assert_eq!(rule.declarations[1].name, "--another");
+            assert_eq!(rule.declarations[2].name, "color");
         } else {
             panic!("Expected qualified rule");
         }
