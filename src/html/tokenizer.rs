@@ -39,6 +39,7 @@ pub struct Tokenizer {
     character_reference_code: u32,
     temporary_buffer: String,
     last_start_tag_name: Option<String>,
+    pub is_xml: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,7 +142,12 @@ impl Tokenizer {
             character_reference_code: 0,
             temporary_buffer: String::new(),
             last_start_tag_name: None,
+            is_xml: false,
         }
+    }
+
+    pub fn set_xml_mode(&mut self, is_xml: bool) {
+        self.is_xml = is_xml;
     }
 
     pub fn set_initial_state(&mut self, state_name: &str) {
@@ -166,7 +172,18 @@ impl Tokenizer {
                 return token;
             }
 
-            let c = self.input.next();
+            let mut c = self.input.next();
+            if self.is_xml {
+                match c {
+                    Some('\u{FFFF}') | Some('\u{FFFE}') => {
+                        c = Some('\u{FFFD}');
+                    }
+                    Some('\u{000C}') => {
+                        c = Some(' ');
+                    }
+                    _ => {}
+                }
+            }
 
             match self.state {
                 State::Data => {
@@ -1326,7 +1343,12 @@ impl Tokenizer {
                         }
                         Some('-') => {
                             if let Some(Token::Comment(data)) = &mut self.current_token {
-                                data.push('-');
+                                if self.is_xml {
+                                    data.push('-');
+                                    data.push(' ');
+                                } else {
+                                    data.push('-');
+                                }
                             }
                         }
                         None => {
@@ -1341,17 +1363,31 @@ impl Tokenizer {
                         Some('\0') => {
                             self.emit_error("unexpected-null-character");
                             if let Some(Token::Comment(data)) = &mut self.current_token {
-                                data.push('-');
-                                data.push('-');
-                                data.push('\u{FFFD}');
+                                if self.is_xml {
+                                    data.push('-');
+                                    data.push(' ');
+                                    data.push('-');
+                                    data.push('\u{FFFD}');
+                                } else {
+                                    data.push('-');
+                                    data.push('-');
+                                    data.push('\u{FFFD}');
+                                }
                             }
                             self.state = State::Comment;
                         }
                         Some(c_val) => {
                             if let Some(Token::Comment(data)) = &mut self.current_token {
-                                data.push('-');
-                                data.push('-');
-                                data.push(c_val);
+                                if self.is_xml {
+                                    data.push('-');
+                                    data.push(' ');
+                                    data.push('-');
+                                    data.push(c_val);
+                                } else {
+                                    data.push('-');
+                                    data.push('-');
+                                    data.push(c_val);
+                                }
                             }
                             self.state = State::Comment;
                         }
