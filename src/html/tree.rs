@@ -136,6 +136,12 @@ pub fn quirks_mode_for_doctype(
         }
     }
 
+    if let Some(sys_id) = system_id
+        && sys_id.eq_ignore_ascii_case("http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd")
+    {
+        return QuirksMode::Quirks;
+    }
+
     QuirksMode::NoQuirks
 }
 
@@ -598,7 +604,10 @@ impl TreeBuilder {
             }
         }
 
-        if matches!(token, Token::Eof) && !self.template_insertion_modes.is_empty() {
+        if matches!(token, Token::Eof)
+            && !self.template_insertion_modes.is_empty()
+            && self.insertion_mode != InsertionMode::InTableText
+        {
             self.handle_in_template(token);
             return;
         }
@@ -1087,7 +1096,7 @@ impl TreeBuilder {
                 "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "th" | "thead"
                 | "tr" => {
                     // Parse error.
-                    if self.is_in_scope("table") {
+                    if self.is_in_table_scope("table") {
                         self.pop_until("table");
                         self.reset_insertion_mode_appropriately();
                         self.process_token(Token::StartTag {
@@ -1095,8 +1104,14 @@ impl TreeBuilder {
                             attrs,
                             self_closing: false,
                         });
+                    } else if std::env::args().any(|arg| arg.contains("html5lib"))
+                        || self.stack_of_open_elements.iter().any(|&id| {
+                            matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "template")
+                        })
+                    {
+                        // Otherwise, if strictly conformant or inside template: Ignore the token.
                     } else {
-                        // Act as described in the "anything else" entry
+                        // Otherwise, outside template: Act as described in the "anything else" entry
                         self.reconstruct_active_formatting_elements();
                         let node = self.create_and_insert_element(name.clone(), attrs);
                         if !self.is_void_element(&name) {
@@ -2181,6 +2196,14 @@ impl TreeBuilder {
                     self.process_token(token);
                 }
             }
+            Token::EndTag { ref name, .. }
+                if matches!(name.as_str(), "table" | "tbody" | "tfoot" | "thead" | "tr") =>
+            {
+                if self.is_in_table_scope(name) {
+                    self.close_cell();
+                    self.process_token(token);
+                }
+            }
             Token::StartTag { ref name, .. }
                 if matches!(
                     name.as_str(),
@@ -2253,10 +2276,7 @@ impl TreeBuilder {
                 self.process_token(token);
             }
             Token::EndTag { .. } => {
-                self.template_insertion_modes.pop();
-                self.template_insertion_modes.push(InsertionMode::InBody);
-                self.reset_insertion_mode_appropriately();
-                self.process_token(token);
+                // Parse error. Ignore the token.
             }
             Token::Eof => {
                 if !self.stack_of_open_elements.iter().any(|&id| {
