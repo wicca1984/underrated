@@ -348,6 +348,16 @@ impl<'a> Parser<'a> {
             }
         }
 
+        let is_custom_property = name.starts_with("--");
+        if !is_custom_property {
+            let is_empty = !value_components
+                .iter()
+                .any(|v| !matches!(v, ComponentValue::Token(CssToken::Whitespace)));
+            if is_empty {
+                return None;
+            }
+        }
+
         if crate::css::values::is_known_layout_property(&name)
             && !has_var_or_calc(&value_components)
         {
@@ -742,6 +752,31 @@ mod tests {
             // "position" has an invalid value (a simple block), so it is discarded, but "color" is kept!
             assert_eq!(rule.declarations.len(), 1);
             assert_eq!(rule.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_declaration_values_discarded() {
+        // Standard properties with empty or whitespace-only values should be discarded.
+        let input = "
+            div {
+                color: ;
+                background:   ;
+                font-size: !important;
+                margin: !important   ;
+                --custom-empty: ; /* custom properties are allowed to be empty */
+                border: solid; /* normal valid property */
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            // Only --custom-empty and border should be kept.
+            assert_eq!(rule.declarations.len(), 2);
+            assert_eq!(rule.declarations[0].name, "--custom-empty");
+            assert_eq!(rule.declarations[1].name, "border");
         } else {
             panic!("Expected qualified rule");
         }
