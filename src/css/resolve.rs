@@ -1147,6 +1147,272 @@ pub fn resolve_value(
     resolve_value_with_context(components, &context, custom_properties)
 }
 
+pub fn resolve_components(
+    components: &[ComponentValue],
+    context: &ResolveContext,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<Vec<ComponentValue>> {
+    let mut result = Vec::new();
+    for comp in components {
+        match comp {
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let lower_unit = unit.to_ascii_lowercase();
+                match lower_unit.as_str() {
+                    "px" => {
+                        result.push(comp.clone());
+                    }
+                    "rem" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * context.root_font_size) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "vw" | "svw" | "lvw" | "dvw" | "vi" | "svi" | "lvi" | "dvi" | "cqw" | "cqi" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * context.viewport_w / 100.0) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "vh" | "svh" | "lvh" | "dvh" | "vb" | "svb" | "lvb" | "dvb" | "cqh" | "cqb" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * context.viewport_h / 100.0) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "vmin" | "svmin" | "lvmin" | "dvmin" | "cqmin" => {
+                        let vmin = context.viewport_w.min(context.viewport_h);
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * vmin / 100.0) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "vmax" | "svmax" | "lvmax" | "dvmax" | "cqmax" => {
+                        let vmax = context.viewport_w.max(context.viewport_h);
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * vmax / 100.0) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "in" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * 96.0) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "cm" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * 96.0 / 2.54) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "mm" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * 9.6 / 2.54) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "pc" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * 16.0) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "pt" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * 96.0 / 72.0) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "q" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * 2.4 / 2.54) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "em" => {
+                        if let Some(fs) = context.current_font_size {
+                            result.push(ComponentValue::Token(CssToken::Dimension {
+                                value: (*value as f32 * fs) as f64,
+                                unit: "px".to_string(),
+                            }));
+                        } else {
+                            result.push(comp.clone());
+                        }
+                    }
+                    "ex" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * fs * 0.5) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "ch" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * fs * 0.5) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "ic" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * fs) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "cap" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * fs * 0.7) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "lh" => {
+                        let lh = context.line_height.unwrap_or_else(|| {
+                            context.current_font_size.unwrap_or(context.root_font_size) * 1.2
+                        });
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * lh) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "rlh" => {
+                        let rlh = context
+                            .root_line_height
+                            .unwrap_or(context.root_font_size * 1.2);
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * rlh) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "rex" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * context.root_font_size * 0.5) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "rch" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * context.root_font_size * 0.5) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "ric" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * context.root_font_size) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    "rcap" => {
+                        result.push(ComponentValue::Token(CssToken::Dimension {
+                            value: (*value as f32 * context.root_font_size * 0.7) as f64,
+                            unit: "px".to_string(),
+                        }));
+                    }
+                    _ => {
+                        result.push(comp.clone());
+                    }
+                }
+            }
+            ComponentValue::Token(CssToken::Percentage(v)) => {
+                if let Some(basis) = context.percentage_basis {
+                    result.push(ComponentValue::Token(CssToken::Dimension {
+                        value: (*v as f32 * basis / 100.0) as f64,
+                        unit: "px".to_string(),
+                    }));
+                } else {
+                    result.push(comp.clone());
+                }
+            }
+            ComponentValue::Function { name, value } => {
+                let name_lower = name.to_ascii_lowercase();
+                if name_lower == "calc" {
+                    let res =
+                        evaluate_calc_to_value_with_context(value, context, custom_properties)?;
+                    match res {
+                        CalcValue::Length(v) => {
+                            result.push(ComponentValue::Token(CssToken::Dimension {
+                                value: v as f64,
+                                unit: "px".to_string(),
+                            }));
+                        }
+                        CalcValue::Number(v) => {
+                            result.push(ComponentValue::Token(CssToken::Number(v as f64)));
+                        }
+                        CalcValue::Angle(v) => {
+                            result.push(ComponentValue::Token(CssToken::Dimension {
+                                value: v as f64,
+                                unit: "rad".to_string(),
+                            }));
+                        }
+                    }
+                } else if name_lower == "min"
+                    || name_lower == "max"
+                    || name_lower == "clamp"
+                    || name_lower == "abs"
+                    || name_lower == "sign"
+                    || name_lower == "round"
+                    || name_lower == "mod"
+                    || name_lower == "rem"
+                    || name_lower == "sqrt"
+                    || name_lower == "pow"
+                    || name_lower == "hypot"
+                    || name_lower == "log"
+                    || name_lower == "exp"
+                    || name_lower == "sin"
+                    || name_lower == "cos"
+                    || name_lower == "tan"
+                    || name_lower == "asin"
+                    || name_lower == "acos"
+                    || name_lower == "atan"
+                    || name_lower == "atan2"
+                {
+                    let res = evaluate_math_fn_to_value_with_context(
+                        &name_lower,
+                        value,
+                        context,
+                        custom_properties,
+                    )?;
+                    match res {
+                        CalcValue::Length(v) => {
+                            result.push(ComponentValue::Token(CssToken::Dimension {
+                                value: v as f64,
+                                unit: "px".to_string(),
+                            }));
+                        }
+                        CalcValue::Number(v) => {
+                            result.push(ComponentValue::Token(CssToken::Number(v as f64)));
+                        }
+                        CalcValue::Angle(v) => {
+                            result.push(ComponentValue::Token(CssToken::Dimension {
+                                value: v as f64,
+                                unit: "rad".to_string(),
+                            }));
+                        }
+                    }
+                } else {
+                    let resolved_args = resolve_components(value, context, custom_properties)?;
+                    result.push(ComponentValue::Function {
+                        name: name.clone(),
+                        value: resolved_args,
+                    });
+                }
+            }
+            ComponentValue::SimpleBlock { associated, value } => {
+                let resolved_block = resolve_components(value, context, custom_properties)?;
+                result.push(ComponentValue::SimpleBlock {
+                    associated: *associated,
+                    value: resolved_block,
+                });
+            }
+            _ => {
+                result.push(comp.clone());
+            }
+        }
+    }
+    Some(result)
+}
+
 pub fn resolve_value_with_context(
     components: &[ComponentValue],
     context: &ResolveContext,
@@ -1176,447 +1442,77 @@ pub fn resolve_value_with_context(
     let trimmed = &substituted[start..end];
 
     if trimmed.len() == 1 {
-        match &trimmed[0] {
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("calc") => {
-                let res = evaluate_calc_to_value_with_context(value, context, custom_properties)?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
+        let ident_name = match &trimmed[0] {
+            ComponentValue::Token(CssToken::Ident(name)) => Some(name),
+            _ => None,
+        };
+        if let Some(name) = ident_name {
+            let lower = name.to_ascii_lowercase();
+            match lower.as_str() {
+                "inherit" => {
+                    if let Some(parent) = &context.parent_value {
+                        return Some(parent.clone());
+                    } else if let Some(prop) = &context.property_name {
+                        if let Some(init_str) = crate::css::property::initial_value(prop) {
+                            return resolve_string_with_context(init_str, context);
+                        } else {
+                            return Some(CssValue::Keyword("inherit".to_string()));
+                        }
+                    } else {
+                        return Some(CssValue::Keyword("inherit".to_string()));
+                    }
                 }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("min") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "min",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
+                "initial" => {
+                    if let Some(prop) = &context.property_name {
+                        if let Some(init_str) = crate::css::property::initial_value(prop) {
+                            let mut sub_context = context.clone();
+                            sub_context.property_name = None;
+                            return resolve_string_with_context(init_str, &sub_context);
+                        } else {
+                            return Some(CssValue::Keyword("initial".to_string()));
+                        }
+                    } else {
+                        return Some(CssValue::Keyword("initial".to_string()));
+                    }
                 }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("max") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "max",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("clamp") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "clamp",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("abs") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "abs",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sign") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "sign",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("round") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "round",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("mod") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "mod",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("rem") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "rem",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sqrt") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "sqrt",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("pow") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "pow",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("hypot") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "hypot",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("log") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "log",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("exp") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "exp",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sin") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "sin",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("cos") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "cos",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("tan") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "tan",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("asin") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "asin",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("acos") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "acos",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("atan") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "atan",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("atan2") => {
-                let res = evaluate_math_fn_to_value_with_context(
-                    "atan2",
-                    value,
-                    context,
-                    custom_properties,
-                )?;
-                match res {
-                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
-                    CalcValue::Number(v) => Some(CssValue::Number(v)),
-                    CalcValue::Angle(_) => None,
-                }
-            }
-            ComponentValue::Token(CssToken::Ident(name)) => {
-                let lower = name.to_ascii_lowercase();
-                match lower.as_str() {
-                    "inherit" => {
-                        if let Some(parent) = &context.parent_value {
-                            Some(parent.clone())
-                        } else if let Some(prop) = &context.property_name {
-                            if let Some(init_str) = crate::css::property::initial_value(prop) {
-                                resolve_string_with_context(init_str, context)
+                "unset" => {
+                    if let Some(prop) = &context.property_name {
+                        let is_inh = crate::css::property::is_inherited(prop);
+                        if is_inh {
+                            if let Some(parent) = &context.parent_value {
+                                return Some(parent.clone());
+                            } else if let Some(init_str) = crate::css::property::initial_value(prop)
+                            {
+                                let mut sub_context = context.clone();
+                                sub_context.property_name = None;
+                                return resolve_string_with_context(init_str, &sub_context);
                             } else {
-                                Some(CssValue::Keyword("inherit".to_string()))
+                                return Some(CssValue::Keyword("unset".to_string()));
                             }
                         } else {
-                            Some(CssValue::Keyword("inherit".to_string()))
-                        }
-                    }
-                    "initial" => {
-                        if let Some(prop) = &context.property_name {
                             if let Some(init_str) = crate::css::property::initial_value(prop) {
                                 let mut sub_context = context.clone();
                                 sub_context.property_name = None;
-                                resolve_string_with_context(init_str, &sub_context)
+                                return resolve_string_with_context(init_str, &sub_context);
                             } else {
-                                Some(CssValue::Keyword("initial".to_string()))
+                                return Some(CssValue::Keyword("unset".to_string()));
                             }
-                        } else {
-                            Some(CssValue::Keyword("initial".to_string()))
                         }
+                    } else {
+                        return Some(CssValue::Keyword("unset".to_string()));
                     }
-                    "unset" => {
-                        if let Some(prop) = &context.property_name {
-                            let is_inh = crate::css::property::is_inherited(prop);
-                            if is_inh {
-                                if let Some(parent) = &context.parent_value {
-                                    Some(parent.clone())
-                                } else if let Some(init_str) =
-                                    crate::css::property::initial_value(prop)
-                                {
-                                    let mut sub_context = context.clone();
-                                    sub_context.property_name = None;
-                                    resolve_string_with_context(init_str, &sub_context)
-                                } else {
-                                    Some(CssValue::Keyword("unset".to_string()))
-                                }
-                            } else {
-                                if let Some(init_str) = crate::css::property::initial_value(prop) {
-                                    let mut sub_context = context.clone();
-                                    sub_context.property_name = None;
-                                    resolve_string_with_context(init_str, &sub_context)
-                                } else {
-                                    Some(CssValue::Keyword("unset".to_string()))
-                                }
-                            }
-                        } else {
-                            Some(CssValue::Keyword("unset".to_string()))
-                        }
-                    }
-                    _ => crate::css::values::parse_value(trimmed),
                 }
+                _ => {}
             }
-            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
-                let lower_unit = unit.to_ascii_lowercase();
-                match lower_unit.as_str() {
-                    "px" => Some(CssValue::Length(*value as f32, LengthUnit::Px)),
-                    "rem" => Some(CssValue::Length(
-                        *value as f32 * context.root_font_size,
-                        LengthUnit::Px,
-                    )),
-                    "vw" | "svw" | "lvw" | "dvw" | "vi" | "svi" | "lvi" | "dvi" | "cqw" | "cqi" => {
-                        Some(CssValue::Length(
-                            *value as f32 * context.viewport_w / 100.0,
-                            LengthUnit::Px,
-                        ))
-                    }
-                    "vh" | "svh" | "lvh" | "dvh" | "vb" | "svb" | "lvb" | "dvb" | "cqh" | "cqb" => {
-                        Some(CssValue::Length(
-                            *value as f32 * context.viewport_h / 100.0,
-                            LengthUnit::Px,
-                        ))
-                    }
-                    "vmin" | "svmin" | "lvmin" | "dvmin" | "cqmin" => {
-                        let vmin = context.viewport_w.min(context.viewport_h);
-                        Some(CssValue::Length(
-                            *value as f32 * vmin / 100.0,
-                            LengthUnit::Px,
-                        ))
-                    }
-                    "vmax" | "svmax" | "lvmax" | "dvmax" | "cqmax" => {
-                        let vmax = context.viewport_w.max(context.viewport_h);
-                        Some(CssValue::Length(
-                            *value as f32 * vmax / 100.0,
-                            LengthUnit::Px,
-                        ))
-                    }
-                    "in" => Some(CssValue::Length(*value as f32 * 96.0, LengthUnit::Px)),
-                    "cm" => Some(CssValue::Length(
-                        *value as f32 * 96.0 / 2.54,
-                        LengthUnit::Px,
-                    )),
-                    "mm" => Some(CssValue::Length(*value as f32 * 9.6 / 2.54, LengthUnit::Px)),
-                    "pc" => Some(CssValue::Length(*value as f32 * 16.0, LengthUnit::Px)),
-                    "pt" => Some(CssValue::Length(
-                        *value as f32 * 96.0 / 72.0,
-                        LengthUnit::Px,
-                    )),
-                    "q" => Some(CssValue::Length(*value as f32 * 2.4 / 2.54, LengthUnit::Px)),
-                    "em" => {
-                        if let Some(fs) = context.current_font_size {
-                            Some(CssValue::Length(*value as f32 * fs, LengthUnit::Px))
-                        } else {
-                            Some(CssValue::Length(*value as f32, LengthUnit::Em))
-                        }
-                    }
-                    "ex" => {
-                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
-                        Some(CssValue::Length(*value as f32 * fs * 0.5, LengthUnit::Px))
-                    }
-                    "ch" => {
-                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
-                        Some(CssValue::Length(*value as f32 * fs * 0.5, LengthUnit::Px))
-                    }
-                    "ic" => {
-                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
-                        Some(CssValue::Length(*value as f32 * fs, LengthUnit::Px))
-                    }
-                    "cap" => {
-                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
-                        Some(CssValue::Length(*value as f32 * fs * 0.7, LengthUnit::Px))
-                    }
-                    "lh" => {
-                        let lh = context.line_height.unwrap_or_else(|| {
-                            context.current_font_size.unwrap_or(context.root_font_size) * 1.2
-                        });
-                        Some(CssValue::Length(*value as f32 * lh, LengthUnit::Px))
-                    }
-                    "rlh" => {
-                        let rlh = context
-                            .root_line_height
-                            .unwrap_or(context.root_font_size * 1.2);
-                        Some(CssValue::Length(*value as f32 * rlh, LengthUnit::Px))
-                    }
-                    "rex" => Some(CssValue::Length(
-                        *value as f32 * context.root_font_size * 0.5,
-                        LengthUnit::Px,
-                    )),
-                    "rch" => Some(CssValue::Length(
-                        *value as f32 * context.root_font_size * 0.5,
-                        LengthUnit::Px,
-                    )),
-                    "ric" => Some(CssValue::Length(
-                        *value as f32 * context.root_font_size,
-                        LengthUnit::Px,
-                    )),
-                    "rcap" => Some(CssValue::Length(
-                        *value as f32 * context.root_font_size * 0.7,
-                        LengthUnit::Px,
-                    )),
-                    _ => None,
-                }
-            }
-            ComponentValue::Token(CssToken::Percentage(v)) => {
-                if let Some(basis) = context.percentage_basis {
-                    Some(CssValue::Length(*v as f32 * basis / 100.0, LengthUnit::Px))
-                } else {
-                    Some(CssValue::Length(*v as f32, LengthUnit::Percent))
-                }
-            }
-            ComponentValue::Token(CssToken::Number(v)) => Some(CssValue::Number(*v as f32)),
-            _ => crate::css::values::parse_value(trimmed),
         }
+    }
+
+    // Recursively resolve all components and then parse.
+    let resolved_components = resolve_components(trimmed, context, custom_properties)?;
+    if let Some(val) = crate::css::values::parse_value(&resolved_components) {
+        Some(val)
     } else {
-        crate::css::values::parse_value(trimmed)
+        crate::css::values::parse_transform(&resolved_components)
     }
 }
 
@@ -2627,5 +2523,67 @@ mod tests {
         } else {
             panic!("Expected a number for sin(hypot(30deg, 40deg))");
         }
+    }
+
+    #[test]
+    fn test_resolve_multi_component_and_nested_fns() {
+        let vars = HashMap::new();
+
+        // 1. Resolve relative units and math functions in multi-component values (lists)
+        assert_eq!(
+            resolve_string("1rem 2rem", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Multiple(vec![
+                CssValue::Length(16.0, LengthUnit::Px),
+                CssValue::Length(32.0, LengthUnit::Px)
+            ]))
+        );
+        assert_eq!(
+            resolve_string("calc(10px + 5px) 20px", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Multiple(vec![
+                CssValue::Length(15.0, LengthUnit::Px),
+                CssValue::Length(20.0, LengthUnit::Px)
+            ]))
+        );
+
+        // 2. Comma and Slash separation within multi-component values
+        assert_eq!(
+            resolve_string("1rem / 2rem", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Multiple(vec![
+                CssValue::Length(16.0, LengthUnit::Px),
+                CssValue::Keyword("/".to_string()),
+                CssValue::Length(32.0, LengthUnit::Px)
+            ]))
+        );
+        assert_eq!(
+            resolve_string("calc(10px + 5px), 20px", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Multiple(vec![
+                CssValue::Length(15.0, LengthUnit::Px),
+                CssValue::Keyword(",".to_string()),
+                CssValue::Length(20.0, LengthUnit::Px)
+            ]))
+        );
+
+        // 3. Resolve inside standard/custom function arguments recursively
+        assert_eq!(
+            resolve_string(
+                "translate(2rem, calc(10px * 3))",
+                16.0,
+                1000.0,
+                800.0,
+                &vars
+            ),
+            Some(CssValue::Transform(vec![
+                crate::css::values::TransformFn::Translate {
+                    x: crate::css::values::LengthOrPercent {
+                        value: 32.0,
+                        unit: crate::css::values::LengthUnit::Px,
+                    },
+                    y: crate::css::values::LengthOrPercent {
+                        value: 30.0,
+                        unit: crate::css::values::LengthUnit::Px,
+                    },
+                }
+            ]))
+        );
     }
 }
