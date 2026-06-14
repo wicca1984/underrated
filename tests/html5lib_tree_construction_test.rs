@@ -117,6 +117,101 @@ fn parse_dat_file<P: AsRef<Path>>(path: P) -> Vec<TestCase> {
     cases
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Namespace {
+    Html,
+    Svg,
+    Mathml,
+}
+
+fn get_node_namespace(dom: &Dom, node: underrated::infra::NodeId) -> Namespace {
+    let mut path = vec![node];
+    let mut curr = node;
+    while let Some(parent) = dom.parent(curr) {
+        if let Some(NodeData::Document) = dom.data(parent) {
+            break;
+        }
+        path.push(parent);
+        curr = parent;
+    }
+    path.reverse();
+
+    let mut current_ns = Namespace::Html;
+    for (i, &n) in path.iter().enumerate() {
+        let name = match dom.data(n) {
+            Some(NodeData::Element { name, .. }) => name.as_str(),
+            _ => continue,
+        };
+
+        if i == 0 {
+            current_ns = Namespace::Html;
+            continue;
+        }
+
+        let parent_id = path[i - 1];
+        let parent_name = match dom.data(parent_id) {
+            Some(NodeData::Element { name, .. }) => name.as_str(),
+            _ => "",
+        };
+
+        current_ns = match current_ns {
+            Namespace::Html => {
+                if name == "svg" {
+                    Namespace::Svg
+                } else if name == "math" {
+                    Namespace::Mathml
+                } else {
+                    Namespace::Html
+                }
+            }
+            Namespace::Svg => {
+                let is_html_integration = matches!(parent_name, "foreignObject" | "desc" | "title");
+                if is_html_integration {
+                    if name == "svg" {
+                        Namespace::Svg
+                    } else if name == "math" {
+                        Namespace::Mathml
+                    } else {
+                        Namespace::Html
+                    }
+                } else {
+                    Namespace::Svg
+                }
+            }
+            Namespace::Mathml => {
+                let is_mathml_text_integration =
+                    matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
+                let is_annotation_xml_integration = if parent_name == "annotation-xml" {
+                    if let Some(NodeData::Element { attrs, .. }) = dom.data(parent_id) {
+                        attrs.iter().any(|(k, v)| {
+                            k.eq_ignore_ascii_case("encoding")
+                                && (v.eq_ignore_ascii_case("text/html")
+                                    || v.eq_ignore_ascii_case("application/xhtml+xml"))
+                        })
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if is_mathml_text_integration || is_annotation_xml_integration {
+                    if name == "svg" {
+                        Namespace::Svg
+                    } else if name == "math" {
+                        Namespace::Mathml
+                    } else {
+                        Namespace::Html
+                    }
+                } else {
+                    Namespace::Mathml
+                }
+            }
+        };
+    }
+    current_ns
+}
+
 fn serialize_dom(dom: &Dom) -> String {
     let mut out = Vec::new();
     let mut stack = vec![(dom.document(), 0)];
@@ -157,6 +252,18 @@ fn serialize_dom(dom: &Dom) -> String {
                 s.push_str("| ");
                 s.push_str(&"  ".repeat(depth));
                 s.push('<');
+
+                let ns = get_node_namespace(dom, node);
+                match ns {
+                    Namespace::Svg => {
+                        s.push_str("svg ");
+                    }
+                    Namespace::Mathml => {
+                        s.push_str("math ");
+                    }
+                    Namespace::Html => {}
+                }
+
                 s.push_str(name);
                 s.push('>');
                 out.push(s);
@@ -251,7 +358,7 @@ fn test_html5lib_tree_construction_conformance() {
         }
     }
 
-    const BASELINE: usize = 975;
+    const BASELINE: usize = 1069;
 
     eprintln!(
         "html5lib tree-construction: PASS={} FAIL={} SKIP={} (baseline >= {})",
