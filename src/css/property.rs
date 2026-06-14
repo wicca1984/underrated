@@ -730,6 +730,141 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "0",
     },
     PropertyMetadata {
+        name: "scroll-margin-top",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-right",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-bottom",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-left",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-block",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-block-start",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-block-end",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-inline",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-inline-start",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-margin-inline-end",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-top",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-right",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-bottom",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-left",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-block",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-block-start",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-block-end",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-inline",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-inline-start",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "scroll-padding-inline-end",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "overflow-clip-margin",
+        inherited: false,
+        initial: "0px",
+    },
+    PropertyMetadata {
+        name: "inset-block",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "inset-block-start",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "inset-block-end",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "inset-inline",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "inset-inline-start",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "inset-inline-end",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "overscroll-behavior",
         inherited: false,
         initial: "auto",
@@ -1396,6 +1531,65 @@ mod tests {
         assert_eq!(text_emphasis_color.name, "text-emphasis-color");
         assert!(text_emphasis_color.inherited);
         assert_eq!(text_emphasis_color.initial, "currentcolor");
+    }
+
+    #[test]
+    fn test_additive_properties_t0721() {
+        // scroll-margin
+        let scroll_margin = lookup("scroll-margin");
+        assert!(scroll_margin.is_some());
+        let scroll_margin = scroll_margin.unwrap();
+        assert_eq!(scroll_margin.name, "scroll-margin");
+        assert!(!scroll_margin.inherited);
+        assert_eq!(scroll_margin.initial, "0");
+
+        // scroll-margin-top
+        let scroll_margin_top = lookup("scroll-margin-top");
+        assert!(scroll_margin_top.is_some());
+        let scroll_margin_top = scroll_margin_top.unwrap();
+        assert_eq!(scroll_margin_top.name, "scroll-margin-top");
+        assert!(!scroll_margin_top.inherited);
+        assert_eq!(scroll_margin_top.initial, "0");
+
+        // scroll-padding
+        let scroll_padding = lookup("scroll-padding");
+        assert!(scroll_padding.is_some());
+        let scroll_padding = scroll_padding.unwrap();
+        assert_eq!(scroll_padding.name, "scroll-padding");
+        assert!(!scroll_padding.inherited);
+        assert_eq!(scroll_padding.initial, "auto");
+
+        // scroll-padding-inline-end
+        let scroll_padding_inline_end = lookup("scroll-padding-inline-end");
+        assert!(scroll_padding_inline_end.is_some());
+        let scroll_padding_inline_end = scroll_padding_inline_end.unwrap();
+        assert_eq!(scroll_padding_inline_end.name, "scroll-padding-inline-end");
+        assert!(!scroll_padding_inline_end.inherited);
+        assert_eq!(scroll_padding_inline_end.initial, "auto");
+
+        // overflow-clip-margin
+        let overflow_clip_margin = lookup("overflow-clip-margin");
+        assert!(overflow_clip_margin.is_some());
+        let overflow_clip_margin = overflow_clip_margin.unwrap();
+        assert_eq!(overflow_clip_margin.name, "overflow-clip-margin");
+        assert!(!overflow_clip_margin.inherited);
+        assert_eq!(overflow_clip_margin.initial, "0px");
+
+        // inset-block
+        let inset_block = lookup("inset-block");
+        assert!(inset_block.is_some());
+        let inset_block = inset_block.unwrap();
+        assert_eq!(inset_block.name, "inset-block");
+        assert!(!inset_block.inherited);
+        assert_eq!(inset_block.initial, "auto");
+
+        // inset-inline-start
+        let inset_inline_start = lookup("inset-inline-start");
+        assert!(inset_inline_start.is_some());
+        let inset_inline_start = inset_inline_start.unwrap();
+        assert_eq!(inset_inline_start.name, "inset-inline-start");
+        assert!(!inset_inline_start.inherited);
+        assert_eq!(inset_inline_start.initial, "auto");
     }
 
     #[test]
