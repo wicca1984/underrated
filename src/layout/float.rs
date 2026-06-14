@@ -677,6 +677,128 @@ pub(crate) fn get_line_box_bounds_at_y(
     get_bounds_at_y(&floats, y, height, containing_left, containing_width)
 }
 
+/// Adjusts the width and position of a block-level layout box that establishes a BFC
+/// (e.g., display: flex, table, or inline-block) to avoid overlapping with any active floats.
+///
+/// Under CSS 2.1 §9.5, the border box of such an element must not overlap the margin box
+/// of any floats in the same block formatting context.
+#[allow(dead_code)]
+pub(crate) fn adjust_bfc_width_and_position(
+    bfc_box: &mut LayoutBox,
+    children: &[LayoutBox],
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    containing_left: f32,
+    containing_width: f32,
+) {
+    let node_id = match bfc_box.node {
+        Some(id) => id,
+        None => return,
+    };
+    let style = match styles.get(&node_id) {
+        Some(s) => s,
+        None => return,
+    };
+
+    if !establishes_bfc(style) {
+        return;
+    }
+
+    let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
+    let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
+    let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
+
+    let mut candidate_y = bfc_box.rect.origin.y - margin_top;
+
+    let floats = collect_preceding_floats(node_id, children, styles);
+    if floats.is_empty() {
+        return;
+    }
+
+    let bfc_outer_width = bfc_box.rect.size.width + margin_left + margin_right;
+    let bfc_outer_height =
+        bfc_box.rect.size.height + margin_top + crate::layout::get_px(style, "margin-bottom", 0.0);
+
+    let (left_bound, right_bound) = get_bounds_at_y(
+        &floats,
+        candidate_y,
+        bfc_outer_height,
+        containing_left,
+        containing_width,
+    );
+
+    let overlapping_left = left_bound > containing_left;
+    let overlapping_right = right_bound < containing_left + containing_width;
+
+    if overlapping_left || overlapping_right {
+        let available_width = right_bound - left_bound;
+        let mut new_width = bfc_box.rect.size.width;
+
+        // If the remaining space is too narrow for the BFC element's margin box,
+        // we can shift the BFC element down (clearing it) below the floats!
+        if bfc_outer_width > available_width {
+            // Find next candidate Y below the overlapping floats
+            let mut next_y = candidate_y;
+            loop {
+                let mut found_overlap = false;
+                let mut min_bottom = None;
+
+                for f in &floats {
+                    let overlap =
+                        floats_overlap_vertically(f.y, f.height, next_y, bfc_outer_height);
+                    if overlap {
+                        found_overlap = true;
+                        let bottom = f.y + f.height;
+                        min_bottom = Some(match min_bottom {
+                            Some(mb) => f32::min(mb, bottom),
+                            None => bottom,
+                        });
+                    }
+                }
+
+                if found_overlap && let Some(mb) = min_bottom {
+                    next_y = mb;
+                } else {
+                    break;
+                }
+            }
+
+            if next_y > candidate_y {
+                let dy = next_y - candidate_y;
+                super::position::shift_layout_box(bfc_box, styles, 0.0, dy, 0);
+                candidate_y = next_y;
+            }
+        }
+
+        // Now compute bounds again at the final candidate_y
+        let (final_left, final_right) = get_bounds_at_y(
+            &floats,
+            candidate_y,
+            bfc_outer_height,
+            containing_left,
+            containing_width,
+        );
+
+        let final_avail = final_right - final_left;
+        let mut final_x = bfc_box.rect.origin.x;
+
+        // Place it adjacent to the floats and reduce width if necessary
+        if final_left > containing_left {
+            final_x = final_left + margin_left;
+        }
+
+        let outer_avail_width = final_avail - margin_left - margin_right;
+        if outer_avail_width < new_width {
+            new_width = f32::max(0.0, outer_avail_width);
+        }
+
+        let dx = final_x - bfc_box.rect.origin.x;
+        if dx != 0.0 {
+            super::position::shift_layout_box(bfc_box, styles, dx, 0.0, 0);
+        }
+        bfc_box.rect.size.width = new_width;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LayoutBox, RegisteredFloat, SESSION};
@@ -2345,5 +2467,183 @@ mod tests {
         // Because the line box is inside the BFC, it must be completely isolated from the outer float!
         assert!(approx_eq(left, 10.0));
         assert!(approx_eq(right, 110.0));
+    }
+
+    #[test]
+    fn test_bfc_width_reduction_and_position_shifting() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let f_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(doc, f_node);
+
+        let bfc_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(doc, bfc_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .float { float: left; width: 100px; height: 50px; }
+            .bfc { display: inline-block; width: 250px; height: 100px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Build LayoutBox for the float: x = 0, y = 0, w = 100, h = 50
+        let float_box = LayoutBox {
+            node: Some(f_node),
+            rect: crate::geom::Rect::new(0.0, 0.0, 100.0, 50.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        // Build LayoutBox for the BFC: x = 0, y = 0, w = 150, h = 100
+        let mut bfc_box = LayoutBox {
+            node: Some(bfc_node),
+            rect: crate::geom::Rect::new(0.0, 0.0, 150.0, 100.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let children = vec![float_box];
+
+        // Call our BFC width reduction function!
+        // Containing left = 0.0, containing width = 300.0
+        super::adjust_bfc_width_and_position(&mut bfc_box, &children, &styles, 0.0, 300.0);
+
+        // Since bfc_box has width 150, and float_box takes 100, the available space is 300 - 100 = 200.
+        // So the BFC fits, but its left edge is shifted to x = 100. Its width remains 150.
+        assert!(approx_eq(bfc_box.rect.origin.x, 100.0));
+        assert!(approx_eq(bfc_box.rect.size.width, 150.0));
+        assert!(approx_eq(bfc_box.rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_bfc_width_reduction_shifting_down() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let f_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(doc, f_node);
+
+        let bfc_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(doc, bfc_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .float { float: left; width: 150px; height: 50px; }
+            .bfc { display: inline-block; width: 200px; height: 40px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Build LayoutBox for the float: x = 0, y = 0, w = 150, h = 50
+        let float_box = LayoutBox {
+            node: Some(f_node),
+            rect: crate::geom::Rect::new(0.0, 0.0, 150.0, 50.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        // Build LayoutBox for the BFC: x = 0, y = 0, w = 200, h = 40
+        let mut bfc_box = LayoutBox {
+            node: Some(bfc_node),
+            rect: crate::geom::Rect::new(0.0, 0.0, 200.0, 40.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let children = vec![float_box];
+
+        // Containing left = 0.0, containing width = 300.0
+        super::adjust_bfc_width_and_position(&mut bfc_box, &children, &styles, 0.0, 300.0);
+
+        // The BFC element (outer width 200) does not fit next to the float (width 150) because 200 + 150 = 350 > 300.
+        // Therefore, it must be shifted down below the float (y = 50.0), where it can expand to its full width (200.0).
+        assert!(approx_eq(bfc_box.rect.origin.y, 50.0));
+        assert!(approx_eq(bfc_box.rect.origin.x, 0.0));
+        assert!(approx_eq(bfc_box.rect.size.width, 200.0));
+    }
+
+    #[test]
+    fn test_clear_both_complex_with_multiple_stacked_floats() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let left_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "left1".into())],
+        });
+        dom.append_child(body, left_1);
+
+        let left_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "left2".into())],
+        });
+        dom.append_child(body, left_2);
+
+        let right_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "right1".into())],
+        });
+        dom.append_child(body, right_1);
+
+        let right_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "right2".into())],
+        });
+        dom.append_child(body, right_2);
+
+        let clearing_p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, clearing_p);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(clearing_p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 400px; }
+            .left1 { float: left; width: 80px; height: 40px; }
+            .left2 { float: left; width: 80px; height: 60px; }
+            .right1 { float: right; width: 90px; height: 50px; }
+            .right2 { float: right; width: 90px; height: 70px; }
+            p { display: block; clear: both; margin-top: 15px; height: 20px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 400.0);
+        let body_box = &layout_tree.children[0];
+
+        // Clearing block should be at index 4 (since we have 4 floats)
+        let p_layout = &body_box.children[4];
+
+        // Left floats stack:
+        // left1 fits at x=0, y=0. Max bottom is 40.
+        // left2 fits next to it at x=80, y=0. Max bottom is 60.
+        // Right floats stack:
+        // right1 fits at x=310, y=0. Max bottom is 50.
+        // right2 fits next to right1 (to the left) at x=220, y=0. Max bottom is 70.
+        // Maximum bottom edge of any float is 70.
+        // p clears both, so its top border edge must be 70.
+        // Since margin-top is 15, its origin.y should be 70 + 15 = 85.
+        assert!(approx_eq(p_layout.rect.origin.y, 85.0));
     }
 }
