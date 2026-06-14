@@ -3541,6 +3541,144 @@ impl Dom {
             }
         }
     }
+
+    /// Returns the tokens of the element's `rel` attribute split on ASCII whitespace,
+    /// but only if `rel` is a defined attribute for its element tag (a, area, link).
+    ///
+    /// If the node is not one of those elements, or has no `rel` attribute, returns an empty vector.
+    pub fn rel_list(&self, node: NodeId) -> Vec<String> {
+        let n = match self.arena.get(node) {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+        if let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("a")
+                || name.eq_ignore_ascii_case("area")
+                || name.eq_ignore_ascii_case("link"))
+            && let Some(rel_attr) = self.get_attribute(node, "rel")
+        {
+            let mut seen = std::collections::HashSet::new();
+            let mut result = Vec::new();
+            for token in rel_attr.split(crate::ascii::is_html_whitespace) {
+                if !token.is_empty() {
+                    let s = token.to_string();
+                    if seen.insert(s.clone()) {
+                        result.push(s);
+                    }
+                }
+            }
+            return result;
+        }
+        Vec::new()
+    }
+
+    /// Returns the tokens of the element's `sandbox` attribute split on ASCII whitespace,
+    /// but only if the node is an `iframe` element.
+    ///
+    /// If the node is not an `iframe` element, or has no `sandbox` attribute, returns an empty vector.
+    pub fn sandbox_list(&self, node: NodeId) -> Vec<String> {
+        let n = match self.arena.get(node) {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+        if let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+            && let Some(sandbox_attr) = self.get_attribute(node, "sandbox")
+        {
+            let mut seen = std::collections::HashSet::new();
+            let mut result = Vec::new();
+            for token in sandbox_attr.split(crate::ascii::is_html_whitespace) {
+                if !token.is_empty() {
+                    let s = token.to_string();
+                    if seen.insert(s.clone()) {
+                        result.push(s);
+                    }
+                }
+            }
+            return result;
+        }
+        Vec::new()
+    }
+
+    /// Returns the value of the `data` content attribute of a valid `<object>` element.
+    /// Returns `None` if the node is not an `<object>` element, has no `data` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_data(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("object")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("data"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `data` content attribute on a valid `<object>` element.
+    /// No-op if the node is not an `<object>` element, or if the `NodeId` is invalid.
+    pub fn set_data(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("object")
+        {
+            self.set_attribute(node, "data", value);
+        }
+    }
+
+    /// Returns the value of the `manifest` content attribute of a valid `<html>` element.
+    /// Returns `None` if the node is not an `<html>` element, has no `manifest` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_manifest(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("html")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("manifest"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `manifest` content attribute on a valid `<html>` element.
+    /// No-op if the node is not an `<html>` element, or if the `NodeId` is invalid.
+    pub fn set_manifest(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("html")
+        {
+            self.set_attribute(node, "manifest", value);
+        }
+    }
+
+    /// Returns whether the `checked` content attribute (defaultChecked) is present on a valid `<input>` element.
+    /// Returns `None` if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn get_default_checked(&self, node: NodeId) -> Option<bool> {
+        self.get_checked(node)
+    }
+
+    /// Sets or removes the `checked` content attribute (defaultChecked) on a valid `<input>` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn set_default_checked(&mut self, node: NodeId, value: bool) {
+        self.set_checked(node, value);
+    }
+
+    /// Returns whether the `selected` content attribute (defaultSelected) is present on a valid `<option>` element.
+    /// Returns `None` if the node is not an `<option>` element, or if the `NodeId` is invalid.
+    pub fn get_default_selected(&self, node: NodeId) -> Option<bool> {
+        self.get_selected(node)
+    }
+
+    /// Sets or removes the `selected` content attribute (defaultSelected) on a valid `<option>` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an `<option>` element, or if the `NodeId` is invalid.
+    pub fn set_default_selected(&mut self, node: NodeId, value: bool) {
+        self.set_selected(node, value);
+    }
 }
 
 #[cfg(test)]
@@ -6774,5 +6912,74 @@ mod tests {
         assert_eq!(dom.get_is_map(div_id), None);
         dom.set_is_map(img_id, false);
         assert_eq!(dom.get_is_map(img_id), Some(false));
+    }
+
+    #[test]
+    fn test_reflected_attribute_accessors_additive_rel_sandbox_data_manifest_default_checked_selected()
+     {
+        let mut dom = Dom::new();
+        let a_id = elem(&mut dom, "a");
+        let iframe_id = elem(&mut dom, "iframe");
+        let object_id = elem(&mut dom, "object");
+        let html_id = elem(&mut dom, "html");
+        let input_id = elem(&mut dom, "input");
+        let option_id = elem(&mut dom, "option");
+        let div_id = elem(&mut dom, "div");
+
+        // 1. rel_list (a, area, link)
+        assert_eq!(dom.rel_list(a_id), Vec::<String>::new());
+        assert_eq!(dom.rel_list(div_id), Vec::<String>::new());
+        dom.set_attribute(a_id, "rel", "  stylesheet   noopener \t ");
+        assert_eq!(
+            dom.rel_list(a_id),
+            vec!["stylesheet".to_string(), "noopener".to_string()]
+        );
+        assert_eq!(dom.rel_list(div_id), Vec::<String>::new());
+
+        // 2. sandbox_list (iframe)
+        assert_eq!(dom.sandbox_list(iframe_id), Vec::<String>::new());
+        assert_eq!(dom.sandbox_list(div_id), Vec::<String>::new());
+        dom.set_attribute(iframe_id, "sandbox", "allow-scripts   allow-same-origin");
+        assert_eq!(
+            dom.sandbox_list(iframe_id),
+            vec!["allow-scripts".to_string(), "allow-same-origin".to_string()]
+        );
+        assert_eq!(dom.sandbox_list(div_id), Vec::<String>::new());
+
+        // 3. data (object)
+        assert_eq!(dom.get_data(object_id), None);
+        assert_eq!(dom.get_data(div_id), None);
+        dom.set_data(object_id, "movie.swf");
+        dom.set_data(div_id, "movie.swf"); // no-op
+        assert_eq!(dom.get_data(object_id), Some("movie.swf"));
+        assert_eq!(dom.get_data(div_id), None);
+
+        // 4. manifest (html)
+        assert_eq!(dom.get_manifest(html_id), None);
+        assert_eq!(dom.get_manifest(div_id), None);
+        dom.set_manifest(html_id, "cache.appcache");
+        dom.set_manifest(div_id, "cache.appcache"); // no-op
+        assert_eq!(dom.get_manifest(html_id), Some("cache.appcache"));
+        assert_eq!(dom.get_manifest(div_id), None);
+
+        // 5. default_checked (input)
+        assert_eq!(dom.get_default_checked(input_id), Some(false));
+        assert_eq!(dom.get_default_checked(div_id), None);
+        dom.set_default_checked(input_id, true);
+        dom.set_default_checked(div_id, true); // no-op
+        assert_eq!(dom.get_default_checked(input_id), Some(true));
+        assert_eq!(dom.get_default_checked(div_id), None);
+        dom.set_default_checked(input_id, false);
+        assert_eq!(dom.get_default_checked(input_id), Some(false));
+
+        // 6. default_selected (option)
+        assert_eq!(dom.get_default_selected(option_id), Some(false));
+        assert_eq!(dom.get_default_selected(div_id), None);
+        dom.set_default_selected(option_id, true);
+        dom.set_default_selected(div_id, true); // no-op
+        assert_eq!(dom.get_default_selected(option_id), Some(true));
+        assert_eq!(dom.get_default_selected(div_id), None);
+        dom.set_default_selected(option_id, false);
+        assert_eq!(dom.get_default_selected(option_id), Some(false));
     }
 }
