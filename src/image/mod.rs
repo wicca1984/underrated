@@ -3304,6 +3304,150 @@ pub fn decode_hdr(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
+/// Decodes a Portable Float Map (PFM) byte stream into a DecodedImage.
+/// spec: S-19
+pub fn decode_pfm(bytes: &[u8]) -> Option<DecodedImage> {
+    struct PfmParser<'a> {
+        bytes: &'a [u8],
+        pos: usize,
+    }
+
+    impl<'a> PfmParser<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            Self { bytes, pos: 0 }
+        }
+
+        fn skip_whitespace(&mut self) {
+            while self.pos < self.bytes.len() {
+                if self.bytes[self.pos].is_ascii_whitespace() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        fn next_token(&mut self) -> Option<&'a [u8]> {
+            self.skip_whitespace();
+            let start = self.pos;
+            while self.pos < self.bytes.len() && !self.bytes[self.pos].is_ascii_whitespace() {
+                self.pos += 1;
+            }
+            if start == self.pos {
+                None
+            } else {
+                Some(&self.bytes[start..self.pos])
+            }
+        }
+    }
+
+    let mut parser = PfmParser::new(bytes);
+
+    let magic = parser.next_token()?;
+    let is_color = if magic == b"PF" {
+        true
+    } else if magic == b"Pf" {
+        false
+    } else {
+        return None;
+    };
+
+    let w_bytes = parser.next_token()?;
+    let h_bytes = parser.next_token()?;
+    let width_str = std::str::from_utf8(w_bytes).ok()?;
+    let height_str = std::str::from_utf8(h_bytes).ok()?;
+    let width = width_str.parse::<u32>().ok()?;
+    let height = height_str.parse::<u32>().ok()?;
+
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return None;
+    }
+
+    let scale_bytes = parser.next_token()?;
+    let scale_str = std::str::from_utf8(scale_bytes).ok()?;
+    let scale = scale_str.parse::<f32>().ok()?;
+
+    if scale == 0.0 || !scale.is_finite() {
+        return None;
+    }
+    let is_little_endian = scale < 0.0;
+    let scale_abs = scale.abs();
+
+    // Exactly one whitespace byte separates the last header token from the binary raster.
+    let separator_byte = *parser.bytes.get(parser.pos)?;
+    if !separator_byte.is_ascii_whitespace() {
+        return None;
+    }
+    parser.pos += 1;
+    if separator_byte == b'\r' && parser.bytes.get(parser.pos) == Some(&b'\n') {
+        parser.pos += 1;
+    }
+
+    let binary_bytes = &parser.bytes[parser.pos..];
+    let num_floats = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(if is_color { 3 } else { 1 })?;
+    let expected_bytes = num_floats.checked_mul(4)?;
+
+    if binary_bytes.len() < expected_bytes {
+        return None;
+    }
+
+    let mut floats = Vec::with_capacity(num_floats);
+    for chunk in binary_bytes.chunks_exact(4).take(num_floats) {
+        let arr: [u8; 4] = [chunk[0], chunk[1], chunk[2], chunk[3]];
+        let val = if is_little_endian {
+            f32::from_le_bytes(arr)
+        } else {
+            f32::from_be_bytes(arr)
+        };
+        floats.push(val);
+    }
+
+    let map_float = |sample: f32| -> u8 {
+        let mut linear = sample * scale_abs;
+        if !linear.is_finite() {
+            linear = 0.0;
+        }
+        (linear.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8
+    };
+
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+
+    for y in 0..height {
+        let source_y = height - 1 - y;
+        if is_color {
+            let src_row_start = (source_y as usize) * (width as usize) * 3;
+            for x in 0..width {
+                let idx = src_row_start + (x as usize) * 3;
+                let r = map_float(floats[idx]);
+                let g = map_float(floats[idx + 1]);
+                let b = map_float(floats[idx + 2]);
+                rgba.push(r);
+                rgba.push(g);
+                rgba.push(b);
+                rgba.push(255);
+            }
+        } else {
+            let src_row_start = (source_y as usize) * (width as usize);
+            for x in 0..width {
+                let idx = src_row_start + (x as usize);
+                let g = map_float(floats[idx]);
+                rgba.push(g);
+                rgba.push(g);
+                rgba.push(g);
+                rgba.push(255);
+            }
+        }
+    }
+
+    Some(DecodedImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
 /// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, TIFF, or XBM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
@@ -3346,6 +3490,11 @@ pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
         decode_svg(bytes)
     } else if bytes.len() >= 2 && bytes[0] == b'P' && (b'1'..=b'7').contains(&bytes[1]) {
         decode_pnm(bytes)
+    } else if bytes.len() >= 3
+        && (bytes.starts_with(b"PF") || bytes.starts_with(b"Pf"))
+        && bytes[2].is_ascii_whitespace()
+    {
+        decode_pfm(bytes)
     } else if bytes.first() == Some(&0x0A)
         && bytes.get(2) == Some(&1)
         && matches!(bytes.get(1), Some(0 | 2 | 3 | 4 | 5))
@@ -5493,5 +5642,82 @@ mod tests {
         let mut trunc = make_sun_raster(2, 2, 24, 1, 0, &[], &[0; 12]);
         trunc.pop();
         assert!(decode_image(&trunc).is_none());
+    }
+
+    #[test]
+    fn test_pfm_decode_grayscale_le() {
+        let mut pfm = Vec::new();
+        pfm.extend_from_slice(b"Pf\n2 2\n-1.0\n");
+        // Pixels bottom-to-top:
+        // Row 0 (bottom): left = 0.0, right = 0.5
+        // Row 1 (top): left = 1.0, right = 0.0
+        pfm.extend_from_slice(&0.0f32.to_le_bytes()); // Bottom-left
+        pfm.extend_from_slice(&0.5f32.to_le_bytes()); // Bottom-right
+        pfm.extend_from_slice(&1.0f32.to_le_bytes()); // Top-left
+        pfm.extend_from_slice(&0.0f32.to_le_bytes()); // Top-right
+
+        let decoded = decode_image(&pfm).expect("Should decode PFM");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        // Top-to-bottom final image has top row first:
+        // Row 0 (top): left = 1.0 (mapped to 255), right = 0.0 (mapped to 0)
+        // Row 1 (bottom): left = 0.0 (mapped to 0), right = 0.5 (mapped to 186)
+
+        // Top-left
+        assert_eq!(&decoded.rgba[0..4], &[255, 255, 255, 255]);
+        // Top-right
+        assert_eq!(&decoded.rgba[4..8], &[0, 0, 0, 255]);
+        // Bottom-left
+        assert_eq!(&decoded.rgba[8..12], &[0, 0, 0, 255]);
+        // Bottom-right
+        assert_eq!(&decoded.rgba[12..16], &[186, 186, 186, 255]);
+    }
+
+    #[test]
+    fn test_pfm_decode_color_be() {
+        let mut pfm = Vec::new();
+        pfm.extend_from_slice(b"PF\n1 2\n2.0\n");
+        // Pixels bottom-to-top:
+        // Row 0 (bottom): R=0.25, G=0.0, B=0.5
+        // Row 1 (top): R=0.0, G=0.25, B=0.0
+        pfm.extend_from_slice(&0.25f32.to_be_bytes()); // Bottom R
+        pfm.extend_from_slice(&0.00f32.to_be_bytes()); // Bottom G
+        pfm.extend_from_slice(&0.50f32.to_be_bytes()); // Bottom B
+
+        pfm.extend_from_slice(&0.00f32.to_be_bytes()); // Top R
+        pfm.extend_from_slice(&0.25f32.to_be_bytes()); // Top G
+        pfm.extend_from_slice(&0.00f32.to_be_bytes()); // Top B
+
+        let decoded = decode_image(&pfm).expect("Should decode color PFM");
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 2);
+
+        // Top-to-bottom final image has top row first:
+        // Row 0 (top): R=0.0 (mapped to 0), G=0.25 (linear=0.5, mapped to 186), B=0.0 (mapped to 0)
+        // Row 1 (bottom): R=0.25 (linear=0.5, mapped to 186), G=0.0 (mapped to 0), B=0.5 (linear=1.0, mapped to 255)
+
+        // Top pixel
+        assert_eq!(&decoded.rgba[0..4], &[0, 186, 0, 255]);
+        // Bottom pixel
+        assert_eq!(&decoded.rgba[4..8], &[186, 0, 255, 255]);
+    }
+
+    #[test]
+    fn test_pfm_decode_malformed() {
+        // Missing scale
+        assert!(decode_image(b"Pf\n2 2\n").is_none());
+        // Missing magic whitespace
+        assert!(decode_image(b"Pf2 2\n1.0\n").is_none());
+        // Invalid dimensions
+        assert!(decode_image(b"Pf\n0 2\n1.0\n").is_none());
+        assert!(decode_image(b"Pf\n2 0\n1.0\n").is_none());
+        // Scale is zero
+        assert!(decode_image(b"Pf\n2 2\n0.0\n").is_none());
+        // Truncated data
+        let mut pfm = Vec::new();
+        pfm.extend_from_slice(b"Pf\n2 2\n-1.0\n");
+        pfm.extend_from_slice(&0.0f32.to_le_bytes()); // only 1 float instead of 4
+        assert!(decode_image(&pfm).is_none());
     }
 }
