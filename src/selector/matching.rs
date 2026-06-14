@@ -216,6 +216,44 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                 } else {
                     false
                 }
+            } else if name.starts_with("dir(") && name.ends_with(')') {
+                let content = &name["dir(".len()..name.len() - 1];
+                let content_trimmed = content.trim();
+
+                // Determine computed directionality by walking ancestors-or-self
+                let mut curr = Some(node);
+                let mut direction = "ltr"; // Default is ltr (document default)
+                while let Some(curr_node) = curr {
+                    if let Some(NodeData::Element { attrs, .. }) = dom.data(curr_node) {
+                        let dir_attr = attrs
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("dir"))
+                            .map(|(_, v)| v);
+                        if let Some(val) = dir_attr {
+                            let val_trimmed = val.trim();
+                            if val_trimmed.eq_ignore_ascii_case("rtl") {
+                                direction = "rtl";
+                                break;
+                            } else if val_trimmed.eq_ignore_ascii_case("ltr") {
+                                direction = "ltr";
+                                break;
+                            } else if val_trimmed.eq_ignore_ascii_case("auto") {
+                                // TODO(spec): dir=auto heuristic and :dir matching against actual bidi content is not yet implemented
+                                direction = "ltr";
+                                break;
+                            }
+                        }
+                    }
+                    curr = dom.parent(curr_node);
+                }
+
+                if content_trimmed.eq_ignore_ascii_case("ltr") {
+                    direction == "ltr"
+                } else if content_trimmed.eq_ignore_ascii_case("rtl") {
+                    direction == "rtl"
+                } else {
+                    false
+                }
             } else {
                 match name.to_ascii_lowercase().as_str() {
                     "hover" => get_node_state(node).hover,
@@ -3944,6 +3982,118 @@ mod tests {
         assert!(matches(&sel_multi, &dom, p_fr));
         assert!(matches(&sel_multi, &dom, p_en_us));
         assert!(!matches(&sel_multi, &dom, div)); // div is EN, which is not fr or en-US (en-US is too specific)
+    }
+
+    #[test]
+    fn test_matches_dir() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // DOM Structure:
+        // <div id="div_rtl" dir="rtl">
+        //   <p id="p_inherited_rtl"></p>
+        //   <p id="p_explicit_ltr" dir="ltr"></p>
+        //   <p id="p_invalid_dir" dir="invalid"></p>
+        // </div>
+        // <div id="div_ltr" dir="ltr">
+        //   <p id="p_inherited_ltr"></p>
+        // </div>
+        // <div id="div_no_dir"></div>
+        // <div id="div_auto" dir="auto"></div>
+
+        let div_rtl = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("dir".into(), "rtl".into())],
+        });
+        dom.append_child(doc, div_rtl);
+
+        let p_inherited_rtl = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div_rtl, p_inherited_rtl);
+
+        let p_explicit_ltr = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("dir".into(), "ltr".into())],
+        });
+        dom.append_child(div_rtl, p_explicit_ltr);
+
+        let p_invalid_dir = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("dir".into(), "invalid".into())],
+        });
+        dom.append_child(div_rtl, p_invalid_dir);
+
+        let div_ltr = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("dir".into(), "ltr".into())],
+        });
+        dom.append_child(doc, div_ltr);
+
+        let p_inherited_ltr = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div_ltr, p_inherited_ltr);
+
+        let div_no_dir = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_no_dir);
+
+        let div_auto = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("dir".into(), "auto".into())],
+        });
+        dom.append_child(doc, div_auto);
+
+        // Test :dir(ltr) matches
+        let sel_ltr = parse_selector_list(":dir(ltr)").unwrap();
+        let sel_ltr_upper = parse_selector_list(":dir(LTR)").unwrap();
+        let sel_rtl = parse_selector_list(":dir(rtl)").unwrap();
+        let sel_rtl_upper = parse_selector_list(":dir(RTL)").unwrap();
+        let sel_sideways = parse_selector_list(":dir(sideways)").unwrap();
+
+        // 1. div_rtl has dir="rtl", should match :dir(rtl) and not :dir(ltr)
+        assert!(matches(&sel_rtl, &dom, div_rtl));
+        assert!(matches(&sel_rtl_upper, &dom, div_rtl));
+        assert!(!matches(&sel_ltr, &dom, div_rtl));
+
+        // 2. p_inherited_rtl inherits dir="rtl" from div_rtl, should match :dir(rtl)
+        assert!(matches(&sel_rtl, &dom, p_inherited_rtl));
+        assert!(!matches(&sel_ltr, &dom, p_inherited_rtl));
+
+        // 3. p_explicit_ltr overrides div_rtl with dir="ltr", should match :dir(ltr)
+        assert!(matches(&sel_ltr, &dom, p_explicit_ltr));
+        assert!(matches(&sel_ltr_upper, &dom, p_explicit_ltr));
+        assert!(!matches(&sel_rtl, &dom, p_explicit_ltr));
+
+        // 4. p_invalid_dir has invalid dir="invalid", should inherit dir="rtl" from parent div_rtl
+        assert!(matches(&sel_rtl, &dom, p_invalid_dir));
+        assert!(!matches(&sel_ltr, &dom, p_invalid_dir));
+
+        // 5. div_ltr has dir="ltr", should match :dir(ltr) and not :dir(rtl)
+        assert!(matches(&sel_ltr, &dom, div_ltr));
+        assert!(!matches(&sel_rtl, &dom, div_ltr));
+
+        // 6. p_inherited_ltr inherits dir="ltr", should match :dir(ltr)
+        assert!(matches(&sel_ltr, &dom, p_inherited_ltr));
+        assert!(!matches(&sel_rtl, &dom, p_inherited_ltr));
+
+        // 7. div_no_dir has no dir attribute, should default to ltr and match :dir(ltr)
+        assert!(matches(&sel_ltr, &dom, div_no_dir));
+        assert!(!matches(&sel_rtl, &dom, div_no_dir));
+
+        // 8. div_auto has dir="auto", should default to ltr and match :dir(ltr)
+        assert!(matches(&sel_ltr, &dom, div_auto));
+        assert!(!matches(&sel_rtl, &dom, div_auto));
+
+        // 9. :dir(sideways) never matches
+        assert!(!matches(&sel_sideways, &dom, div_rtl));
+        assert!(!matches(&sel_sideways, &dom, div_ltr));
+        assert!(!matches(&sel_sideways, &dom, div_no_dir));
     }
 
     #[test]

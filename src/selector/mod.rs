@@ -692,6 +692,25 @@ impl<'a> SelectorParser<'a> {
                         }
                         Ok(Component::PseudoClass(format!("lang({})", langs.join(","))))
                     }
+                    "dir" => {
+                        let dir_val;
+                        self.skip_whitespace();
+                        match self.peek() {
+                            CssToken::Ident(s) | CssToken::String(s) => {
+                                dir_val = s.clone();
+                                self.consume();
+                            }
+                            _ => return Err(SelectorParseError::InvalidSelector),
+                        }
+                        self.skip_whitespace();
+                        match self.peek() {
+                            CssToken::RightParen => {
+                                self.consume();
+                            }
+                            _ => return Err(SelectorParseError::InvalidSelector),
+                        }
+                        Ok(Component::PseudoClass(format!("dir({})", dir_val)))
+                    }
                     _ => {
                         // TODO(spec): Other functional pseudo-classes.
                         // We need to consume until RightParen to stay in sync.
@@ -1042,6 +1061,18 @@ mod tests {
         assert_eq!(
             list.0[0].parts[0].1.components[0],
             Component::PseudoClass("lang(en-US,fr)".to_string())
+        );
+
+        // :dir(...)
+        let list = parse_selector_list(":dir(ltr)").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::PseudoClass("dir(ltr)".to_string())
+        );
+        let list = parse_selector_list(":dir(\"rtl\")").unwrap();
+        assert_eq!(
+            list.0[0].parts[0].1.components[0],
+            Component::PseudoClass("dir(rtl)".to_string())
         );
 
         // :first-child, :last-child
