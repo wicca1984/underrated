@@ -218,6 +218,26 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "text-autospace",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "text-spacing-trim",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "hyphenate-character",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "ruby-position",
+        inherited: true,
+        initial: "alternate",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1270,6 +1290,37 @@ mod tests {
         assert_eq!(field_sizing.name, "field-sizing");
         assert!(!field_sizing.inherited);
         assert_eq!(field_sizing.initial, "fixed");
+    }
+
+    #[test]
+    fn test_additive_properties_t0714() {
+        let text_autospace = lookup("text-autospace");
+        assert!(text_autospace.is_some());
+        let text_autospace = text_autospace.unwrap();
+        assert_eq!(text_autospace.name, "text-autospace");
+        assert!(text_autospace.inherited);
+        assert_eq!(text_autospace.initial, "normal");
+
+        let text_spacing_trim = lookup("text-spacing-trim");
+        assert!(text_spacing_trim.is_some());
+        let text_spacing_trim = text_spacing_trim.unwrap();
+        assert_eq!(text_spacing_trim.name, "text-spacing-trim");
+        assert!(text_spacing_trim.inherited);
+        assert_eq!(text_spacing_trim.initial, "normal");
+
+        let hyphenate_character = lookup("hyphenate-character");
+        assert!(hyphenate_character.is_some());
+        let hyphenate_character = hyphenate_character.unwrap();
+        assert_eq!(hyphenate_character.name, "hyphenate-character");
+        assert!(hyphenate_character.inherited);
+        assert_eq!(hyphenate_character.initial, "auto");
+
+        let ruby_position = lookup("ruby-position");
+        assert!(ruby_position.is_some());
+        let ruby_position = ruby_position.unwrap();
+        assert_eq!(ruby_position.name, "ruby-position");
+        assert!(ruby_position.inherited);
+        assert_eq!(ruby_position.initial, "alternate");
     }
 
     #[test]
