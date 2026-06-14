@@ -17,12 +17,13 @@ pub fn is_absolute_or_fixed(
             let has_explicit_top = style.reset_surround.top != -1;
             let has_explicit_left = style.reset_surround.left != -1;
             let has_explicit_right = style.reset_surround.right != -1;
+            let has_explicit_bottom = style.reset_surround.bottom != -1;
 
             // TODO(spec): True CSS static-position-for-out-of-flow semantics is deferred:
             // we use an interim decision where if both top and left are unspecified (auto)
             // (and we also check right here to avoid normal flow when right is specified),
             // we keep the element in normal flow (as if position: static) to avoid collapsing to (0,0).
-            has_explicit_top || has_explicit_left || has_explicit_right
+            has_explicit_top || has_explicit_left || has_explicit_right || has_explicit_bottom
         } else {
             false
         }
@@ -78,15 +79,19 @@ pub fn resolve_relative_positions(
     if let Some(style) = layout_box.node.and_then(|node_id| styles.get(&node_id))
         && (style.reset_box.position == "relative" || style.reset_box.position == "sticky")
     {
-        let dx = if style.reset_surround.left == -1 {
-            0.0
-        } else {
+        let dx = if style.reset_surround.left != -1 {
             style.reset_surround.left as f32
-        };
-        let dy = if style.reset_surround.top == -1 {
-            0.0
+        } else if style.reset_surround.right != -1 {
+            -(style.reset_surround.right as f32)
         } else {
+            0.0
+        };
+        let dy = if style.reset_surround.top != -1 {
             style.reset_surround.top as f32
+        } else if style.reset_surround.bottom != -1 {
+            -(style.reset_surround.bottom as f32)
+        } else {
+            0.0
         };
         if style.reset_box.position == "sticky" {
             // TODO(spec): true scroll-threshold sticky behavior is deferred (no scroll context yet).
@@ -236,6 +241,18 @@ pub fn layout_absolute_and_fixed_elements(
                 child_box.rect.origin.x += shift_dx;
                 for child in &mut child_box.children {
                     shift_layout_box(child, styles, shift_dx, 0.0, 1);
+                }
+            }
+
+            // If top is auto (-1) and bottom is set (not -1), position from the bottom offset.
+            if style.reset_surround.top == -1 && style.reset_surround.bottom != -1 {
+                let bottom = style.reset_surround.bottom as f32;
+                let container_height = root_box.rect.size.height;
+                let target_y = container_height - bottom - child_box.rect.size.height;
+                let shift_dy = target_y - child_box.rect.origin.y;
+                child_box.rect.origin.y += shift_dy;
+                for child in &mut child_box.children {
+                    shift_layout_box(child, styles, 0.0, shift_dy, 1);
                 }
             }
 
@@ -414,5 +431,117 @@ mod tests {
         // Since both left and right are set, left (30.0) should win.
         assert_eq!(div_box.rect.origin.x, 30.0);
         assert_eq!(div_box.rect.origin.y, 10.0);
+    }
+
+    #[test]
+    fn test_absolute_position_bottom_offset() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; height: 400px; }
+            div {
+                display: block;
+                position: absolute;
+                bottom: 50px;
+                width: 100px;
+                height: 80px;
+                left: 20px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found in layout tree");
+        // The container height is the root_box height, which is 400.0 (plus any body margins/padding, but default margin is 8px for body usually if UA sheet is applied. Wait, is body UA stylesheet applied? In layout_document, we computed layout using parsed stylesheet. Let's look at the result).
+        // Let's assert div_box properties:
+        assert_eq!(div_box.rect.size.width, 100.0);
+        assert_eq!(div_box.rect.size.height, 80.0);
+        assert_eq!(div_box.rect.origin.x, 20.0);
+        // target_y = container_height - bottom - height = container_height - 50.0 - 80.0
+        // Let's assert it is correct:
+        let expected_y = layout_tree.rect.size.height - 50.0 - 80.0;
+        assert_eq!(div_box.rect.origin.y, expected_y);
+    }
+
+    #[test]
+    fn test_relative_position_right_and_bottom_offsets() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: relative;
+                right: 30px;
+                bottom: 25px;
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Relative div box not found in layout tree");
+        // Static position would be (0.0, 0.0)
+        // With right: 30px, dx = -30.0. With bottom: 25px, dy = -25.0.
+        // So the offset position should be (-30.0, -25.0).
+        assert_eq!(div_box.rect.origin.x, -30.0);
+        assert_eq!(div_box.rect.origin.y, -25.0);
     }
 }
