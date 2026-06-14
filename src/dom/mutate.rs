@@ -235,6 +235,20 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `placeholder` content attribute of a valid element node.
+    /// Returns `None` if the node has no `placeholder` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_placeholder(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("placeholder"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Returns the value of the `name` content attribute of a valid element node.
     /// Returns `None` if the node has no `name` attribute, is not an element node,
     /// or if the `NodeId` is invalid.
@@ -743,6 +757,44 @@ mod tests {
             foreign_node = elem(&mut foreign_dom, "img");
         }
         assert_eq!(dom.get_alt(foreign_node), None);
+    }
+
+    #[test]
+    fn test_placeholder_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element with placeholder attribute -> returns Some(value)
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("placeholder".to_string(), "Search".to_string())],
+        });
+        assert_eq!(dom.get_placeholder(input_id), Some("Search"));
+
+        // 2. Element with case-insensitive placeholder attribute (e.g., PLACEHOLDER) -> returns Some(value)
+        let input_id_upper = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("PLACEHOLDER".to_string(), "Search Upper".to_string())],
+        });
+        assert_eq!(dom.get_placeholder(input_id_upper), Some("Search Upper"));
+
+        // 3. Element without placeholder attribute -> returns None
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_placeholder(p_id), None);
+
+        // 4. Non-element node (e.g., Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_placeholder(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "input");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "input");
+        }
+        assert_eq!(dom.get_placeholder(foreign_node), None);
     }
 
     #[test]
