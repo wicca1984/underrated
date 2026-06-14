@@ -25,6 +25,35 @@ enum CalcToken {
     RightParen,
 }
 
+#[derive(Debug, Clone)]
+pub struct ResolveContext {
+    pub root_font_size: f32,
+    pub current_font_size: Option<f32>,
+    pub line_height: Option<f32>,
+    pub root_line_height: Option<f32>,
+    pub viewport_w: f32,
+    pub viewport_h: f32,
+    pub percentage_basis: Option<f32>,
+    pub property_name: Option<String>,
+    pub parent_value: Option<CssValue>,
+}
+
+impl Default for ResolveContext {
+    fn default() -> Self {
+        Self {
+            root_font_size: 16.0,
+            current_font_size: None,
+            line_height: None,
+            root_line_height: None,
+            viewport_w: 1024.0,
+            viewport_h: 768.0,
+            percentage_basis: None,
+            property_name: None,
+            parent_value: None,
+        }
+    }
+}
+
 /// Helper to parse a `var()` function's arguments.
 /// format: `var( <custom-property-name> [, <declaration-value>]? )`
 fn parse_var_function(components: &[ComponentValue]) -> Option<(&str, Option<&[ComponentValue]>)> {
@@ -277,9 +306,7 @@ impl CalcExprParser {
 
 fn component_to_calc_tokens(
     comp: &ComponentValue,
-    root_font_size: f32,
-    viewport_w: f32,
-    viewport_h: f32,
+    context: &ResolveContext,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
     tokens: &mut Vec<CalcToken>,
 ) -> bool {
@@ -294,31 +321,31 @@ fn component_to_calc_tokens(
                 }
                 "rem" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
-                        *value as f32 * root_font_size,
+                        *value as f32 * context.root_font_size,
                     )));
                     true
                 }
                 "vw" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
-                        *value as f32 * viewport_w / 100.0,
+                        *value as f32 * context.viewport_w / 100.0,
                     )));
                     true
                 }
                 "vh" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
-                        *value as f32 * viewport_h / 100.0,
+                        *value as f32 * context.viewport_h / 100.0,
                     )));
                     true
                 }
                 "vmin" => {
-                    let vmin = viewport_w.min(viewport_h);
+                    let vmin = context.viewport_w.min(context.viewport_h);
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * vmin / 100.0,
                     )));
                     true
                 }
                 "vmax" => {
-                    let vmax = viewport_w.max(viewport_h);
+                    let vmax = context.viewport_w.max(context.viewport_h);
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * vmax / 100.0,
                     )));
@@ -350,6 +377,35 @@ fn component_to_calc_tokens(
                     )));
                     true
                 }
+                "em" => {
+                    let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * fs)));
+                    true
+                }
+                "ex" => {
+                    let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * fs * 0.5)));
+                    true
+                }
+                "ch" => {
+                    let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * fs * 0.5)));
+                    true
+                }
+                "lh" => {
+                    let lh = context.line_height.unwrap_or_else(|| {
+                        context.current_font_size.unwrap_or(context.root_font_size) * 1.2
+                    });
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * lh)));
+                    true
+                }
+                "rlh" => {
+                    let rlh = context
+                        .root_line_height
+                        .unwrap_or(context.root_font_size * 1.2);
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * rlh)));
+                    true
+                }
                 "deg" => {
                     let rad = (*value as f32).to_radians();
                     tokens.push(CalcToken::Val(CalcValue::Angle(rad)));
@@ -370,6 +426,14 @@ fn component_to_calc_tokens(
                     true
                 }
                 _ => false,
+            }
+        }
+        ComponentValue::Token(CssToken::Percentage(v)) => {
+            if let Some(basis) = context.percentage_basis {
+                tokens.push(CalcToken::Val(CalcValue::Length(*v as f32 * basis / 100.0)));
+                true
+            } else {
+                false
             }
         }
         ComponentValue::Token(CssToken::Number(v)) => {
@@ -432,14 +496,7 @@ fn component_to_calc_tokens(
         } => {
             tokens.push(CalcToken::LeftParen);
             for v in value {
-                if !component_to_calc_tokens(
-                    v,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
-                    custom_properties,
-                    tokens,
-                ) {
+                if !component_to_calc_tokens(v, context, custom_properties, tokens) {
                     return false;
                 }
             }
@@ -448,13 +505,7 @@ fn component_to_calc_tokens(
         }
         ComponentValue::Function { name, value } => {
             let resolved = if name.eq_ignore_ascii_case("calc") {
-                evaluate_calc_to_value(
-                    value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
-                    custom_properties,
-                )
+                evaluate_calc_to_value_with_context(value, context, custom_properties)
             } else if name.eq_ignore_ascii_case("min")
                 || name.eq_ignore_ascii_case("max")
                 || name.eq_ignore_ascii_case("clamp")
@@ -476,14 +527,7 @@ fn component_to_calc_tokens(
                 || name.eq_ignore_ascii_case("atan")
                 || name.eq_ignore_ascii_case("atan2")
             {
-                evaluate_math_fn_to_value(
-                    name,
-                    value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
-                    custom_properties,
-                )
+                evaluate_math_fn_to_value_with_context(name, value, context, custom_properties)
             } else {
                 None
             };
@@ -508,12 +552,10 @@ fn component_to_calc_tokens(
     }
 }
 
-fn evaluate_math_fn_to_value(
+fn evaluate_math_fn_to_value_with_context(
     kind: &str,
     components: &[ComponentValue],
-    root_font_size: f32,
-    viewport_w: f32,
-    viewport_h: f32,
+    context: &ResolveContext,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
 ) -> Option<CalcValue> {
     // 1. Split by top-level Comma tokens.
@@ -605,13 +647,8 @@ fn evaluate_math_fn_to_value(
         if trimmed_group.is_empty() {
             return None;
         }
-        let evaluated = evaluate_calc_to_value(
-            trimmed_group,
-            root_font_size,
-            viewport_w,
-            viewport_h,
-            custom_properties,
-        )?;
+        let evaluated =
+            evaluate_calc_to_value_with_context(trimmed_group, context, custom_properties)?;
         evaluated_args.push(evaluated);
     }
 
@@ -925,6 +962,23 @@ fn evaluate_math_fn_to_value(
     }
 }
 
+fn evaluate_math_fn_to_value(
+    kind: &str,
+    components: &[ComponentValue],
+    root_font_size: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CalcValue> {
+    let context = ResolveContext {
+        root_font_size,
+        viewport_w,
+        viewport_h,
+        ..Default::default()
+    };
+    evaluate_math_fn_to_value_with_context(kind, components, &context, custom_properties)
+}
+
 /// Evaluates CSS math functions `min()`, `max()`, `clamp()`, `abs()`, `sign()`, `round()`, `mod()`, `rem()`, `sqrt()`, `pow()`, `hypot()`, `log()`, and `exp()`.
 pub fn evaluate_math_fn(
     kind: &str,
@@ -973,25 +1027,16 @@ fn trim_whitespace(components: &[ComponentValue]) -> &[ComponentValue] {
     &components[start..end]
 }
 
-fn evaluate_calc_to_value(
+fn evaluate_calc_to_value_with_context(
     components: &[ComponentValue],
-    root_font_size: f32,
-    viewport_w: f32,
-    viewport_h: f32,
+    context: &ResolveContext,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
 ) -> Option<CalcValue> {
     let substituted = substitute_variables(components, custom_properties, &mut HashSet::new())?;
 
     let mut tokens = Vec::new();
     for comp in &substituted {
-        if !component_to_calc_tokens(
-            comp,
-            root_font_size,
-            viewport_w,
-            viewport_h,
-            custom_properties,
-            &mut tokens,
-        ) {
+        if !component_to_calc_tokens(comp, context, custom_properties, &mut tokens) {
             return None;
         }
     }
@@ -1003,6 +1048,22 @@ fn evaluate_calc_to_value(
     }
 
     Some(res)
+}
+
+fn evaluate_calc_to_value(
+    components: &[ComponentValue],
+    root_font_size: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CalcValue> {
+    let context = ResolveContext {
+        root_font_size,
+        viewport_w,
+        viewport_h,
+        ..Default::default()
+    };
+    evaluate_calc_to_value_with_context(components, &context, custom_properties)
 }
 
 /// Evaluates a CSS `calc()` expression.
@@ -1037,6 +1098,20 @@ pub fn resolve_value(
     viewport_h: f32,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
 ) -> Option<CssValue> {
+    let context = ResolveContext {
+        root_font_size,
+        viewport_w,
+        viewport_h,
+        ..Default::default()
+    };
+    resolve_value_with_context(components, &context, custom_properties)
+}
+
+pub fn resolve_value_with_context(
+    components: &[ComponentValue],
+    context: &ResolveContext,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CssValue> {
     let substituted = substitute_variables(components, custom_properties, &mut HashSet::new())?;
 
     // Trim leading and trailing whitespace
@@ -1063,239 +1138,358 @@ pub fn resolve_value(
     if trimmed.len() == 1 {
         match &trimmed[0] {
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("calc") => {
-                evaluate_calc(
-                    value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
-                    custom_properties,
-                )
+                let res = evaluate_calc_to_value_with_context(value, context, custom_properties)?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("min") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "min",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("max") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "max",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("clamp") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "clamp",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("abs") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "abs",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sign") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "sign",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("round") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "round",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("mod") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "mod",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("rem") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "rem",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sqrt") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "sqrt",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("pow") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "pow",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("hypot") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "hypot",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("log") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "log",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("exp") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "exp",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sin") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "sin",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("cos") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "cos",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("tan") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "tan",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("asin") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "asin",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("acos") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "acos",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("atan") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "atan",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("atan2") => {
-                evaluate_math_fn(
+                let res = evaluate_math_fn_to_value_with_context(
                     "atan2",
                     value,
-                    root_font_size,
-                    viewport_w,
-                    viewport_h,
+                    context,
                     custom_properties,
-                )
+                )?;
+                match res {
+                    CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+                    CalcValue::Number(v) => Some(CssValue::Number(v)),
+                    CalcValue::Angle(_) => None,
+                }
+            }
+            ComponentValue::Token(CssToken::Ident(name)) => {
+                let lower = name.to_ascii_lowercase();
+                match lower.as_str() {
+                    "inherit" => {
+                        if let Some(parent) = &context.parent_value {
+                            Some(parent.clone())
+                        } else if let Some(prop) = &context.property_name {
+                            if let Some(init_str) = crate::css::property::initial_value(prop) {
+                                resolve_string_with_context(init_str, context)
+                            } else {
+                                Some(CssValue::Keyword("inherit".to_string()))
+                            }
+                        } else {
+                            Some(CssValue::Keyword("inherit".to_string()))
+                        }
+                    }
+                    "initial" => {
+                        if let Some(prop) = &context.property_name {
+                            if let Some(init_str) = crate::css::property::initial_value(prop) {
+                                let mut sub_context = context.clone();
+                                sub_context.property_name = None;
+                                resolve_string_with_context(init_str, &sub_context)
+                            } else {
+                                Some(CssValue::Keyword("initial".to_string()))
+                            }
+                        } else {
+                            Some(CssValue::Keyword("initial".to_string()))
+                        }
+                    }
+                    "unset" => {
+                        if let Some(prop) = &context.property_name {
+                            let is_inh = crate::css::property::is_inherited(prop);
+                            if is_inh {
+                                if let Some(parent) = &context.parent_value {
+                                    Some(parent.clone())
+                                } else if let Some(init_str) =
+                                    crate::css::property::initial_value(prop)
+                                {
+                                    let mut sub_context = context.clone();
+                                    sub_context.property_name = None;
+                                    resolve_string_with_context(init_str, &sub_context)
+                                } else {
+                                    Some(CssValue::Keyword("unset".to_string()))
+                                }
+                            } else {
+                                if let Some(init_str) = crate::css::property::initial_value(prop) {
+                                    let mut sub_context = context.clone();
+                                    sub_context.property_name = None;
+                                    resolve_string_with_context(init_str, &sub_context)
+                                } else {
+                                    Some(CssValue::Keyword("unset".to_string()))
+                                }
+                            }
+                        } else {
+                            Some(CssValue::Keyword("unset".to_string()))
+                        }
+                    }
+                    _ => crate::css::values::parse_value(trimmed),
+                }
             }
             ComponentValue::Token(CssToken::Dimension { value, unit }) => {
                 let lower_unit = unit.to_ascii_lowercase();
                 match lower_unit.as_str() {
                     "px" => Some(CssValue::Length(*value as f32, LengthUnit::Px)),
                     "rem" => Some(CssValue::Length(
-                        *value as f32 * root_font_size,
+                        *value as f32 * context.root_font_size,
                         LengthUnit::Px,
                     )),
                     "vw" => Some(CssValue::Length(
-                        *value as f32 * viewport_w / 100.0,
+                        *value as f32 * context.viewport_w / 100.0,
                         LengthUnit::Px,
                     )),
                     "vh" => Some(CssValue::Length(
-                        *value as f32 * viewport_h / 100.0,
+                        *value as f32 * context.viewport_h / 100.0,
                         LengthUnit::Px,
                     )),
                     "vmin" => {
-                        let vmin = viewport_w.min(viewport_h);
+                        let vmin = context.viewport_w.min(context.viewport_h);
                         Some(CssValue::Length(
                             *value as f32 * vmin / 100.0,
                             LengthUnit::Px,
                         ))
                     }
                     "vmax" => {
-                        let vmax = viewport_w.max(viewport_h);
+                        let vmax = context.viewport_w.max(context.viewport_h);
                         Some(CssValue::Length(
                             *value as f32 * vmax / 100.0,
                             LengthUnit::Px,
@@ -1308,16 +1502,46 @@ pub fn resolve_value(
                     )),
                     "mm" => Some(CssValue::Length(*value as f32 * 9.6 / 2.54, LengthUnit::Px)),
                     "pc" => Some(CssValue::Length(*value as f32 * 16.0, LengthUnit::Px)),
-                    "em" => Some(CssValue::Length(*value as f32, LengthUnit::Em)),
                     "pt" => Some(CssValue::Length(
                         *value as f32 * 96.0 / 72.0,
                         LengthUnit::Px,
                     )),
+                    "em" => {
+                        if let Some(fs) = context.current_font_size {
+                            Some(CssValue::Length(*value as f32 * fs, LengthUnit::Px))
+                        } else {
+                            Some(CssValue::Length(*value as f32, LengthUnit::Em))
+                        }
+                    }
+                    "ex" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        Some(CssValue::Length(*value as f32 * fs * 0.5, LengthUnit::Px))
+                    }
+                    "ch" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        Some(CssValue::Length(*value as f32 * fs * 0.5, LengthUnit::Px))
+                    }
+                    "lh" => {
+                        let lh = context.line_height.unwrap_or_else(|| {
+                            context.current_font_size.unwrap_or(context.root_font_size) * 1.2
+                        });
+                        Some(CssValue::Length(*value as f32 * lh, LengthUnit::Px))
+                    }
+                    "rlh" => {
+                        let rlh = context
+                            .root_line_height
+                            .unwrap_or(context.root_font_size * 1.2);
+                        Some(CssValue::Length(*value as f32 * rlh, LengthUnit::Px))
+                    }
                     _ => None,
                 }
             }
             ComponentValue::Token(CssToken::Percentage(v)) => {
-                Some(CssValue::Length(*v as f32, LengthUnit::Percent))
+                if let Some(basis) = context.percentage_basis {
+                    Some(CssValue::Length(*v as f32 * basis / 100.0, LengthUnit::Px))
+                } else {
+                    Some(CssValue::Length(*v as f32, LengthUnit::Percent))
+                }
             }
             ComponentValue::Token(CssToken::Number(v)) => Some(CssValue::Number(*v as f32)),
             _ => crate::css::values::parse_value(trimmed),
@@ -1325,6 +1549,12 @@ pub fn resolve_value(
     } else {
         crate::css::values::parse_value(trimmed)
     }
+}
+
+pub fn resolve_string_with_context(input: &str, context: &ResolveContext) -> Option<CssValue> {
+    let components = crate::css::parser::parse_component_values(input);
+    let vars_map = HashMap::new();
+    resolve_value_with_context(&components, context, &vars_map)
 }
 
 /// Parses an input string and resolves variables, relative units, and `calc()` expressions inside it.
@@ -1979,6 +2209,161 @@ mod tests {
                 &vars
             ),
             Some(CssValue::Length(160.0, LengthUnit::Px))
+        );
+    }
+
+    #[test]
+    fn test_resolve_extended_t0843() {
+        // 1. Relative Units resolution (em, ex, ch, lh, rlh)
+        let ctx_relative = ResolveContext {
+            root_font_size: 16.0,
+            current_font_size: Some(24.0),
+            line_height: Some(40.0),
+            root_line_height: Some(20.0),
+            viewport_w: 1000.0,
+            viewport_h: 800.0,
+            ..Default::default()
+        };
+
+        // Direct resolving
+        assert_eq!(
+            resolve_string_with_context("2em", &ctx_relative),
+            Some(CssValue::Length(48.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string_with_context("3ex", &ctx_relative),
+            Some(CssValue::Length(36.0, LengthUnit::Px)) // 3 * 24.0 * 0.5 = 36
+        );
+        assert_eq!(
+            resolve_string_with_context("4ch", &ctx_relative),
+            Some(CssValue::Length(48.0, LengthUnit::Px)) // 4 * 24.0 * 0.5 = 48
+        );
+        assert_eq!(
+            resolve_string_with_context("2lh", &ctx_relative),
+            Some(CssValue::Length(80.0, LengthUnit::Px)) // 2 * 40.0 = 80
+        );
+        assert_eq!(
+            resolve_string_with_context("3rlh", &ctx_relative),
+            Some(CssValue::Length(60.0, LengthUnit::Px)) // 3 * 20.0 = 60
+        );
+
+        // Fallbacks when current/line_height are None
+        let ctx_relative_fallbacks = ResolveContext {
+            root_font_size: 16.0,
+            current_font_size: None,
+            line_height: None,
+            root_line_height: None,
+            viewport_w: 1000.0,
+            viewport_h: 800.0,
+            ..Default::default()
+        };
+        // em without current_font_size stays as Em
+        assert_eq!(
+            resolve_string_with_context("2em", &ctx_relative_fallbacks),
+            Some(CssValue::Length(2.0, LengthUnit::Em))
+        );
+        // ex, ch without current_font_size use root_font_size
+        assert_eq!(
+            resolve_string_with_context("2ex", &ctx_relative_fallbacks),
+            Some(CssValue::Length(16.0, LengthUnit::Px)) // 2 * 16 * 0.5 = 16
+        );
+        // lh without current_font_size and line_height uses 1.2 * root_font_size
+        assert_eq!(
+            resolve_string_with_context("2lh", &ctx_relative_fallbacks),
+            Some(CssValue::Length(38.4, LengthUnit::Px)) // 2 * 16 * 1.2 = 38.4
+        );
+        // rlh without root_line_height uses 1.2 * root_font_size
+        assert_eq!(
+            resolve_string_with_context("2rlh", &ctx_relative_fallbacks),
+            Some(CssValue::Length(38.4, LengthUnit::Px)) // 2 * 16 * 1.2 = 38.4
+        );
+
+        // Within calc
+        assert_eq!(
+            resolve_string_with_context("calc(1em + 10px)", &ctx_relative),
+            Some(CssValue::Length(34.0, LengthUnit::Px)) // 24 + 10 = 34
+        );
+        assert_eq!(
+            resolve_string_with_context("calc(2ex * 2)", &ctx_relative),
+            Some(CssValue::Length(48.0, LengthUnit::Px)) // 2 * 12 * 2 = 48
+        );
+        assert_eq!(
+            resolve_string_with_context("calc(1lh / 2)", &ctx_relative),
+            Some(CssValue::Length(20.0, LengthUnit::Px)) // 40 / 2 = 20
+        );
+
+        // 2. inherit / initial / unset handling
+        let parent_color = CssValue::Color(crate::css::values::Color::Rgba(255, 0, 0, 255));
+        let ctx_keywords = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(parent_color.clone()),
+            ..Default::default()
+        };
+
+        // inherit resolves to parent's value
+        assert_eq!(
+            resolve_string_with_context("inherit", &ctx_keywords),
+            Some(parent_color.clone())
+        );
+
+        // initial resolves to property's initial value ("black")
+        assert_eq!(
+            resolve_string_with_context("initial", &ctx_keywords),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 0, 255
+            )))
+        );
+
+        // unset on color (inherited) resolves to parent's value
+        assert_eq!(
+            resolve_string_with_context("unset", &ctx_keywords),
+            Some(parent_color.clone())
+        );
+
+        // unset on color (inherited) with no parent resolves to initial value
+        let ctx_keywords_no_parent = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("unset", &ctx_keywords_no_parent),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 0, 255
+            )))
+        );
+
+        // unset on background-color (not inherited, initial: "transparent")
+        let ctx_non_inherited = ResolveContext {
+            property_name: Some("background-color".to_string()),
+            parent_value: Some(parent_color.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("unset", &ctx_non_inherited),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 0)))
+        );
+
+        // 3. Percentage Resolution
+        let ctx_percentage = ResolveContext {
+            percentage_basis: Some(500.0),
+            ..Default::default()
+        };
+
+        // Direct percentage resolving to Px
+        assert_eq!(
+            resolve_string_with_context("50%", &ctx_percentage),
+            Some(CssValue::Length(250.0, LengthUnit::Px))
+        );
+
+        // Percentage within calc
+        assert_eq!(
+            resolve_string_with_context("calc(10% + 50px)", &ctx_percentage),
+            Some(CssValue::Length(100.0, LengthUnit::Px)) // 50 + 50 = 100
+        );
+        assert_eq!(
+            resolve_string_with_context("calc(10% + 20%)", &ctx_percentage),
+            Some(CssValue::Length(150.0, LengthUnit::Px)) // 50 + 100 = 150
         );
     }
 }
