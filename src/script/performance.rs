@@ -38,9 +38,32 @@ fn get_time_origin_ms() -> f64 {
     get_origins().1
 }
 
+/// PerformanceEntry base class representation.
+#[derive(Debug, Trace, Finalize, JsData)]
+pub struct PerformanceEntry {}
+
+impl Class for PerformanceEntry {
+    const NAME: &'static str = "PerformanceEntry";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        _args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        Err(JsError::from(
+            JsNativeError::typ().with_message("TypeError: Illegal constructor"),
+        ))
+    }
+
+    fn init(_class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        Ok(())
+    }
+}
+
 /// Representation of a stored performance mark.
 #[derive(Debug, Clone, Trace, Finalize, JsData)]
-pub struct PerformanceMarkEntry {
+pub struct PerformanceMark {
     pub name: String,
     pub start_time: f64,
     pub detail: JsValue,
@@ -48,7 +71,7 @@ pub struct PerformanceMarkEntry {
 
 /// Representation of a stored performance measure.
 #[derive(Debug, Clone, Trace, Finalize, JsData)]
-pub struct PerformanceMeasureEntry {
+pub struct PerformanceMeasure {
     pub name: String,
     pub start_time: f64,
     pub duration: f64,
@@ -58,8 +81,8 @@ pub struct PerformanceMeasureEntry {
 /// Performance JS Class host struct.
 #[derive(Debug, Trace, Finalize, JsData)]
 pub struct Performance {
-    pub(crate) marks: GcRefCell<Vec<PerformanceMarkEntry>>,
-    pub(crate) measures: GcRefCell<Vec<PerformanceMeasureEntry>>,
+    pub(crate) marks: GcRefCell<Vec<JsObject>>,
+    pub(crate) measures: GcRefCell<Vec<JsObject>>,
 }
 
 impl Class for Performance {
@@ -286,35 +309,6 @@ fn performance_navigation_to_json(
     Ok(JsValue::from(initializer.build()))
 }
 
-fn performance_entry_to_json(
-    this: &JsValue,
-    _args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<JsValue> {
-    let obj = this.as_object().ok_or_else(|| {
-        JsError::from(JsNativeError::typ().with_message("toJSON called on non-object"))
-    })?;
-
-    let name = obj.get(JsString::from("name"), context)?;
-    let entry_type = obj.get(JsString::from("entryType"), context)?;
-    let start_time = obj.get(JsString::from("startTime"), context)?;
-    let duration = obj.get(JsString::from("duration"), context)?;
-    let detail = obj.get(JsString::from("detail"), context)?;
-
-    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
-    let mut initializer = ObjectInitializer::new(context);
-    initializer.property(JsString::from("name"), name, ro);
-    initializer.property(JsString::from("entryType"), entry_type, ro);
-    initializer.property(JsString::from("startTime"), start_time, ro);
-    initializer.property(JsString::from("duration"), duration, ro);
-
-    if !detail.is_undefined() {
-        initializer.property(JsString::from("detail"), detail, ro);
-    }
-
-    Ok(JsValue::from(initializer.build()))
-}
-
 fn performance_get_timing(
     _this: &JsValue,
     _args: &[JsValue],
@@ -423,50 +417,21 @@ fn performance_mark(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         JsError::from(JsNativeError::typ().with_message("Method called on non-Performance object"))
     })?;
 
-    let name_val = args.first().ok_or_else(|| {
-        JsError::from(JsNativeError::typ().with_message("performance.mark: name is required"))
-    })?;
-    let name = name_val
-        .to_string(context)?
-        .to_std_string()
-        .unwrap_or_default();
+    let performance_mark_constructor = context
+        .global_object()
+        .get(JsString::from("PerformanceMark"), context)?
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from(
+                JsNativeError::typ().with_message("PerformanceMark constructor not found"),
+            )
+        })?;
 
-    let mut detail = JsValue::undefined();
-    let mut start_time = get_time_origin().elapsed().as_secs_f64() * 1000.0;
+    let mark_obj = performance_mark_constructor.construct(args, None, context)?;
 
-    if let Some(options_obj) = args.get(1).and_then(|v| {
-        if !v.is_undefined() && !v.is_null() {
-            v.as_object()
-        } else {
-            None
-        }
-    }) {
-        let det = options_obj.get(JsString::from("detail"), context)?;
-        if !det.is_undefined() {
-            detail = det;
-        }
+    performance.marks.borrow_mut().push(mark_obj.clone());
 
-        let start_val = options_obj.get(JsString::from("startTime"), context)?;
-        if !start_val.is_undefined() && !start_val.is_null() {
-            let st = start_val.to_number(context)?;
-            if st < 0.0 {
-                return Err(JsError::from(
-                    JsNativeError::typ()
-                        .with_message("performance.mark: startTime cannot be negative"),
-                ));
-            }
-            start_time = st;
-        }
-    }
-
-    performance.marks.borrow_mut().push(PerformanceMarkEntry {
-        name: name.clone(),
-        start_time,
-        detail: detail.clone(),
-    });
-
-    let mark_obj = create_performance_mark_object(&name, start_time, &detail, context);
-    Ok(mark_obj)
+    Ok(JsValue::from(mark_obj))
 }
 
 fn throw_dom_exception(name: &str, message: &str, context: &mut Context) -> JsError {
@@ -539,9 +504,21 @@ fn resolve_mark_or_value(
         } else {
             // 2. Check if name is in performance.marks
             let marks_borrow = performance.marks.borrow();
-            let mark_opt = marks_borrow.iter().rev().find(|m| m.name == name);
+            let mark_opt = marks_borrow.iter().rev().find(|m_obj| {
+                if let Some(m) = m_obj.downcast_ref::<PerformanceMark>() {
+                    m.name == name
+                } else {
+                    false
+                }
+            });
             match mark_opt {
-                Some(mark) => Ok(mark.start_time),
+                Some(m_obj) => {
+                    let st = m_obj
+                        .downcast_ref::<PerformanceMark>()
+                        .map(|m| m.start_time)
+                        .unwrap_or(0.0);
+                    Ok(st)
+                }
                 None => Err(throw_dom_exception(
                     "SyntaxError",
                     &format!("performance.measure: mark '{}' not found", name),
@@ -690,19 +667,29 @@ fn performance_measure(
         (start_time, end_time - start_time, JsValue::undefined())
     };
 
-    performance
-        .measures
-        .borrow_mut()
-        .push(PerformanceMeasureEntry {
-            name: name.clone(),
-            start_time,
-            duration,
-            detail: detail.clone(),
-        });
+    let performance_measure_constructor = context
+        .global_object()
+        .get(JsString::from("PerformanceMeasure"), context)?
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from(
+                JsNativeError::typ().with_message("PerformanceMeasure constructor not found"),
+            )
+        })?;
 
-    let measure_obj =
-        create_performance_measure_object(&name, start_time, duration, &detail, context);
-    Ok(measure_obj)
+    let measure_args = [
+        JsValue::from(JsString::from("__internal_private_key__")),
+        JsValue::from(JsString::from(name.clone())),
+        JsValue::from(start_time),
+        JsValue::from(duration),
+        detail.clone(),
+    ];
+
+    let measure_obj = performance_measure_constructor.construct(&measure_args, None, context)?;
+
+    performance.measures.borrow_mut().push(measure_obj.clone());
+
+    Ok(JsValue::from(measure_obj))
 }
 
 fn performance_clear_marks(
@@ -722,7 +709,13 @@ fn performance_clear_marks(
             .to_string(context)?
             .to_std_string()
             .unwrap_or_default();
-        performance.marks.borrow_mut().retain(|m| m.name != name);
+        performance.marks.borrow_mut().retain(|m_obj| {
+            if let Some(m) = m_obj.downcast_ref::<PerformanceMark>() {
+                m.name != name
+            } else {
+                true
+            }
+        });
         return Ok(JsValue::undefined());
     }
 
@@ -747,7 +740,13 @@ fn performance_clear_measures(
             .to_string(context)?
             .to_std_string()
             .unwrap_or_default();
-        performance.measures.borrow_mut().retain(|m| m.name != name);
+        performance.measures.borrow_mut().retain(|m_obj| {
+            if let Some(m) = m_obj.downcast_ref::<PerformanceMeasure>() {
+                m.name != name
+            } else {
+                true
+            }
+        });
         return Ok(JsValue::undefined());
     }
 
@@ -785,24 +784,16 @@ fn performance_get_entries(
 
     let mut entries = Vec::new();
 
-    for mark in performance.marks.borrow().iter() {
-        entries.push((
-            mark.start_time,
-            create_performance_mark_object(&mark.name, mark.start_time, &mark.detail, context),
-        ));
+    for mark_obj in performance.marks.borrow().iter() {
+        if let Some(mark) = mark_obj.downcast_ref::<PerformanceMark>() {
+            entries.push((mark.start_time, JsValue::from(mark_obj.clone())));
+        }
     }
 
-    for measure in performance.measures.borrow().iter() {
-        entries.push((
-            measure.start_time,
-            create_performance_measure_object(
-                &measure.name,
-                measure.start_time,
-                measure.duration,
-                &measure.detail,
-                context,
-            ),
-        ));
+    for measure_obj in performance.measures.borrow().iter() {
+        if let Some(measure) = measure_obj.downcast_ref::<PerformanceMeasure>() {
+            entries.push((measure.start_time, JsValue::from(measure_obj.clone())));
+        }
     }
 
     entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -838,24 +829,16 @@ fn performance_get_entries_by_type(
     let mut entries = Vec::new();
 
     if entry_type == "mark" {
-        for mark in performance.marks.borrow().iter() {
-            entries.push((
-                mark.start_time,
-                create_performance_mark_object(&mark.name, mark.start_time, &mark.detail, context),
-            ));
+        for mark_obj in performance.marks.borrow().iter() {
+            if let Some(mark) = mark_obj.downcast_ref::<PerformanceMark>() {
+                entries.push((mark.start_time, JsValue::from(mark_obj.clone())));
+            }
         }
     } else if entry_type == "measure" {
-        for measure in performance.measures.borrow().iter() {
-            entries.push((
-                measure.start_time,
-                create_performance_measure_object(
-                    &measure.name,
-                    measure.start_time,
-                    measure.duration,
-                    &measure.detail,
-                    context,
-                ),
-            ));
+        for measure_obj in performance.measures.borrow().iter() {
+            if let Some(measure) = measure_obj.downcast_ref::<PerformanceMeasure>() {
+                entries.push((measure.start_time, JsValue::from(measure_obj.clone())));
+            }
         }
     }
 
@@ -907,34 +890,23 @@ fn performance_get_entries_by_name(
     let check_measure = entry_type.as_deref().is_none_or(|t| t == "measure");
 
     if check_mark {
-        for mark in performance.marks.borrow().iter() {
-            if mark.name == name {
-                entries.push((
-                    mark.start_time,
-                    create_performance_mark_object(
-                        &mark.name,
-                        mark.start_time,
-                        &mark.detail,
-                        context,
-                    ),
-                ));
+        for mark_obj in performance.marks.borrow().iter() {
+            if let Some(mark) = mark_obj
+                .downcast_ref::<PerformanceMark>()
+                .filter(|m| m.name == name)
+            {
+                entries.push((mark.start_time, JsValue::from(mark_obj.clone())));
             }
         }
     }
 
     if check_measure {
-        for measure in performance.measures.borrow().iter() {
-            if measure.name == name {
-                entries.push((
-                    measure.start_time,
-                    create_performance_measure_object(
-                        &measure.name,
-                        measure.start_time,
-                        measure.duration,
-                        &measure.detail,
-                        context,
-                    ),
-                ));
+        for measure_obj in performance.measures.borrow().iter() {
+            if let Some(measure) = measure_obj
+                .downcast_ref::<PerformanceMeasure>()
+                .filter(|m| m.name == name)
+            {
+                entries.push((measure.start_time, JsValue::from(measure_obj.clone())));
             }
         }
     }
@@ -947,62 +919,464 @@ fn performance_get_entries_by_name(
     Ok(JsValue::from(array))
 }
 
-fn create_performance_mark_object(
-    name: &str,
-    start_time: f64,
-    detail: &JsValue,
-    context: &mut Context,
-) -> JsValue {
-    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
-    let realm = context.realm().clone();
-    let to_json_fn = FunctionObjectBuilder::new(
-        &realm,
-        NativeFunction::from_fn_ptr(performance_entry_to_json),
-    )
-    .name("toJSON")
-    .build();
+impl Class for PerformanceMark {
+    const NAME: &'static str = "PerformanceMark";
+    const LENGTH: usize = 1;
 
-    let mark_obj = ObjectInitializer::new(context)
-        .property(JsString::from("name"), JsString::from(name), ro)
-        .property(JsString::from("entryType"), JsString::from("mark"), ro)
-        .property(JsString::from("startTime"), JsValue::from(start_time), ro)
-        .property(JsString::from("duration"), JsValue::from(0.0), ro)
-        .property(JsString::from("detail"), detail.clone(), ro)
-        .property(JsString::from("toJSON"), to_json_fn, ro)
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let name_val = args.first().ok_or_else(|| {
+            JsError::from(
+                JsNativeError::typ().with_message("PerformanceMark constructor: name is required"),
+            )
+        })?;
+        let name = name_val
+            .to_string(context)?
+            .to_std_string()
+            .unwrap_or_default();
+
+        let mut detail = JsValue::undefined();
+        let mut start_time = get_time_origin().elapsed().as_secs_f64() * 1000.0;
+
+        if let Some(options_obj) = args.get(1).and_then(|v| {
+            if !v.is_undefined() && !v.is_null() {
+                v.as_object()
+            } else {
+                None
+            }
+        }) {
+            let det = options_obj.get(JsString::from("detail"), context)?;
+            if !det.is_undefined() {
+                detail = det;
+            }
+
+            let start_val = options_obj.get(JsString::from("startTime"), context)?;
+            if !start_val.is_undefined() && !start_val.is_null() {
+                let st = start_val.to_number(context)?;
+                if st < 0.0 {
+                    return Err(JsError::from(JsNativeError::typ().with_message(
+                        "PerformanceMark constructor: startTime cannot be negative",
+                    )));
+                }
+                start_time = st;
+            }
+        }
+
+        Ok(PerformanceMark {
+            name,
+            start_time,
+            detail,
+        })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let get_name_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_mark_get_name),
+        )
+        .name("get name")
         .build();
-    JsValue::from(mark_obj)
+        let get_entry_type_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_mark_get_entry_type),
+        )
+        .name("get entryType")
+        .build();
+        let get_start_time_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_mark_get_start_time),
+        )
+        .name("get startTime")
+        .build();
+        let get_duration_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_mark_get_duration),
+        )
+        .name("get duration")
+        .build();
+        let get_detail_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_mark_get_detail),
+        )
+        .name("get detail")
+        .build();
+
+        class
+            .accessor(
+                JsString::from("name"),
+                Some(get_name_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("entryType"),
+                Some(get_entry_type_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("startTime"),
+                Some(get_start_time_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("duration"),
+                Some(get_duration_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("detail"),
+                Some(get_detail_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .method(
+                JsString::from("toJSON"),
+                0,
+                NativeFunction::from_fn_ptr(performance_mark_to_json),
+            );
+
+        Ok(())
+    }
 }
 
-fn create_performance_measure_object(
-    name: &str,
-    start_time: f64,
-    duration: f64,
-    detail: &JsValue,
-    context: &mut Context,
-) -> JsValue {
-    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
-    let realm = context.realm().clone();
-    let to_json_fn = FunctionObjectBuilder::new(
-        &realm,
-        NativeFunction::from_fn_ptr(performance_entry_to_json),
-    )
-    .name("toJSON")
-    .build();
+fn performance_mark_get_name(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let mark = obj.downcast_ref::<PerformanceMark>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-PerformanceMark object"),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(mark.name.clone())))
+}
 
-    let measure_obj = ObjectInitializer::new(context)
-        .property(JsString::from("name"), JsString::from(name), ro)
-        .property(JsString::from("entryType"), JsString::from("measure"), ro)
-        .property(JsString::from("startTime"), JsValue::from(start_time), ro)
-        .property(JsString::from("duration"), JsValue::from(duration), ro)
-        .property(JsString::from("detail"), detail.clone(), ro)
-        .property(JsString::from("toJSON"), to_json_fn, ro)
+fn performance_mark_get_entry_type(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    Ok(JsValue::from(JsString::from("mark")))
+}
+
+fn performance_mark_get_start_time(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let mark = obj.downcast_ref::<PerformanceMark>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-PerformanceMark object"),
+        )
+    })?;
+    Ok(JsValue::from(mark.start_time))
+}
+
+fn performance_mark_get_duration(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    Ok(JsValue::from(0.0))
+}
+
+fn performance_mark_get_detail(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let mark = obj.downcast_ref::<PerformanceMark>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-PerformanceMark object"),
+        )
+    })?;
+    Ok(mark.detail.clone())
+}
+
+fn performance_mark_to_json(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("toJSON called on non-object"))
+    })?;
+    let mark = obj.downcast_ref::<PerformanceMark>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("toJSON called on non-PerformanceMark object"),
+        )
+    })?;
+
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let mut initializer = ObjectInitializer::new(context);
+    initializer.property(
+        JsString::from("name"),
+        JsString::from(mark.name.clone()),
+        ro,
+    );
+    initializer.property(JsString::from("entryType"), JsString::from("mark"), ro);
+    initializer.property(
+        JsString::from("startTime"),
+        JsValue::from(mark.start_time),
+        ro,
+    );
+    initializer.property(JsString::from("duration"), JsValue::from(0.0), ro);
+
+    if !mark.detail.is_undefined() {
+        initializer.property(JsString::from("detail"), mark.detail.clone(), ro);
+    }
+
+    Ok(JsValue::from(initializer.build()))
+}
+
+impl Class for PerformanceMeasure {
+    const NAME: &'static str = "PerformanceMeasure";
+    const LENGTH: usize = 0;
+
+    fn data_constructor(
+        _new_target: &JsValue,
+        args: &[JsValue],
+        _context: &mut Context,
+    ) -> JsResult<Self> {
+        if args
+            .first()
+            .and_then(|v| v.as_string())
+            .map(|s| s.to_std_string().unwrap_or_default())
+            != Some("__internal_private_key__".to_string())
+        {
+            return Err(JsError::from(
+                JsNativeError::typ().with_message("TypeError: Illegal constructor"),
+            ));
+        }
+
+        let name = args
+            .get(1)
+            .and_then(|v| v.as_string())
+            .map(|s| s.to_std_string().unwrap_or_default())
+            .unwrap_or_default();
+        let start_time = args.get(2).and_then(|v| v.as_number()).unwrap_or(0.0);
+        let duration = args.get(3).and_then(|v| v.as_number()).unwrap_or(0.0);
+        let detail = args.get(4).cloned().unwrap_or(JsValue::undefined());
+
+        Ok(PerformanceMeasure {
+            name,
+            start_time,
+            duration,
+            detail,
+        })
+    }
+
+    fn init(class: &mut ClassBuilder<'_>) -> JsResult<()> {
+        let realm = class.context().realm().clone();
+
+        let get_name_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_measure_get_name),
+        )
+        .name("get name")
         .build();
-    JsValue::from(measure_obj)
+        let get_entry_type_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_measure_get_entry_type),
+        )
+        .name("get entryType")
+        .build();
+        let get_start_time_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_measure_get_start_time),
+        )
+        .name("get startTime")
+        .build();
+        let get_duration_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_measure_get_duration),
+        )
+        .name("get duration")
+        .build();
+        let get_detail_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_measure_get_detail),
+        )
+        .name("get detail")
+        .build();
+
+        class
+            .accessor(
+                JsString::from("name"),
+                Some(get_name_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("entryType"),
+                Some(get_entry_type_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("startTime"),
+                Some(get_start_time_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("duration"),
+                Some(get_duration_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("detail"),
+                Some(get_detail_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .method(
+                JsString::from("toJSON"),
+                0,
+                NativeFunction::from_fn_ptr(performance_measure_to_json),
+            );
+
+        Ok(())
+    }
+}
+
+fn performance_measure_get_name(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let measure = obj.downcast_ref::<PerformanceMeasure>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-PerformanceMeasure object"),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(measure.name.clone())))
+}
+
+fn performance_measure_get_entry_type(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    Ok(JsValue::from(JsString::from("measure")))
+}
+
+fn performance_measure_get_start_time(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let measure = obj.downcast_ref::<PerformanceMeasure>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-PerformanceMeasure object"),
+        )
+    })?;
+    Ok(JsValue::from(measure.start_time))
+}
+
+fn performance_measure_get_duration(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let measure = obj.downcast_ref::<PerformanceMeasure>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-PerformanceMeasure object"),
+        )
+    })?;
+    Ok(JsValue::from(measure.duration))
+}
+
+fn performance_measure_get_detail(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let measure = obj.downcast_ref::<PerformanceMeasure>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("Method called on non-PerformanceMeasure object"),
+        )
+    })?;
+    Ok(measure.detail.clone())
+}
+
+fn performance_measure_to_json(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("toJSON called on non-object"))
+    })?;
+    let measure = obj.downcast_ref::<PerformanceMeasure>().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("toJSON called on non-PerformanceMeasure object"),
+        )
+    })?;
+
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let mut initializer = ObjectInitializer::new(context);
+    initializer.property(
+        JsString::from("name"),
+        JsString::from(measure.name.clone()),
+        ro,
+    );
+    initializer.property(JsString::from("entryType"), JsString::from("measure"), ro);
+    initializer.property(
+        JsString::from("startTime"),
+        JsValue::from(measure.start_time),
+        ro,
+    );
+    initializer.property(
+        JsString::from("duration"),
+        JsValue::from(measure.duration),
+        ro,
+    );
+
+    if !measure.detail.is_undefined() {
+        initializer.property(JsString::from("detail"), measure.detail.clone(), ro);
+    }
+
+    Ok(JsValue::from(initializer.build()))
 }
 
 /// Creates the standard `performance` object.
 pub fn create_performance(context: &mut Context) -> JsObject {
     let _ = context.register_global_class::<Performance>();
+    let _ = context.register_global_class::<PerformanceEntry>();
+    let _ = context.register_global_class::<PerformanceMark>();
+    let _ = context.register_global_class::<PerformanceMeasure>();
 
     let performance_obj = context
         .global_object()
@@ -1070,8 +1444,14 @@ mod tests {
             let perf = performance.downcast_ref::<Performance>().unwrap();
             let marks = perf.marks.borrow();
             assert_eq!(marks.len(), 2);
-            assert_eq!(marks[0].name, "start");
-            assert_eq!(marks[1].name, "end");
+            assert_eq!(
+                marks[0].downcast_ref::<PerformanceMark>().unwrap().name,
+                "start"
+            );
+            assert_eq!(
+                marks[1].downcast_ref::<PerformanceMark>().unwrap().name,
+                "end"
+            );
         }
 
         // 2. Measure creation
@@ -1088,8 +1468,20 @@ mod tests {
             let perf = performance.downcast_ref::<Performance>().unwrap();
             let measures = perf.measures.borrow();
             assert_eq!(measures.len(), 1);
-            assert_eq!(measures[0].name, "my-duration");
-            assert!(measures[0].duration >= 0.0);
+            assert_eq!(
+                measures[0]
+                    .downcast_ref::<PerformanceMeasure>()
+                    .unwrap()
+                    .name,
+                "my-duration"
+            );
+            assert!(
+                measures[0]
+                    .downcast_ref::<PerformanceMeasure>()
+                    .unwrap()
+                    .duration
+                    >= 0.0
+            );
         }
 
         // 3. Clear marks by name
@@ -1104,7 +1496,10 @@ mod tests {
             let perf = performance.downcast_ref::<Performance>().unwrap();
             let marks = perf.marks.borrow();
             assert_eq!(marks.len(), 1);
-            assert_eq!(marks[0].name, "end");
+            assert_eq!(
+                marks[0].downcast_ref::<PerformanceMark>().unwrap().name,
+                "end"
+            );
         }
 
         // 4. Clear all marks
@@ -1682,6 +2077,92 @@ mod tests {
                 const res1 = performance.clearResourceTimings();
                 const res2 = performance.setResourceTimingBufferSize(150);
                 res1 === undefined && res2 === undefined
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_classes_global_surface() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // 1. PerformanceMark constructor exposure and properties
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const mark = new PerformanceMark("my-custom-mark", {
+                    startTime: 500,
+                    detail: { status: "success" }
+                });
+                mark.name === "my-custom-mark" &&
+                mark.entryType === "mark" &&
+                mark.startTime === 500 &&
+                mark.duration === 0 &&
+                mark.detail.status === "success"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. Constructed mark is NOT in the timeline
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                performance.getEntries().length === 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 3. toJSON of constructed mark works perfectly
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const json = mark.toJSON();
+                json.name === "my-custom-mark" &&
+                json.entryType === "mark" &&
+                json.startTime === 500 &&
+                json.duration === 0 &&
+                json.detail.status === "success"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 4. PerformanceMeasure constructor is not constructible and throws TypeError
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threwMeasure = false;
+                try {
+                    new PerformanceMeasure();
+                } catch (e) {
+                    threwMeasure = e instanceof TypeError;
+                }
+                threwMeasure
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 5. PerformanceEntry constructor is not constructible and throws TypeError
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threwEntry = false;
+                try {
+                    new PerformanceEntry();
+                } catch (e) {
+                    threwEntry = e instanceof TypeError;
+                }
+                threwEntry
                 "#,
             ))
             .unwrap();
