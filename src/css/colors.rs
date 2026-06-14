@@ -687,6 +687,7 @@ pub fn serialize_color(color: Color) -> String {
 }
 
 fn format_float(val: f32) -> String {
+    let val = if val.is_finite() { val } else { 0.0 };
     let formatted = format!("{:.5}", val);
     let mut trimmed = formatted.trim_end_matches('0');
     if trimmed.ends_with('.') {
@@ -702,17 +703,13 @@ fn format_float(val: f32) -> String {
 /// Serializes a Color into its CSS lab() functional notation.
 pub fn serialize_color_lab(color: Color) -> String {
     let (l, a, b, alpha) = color_to_lab(color);
+    let l_str = format!("{}%", format_float(l));
     if alpha == 1.0 {
-        format!(
-            "lab({} {} {})",
-            format_float(l),
-            format_float(a),
-            format_float(b)
-        )
+        format!("lab({} {} {})", l_str, format_float(a), format_float(b))
     } else {
         format!(
             "lab({} {} {} / {})",
-            format_float(l),
+            l_str,
             format_float(a),
             format_float(b),
             format_float(alpha)
@@ -723,17 +720,13 @@ pub fn serialize_color_lab(color: Color) -> String {
 /// Serializes a Color into its CSS lch() functional notation.
 pub fn serialize_color_lch(color: Color) -> String {
     let (l, c, h, alpha) = color_to_lch(color);
+    let l_str = format!("{}%", format_float(l));
     if alpha == 1.0 {
-        format!(
-            "lch({} {} {})",
-            format_float(l),
-            format_float(c),
-            format_float(h)
-        )
+        format!("lch({} {} {})", l_str, format_float(c), format_float(h))
     } else {
         format!(
             "lch({} {} {} / {})",
-            format_float(l),
+            l_str,
             format_float(c),
             format_float(h),
             format_float(alpha)
@@ -1348,6 +1341,9 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let parts_vec = get_color_parts("rgb", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
                 if parts.len() == 3 || parts.len() == 4 {
+                    if !validate_rgb_components_type(&parts[0..3]) {
+                        return None;
+                    }
                     let r = parse_rgb_component(parts[0])?;
                     let g = parse_rgb_component(parts[1])?;
                     let b = parse_rgb_component(parts[2])?;
@@ -1925,6 +1921,55 @@ fn parse_hue_angle(part: &str) -> Option<f32> {
     } else {
         part.parse::<f32>().ok()
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComponentType {
+    Number,
+    Percentage,
+    NoneValue,
+}
+
+fn detect_component_type(part: &str) -> Option<ComponentType> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(ComponentType::NoneValue);
+    }
+    if part == "0" || part == "0.0" || part == "-0" {
+        return Some(ComponentType::NoneValue);
+    }
+    if part.to_ascii_lowercase().starts_with("calc(") {
+        let (val, unit) = parse_calc_expression(part)?;
+        if val == 0.0 {
+            return Some(ComponentType::NoneValue);
+        }
+        match unit {
+            None => Some(ComponentType::Number),
+            Some(ref u) if u == "%" => Some(ComponentType::Percentage),
+            _ => None,
+        }
+    } else if part.ends_with('%') {
+        Some(ComponentType::Percentage)
+    } else {
+        Some(ComponentType::Number)
+    }
+}
+
+fn validate_rgb_components_type(parts: &[&str]) -> bool {
+    let mut has_number = false;
+    let mut has_percentage = false;
+    for part in parts {
+        if let Some(t) = detect_component_type(part) {
+            match t {
+                ComponentType::Number => has_number = true,
+                ComponentType::Percentage => has_percentage = true,
+                ComponentType::NoneValue => {}
+            }
+        } else {
+            return false;
+        }
+    }
+    !(has_number && has_percentage)
 }
 
 fn parse_rgb_component(part: &str) -> Option<f32> {
@@ -3375,5 +3420,28 @@ mod tests {
             parse_color("oklch(0.6 0.12 0.3333turn)"), // 120 deg
             Some(parse_oklch(0.6, 0.12, 120.0, 1.0))
         );
+    }
+
+    #[test]
+    fn test_rgb_type_mixing_and_serialization() {
+        // Disallow mixed non-zero percentage and number types in rgb/rgba
+        assert_eq!(parse_color("rgb(100% 0 128)"), None); // mixed percentage and number
+        assert_eq!(
+            parse_color("rgb(100% 0 0%)"),
+            Some(Color::Rgba(255, 0, 0, 255))
+        ); // valid because 0 is treated as neutral, others are percentages
+        assert_eq!(parse_color("rgb(100% 50% 128)"), None); // mixed percentage and number
+        assert_eq!(parse_color("rgb(255 50% 128)"), None); // mixed number and percentage
+        assert_eq!(
+            parse_color("rgb(calc(50% + 50%) 0 0%)"),
+            Some(Color::Rgba(255, 0, 0, 255))
+        ); // calc percentage mixed with 0 is valid
+
+        // Lab and LCH lightness serialization as percentage
+        let white_lab = serialize_color_lab(Color::Rgba(255, 255, 255, 255));
+        assert!(white_lab.starts_with("lab(100%"));
+
+        let white_lch = serialize_color_lch(Color::Rgba(255, 255, 255, 255));
+        assert!(white_lch.starts_with("lch(100%"));
     }
 }
