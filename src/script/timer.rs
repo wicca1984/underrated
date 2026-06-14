@@ -518,6 +518,20 @@ fn js_value_to_i32(val: &JsValue, context: &mut Context) -> Result<i32, JsError>
     }
 }
 
+fn js_value_to_u32(val: &JsValue, context: &mut Context) -> Result<u32, JsError> {
+    let num = val.to_number(context)?;
+    if num.is_nan() || num.is_infinite() {
+        Ok(0)
+    } else {
+        // Implement standard WebIDL 32-bit unsigned integer (unsigned long) wrapping/modulo conversion
+        let truncated = num.trunc();
+        let modulo_val = truncated % 4294967296.0;
+        let i64_val = modulo_val as i64;
+        let u32_val = i64_val as u32;
+        Ok(u32_val)
+    }
+}
+
 fn next_timer_id() -> i32 {
     NEXT_TIMER_ID.with(|cell| {
         let mut next_id = cell.borrow_mut();
@@ -819,12 +833,7 @@ pub fn request_idle_callback(
         if let Some(options_obj) = options_val.as_object() {
             let timeout_val = options_obj.get(JsString::from("timeout"), context)?;
             if !timeout_val.is_undefined() && !timeout_val.is_null() {
-                let t_num = timeout_val.to_number(context)?;
-                if t_num >= 0.0 && t_num.is_finite() {
-                    Some(t_num as u32)
-                } else {
-                    None
-                }
+                Some(js_value_to_u32(&timeout_val, context)?)
             } else {
                 None
             }
@@ -2260,5 +2269,69 @@ mod tests {
         assert!(get_timer(3).is_none());
 
         assert_eq!(get_timer_count(), 2); // only id1 (1) and id3 (i32::MAX) are active
+    }
+
+    #[test]
+    fn test_request_idle_callback_webidl_wrapping() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. Verify negative timeout values wrap under WebIDL unsigned long rules:
+        // -10 should wrap to 4294967286 (2^32 - 10)
+        let id1_val = context
+            .eval(Source::from_bytes(
+                r#"
+            requestIdleCallback(() => {}, { timeout: -10 });
+            "#,
+            ))
+            .unwrap();
+        let id1 = id1_val.as_number().unwrap() as i32;
+        let idle1 = IDLE_CALLBACKS
+            .with(|cell| cell.borrow().get(&id1).cloned())
+            .unwrap();
+        assert_eq!(idle1.timeout, Some(4294967286));
+
+        // 2. Verify large timeout values modulo 2^32:
+        // 4294967396 (2^32 + 100) should wrap to 100
+        let id2_val = context
+            .eval(Source::from_bytes(
+                r#"
+            requestIdleCallback(() => {}, { timeout: 4294967396 });
+            "#,
+            ))
+            .unwrap();
+        let id2 = id2_val.as_number().unwrap() as i32;
+        let idle2 = IDLE_CALLBACKS
+            .with(|cell| cell.borrow().get(&id2).cloned())
+            .unwrap();
+        assert_eq!(idle2.timeout, Some(100));
+
+        // 3. Verify NaN and Infinity values convert to 0:
+        let id3_val = context
+            .eval(Source::from_bytes(
+                r#"
+            requestIdleCallback(() => {}, { timeout: NaN });
+            "#,
+            ))
+            .unwrap();
+        let id3 = id3_val.as_number().unwrap() as i32;
+        let idle3 = IDLE_CALLBACKS
+            .with(|cell| cell.borrow().get(&id3).cloned())
+            .unwrap();
+        assert_eq!(idle3.timeout, Some(0));
+
+        let id4_val = context
+            .eval(Source::from_bytes(
+                r#"
+            requestIdleCallback(() => {}, { timeout: Infinity });
+            "#,
+            ))
+            .unwrap();
+        let id4 = id4_val.as_number().unwrap() as i32;
+        let idle4 = IDLE_CALLBACKS
+            .with(|cell| cell.borrow().get(&id4).cloned())
+            .unwrap();
+        assert_eq!(idle4.timeout, Some(0));
     }
 }
