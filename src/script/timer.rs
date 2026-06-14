@@ -153,7 +153,7 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
                 timers.remove(&id);
             } else {
                 t.nesting_level += 1;
-                if t.nesting_level >= 5 && t.delay < 4 {
+                if t.nesting_level > 5 && t.delay < 4 {
                     t.delay = 4;
                 }
             }
@@ -225,19 +225,114 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
             let global_this = context.global_object().clone();
             callback_obj.call(&JsValue::from(global_this), &callback_args, context)
         } else if callback.is_string() {
-            let code_str = callback.to_string(context)?;
-            let std_str = code_str.to_std_string().unwrap_or_default();
-            let source = Source::from_bytes(std_str.as_bytes());
-            context.eval(source)
+            match callback.to_string(context) {
+                Ok(code_str) => {
+                    let std_str = code_str.to_std_string().unwrap_or_default();
+                    let source = Source::from_bytes(std_str.as_bytes());
+                    context.eval(source)
+                }
+                Err(err) => Err(err),
+            }
         } else {
             // No-op or ignore non-callable callbacks gracefully
             Ok(JsValue::undefined())
         }
-    }?;
+    };
 
-    drain_microtasks(context)?;
+    let drain_res = drain_microtasks(context);
 
-    Ok(res)
+    match res {
+        Err(err) => Err(err),
+        Ok(val) => drain_res.map(|_| val),
+    }
+}
+
+fn get_current_performance_timestamp(context: &mut Context) -> Result<JsValue, JsError> {
+    let perf_opt = context
+        .global_object()
+        .get(JsString::from("performance"), context)
+        .ok()
+        .and_then(|val| val.as_object());
+
+    if let Some(perf_obj) = perf_opt {
+        let now_opt = perf_obj
+            .get(JsString::from("now"), context)
+            .ok()
+            .and_then(|val| val.as_object());
+        if let Some(now_fn) = now_opt {
+            return now_fn
+                .call(&JsValue::from(perf_obj), &[], context)
+                .or_else(|_| Ok(JsValue::from(16.0)));
+        }
+    }
+    Ok(JsValue::from(16.0))
+}
+
+/// Trigger all currently registered animation frame callbacks.
+/// In accordance with the spec, all callbacks run in this frame must receive the exact same timestamp.
+pub fn trigger_all_animation_frames(
+    context: &mut Context,
+) -> Result<Vec<Result<JsValue, JsError>>, JsError> {
+    let ids: Vec<i32> = ANIMATION_FRAMES.with(|cell| {
+        let keys = cell.borrow().keys().cloned().collect::<Vec<i32>>();
+        let mut sorted = keys;
+        sorted.sort();
+        sorted
+    });
+
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let timestamp = get_current_performance_timestamp(context)?;
+    let mut results = Vec::new();
+
+    for id in ids {
+        let exists = ANIMATION_FRAMES.with(|cell| cell.borrow_mut().remove(&id).is_some());
+        if !exists {
+            continue;
+        }
+
+        let raf_obj = get_or_create_animation_frames_obj(context)?;
+        let frame_info_val = raf_obj.get(id, context)?;
+        if frame_info_val.is_undefined() || frame_info_val.is_null() {
+            continue;
+        }
+
+        if let Some(frame_info_obj) = frame_info_val.as_object() {
+            let _ = raf_obj.delete_property_or_throw(id, context)?;
+
+            let callback = frame_info_obj.get(JsString::from("callback"), context)?;
+            let callback_args = vec![timestamp.clone()];
+
+            let res = if let Some(callback_obj) = callback.as_object() {
+                let global_this = context.global_object().clone();
+                callback_obj.call(&JsValue::from(global_this), &callback_args, context)
+            } else if callback.is_string() {
+                match callback.to_string(context) {
+                    Ok(code_str) => {
+                        let std_str = code_str.to_std_string().unwrap_or_default();
+                        let source = Source::from_bytes(std_str.as_bytes());
+                        context.eval(source)
+                    }
+                    Err(err) => Err(err),
+                }
+            } else {
+                Ok(JsValue::undefined())
+            };
+
+            let drain_res = drain_microtasks(context);
+
+            let final_res = match res {
+                Err(err) => Err(err),
+                Ok(val) => drain_res.map(|_| val),
+            };
+
+            results.push(final_res);
+        }
+    }
+
+    Ok(results)
 }
 
 /// Trigger an animation frame callback manually (for testing or event loop MVP).
@@ -270,48 +365,32 @@ pub fn trigger_animation_frame(id: i32, context: &mut Context) -> Result<JsValue
 
     let callback = frame_info_obj.get(JsString::from("callback"), context)?;
 
-    // Get the timestamp from performance.now() if it exists in JS context, otherwise fall back to 16.0
-    let timestamp = if let Ok(perf_val) = context
-        .global_object()
-        .get(JsString::from("performance"), context)
-    {
-        if let Some(perf_obj) = perf_val.as_object() {
-            if let Ok(now_val) = perf_obj.get(JsString::from("now"), context) {
-                if let Some(now_fn) = now_val.as_object() {
-                    now_fn
-                        .call(&perf_val, &[], context)
-                        .unwrap_or_else(|_| JsValue::from(16.0))
-                } else {
-                    JsValue::from(16.0)
-                }
-            } else {
-                JsValue::from(16.0)
-            }
-        } else {
-            JsValue::from(16.0)
-        }
-    } else {
-        JsValue::from(16.0)
-    };
-
+    let timestamp = get_current_performance_timestamp(context)?;
     let callback_args = vec![timestamp];
 
     let res = if let Some(callback_obj) = callback.as_object() {
         let global_this = context.global_object().clone();
         callback_obj.call(&JsValue::from(global_this), &callback_args, context)
     } else if callback.is_string() {
-        let code_str = callback.to_string(context)?;
-        let std_str = code_str.to_std_string().unwrap_or_default();
-        let source = Source::from_bytes(std_str.as_bytes());
-        context.eval(source)
+        match callback.to_string(context) {
+            Ok(code_str) => {
+                let std_str = code_str.to_std_string().unwrap_or_default();
+                let source = Source::from_bytes(std_str.as_bytes());
+                context.eval(source)
+            }
+            Err(err) => Err(err),
+        }
     } else {
         // No-op or ignore non-callable callbacks gracefully
         Ok(JsValue::undefined())
-    }?;
+    };
 
-    drain_microtasks(context)?;
+    let drain_res = drain_microtasks(context);
 
-    Ok(res)
+    match res {
+        Err(err) => Err(err),
+        Ok(val) => drain_res.map(|_| val),
+    }
 }
 
 fn time_remaining_fixed(
@@ -372,18 +451,25 @@ pub fn trigger_idle_callback(id: i32, context: &mut Context) -> Result<JsValue, 
         let global_this = context.global_object().clone();
         callback_obj.call(&JsValue::from(global_this), &callback_args, context)
     } else if callback.is_string() {
-        let code_str = callback.to_string(context)?;
-        let std_str = code_str.to_std_string().unwrap_or_default();
-        let source = Source::from_bytes(std_str.as_bytes());
-        context.eval(source)
+        match callback.to_string(context) {
+            Ok(code_str) => {
+                let std_str = code_str.to_std_string().unwrap_or_default();
+                let source = Source::from_bytes(std_str.as_bytes());
+                context.eval(source)
+            }
+            Err(err) => Err(err),
+        }
     } else {
         // No-op or ignore non-callable callbacks gracefully
         Ok(JsValue::undefined())
-    }?;
+    };
 
-    drain_microtasks(context)?;
+    let drain_res = drain_microtasks(context);
 
-    Ok(res)
+    match res {
+        Err(err) => Err(err),
+        Ok(val) => drain_res.map(|_| val),
+    }
 }
 
 fn js_value_to_i32(val: &JsValue, context: &mut Context) -> Result<i32, JsError> {
@@ -467,7 +553,7 @@ pub fn set_timeout(
         0
     };
 
-    if new_level >= 5 && delay < 4 {
+    if current_level > 5 && delay < 4 {
         delay = 4;
     }
 
@@ -555,7 +641,7 @@ pub fn set_interval(
         0
     };
 
-    if new_level >= 5 && delay < 4 {
+    if current_level > 5 && delay < 4 {
         delay = 4;
     }
 
@@ -1242,8 +1328,12 @@ mod tests {
                 var id2 = setTimeout(() => {
                     var id3 = setTimeout(() => {
                         var id4 = setTimeout(() => {
-                            var id5 = setTimeout(() => {}, 0);
-                            last_id = id5;
+                            var id5 = setTimeout(() => {
+                                var id6 = setTimeout(() => {
+                                    var id7 = setTimeout(() => {}, 0);
+                                    last_id = id7;
+                                }, 0);
+                            }, 0);
                         }, 0);
                     }, 0);
                 }, 0);
@@ -1280,10 +1370,24 @@ mod tests {
 
         // Trigger 4th
         trigger_timer(4, &mut context).unwrap();
-        // Now id5 should be registered (ID 5), but since nesting level is 5, delay must be clamped to 4!
+        // Now id5 should be registered (ID 5), with delay 0, nesting level 5
         let t5 = get_timer(5).unwrap();
-        assert_eq!(t5.delay, 4);
+        assert_eq!(t5.delay, 0);
         assert_eq!(t5.nesting_level, 5);
+
+        // Trigger 5th
+        trigger_timer(5, &mut context).unwrap();
+        // Now id6 should be registered (ID 6), with delay 0, nesting level 6 (since current_level is 5, which is not > 5)
+        let t6 = get_timer(6).unwrap();
+        assert_eq!(t6.delay, 0);
+        assert_eq!(t6.nesting_level, 6);
+
+        // Trigger 6th
+        trigger_timer(6, &mut context).unwrap();
+        // Now id7 should be registered (ID 7). Since current_level is 6 (which is > 5), delay must be clamped to 4!
+        let t7 = get_timer(7).unwrap();
+        assert_eq!(t7.delay, 4);
+        assert_eq!(t7.nesting_level, 7);
     }
 
     #[test]
@@ -1322,11 +1426,17 @@ mod tests {
         assert_eq!(t.delay, 0);
         assert_eq!(t.nesting_level, 4);
 
-        // Trigger 4th time -> next execution nesting level becomes 5! So delay must clamp to 4.
+        // Trigger 4th time
+        trigger_timer(id, &mut context).unwrap();
+        let t = get_timer(id).unwrap();
+        assert_eq!(t.delay, 0);
+        assert_eq!(t.nesting_level, 5);
+
+        // Trigger 5th time -> next execution nesting level becomes 6! So delay must clamp to 4.
         trigger_timer(id, &mut context).unwrap();
         let t = get_timer(id).unwrap();
         assert_eq!(t.delay, 4);
-        assert_eq!(t.nesting_level, 5);
+        assert_eq!(t.nesting_level, 6);
     }
 
     #[test]
@@ -1543,5 +1653,91 @@ mod tests {
                 .eval(Source::from_bytes("cancelIdleCallback()"))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn test_timer_callback_exception_still_drains_microtasks() {
+        clear_all_timers();
+        clear_all_microtasks();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.__microtask_ran = false;
+            var timerId = setTimeout(() => {
+                queueMicrotask(() => {
+                    globalThis.__microtask_ran = true;
+                });
+                throw new Error("timer callback threw exception");
+            }, 100);
+            "#,
+            ))
+            .unwrap();
+
+        let id_val = context.eval(Source::from_bytes("timerId")).unwrap();
+        let id = id_val.as_number().unwrap() as i32;
+
+        // Triggering the timer should return an error because the callback threw an exception.
+        let trigger_res = trigger_timer(id, &mut context);
+        assert!(trigger_res.is_err());
+
+        // However, the microtask queued during the timer's run must still be drained!
+        let microtask_ran = context
+            .eval(Source::from_bytes("globalThis.__microtask_ran"))
+            .unwrap()
+            .as_boolean()
+            .unwrap();
+        assert!(microtask_ran);
+    }
+
+    #[test]
+    fn test_trigger_all_animation_frames_same_timestamp() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.performance = {
+                now() { return 54321.0; }
+            };
+            globalThis.__ts1 = 0;
+            globalThis.__ts2 = 0;
+            requestAnimationFrame((ts) => {
+                globalThis.__ts1 = ts;
+            });
+            requestAnimationFrame((ts) => {
+                globalThis.__ts2 = ts;
+            });
+            "#,
+            ))
+            .unwrap();
+
+        assert_eq!(get_animation_frame_count(), 2);
+
+        let results = trigger_all_animation_frames(&mut context).unwrap();
+        assert_eq!(results.len(), 2);
+        for res in results {
+            assert!(res.is_ok());
+        }
+
+        assert_eq!(get_animation_frame_count(), 0);
+
+        let ts1 = context
+            .eval(Source::from_bytes("globalThis.__ts1"))
+            .unwrap()
+            .as_number()
+            .unwrap();
+        let ts2 = context
+            .eval(Source::from_bytes("globalThis.__ts2"))
+            .unwrap()
+            .as_number()
+            .unwrap();
+
+        assert_eq!(ts1, 54321.0);
+        assert_eq!(ts2, 54321.0);
     }
 }
