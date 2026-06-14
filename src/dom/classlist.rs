@@ -105,6 +105,9 @@ impl Dom {
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-add
     pub fn add_classes(&mut self, node: NodeId, tokens: &[&str]) {
+        if tokens.is_empty() {
+            return;
+        }
         if let Some(NodeData::Element { .. }) = self.data(node) {
             let has_class_attr = self.get_attribute(node, "class").is_some();
             let mut classes = self.class_list(node);
@@ -147,6 +150,9 @@ impl Dom {
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-remove
     pub fn remove_classes(&mut self, node: NodeId, tokens: &[&str]) {
+        if tokens.is_empty() {
+            return;
+        }
         if let Some(NodeData::Element { .. }) = self.data(node) {
             let has_class_attr = self.get_attribute(node, "class").is_some();
             let mut classes = self.class_list(node);
@@ -284,6 +290,9 @@ impl Dom {
         node: NodeId,
         tokens: &[&str],
     ) -> Result<(), ClassTokenError> {
+        if tokens.is_empty() {
+            return Ok(());
+        }
         for token in tokens {
             self.validate_class_token(token)?;
         }
@@ -312,6 +321,9 @@ impl Dom {
         node: NodeId,
         tokens: &[&str],
     ) -> Result<(), ClassTokenError> {
+        if tokens.is_empty() {
+            return Ok(());
+        }
         for token in tokens {
             self.validate_class_token(token)?;
         }
@@ -1136,5 +1148,18 @@ mod tests {
         assert_eq!(dom.try_remove_class(text, "foo"), Ok(()));
         assert_eq!(dom.try_toggle_class_force(text, "foo", None), Ok(false));
         assert_eq!(dom.try_replace_class(text, "foo", "bar"), Ok(false));
+
+        // 10. Verification that empty token slices result in no-op early returns
+        dom.set_attribute(el, "class", "  original   spacing  ");
+        assert_eq!(dom.try_add_classes(el, &[]), Ok(()));
+        assert_eq!(
+            dom.get_attribute(el, "class"),
+            Some("  original   spacing  ")
+        );
+        assert_eq!(dom.try_remove_classes(el, &[]), Ok(()));
+        assert_eq!(
+            dom.get_attribute(el, "class"),
+            Some("  original   spacing  ")
+        );
     }
 }
