@@ -261,6 +261,96 @@ impl Dom {
         }
         Ok(())
     }
+
+    /// Splits a Text node into two Text nodes at the specified UTF-16 code unit offset.
+    ///
+    /// Both nodes remain in the tree as siblings, and the new Text node is returned.
+    /// Returns `Err(DomError::NotSupported)` if the node is not a Text node.
+    /// Returns `Err(DomError::IndexSize)` if the offset is greater than the data's length.
+    // spec: https://dom.spec.whatwg.org/#dom-text-splittext
+    pub fn split_text(&mut self, node: NodeId, offset: usize) -> Result<NodeId, DomError> {
+        let data = self.data(node).ok_or(DomError::NotSupported)?;
+        let length = match data {
+            NodeData::Text(s) => s.encode_utf16().count(),
+            _ => return Err(DomError::NotSupported),
+        };
+
+        if offset > length {
+            return Err(DomError::IndexSize);
+        }
+
+        let count = length - offset;
+        let new_data = self.substring_data(node, offset, count)?;
+        let new_node = self.create_node(NodeData::Text(new_data));
+
+        if let Some(parent) = self.parent(node) {
+            let reference = if let Some(p_node) = self.arena.get(parent) {
+                let idx = p_node.children.iter().position(|&c| c == node);
+                idx.and_then(|i| p_node.children.get(i + 1).copied())
+            } else {
+                None
+            };
+            self.insert_before(parent, new_node, reference);
+        }
+
+        self.replace_data(node, offset, count, "")?;
+
+        Ok(new_node)
+    }
+
+    /// Returns the contiguous text of all sibling Text nodes of the given Text node.
+    ///
+    /// Returns `None` if the node is not a Text node.
+    // spec: https://dom.spec.whatwg.org/#dom-text-wholetext
+    pub fn whole_text(&self, node: NodeId) -> Option<String> {
+        let data = self.data(node)?;
+        if !matches!(data, NodeData::Text(_)) {
+            return None;
+        }
+
+        let parent = self.parent(node);
+        match parent {
+            None => {
+                if let NodeData::Text(s) = data {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            }
+            Some(parent_id) => {
+                let children = self.children(parent_id);
+                let idx = children.iter().position(|&c| c == node)?;
+
+                let mut start_idx = idx;
+                while start_idx > 0 {
+                    let prev_sibling = children[start_idx - 1];
+                    if let Some(NodeData::Text(_)) = self.data(prev_sibling) {
+                        start_idx -= 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let mut end_idx = idx;
+                while end_idx + 1 < children.len() {
+                    let next_sibling = children[end_idx + 1];
+                    if let Some(NodeData::Text(_)) = self.data(next_sibling) {
+                        end_idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let mut result = String::new();
+                for &sibling in &children[start_idx..=end_idx] {
+                    if let Some(NodeData::Text(s)) = self.data(sibling) {
+                        result.push_str(s);
+                    }
+                }
+                Some(result)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -523,5 +613,110 @@ mod tests {
         let foxy_node = dom.create_node(NodeData::Text("a🦊b".into()));
         assert_eq!(dom.replace_data(foxy_node, 1, 2, "cat"), Ok(()));
         assert_eq!(dom.character_data(foxy_node), Some("acatb".into()));
+    }
+
+    #[test]
+    fn test_split_text_basic() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let text_node = dom.create_node(NodeData::Text("hello world".into()));
+        dom.append_child(parent, text_node);
+
+        assert_eq!(dom.character_data(text_node), Some("hello world".into()));
+        assert_eq!(dom.children(parent).len(), 1);
+
+        dom.clear_dirty();
+        let new_node = dom.split_text(text_node, 5).unwrap();
+
+        assert_eq!(dom.character_data(text_node), Some("hello".into()));
+        assert_eq!(dom.character_data(new_node), Some(" world".into()));
+
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0], text_node);
+        assert_eq!(children[1], new_node);
+        assert_eq!(dom.parent(new_node), Some(parent));
+        assert!(dom.is_dirty(parent));
+    }
+
+    #[test]
+    fn test_split_text_no_parent() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("independent text".into()));
+
+        let new_node = dom.split_text(text_node, 11).unwrap();
+        assert_eq!(dom.character_data(text_node), Some("independent".into()));
+        assert_eq!(dom.character_data(new_node), Some(" text".into()));
+        assert_eq!(dom.parent(text_node), None);
+        assert_eq!(dom.parent(new_node), None);
+    }
+
+    #[test]
+    fn test_split_text_errors() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("abc".into()));
+        let comment_node = dom.create_node(NodeData::Comment("comment".into()));
+        let element_node = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.split_text(text_node, 4), Err(DomError::IndexSize));
+        assert_eq!(dom.split_text(comment_node, 3), Err(DomError::NotSupported));
+        assert_eq!(dom.split_text(element_node, 0), Err(DomError::NotSupported));
+    }
+
+    #[test]
+    fn test_whole_text_basic() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        let t1 = dom.create_node(NodeData::Text("a".into()));
+        let c1 = dom.create_node(NodeData::Comment("comment".into()));
+        let t2 = dom.create_node(NodeData::Text("b".into()));
+        let t3 = dom.create_node(NodeData::Text("c".into()));
+        let el = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let t4 = dom.create_node(NodeData::Text("d".into()));
+
+        dom.append_child(parent, t1);
+        dom.append_child(parent, c1);
+        dom.append_child(parent, t2);
+        dom.append_child(parent, t3);
+        dom.append_child(parent, el);
+        dom.append_child(parent, t4);
+
+        assert_eq!(dom.whole_text(t1), Some("a".into()));
+        assert_eq!(dom.whole_text(t2), Some("bc".into()));
+        assert_eq!(dom.whole_text(t3), Some("bc".into()));
+        assert_eq!(dom.whole_text(t4), Some("d".into()));
+    }
+
+    #[test]
+    fn test_whole_text_no_parent() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("independent".into()));
+        assert_eq!(dom.whole_text(text_node), Some("independent".into()));
+    }
+
+    #[test]
+    fn test_whole_text_errors() {
+        let mut dom = Dom::new();
+        let comment_node = dom.create_node(NodeData::Comment("comment".into()));
+        let element_node = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.whole_text(comment_node), None);
+        assert_eq!(dom.whole_text(element_node), None);
     }
 }
