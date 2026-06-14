@@ -2103,6 +2103,10 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
         CssValue::PrintColorAdjust(pca) => pca.as_str().to_string(),
         CssValue::ForcedColorAdjust(fca) => fca.as_str().to_string(),
         CssValue::ColorScheme(cs) => cs.as_str().to_string(),
+        CssValue::ColumnSpan(cs) => match cs {
+            crate::css::values::ColumnSpanValue::None => "none".to_string(),
+            crate::css::values::ColumnSpanValue::All => "all".to_string(),
+        },
     }
 }
 
