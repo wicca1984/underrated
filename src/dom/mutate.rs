@@ -398,6 +398,10 @@ impl Dom {
             return None;
         }
 
+        if new_child == old_child {
+            return Some(old_child);
+        }
+
         let mut reference_child = None;
         if let Some(p_node) = self.arena.get(parent)
             && let Some(pos) = p_node.children.iter().position(|&c| c == old_child)
@@ -8279,5 +8283,116 @@ mod tests {
         // Inserting a child before itself should advance reference to next sibling (i.e. do nothing / keep it there)
         dom.insert_before(parent, child, Some(child));
         assert_eq!(dom.children(parent), &[child]);
+    }
+
+    #[test]
+    fn test_t1057_replace_child_same_node() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let child = elem(&mut dom, "span");
+        dom.append_child(parent, child);
+
+        // Replace child with itself.
+        let res = dom.replace_child(parent, child, child);
+        assert_eq!(res, Some(child));
+        assert_eq!(dom.children(parent), &[child]);
+
+        // Replace with a non-child should fail.
+        let non_child = elem(&mut dom, "p");
+        let res2 = dom.replace_child(parent, child, non_child);
+        assert_eq!(res2, None);
+    }
+
+    #[test]
+    fn test_t1057_replace_child_with_descendant() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let old_child = elem(&mut dom, "p");
+        let descendant = elem(&mut dom, "span");
+        dom.append_child(parent, old_child);
+        dom.append_child(old_child, descendant);
+
+        assert_eq!(dom.children(parent), &[old_child]);
+        assert_eq!(dom.children(old_child), &[descendant]);
+
+        // Replace old_child with descendant.
+        let res = dom.replace_child(parent, descendant, old_child);
+        assert_eq!(res, Some(old_child));
+
+        assert_eq!(dom.children(parent), &[descendant]);
+        assert_eq!(dom.parent(descendant), Some(parent));
+        assert_eq!(dom.parent(old_child), None);
+        assert_eq!(dom.children(old_child), &[] as &[NodeId]);
+    }
+
+    #[test]
+    fn test_t1057_strengthen_validation_document_parent() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 1. Appending second Element directly under Document must fail
+        let el1 = elem(&mut dom, "html");
+        let el2 = elem(&mut dom, "body");
+        dom.append(doc, &[NodeOrString::Node(el1)]);
+        assert_eq!(dom.children(doc), &[el1]);
+
+        dom.append(doc, &[NodeOrString::Node(el2)]);
+        // The second Element must have been rejected
+        assert_eq!(dom.children(doc), &[el1]);
+        assert_ne!(dom.parent(el2), Some(doc));
+
+        // 2. Replacing existing child with Element (when there's only one Element) should succeed
+        let res = dom.replace_child(doc, el2, el1);
+        assert_eq!(res, Some(el1));
+        assert_eq!(dom.children(doc), &[el2]);
+        assert_eq!(dom.parent(el2), Some(doc));
+        assert_eq!(dom.parent(el1), None);
+
+        // 3. Doctype ordering: Doctype must precede Element
+        let doctype = dom.create_node(NodeData::Doctype {
+            name: "html".to_string(),
+            public_id: String::new(),
+            system_id: String::new(),
+        });
+        // Appending Doctype when an Element exists at the end (so Doctype would be after Element) must fail
+        dom.append(doc, &[NodeOrString::Node(doctype)]);
+        assert!(!dom.children(doc).contains(&doctype));
+
+        // But inserting Doctype before the Element must succeed!
+        dom.insert_before(doc, doctype, Some(el2));
+        assert_eq!(dom.children(doc), &[doctype, el2]);
+    }
+
+    #[test]
+    fn test_t1057_document_fragment_complex_validation() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let el = elem(&mut dom, "html");
+        dom.append_child(doc, el);
+
+        // Create a fragment with multiple elements.
+        let frag = dom.create_node(NodeData::Document);
+        let f1 = elem(&mut dom, "span");
+        let f2 = elem(&mut dom, "div");
+        dom.append_child(frag, f1);
+        dom.append_child(frag, f2);
+
+        // Appending the fragment to doc (which already has `el`) should fail because it has 2 elements
+        // and doc already has 1.
+        dom.append(doc, &[NodeOrString::Node(frag)]);
+        assert_eq!(dom.children(doc), &[el]);
+        assert_eq!(dom.children(frag), &[f1, f2]); // untouched
+
+        // Create a fragment with one Element.
+        let frag_ok = dom.create_node(NodeData::Document);
+        let f_ok = elem(&mut dom, "body");
+        dom.append_child(frag_ok, f_ok);
+
+        // Replacing `el` with `frag_ok` (which has 1 element) should succeed!
+        let res = dom.replace_child(doc, frag_ok, el);
+        assert_eq!(res, Some(el));
+        assert_eq!(dom.children(doc), &[f_ok]);
+        assert_eq!(dom.parent(f_ok), Some(doc));
+        assert_eq!(dom.children(frag_ok), &[] as &[NodeId]);
     }
 }
