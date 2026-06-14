@@ -378,7 +378,7 @@ fn test_html5lib_tree_construction_conformance() {
         }
     }
 
-    const BASELINE: usize = 1383;
+    const BASELINE: usize = 1413;
 
     eprintln!(
         "html5lib tree-construction: PASS={} FAIL={} SKIP={} (baseline >= {})",
