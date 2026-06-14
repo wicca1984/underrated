@@ -31,6 +31,9 @@ impl Dom {
     /// Returns the first element in the document with the given `id`.
     // spec: https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
     pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
+        if id.is_empty() {
+            return None;
+        }
         // Document order (pre-order) traversal.
         // We include the document root itself, although it won't match an ID attribute.
         std::iter::once(self.document())
@@ -2694,5 +2697,51 @@ mod tests {
         assert!(divs_without_p.contains(&sib1));
         assert!(!divs_without_p.contains(&sibling_parent));
         assert!(!divs_without_p.contains(&container));
+    }
+
+    #[test]
+    fn test_t1071_compliance_improvements() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 1. Test get_element_by_id with empty string
+        let empty_id_element = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "".into())],
+        });
+        dom.append_child(doc, empty_id_element);
+
+        // Even though an element with id="" exists, get_element_by_id("") must return None
+        assert_eq!(dom.get_element_by_id(""), None);
+
+        // 2. Test sibling/relative matches combined with :has and nested selectors
+        let div_parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "parent".into())],
+        });
+        dom.append_child(doc, div_parent);
+
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p1".into())],
+        });
+        dom.append_child(div_parent, p1);
+
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p2".into())],
+        });
+        dom.append_child(div_parent, p2);
+
+        // p1 matches :has(+ p) because p2 is its next sibling
+        assert!(dom.matches(p1, "p:has(+ p)"));
+        // p2 does not match :has(+ p)
+        assert!(!dom.matches(p2, "p:has(+ p)"));
+
+        // 3. Robust case-insensitivity in functional pseudo-classes and tag names
+        assert_eq!(
+            dom.query_selector("DIV:nOt(:hAs(P))"),
+            Some(empty_id_element)
+        );
     }
 }
