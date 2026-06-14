@@ -28,6 +28,16 @@ pub(crate) fn get_clear_value(style: &CategorizedComputedStyle) -> Option<&str> 
     }
 }
 
+fn establishes_bfc(style: &CategorizedComputedStyle) -> bool {
+    get_float_value(style).is_some()
+        || style.reset_box.display == "inline-block"
+        || style.reset_box.display == "flex"
+        || style.reset_box.display == "table"
+        || style.reset_box.display == "table-cell"
+        || style.reset_box.position == "absolute"
+        || style.reset_box.position == "fixed"
+}
+
 /// Computes the maximum bottom edge of the relevant active floats based on `clear_val`.
 pub(crate) fn find_clearance_y(
     children: &[LayoutBox],
@@ -41,32 +51,33 @@ pub(crate) fn find_clearance_y(
     }
 
     while let Some(current) = stack.pop() {
-        if let Some(fv) = current
-            .node
-            .and_then(|node_id| styles.get(&node_id))
-            .and_then(get_float_value)
+        let mut is_bfc = false;
+        if let Some(node_id) = current.node
+            && let Some(style) = styles.get(&node_id)
         {
-            let matches_side = match clear_val {
-                "left" => fv == "left",
-                "right" => fv == "right",
-                "both" => fv == "left" || fv == "right",
-                _ => false,
-            };
-            if matches_side {
-                let margin_bottom = current
-                    .node
-                    .and_then(|node_id| styles.get(&node_id))
-                    .map(|s| crate::layout::get_px(s, "margin-bottom", 0.0))
-                    .unwrap_or(0.0);
-                let bottom_edge = current.rect.max_y() + margin_bottom;
-                max_float_y = Some(match max_float_y {
-                    Some(y) => f32::max(y, bottom_edge),
-                    None => bottom_edge,
-                });
+            is_bfc = establishes_bfc(style);
+            if let Some(fv) = get_float_value(style) {
+                let matches_side = match clear_val {
+                    "left" => fv == "left",
+                    "right" => fv == "right",
+                    "both" => fv == "left" || fv == "right",
+                    _ => false,
+                };
+                if matches_side {
+                    let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+                    let bottom_edge = current.rect.max_y() + margin_bottom;
+                    max_float_y = Some(match max_float_y {
+                        Some(y) => f32::max(y, bottom_edge),
+                        None => bottom_edge,
+                    });
+                }
             }
         }
-        for child in &current.children {
-            stack.push(child);
+
+        if !is_bfc {
+            for child in &current.children {
+                stack.push(child);
+            }
         }
     }
 
@@ -92,31 +103,36 @@ fn collect_preceding_floats(
     }
 
     while let Some(current) = stack.pop() {
+        let mut is_bfc = false;
         if let Some(node_id) = current.node
             && let Some(style) = styles.get(&node_id)
-            && let Some(fv) = get_float_value(style)
         {
-            let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
-            let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
-            let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
-            let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+            is_bfc = establishes_bfc(style);
+            if let Some(fv) = get_float_value(style) {
+                let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
+                let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
+                let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
+                let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
 
-            let x = current.rect.origin.x - margin_left;
-            let y = current.rect.origin.y - margin_top;
-            let width = current.rect.size.width + margin_left + margin_right;
-            let height = current.rect.size.height + margin_top + margin_bottom;
+                let x = current.rect.origin.x - margin_left;
+                let y = current.rect.origin.y - margin_top;
+                let width = current.rect.size.width + margin_left + margin_right;
+                let height = current.rect.size.height + margin_top + margin_bottom;
 
-            floats.push(PrecedingFloat {
-                float_type: fv.to_string(),
-                x,
-                y,
-                width,
-                height,
-            });
+                floats.push(PrecedingFloat {
+                    float_type: fv.to_string(),
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            }
         }
 
-        for child in current.children.iter().rev() {
-            stack.push(child);
+        if !is_bfc {
+            for child in current.children.iter().rev() {
+                stack.push(child);
+            }
         }
     }
 
@@ -927,5 +943,133 @@ mod tests {
         // Since f3 width is 30, it fits next to f2 (at x=150, y=50).
         assert!(approx_eq(f3_layout.rect.origin.y, 50.0));
         assert!(approx_eq(f3_layout.rect.origin.x, 150.0));
+    }
+
+    #[test]
+    fn test_bfc_isolation_for_floats() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // inline-block parent establishing a BFC
+        let bfc_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(body, bfc_container);
+
+        // Nested float inside BFC container (should be isolated from outside)
+        let inner_float = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "inner-float".into())],
+        });
+        dom.append_child(bfc_container, inner_float);
+
+        // Outer float in body context
+        let outer_float = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "outer-float".into())],
+        });
+        dom.append_child(body, outer_float);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .bfc {
+                display: inline-block;
+                width: 0px;
+                height: 0px;
+            }
+            .inner-float {
+                float: left;
+                width: 50px;
+                height: 50px;
+            }
+            .outer-float {
+                float: left;
+                width: 50px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+
+        // Since the inner-float is isolated inside the BFC, the outer-float is positioned as if inner-float does not exist.
+        // Therefore, outer-float is positioned at x = 0 (its margin-left/padding is 0).
+        let outer_layout = &body_box.children[1];
+        assert!(approx_eq(outer_layout.rect.origin.x, 0.0));
+    }
+
+    #[test]
+    fn test_bfc_isolation_for_clearance() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // inline-block parent establishing a BFC
+        let bfc_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(body, bfc_container);
+
+        // Nested float inside BFC container (should be isolated)
+        let inner_float = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "inner-float".into())],
+        });
+        dom.append_child(bfc_container, inner_float);
+
+        // Clearing block in body context
+        let clearing_p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, clearing_p);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(clearing_p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .bfc {
+                display: inline-block;
+                width: 0px;
+                height: 0px;
+            }
+            .inner-float {
+                float: left;
+                width: 50px;
+                height: 50px;
+            }
+            p {
+                display: block;
+                clear: left;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+
+        // If inner-float is isolated, there are no active outer floats.
+        // So clearing_p is positioned at its baseline offset, which is less than 40.0
+        // (if it had cleared the inner-float of height 50, it would be >= 50.0).
+        let p_layout = &body_box.children[1];
+        assert!(p_layout.rect.origin.y < 40.0);
     }
 }
