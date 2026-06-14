@@ -3400,6 +3400,147 @@ impl Dom {
             }
         }
     }
+
+    /// Returns the value of the `cols` content attribute of a valid `<textarea>` element.
+    /// Returns `None` if the node is not a `<textarea>` element, has no `cols` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_cols(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("cols"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `cols` content attribute on a valid `<textarea>` element.
+    /// No-op if the node is not a `<textarea>` element, or if the `NodeId` is invalid.
+    pub fn set_cols(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            self.set_attribute(node, "cols", value);
+        }
+    }
+
+    /// Returns the value of the `rows` content attribute of a valid `<textarea>` element.
+    /// Returns `None` if the node is not a `<textarea>` element, has no `rows` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_rows(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("rows"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `rows` content attribute on a valid `<textarea>` element.
+    /// No-op if the node is not a `<textarea>` element, or if the `NodeId` is invalid.
+    pub fn set_rows(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            self.set_attribute(node, "rows", value);
+        }
+    }
+
+    /// Returns whether the `nomodule` content attribute is present on a valid `<script>` element.
+    /// Returns `None` if the node is not a `<script>` element, or if the `NodeId` is invalid.
+    pub fn get_no_module(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("script")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("nomodule")),
+            );
+        }
+        None
+    }
+
+    /// Sets or removes the `nomodule` content attribute on a valid `<script>` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a `<script>` element, or if the `NodeId` is invalid.
+    pub fn set_no_module(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("script")
+        {
+            if value {
+                self.set_attribute(node, "nomodule", "");
+            } else {
+                self.remove_attribute(node, "nomodule");
+            }
+        }
+    }
+
+    /// Returns the value of the `accept-charset` content attribute of a valid `<form>` element.
+    /// Returns `None` if the node is not a `<form>` element, has no `accept-charset` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_accept_charset(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("accept-charset"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `accept-charset` content attribute on a valid `<form>` element.
+    /// No-op if the node is not a `<form>` element, or if the `NodeId` is invalid.
+    pub fn set_accept_charset(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            self.set_attribute(node, "accept-charset", value);
+        }
+    }
+
+    /// Returns whether the `ismap` content attribute is present on a valid `<img>` element.
+    /// Returns `None` if the node is not an `<img>` element, or if the `NodeId` is invalid.
+    pub fn get_is_map(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("img")
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("ismap")));
+        }
+        None
+    }
+
+    /// Sets or removes the `ismap` content attribute on a valid `<img>` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an `<img>` element, or if the `NodeId` is invalid.
+    pub fn set_is_map(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("img")
+        {
+            if value {
+                self.set_attribute(node, "ismap", "");
+            } else {
+                self.remove_attribute(node, "ismap");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -6579,5 +6720,59 @@ mod tests {
 
         dom.set_default(track_id, false);
         assert_eq!(dom.get_default(track_id), Some(false));
+    }
+
+    #[test]
+    fn test_reflected_attribute_accessors_t0928_rows_cols_nomodule_acceptcharset_ismap() {
+        let mut dom = Dom::new();
+        let textarea_id = elem(&mut dom, "textarea");
+        let script_id = elem(&mut dom, "script");
+        let form_id = elem(&mut dom, "form");
+        let img_id = elem(&mut dom, "img");
+        let div_id = elem(&mut dom, "div");
+
+        // 1. cols (textarea)
+        assert_eq!(dom.get_cols(textarea_id), None);
+        assert_eq!(dom.get_cols(div_id), None);
+        dom.set_cols(textarea_id, "30");
+        dom.set_cols(div_id, "30"); // no-op
+        assert_eq!(dom.get_cols(textarea_id), Some("30"));
+        assert_eq!(dom.get_cols(div_id), None);
+
+        // 2. rows (textarea)
+        assert_eq!(dom.get_rows(textarea_id), None);
+        assert_eq!(dom.get_rows(div_id), None);
+        dom.set_rows(textarea_id, "10");
+        dom.set_rows(div_id, "10"); // no-op
+        assert_eq!(dom.get_rows(textarea_id), Some("10"));
+        assert_eq!(dom.get_rows(div_id), None);
+
+        // 3. nomodule (script)
+        assert_eq!(dom.get_no_module(script_id), Some(false));
+        assert_eq!(dom.get_no_module(div_id), None);
+        dom.set_no_module(script_id, true);
+        dom.set_no_module(div_id, true); // no-op
+        assert_eq!(dom.get_no_module(script_id), Some(true));
+        assert_eq!(dom.get_no_module(div_id), None);
+        dom.set_no_module(script_id, false);
+        assert_eq!(dom.get_no_module(script_id), Some(false));
+
+        // 4. accept-charset (form)
+        assert_eq!(dom.get_accept_charset(form_id), None);
+        assert_eq!(dom.get_accept_charset(div_id), None);
+        dom.set_accept_charset(form_id, "UTF-8");
+        dom.set_accept_charset(div_id, "UTF-8"); // no-op
+        assert_eq!(dom.get_accept_charset(form_id), Some("UTF-8"));
+        assert_eq!(dom.get_accept_charset(div_id), None);
+
+        // 5. ismap (img)
+        assert_eq!(dom.get_is_map(img_id), Some(false));
+        assert_eq!(dom.get_is_map(div_id), None);
+        dom.set_is_map(img_id, true);
+        dom.set_is_map(div_id, true); // no-op
+        assert_eq!(dom.get_is_map(img_id), Some(true));
+        assert_eq!(dom.get_is_map(div_id), None);
+        dom.set_is_map(img_id, false);
+        assert_eq!(dom.get_is_map(img_id), Some(false));
     }
 }
