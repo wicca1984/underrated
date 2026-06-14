@@ -90,6 +90,41 @@ pub enum Pointer {
     Fine,
 }
 
+/// Represents the color gamut of the output device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorGamut {
+    Srgb,
+    P3,
+    Rec2020,
+}
+
+/// Represents the display mode of the application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    Fullscreen,
+    Standalone,
+    MinimalUi,
+    Browser,
+    WindowControlsOverlay,
+    PictureInPicture,
+}
+
+/// Represents the overflow behavior of the output device in the block axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowBlock {
+    None,
+    Scroll,
+    Paged,
+    OptionalPaged,
+}
+
+/// Represents the overflow behavior of the output device in the inline axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowInline {
+    None,
+    Scroll,
+}
+
 thread_local! {
     static PREFERRED_COLOR_SCHEME: Cell<ColorScheme> = const { Cell::new(ColorScheme::Light) };
     static PREFERS_REDUCED_MOTION: Cell<PrefersReducedMotion> = const { Cell::new(PrefersReducedMotion::NoPreference) };
@@ -234,6 +269,30 @@ pub fn set_any_pointer(val: Pointer) {
 /// Gets the any-pointer setting for the current thread.
 pub fn any_pointer() -> Pointer {
     ANY_POINTER.with(|c| c.get())
+}
+
+/// Gets the color gamut of the output device.
+/// TODO(spec): true environment querying is not yet wired.
+pub fn color_gamut() -> ColorGamut {
+    ColorGamut::Srgb
+}
+
+/// Gets the display mode of the application.
+/// TODO(spec): true environment querying is not yet wired.
+pub fn display_mode() -> DisplayMode {
+    DisplayMode::Browser
+}
+
+/// Gets the overflow behavior of the output device in the block axis.
+/// TODO(spec): true environment querying is not yet wired.
+pub fn overflow_block() -> OverflowBlock {
+    OverflowBlock::Scroll
+}
+
+/// Gets the overflow behavior of the output device in the inline axis.
+/// TODO(spec): true environment querying is not yet wired.
+pub fn overflow_inline() -> OverflowInline {
+    OverflowInline::Scroll
 }
 
 /// Serializes component values back to a CSS string.
@@ -471,6 +530,10 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "any-hover" => return any_hover() != Hover::None,
             "pointer" => return pointer() != Pointer::None,
             "any-pointer" => return any_pointer() != Pointer::None,
+            "color-gamut" => return true,
+            "display-mode" => return true,
+            "overflow-block" => return true,
+            "overflow-inline" => return true,
             _ => return false,
         }
     }
@@ -652,6 +715,65 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
                 (Pointer::None, "none") => return true,
                 (Pointer::Coarse, "coarse") => return true,
                 (Pointer::Fine, "fine") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "color-gamut" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = color_gamut();
+            match (current, val_lower.as_str()) {
+                (ColorGamut::Srgb, "srgb") => return true,
+                (ColorGamut::P3, "p3") => return true,
+                (ColorGamut::Rec2020, "rec2020") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "display-mode" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = display_mode();
+            match (current, val_lower.as_str()) {
+                (DisplayMode::Fullscreen, "fullscreen") => return true,
+                (DisplayMode::Standalone, "standalone") => return true,
+                (DisplayMode::MinimalUi, "minimal-ui") => return true,
+                (DisplayMode::Browser, "browser") => return true,
+                (DisplayMode::WindowControlsOverlay, "window-controls-overlay") => return true,
+                (DisplayMode::PictureInPicture, "picture-in-picture") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "overflow-block" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = overflow_block();
+            match (current, val_lower.as_str()) {
+                (OverflowBlock::None, "none") => return true,
+                (OverflowBlock::Scroll, "scroll") => return true,
+                (OverflowBlock::Paged, "paged") => return true,
+                (OverflowBlock::OptionalPaged, "optional-paged") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "overflow-inline" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = overflow_inline();
+            match (current, val_lower.as_str()) {
+                (OverflowInline::None, "none") => return true,
+                (OverflowInline::Scroll, "scroll") => return true,
                 _ => return false,
             }
         }
@@ -1628,5 +1750,52 @@ mod tests {
 
         // Reset
         set_any_pointer(Pointer::Fine);
+    }
+
+    #[test]
+    fn test_color_gamut_feature() {
+        // Default color-gamut: srgb
+        assert!(media_matches("(color-gamut: srgb)", 1000.0));
+        assert!(!media_matches("(color-gamut: p3)", 1000.0));
+        assert!(!media_matches("(color-gamut: rec2020)", 1000.0));
+        // Case insensitivity
+        assert!(media_matches("(COLOR-GAMUT: SrGb)", 1000.0));
+        // Boolean context: should be true
+        assert!(media_matches("(color-gamut)", 1000.0));
+    }
+
+    #[test]
+    fn test_display_mode_feature() {
+        // Default display-mode: browser
+        assert!(media_matches("(display-mode: browser)", 1000.0));
+        assert!(!media_matches("(display-mode: fullscreen)", 1000.0));
+        assert!(!media_matches("(display-mode: standalone)", 1000.0));
+        // Case insensitivity
+        assert!(media_matches("(DISPLAY-MODE: BrOwSeR)", 1000.0));
+        // Boolean context: should be true
+        assert!(media_matches("(display-mode)", 1000.0));
+    }
+
+    #[test]
+    fn test_overflow_block_feature() {
+        // Default overflow-block: scroll
+        assert!(media_matches("(overflow-block: scroll)", 1000.0));
+        assert!(!media_matches("(overflow-block: none)", 1000.0));
+        assert!(!media_matches("(overflow-block: paged)", 1000.0));
+        // Case insensitivity
+        assert!(media_matches("(OVERFLOW-BLOCK: ScRoLl)", 1000.0));
+        // Boolean context: should be true
+        assert!(media_matches("(overflow-block)", 1000.0));
+    }
+
+    #[test]
+    fn test_overflow_inline_feature() {
+        // Default overflow-inline: scroll
+        assert!(media_matches("(overflow-inline: scroll)", 1000.0));
+        assert!(!media_matches("(overflow-inline: none)", 1000.0));
+        // Case insensitivity
+        assert!(media_matches("(OVERFLOW-INLINE: ScRoLl)", 1000.0));
+        // Boolean context: should be true
+        assert!(media_matches("(overflow-inline)", 1000.0));
     }
 }
