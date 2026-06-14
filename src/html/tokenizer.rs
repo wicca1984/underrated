@@ -6430,4 +6430,267 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_t1054_harden_tokenizer() {
+        let run_case_full = |input: &[u8],
+                             initial_state: &str,
+                             last_start_tag: Option<&str>|
+         -> (Vec<Token>, Vec<ParseError>) {
+            let stream = InputStream::from_utf8(input);
+            let mut tokenizer = Tokenizer::new(stream);
+            tokenizer.set_initial_state(initial_state);
+            if let Some(tag) = last_start_tag {
+                tokenizer.set_last_start_tag(tag);
+            }
+            let mut tokens = Vec::new();
+            loop {
+                let tok = tokenizer.next_token();
+                if tok == Token::Eof {
+                    break;
+                }
+                tokens.push(tok);
+            }
+            let errors = tokenizer.take_errors();
+            (tokens, errors)
+        };
+
+        let get_chars = |tokens: &[Token]| -> String {
+            let mut s = String::new();
+            for tok in tokens {
+                if let Token::Character(c) = tok {
+                    s.push(*c);
+                } else {
+                    panic!("Expected only character tokens, but got: {:?}", tok);
+                }
+            }
+            s
+        };
+
+        // 1. Numeric Character Reference: Out-of-range, surrogate, noncharacters, control characters
+        {
+            // Out of range: &#x110000; -> should emit error "character-reference-outside-unicode-range" and resolve to \u{FFFD}
+            let (tokens, errors) = run_case_full(b"&#x110000;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "\u{FFFD}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "character-reference-outside-unicode-range")
+            );
+
+            // Surrogate: &#xD800; -> should emit error "surrogate-character-reference" and resolve to \u{FFFD}
+            let (tokens, errors) = run_case_full(b"&#xD800;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "\u{FFFD}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "surrogate-character-reference")
+            );
+
+            // Noncharacter: &#xFFFF; -> should emit error "noncharacter-character-reference" but return \u{FFFF}
+            let (tokens, errors) = run_case_full(b"&#xFFFF;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "\u{FFFF}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "noncharacter-character-reference")
+            );
+
+            // Control character whitespace: &#x09; (TAB) -> should be TAB and NOT emit control character error
+            let (tokens, errors) = run_case_full(b"&#x09;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "\t");
+            assert!(errors.is_empty());
+
+            // Control character non-whitespace: &#x80; -> maps to \u{20AC} and emits error "control-character-reference"
+            let (tokens, errors) = run_case_full(b"&#x80;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "\u{20AC}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "control-character-reference")
+            );
+
+            // Control character non-whitespace (unmapped): &#x01; -> remains \u{0001} and emits error "control-character-reference"
+            let (tokens, errors) = run_case_full(b"&#x01;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "\u{0001}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "control-character-reference")
+            );
+
+            // Huge hexadecimal reference: &#x11000000000000000000000000000; -> saturates to u32::MAX, is out-of-range, emits error and resolves to \u{FFFD}
+            let (tokens, errors) =
+                run_case_full(b"&#x11000000000000000000000000000;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "\u{FFFD}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "character-reference-outside-unicode-range")
+            );
+
+            // Absence of digits: &#; -> emits error "absence-of-digits-in-numeric-character-reference" and flushes literal prefix
+            let (tokens, errors) = run_case_full(b"&#;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "&#;");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "absence-of-digits-in-numeric-character-reference")
+            );
+
+            // Absence of digits hex: &#x; -> emits error "absence-of-digits-in-numeric-character-reference" and flushes literal prefix
+            let (tokens, errors) = run_case_full(b"&#x;", "Data state", None);
+            assert_eq!(get_chars(&tokens), "&#x;");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "absence-of-digits-in-numeric-character-reference")
+            );
+        }
+
+        // 2. Named Character Reference: Semicolon-less and ambiguous ampersand cases
+        {
+            // Semicolon-less outside attribute: &ampb -> matches &amp, leaves b, emits "missing-semicolon-after-character-reference" and "ambiguous-ampersand" (since b is alpha)
+            let (tokens, errors) = run_case_full(b"&ampb", "Data state", None);
+            assert_eq!(get_chars(&tokens), "&b");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "missing-semicolon-after-character-reference")
+            );
+            assert!(errors.iter().any(|e| e.code == "ambiguous-ampersand"));
+
+            // Semicolon-less outside attribute followed by non-alpha: &amp? -> matches &amp, leaves ?, emits "missing-semicolon-after-character-reference" but NOT "ambiguous-ampersand"
+            let (tokens, errors) = run_case_full(b"&amp?", "Data state", None);
+            assert_eq!(get_chars(&tokens), "&?");
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "missing-semicolon-after-character-reference")
+            );
+            assert!(!errors.iter().any(|e| e.code == "ambiguous-ampersand"));
+
+            // Semicolon-less inside attribute followed by alphanumeric: class="&ampb" -> is ignored as a character reference, matches literally
+            let (tokens, _errors) = run_case_full(b"<div class=\"&ampb\">", "Data state", None);
+            assert_eq!(tokens.len(), 1);
+            if let Token::StartTag { attrs, .. } = &tokens[0] {
+                assert_eq!(attrs, &vec![("class".to_string(), "&ampb".to_string())]);
+            } else {
+                panic!("Expected StartTag");
+            }
+
+            // Semicolon-less inside attribute followed by non-alphanumeric: class="&amp?" -> decoded, because ? is not alphanumeric or '='
+            let (tokens, _errors) = run_case_full(b"<div class=\"&amp?\">", "Data state", None);
+            assert_eq!(tokens.len(), 1);
+            if let Token::StartTag { attrs, .. } = &tokens[0] {
+                assert_eq!(attrs, &vec![("class".to_string(), "&?".to_string())]);
+            } else {
+                panic!("Expected StartTag");
+            }
+        }
+
+        // 3. RCDATA state edge cases
+        {
+            // Mixed case appropriate end tag with solidus inside RCDATA
+            let (tokens, _errors) = run_case_full(b"hello</TiTlE/>", "RCDATA state", Some("title"));
+            assert_eq!(tokens.len(), 6); // 5 chars, 1 EndTag
+            assert_eq!(get_chars(&tokens[0..5]), "hello");
+            assert_eq!(
+                tokens[5],
+                Token::EndTag {
+                    name: "title".to_string(),
+                    attrs: vec![],
+                    self_closing: true
+                }
+            );
+
+            // Inappropriate end tag inside RCDATA is treated as characters
+            let (tokens, _errors) = run_case_full(b"hello</style>", "RCDATA state", Some("title"));
+            assert_eq!(get_chars(&tokens), "hello</style>");
+
+            // Character references inside RCDATA
+            let (tokens, _errors) =
+                run_case_full(b"hello &amp; world", "RCDATA state", Some("title"));
+            assert_eq!(get_chars(&tokens), "hello & world");
+        }
+
+        // 4. RAWTEXT state edge cases
+        {
+            // Mixed case appropriate end tag with solidus and attributes inside RAWTEXT
+            let (tokens, _errors) = run_case_full(
+                b"body</StYlE class=\"main\"/>",
+                "RAWTEXT state",
+                Some("style"),
+            );
+            assert_eq!(tokens.len(), 5); // 4 chars, 1 EndTag
+            assert_eq!(get_chars(&tokens[0..4]), "body");
+            if let Token::EndTag {
+                name,
+                attrs,
+                self_closing,
+            } = &tokens[4]
+            {
+                assert_eq!(name, "style");
+                assert_eq!(attrs, &vec![("class".to_string(), "main".to_string())]);
+                assert!(*self_closing);
+            } else {
+                panic!("Expected EndTag");
+            }
+
+            // Inappropriate end tag inside RAWTEXT is treated as characters
+            let (tokens, _errors) = run_case_full(b"body</script>", "RAWTEXT state", Some("style"));
+            assert_eq!(get_chars(&tokens), "body</script>");
+        }
+
+        // 5. ScriptData and escapes edge cases
+        {
+            // Escape start and escape start dash transitions
+            let (tokens, _errors) = run_case_full(b"<!--", "Script data state", Some("script"));
+            assert_eq!(get_chars(&tokens), "<!--");
+
+            // Transitions from Escaped -> EscapedDash -> EscapedDashDash -> EscapedLessThanSign -> EscapedEndTagOpen -> EscapedEndTagName
+            let (tokens, _errors) = run_case_full(
+                b"<!--hello</script>-->world",
+                "Script data state",
+                Some("script"),
+            );
+            let end_tag_idx = tokens
+                .iter()
+                .position(|t| matches!(t, Token::EndTag { .. }))
+                .expect("Should find EndTag");
+            assert_eq!(get_chars(&tokens[0..end_tag_idx]), "<!--hello");
+            assert_eq!(
+                tokens[end_tag_idx],
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+            assert_eq!(get_chars(&tokens[end_tag_idx + 1..]), "-->world");
+
+            // Double Escape transitions
+            let (tokens, _errors) = run_case_full(
+                b"<!--<script>hello</script></script>",
+                "Script data state",
+                Some("script"),
+            );
+            let end_tag_idx = tokens
+                .iter()
+                .position(|t| matches!(t, Token::EndTag { .. }))
+                .expect("Should find EndTag");
+            assert_eq!(
+                get_chars(&tokens[0..end_tag_idx]),
+                "<!--<script>hello</script>"
+            );
+            assert_eq!(
+                tokens[end_tag_idx],
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+        }
+    }
 }
