@@ -292,6 +292,12 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :muted always returns false.
                         false
                     }
+                    "paused" => {
+                        // TODO(spec): Real :paused matching requires tracking HTMLMediaElement audio state / media playback.
+                        // This engine has no media playback or audio state tracking, so no element is ever paused.
+                        // Thus, :paused always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3220,6 +3226,39 @@ mod tests {
         assert!(!matches(&sel_muted, &dom, div_elem));
         assert!(!matches(&sel_muted, &dom, video_elem));
         assert!(!matches(&sel_muted, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_paused_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <audio>
+        let audio_elem = dom.create_node(NodeData::Element {
+            name: "audio".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, audio_elem);
+
+        // Matches :paused (should never match since we have no media audio/playback state)
+        let sel_paused = parse_selector_list(":paused").unwrap();
+        assert!(!matches(&sel_paused, &dom, div_elem));
+        assert!(!matches(&sel_paused, &dom, video_elem));
+        assert!(!matches(&sel_paused, &dom, audio_elem));
     }
 
     #[test]
