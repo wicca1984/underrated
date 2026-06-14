@@ -1767,6 +1767,229 @@ pub fn resolve_string(
     )
 }
 
+/// A declaration in the CSS cascade, used to sort and resolve layered styles.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CascadeDeclaration {
+    pub value: String,
+    pub is_important: bool,
+    pub layer: Option<String>,
+    pub specificity: (u32, u32, u32, u32),
+    pub source_order: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerGroup {
+    NormalLayer(String),
+    NormalUnlayered,
+    ImportantUnlayered,
+    ImportantLayer(String),
+}
+
+impl CascadeDeclaration {
+    pub fn layer_group(&self) -> LayerGroup {
+        if self.is_important {
+            if let Some(ref l) = self.layer {
+                LayerGroup::ImportantLayer(l.clone())
+            } else {
+                LayerGroup::ImportantUnlayered
+            }
+        } else {
+            if let Some(ref l) = self.layer {
+                LayerGroup::NormalLayer(l.clone())
+            } else {
+                LayerGroup::NormalUnlayered
+            }
+        }
+    }
+}
+
+pub fn get_group_priority(group: &LayerGroup, layer_order: &[String]) -> usize {
+    match group {
+        LayerGroup::NormalLayer(name) => layer_order.iter().position(|l| l == name).unwrap_or(0),
+        LayerGroup::NormalUnlayered => layer_order.len(),
+        LayerGroup::ImportantUnlayered => layer_order.len() + 1,
+        LayerGroup::ImportantLayer(name) => {
+            let idx = layer_order.iter().position(|l| l == name).unwrap_or(0);
+            layer_order.len() + 1 + (layer_order.len() - idx)
+        }
+    }
+}
+
+pub fn compare_declarations(
+    a: &CascadeDeclaration,
+    b: &CascadeDeclaration,
+    layer_order: &[String],
+) -> std::cmp::Ordering {
+    // 1. Importance
+    if a.is_important != b.is_important {
+        return a.is_important.cmp(&b.is_important);
+    }
+
+    // 2. Layer priority
+    if a.is_important {
+        // Important: layered > unlayered. Earlier layer > later layer.
+        match (&a.layer, &b.layer) {
+            (None, None) => {} // Both unlayered, proceed to specificity
+            (None, Some(_)) => return std::cmp::Ordering::Less, // b is layered, so b > a
+            (Some(_), None) => return std::cmp::Ordering::Greater, // a is layered, so a > b
+            (Some(la), Some(lb)) => {
+                if la != lb {
+                    let idx_a = layer_order
+                        .iter()
+                        .position(|l| l == la)
+                        .unwrap_or(usize::MAX);
+                    let idx_b = layer_order
+                        .iter()
+                        .position(|l| l == lb)
+                        .unwrap_or(usize::MAX);
+                    // Earlier layer is higher priority for !important
+                    return idx_b.cmp(&idx_a);
+                }
+            }
+        }
+    } else {
+        // Normal: unlayered > layered. Later layer > earlier layer.
+        match (&a.layer, &b.layer) {
+            (None, None) => {} // Both unlayered, proceed to specificity
+            (None, Some(_)) => return std::cmp::Ordering::Greater, // a is unlayered, so b is lower
+            (Some(_), None) => return std::cmp::Ordering::Less, // b is unlayered, so b is higher
+            (Some(la), Some(lb)) => {
+                if la != lb {
+                    let idx_a = layer_order
+                        .iter()
+                        .position(|l| l == la)
+                        .unwrap_or(usize::MAX);
+                    let idx_b = layer_order
+                        .iter()
+                        .position(|l| l == lb)
+                        .unwrap_or(usize::MAX);
+                    // Later layer is higher priority for normal
+                    return idx_a.cmp(&idx_b);
+                }
+            }
+        }
+    }
+
+    // 3. Specificity
+    if a.specificity != b.specificity {
+        return a.specificity.cmp(&b.specificity);
+    }
+
+    // 4. Source order
+    a.source_order.cmp(&b.source_order)
+}
+
+fn resolve_cascade_under_priority(
+    max_priority: usize,
+    decls: &[CascadeDeclaration],
+    layer_order: &[String],
+    context: &ResolveContext,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CssValue> {
+    for i in (0..decls.len()).rev() {
+        let decl = &decls[i];
+        let group = decl.layer_group();
+        let prio = get_group_priority(&group, layer_order);
+        if prio < max_priority {
+            let mut sub_context = context.clone();
+            sub_context.revert_value = context.revert_value.clone();
+            sub_context.revert_layer_value = resolve_cascade_under_priority(
+                prio,
+                decls,
+                layer_order,
+                context,
+                custom_properties,
+            );
+
+            let components = crate::css::parser::parse_component_values(&decl.value);
+            if let Some(val) =
+                resolve_value_with_context(&components, &sub_context, custom_properties)
+            {
+                return Some(val);
+            }
+        }
+    }
+    context.revert_value.clone()
+}
+
+/// Resolves the winning declaration value from a list of layered cascade declarations.
+pub fn resolve_cascade(
+    decls: &[CascadeDeclaration],
+    layer_order: &[String],
+    context: &ResolveContext,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CssValue> {
+    if decls.is_empty() {
+        return None;
+    }
+    let mut sorted_decls = decls.to_vec();
+    sorted_decls.sort_by(|a, b| compare_declarations(a, b, layer_order));
+
+    let last_idx = sorted_decls.len() - 1;
+    let decl = &sorted_decls[last_idx];
+    let group = decl.layer_group();
+    let prio = get_group_priority(&group, layer_order);
+
+    let mut sub_context = context.clone();
+    sub_context.revert_value = context.revert_value.clone();
+    sub_context.revert_layer_value = resolve_cascade_under_priority(
+        prio,
+        &sorted_decls,
+        layer_order,
+        context,
+        custom_properties,
+    );
+
+    let components = crate::css::parser::parse_component_values(&decl.value);
+    resolve_value_with_context(&components, &sub_context, custom_properties)
+}
+
+/// Expands a shorthand property declaration if its value is a CSS-wide keyword.
+pub fn expand_shorthand_declaration(
+    name: &str,
+    components: &[ComponentValue],
+) -> Option<Vec<(String, Vec<ComponentValue>)>> {
+    let mut start = 0;
+    while start < components.len()
+        && matches!(
+            components[start],
+            ComponentValue::Token(CssToken::Whitespace)
+        )
+    {
+        start += 1;
+    }
+    let mut end = components.len();
+    while end > start
+        && matches!(
+            components[end - 1],
+            ComponentValue::Token(CssToken::Whitespace)
+        )
+    {
+        end -= 1;
+    }
+    let trimmed = &components[start..end];
+    if trimmed.len() != 1 {
+        return None;
+    }
+    let ident = match &trimmed[0] {
+        ComponentValue::Token(CssToken::Ident(id)) => id,
+        _ => return None,
+    };
+    let lower = ident.to_ascii_lowercase();
+    if !matches!(
+        lower.as_str(),
+        "inherit" | "initial" | "unset" | "revert" | "revert-layer"
+    ) {
+        return None;
+    }
+    let longhands = crate::css::property::shorthand_longhands(name)?;
+    let mut expanded = Vec::new();
+    for lh in longhands {
+        expanded.push((lh.to_string(), trimmed.to_vec()));
+    }
+    Some(expanded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3017,5 +3240,208 @@ mod tests {
                 0, 255, 0, 255
             ))) // inherits parent color
         );
+    }
+
+    #[test]
+    fn test_cascade_layer_ordering_and_revert() {
+        let layers = vec![
+            "base".to_string(),
+            "theme".to_string(),
+            "utilities".to_string(),
+        ];
+        let custom_props = HashMap::new();
+        let default_ctx = ResolveContext::default();
+
+        // 1. Normal unlayered declaration beats normal layered declaration
+        let d_base = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: false,
+            layer: Some("base".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let d_unlayered = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+
+        let mut decls = [d_base.clone(), d_unlayered.clone()];
+        decls.sort_by(|a, b| compare_declarations(a, b, &layers));
+        // unlayered should be higher priority, thus sorted last
+        assert_eq!(decls[1].layer, None);
+
+        // 2. Important layered declaration beats important unlayered declaration
+        let d_base_important = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: true,
+            layer: Some("base".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let d_unlayered_important = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: true,
+            layer: None,
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+
+        let mut decls = [d_base_important.clone(), d_unlayered_important.clone()];
+        decls.sort_by(|a, b| compare_declarations(a, b, &layers));
+        // base important should be higher priority, thus sorted last
+        assert_eq!(decls[1].layer, Some("base".to_string()));
+
+        // 3. Normal layer order: later layer wins (utilities > theme)
+        let d_theme = CascadeDeclaration {
+            value: "green".to_string(),
+            is_important: false,
+            layer: Some("theme".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let d_utilities = CascadeDeclaration {
+            value: "yellow".to_string(),
+            is_important: false,
+            layer: Some("utilities".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+
+        let mut decls = [d_theme.clone(), d_utilities.clone()];
+        decls.sort_by(|a, b| compare_declarations(a, b, &layers));
+        assert_eq!(decls[1].layer, Some("utilities".to_string()));
+
+        // 4. Important layer order: earlier layer wins (theme > utilities)
+        let d_theme_important = CascadeDeclaration {
+            value: "green".to_string(),
+            is_important: true,
+            layer: Some("theme".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let d_utilities_important = CascadeDeclaration {
+            value: "yellow".to_string(),
+            is_important: true,
+            layer: Some("utilities".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+
+        let mut decls = [d_theme_important.clone(), d_utilities_important.clone()];
+        decls.sort_by(|a, b| compare_declarations(a, b, &layers));
+        assert_eq!(decls[1].layer, Some("theme".to_string()));
+
+        // 5. Revert-layer rolls back to the next lower-priority layer (utilities rolls back to theme)
+        let d_utilities_revert = CascadeDeclaration {
+            value: "revert-layer".to_string(),
+            is_important: false,
+            layer: Some("utilities".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        let decls = vec![d_theme.clone(), d_utilities_revert.clone()];
+        let res = resolve_cascade(&decls, &layers, &default_ctx, &custom_props);
+        assert_eq!(
+            res,
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 128, 0, 255
+            )))
+        );
+
+        // 6. Important revert-layer rolls back to next lower-priority important layer
+        let d_theme_revert_important = CascadeDeclaration {
+            value: "revert-layer".to_string(),
+            is_important: true,
+            layer: Some("theme".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        // For utilities important, let's use "blue" which is parsed as Rgba(0, 0, 255, 255)
+        let d_utilities_blue_important = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: true,
+            layer: Some("utilities".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        let decls = vec![
+            d_theme_revert_important.clone(),
+            d_utilities_blue_important.clone(),
+        ];
+        let res = resolve_cascade(&decls, &layers, &default_ctx, &custom_props);
+        assert_eq!(
+            res,
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            )))
+        );
+
+        // 7. Chained rollback (utilities rolls back to theme which rolls back to base)
+        let d_theme_revert = CascadeDeclaration {
+            value: "revert-layer".to_string(),
+            is_important: false,
+            layer: Some("theme".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let d_base_color = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: false,
+            layer: Some("base".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 0,
+        };
+        let decls = vec![d_base_color, d_theme_revert, d_utilities_revert];
+        let res = resolve_cascade(&decls, &layers, &default_ctx, &custom_props);
+        assert_eq!(
+            res,
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255
+            )))
+        );
+
+        // 8. Revert-layer on lowest layer rolls back to revert_value
+        let ctx_with_revert = ResolveContext {
+            revert_value: Some(CssValue::Length(100.0, LengthUnit::Px)),
+            ..Default::default()
+        };
+        let d_base_revert = CascadeDeclaration {
+            value: "revert-layer".to_string(),
+            is_important: false,
+            layer: Some("base".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 0,
+        };
+        let decls = vec![d_base_revert];
+        let res = resolve_cascade(&decls, &layers, &ctx_with_revert, &custom_props);
+        assert_eq!(res, Some(CssValue::Length(100.0, LengthUnit::Px)));
+    }
+
+    #[test]
+    fn test_shorthand_wide_keyword_expansion() {
+        // 1. margin shorthand with CSS-wide keyword "inherit"
+        let comps = crate::css::parser::parse_component_values("inherit");
+        let expanded = expand_shorthand_declaration("margin", &comps).unwrap();
+        assert_eq!(expanded.len(), 4);
+        assert_eq!(expanded[0].0, "margin-top");
+        assert_eq!(expanded[0].1, comps);
+        assert_eq!(expanded[3].0, "margin-left");
+
+        // 2. padding shorthand with CSS-wide keyword "initial"
+        let comps_initial = crate::css::parser::parse_component_values("  initial  ");
+        let expanded_padding = expand_shorthand_declaration("padding", &comps_initial).unwrap();
+        assert_eq!(expanded_padding.len(), 4);
+        assert_eq!(expanded_padding[0].0, "padding-top");
+
+        // 3. Non-shorthand properties like "color" should return None
+        let color_comps = crate::css::parser::parse_component_values("inherit");
+        assert!(expand_shorthand_declaration("color", &color_comps).is_none());
+
+        // 4. Non-keyword value should return None
+        let normal_comps = crate::css::parser::parse_component_values("10px");
+        assert!(expand_shorthand_declaration("margin", &normal_comps).is_none());
     }
 }
