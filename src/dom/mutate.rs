@@ -3267,7 +3267,51 @@ impl Dom {
         }
     }
 
-    // TODO(spec): muted reflects defaultMuted
+    /// Returns whether the `muted` content attribute (defaultMuted) is present on a valid media element (audio, video).
+    /// Returns `None` if the node is not a media element, or if the `NodeId` is invalid.
+    pub fn get_default_muted(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("muted")));
+        }
+        None
+    }
+
+    /// Sets or removes the `muted` content attribute (defaultMuted) on a valid media element (audio, video).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a media element, or if the `NodeId` is invalid.
+    pub fn set_default_muted(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            if value {
+                self.set_attribute(node, "muted", "");
+            } else {
+                self.remove_attribute(node, "muted");
+            }
+        }
+    }
+
+    /// Returns the current muted state of a valid media element (audio, video).
+    /// In this implementation, the IDL attribute `muted` reflects the `muted` content attribute (`defaultMuted`).
+    /// Returns `None` if the node is not a media element, or if the `NodeId` is invalid.
+    pub fn get_muted(&self, node: NodeId) -> Option<bool> {
+        // TODO(spec): muted should track dynamic state separate from the content attribute.
+        // For now, it reflects defaultMuted.
+        self.get_default_muted(node)
+    }
+
+    /// Sets the current muted state of a valid media element (audio, video).
+    /// In this implementation, the IDL attribute `muted` reflects the `muted` content attribute (`defaultMuted`).
+    /// No-op if the node is not a media element, or if the `NodeId` is invalid.
+    pub fn set_muted(&mut self, node: NodeId, value: bool) {
+        // TODO(spec): muted should track dynamic state separate from the content attribute.
+        // For now, it reflects defaultMuted.
+        self.set_default_muted(node, value);
+    }
 }
 
 #[cfg(test)]
@@ -6349,5 +6393,49 @@ mod tests {
         dom.set_autoplay(video_id, false);
         assert_eq!(dom.get_autoplay(audio_id), Some(false));
         assert_eq!(dom.get_autoplay(video_id), Some(false));
+    }
+
+    #[test]
+    fn test_reflected_attribute_accessors_t0883_muted() {
+        let mut dom = Dom::new();
+        let audio_id = elem(&mut dom, "audio");
+        let video_id = elem(&mut dom, "video");
+        let div_id = elem(&mut dom, "div");
+
+        // defaultMuted
+        assert_eq!(dom.get_default_muted(audio_id), Some(false));
+        assert_eq!(dom.get_default_muted(video_id), Some(false));
+        assert_eq!(dom.get_default_muted(div_id), None);
+
+        dom.set_default_muted(audio_id, true);
+        dom.set_default_muted(video_id, true);
+        dom.set_default_muted(div_id, true); // no-op
+
+        assert_eq!(dom.get_default_muted(audio_id), Some(true));
+        assert_eq!(dom.get_default_muted(video_id), Some(true));
+        assert_eq!(dom.get_default_muted(div_id), None);
+
+        dom.set_default_muted(audio_id, false);
+        dom.set_default_muted(video_id, false);
+        assert_eq!(dom.get_default_muted(audio_id), Some(false));
+        assert_eq!(dom.get_default_muted(video_id), Some(false));
+
+        // muted
+        assert_eq!(dom.get_muted(audio_id), Some(false));
+        assert_eq!(dom.get_muted(video_id), Some(false));
+        assert_eq!(dom.get_muted(div_id), None);
+
+        dom.set_muted(audio_id, true);
+        dom.set_muted(video_id, true);
+        dom.set_muted(div_id, true); // no-op
+
+        assert_eq!(dom.get_muted(audio_id), Some(true));
+        assert_eq!(dom.get_muted(video_id), Some(true));
+        assert_eq!(dom.get_muted(div_id), None);
+
+        dom.set_muted(audio_id, false);
+        dom.set_muted(video_id, false);
+        assert_eq!(dom.get_muted(audio_id), Some(false));
+        assert_eq!(dom.get_muted(video_id), Some(false));
     }
 }
