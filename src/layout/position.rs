@@ -324,19 +324,47 @@ pub fn layout_absolute_and_fixed_elements(
             continue;
         }
 
+        // Determine containing block's origin and size (default to viewport)
+        let mut ancestor_origin = (0.0, 0.0);
+        let mut container_width = viewport_width;
+        let mut container_height = root_box.rect.size.height;
+
+        if style.reset_box.position == "absolute" {
+            let mut current = dom.parent(node);
+            let mut positioned_ancestor = None;
+            while let Some(ancestor) = current {
+                if let Some(anc_style) = styles.get(&ancestor) {
+                    let pos = &anc_style.reset_box.position;
+                    if pos == "relative" || pos == "absolute" || pos == "fixed" || pos == "sticky" {
+                        positioned_ancestor = Some(ancestor);
+                        break;
+                    }
+                }
+                current = dom.parent(ancestor);
+            }
+
+            if let Some(ancestor_id) = positioned_ancestor
+                && let Some(ancestor_box) = find_layout_box_mut(root_box, ancestor_id, 0)
+            {
+                ancestor_origin = (ancestor_box.rect.origin.x, ancestor_box.rect.origin.y);
+                container_width = ancestor_box.rect.size.width;
+                container_height = ancestor_box.rect.size.height;
+            }
+        }
+
         // absolute/fixed position: top/left basic relative to containing block (viewport/root)
         // spec: S-31
         let left = if style.reset_surround.left == -1 {
-            0.0
+            ancestor_origin.0
         } else {
-            style.reset_surround.left as f32
+            ancestor_origin.0 + style.reset_surround.left as f32
         };
 
         // TODO(spec): bottom offset needs containing-block height (not threaded into this signature)
         let top = if style.reset_surround.top == -1 {
-            0.0
+            ancestor_origin.1
         } else {
-            style.reset_surround.top as f32
+            ancestor_origin.1 + style.reset_surround.top as f32
         };
 
         // Determine available width based on offsets
@@ -346,15 +374,15 @@ pub fn layout_absolute_and_fixed_elements(
         let available_width = if has_left && has_right {
             let left_val = style.reset_surround.left as f32;
             let right_val = style.reset_surround.right as f32;
-            (viewport_width - left_val - right_val).max(0.0)
+            (container_width - left_val - right_val).max(0.0)
         } else if has_left {
             let left_val = style.reset_surround.left as f32;
-            (viewport_width - left_val).max(0.0)
+            (container_width - left_val).max(0.0)
         } else if has_right {
             let right_val = style.reset_surround.right as f32;
-            (viewport_width - right_val).max(0.0)
+            (container_width - right_val).max(0.0)
         } else {
-            viewport_width
+            container_width
         };
 
         // Determine containing width parameter for layout_node
@@ -381,7 +409,7 @@ pub fn layout_absolute_and_fixed_elements(
                 target_width.min(available_width).max(0.0)
             }
         } else {
-            viewport_width
+            container_width
         };
 
         // Layout the node with computed containing width, and top/left as offsets
@@ -399,13 +427,13 @@ pub fn layout_absolute_and_fixed_elements(
                     let left_val = style.reset_surround.left as f32;
                     let right_val = style.reset_surround.right as f32;
                     let border_box_width = child_box.rect.size.width;
-                    let extra_space = viewport_width - left_val - right_val - border_box_width;
+                    let extra_space = container_width - left_val - right_val - border_box_width;
                     let target_x = if extra_space >= 0.0 {
-                        left_val + (extra_space / 2.0)
+                        ancestor_origin.0 + left_val + (extra_space / 2.0)
                     } else if style.inherited_text.direction == "rtl" {
-                        viewport_width - right_val - border_box_width
+                        ancestor_origin.0 + container_width - right_val - border_box_width
                     } else {
-                        left_val
+                        ancestor_origin.0 + left_val
                     };
                     let shift_dx = target_x - child_box.rect.origin.x;
                     if shift_dx != 0.0 {
@@ -422,8 +450,10 @@ pub fn layout_absolute_and_fixed_elements(
                     } else {
                         style.reset_surround.margin_right as f32
                     };
-                    let target_x =
-                        viewport_width - right - margin_right - child_box.rect.size.width;
+                    let target_x = ancestor_origin.0 + container_width
+                        - right
+                        - margin_right
+                        - child_box.rect.size.width;
                     let shift_dx = target_x - child_box.rect.origin.x;
                     if shift_dx != 0.0 {
                         child_box.rect.origin.x += shift_dx;
@@ -445,8 +475,10 @@ pub fn layout_absolute_and_fixed_elements(
                     } else {
                         style.reset_surround.margin_right as f32
                     };
-                    let target_x =
-                        viewport_width - right - margin_right - child_box.rect.size.width;
+                    let target_x = ancestor_origin.0 + container_width
+                        - right
+                        - margin_right
+                        - child_box.rect.size.width;
                     let shift_dx = target_x - child_box.rect.origin.x;
                     if shift_dx != 0.0 {
                         child_box.rect.origin.x += shift_dx;
@@ -468,12 +500,11 @@ pub fn layout_absolute_and_fixed_elements(
                     let top_val = style.reset_surround.top as f32;
                     let bottom_val = style.reset_surround.bottom as f32;
                     let border_box_height = child_box.rect.size.height;
-                    let container_height = root_box.rect.size.height;
                     let extra_space = container_height - top_val - bottom_val - border_box_height;
                     let target_y = if extra_space >= 0.0 {
-                        top_val + (extra_space / 2.0)
+                        ancestor_origin.1 + top_val + (extra_space / 2.0)
                     } else {
-                        top_val
+                        ancestor_origin.1 + top_val
                     };
                     let shift_dy = target_y - child_box.rect.origin.y;
                     if shift_dy != 0.0 {
@@ -492,10 +523,9 @@ pub fn layout_absolute_and_fixed_elements(
                     } else {
                         style.reset_surround.margin_bottom as f32
                     };
-                    let container_height = root_box.rect.size.height;
                     let target_y =
                         container_height - bottom - margin_bottom - child_box.rect.size.height;
-                    let shift_dy = target_y - child_box.rect.origin.y;
+                    let shift_dy = ancestor_origin.1 + target_y - child_box.rect.origin.y;
                     if shift_dy != 0.0 {
                         child_box.rect.origin.y += shift_dy;
                         for child in &mut child_box.children {
@@ -512,7 +542,6 @@ pub fn layout_absolute_and_fixed_elements(
             {
                 let top_val = style.reset_surround.top as f32;
                 let bottom_val = style.reset_surround.bottom as f32;
-                let container_height = root_box.rect.size.height;
                 let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
                 let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
                 let target_height =
@@ -1433,5 +1462,84 @@ mod tests {
         // target_y = top (50.0) + margin_top (100.0) = 150.0
         let expected_y = 50.0 + (layout_tree.rect.size.height - 50.0 - 50.0 - 100.0) / 2.0;
         assert_eq!(div_box.rect.origin.y, expected_y);
+    }
+
+    #[test]
+    fn test_nested_absolute_positioning_t0932() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(crate::dom::NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let parent = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, parent);
+
+        let child = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(parent, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 800px; }
+            .parent {
+                display: block;
+                position: absolute;
+                left: 100px;
+                top: 120px;
+                width: 300px;
+                height: 200px;
+            }
+            .child {
+                display: block;
+                position: absolute;
+                left: 20px;
+                top: 30px;
+                width: 50px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut parent_box = None;
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(parent) {
+                parent_box = Some(current);
+            }
+            if current.node == Some(child) {
+                child_box = Some(current);
+            }
+            for child_elem in &current.children {
+                stack.push(child_elem);
+            }
+        }
+
+        let parent_box = parent_box.expect("Parent box not found");
+        let child_box = child_box.expect("Child box not found");
+
+        // Parent should be placed relative to viewport
+        assert_eq!(parent_box.rect.origin.x, 100.0);
+        assert_eq!(parent_box.rect.origin.y, 120.0);
+        assert_eq!(parent_box.rect.size.width, 300.0);
+        assert_eq!(parent_box.rect.size.height, 200.0);
+
+        // Child should be placed relative to Parent
+        assert_eq!(child_box.rect.origin.x, 120.0);
+        assert_eq!(child_box.rect.origin.y, 150.0);
+        assert_eq!(child_box.rect.size.width, 50.0);
+        assert_eq!(child_box.rect.size.height, 50.0);
     }
 }
