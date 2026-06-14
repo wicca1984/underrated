@@ -2162,6 +2162,506 @@ impl Dom {
         }
     }
 
+    /// Sets the `href` content attribute on a valid element node (a, area, link, base).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_href(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+        {
+            let is_defined = name.eq_ignore_ascii_case("a")
+                || name.eq_ignore_ascii_case("area")
+                || name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("base");
+            if is_defined {
+                self.set_attribute(node, "href", value);
+            }
+        }
+    }
+
+    /// Sets the `src` content attribute on a valid element node (img, script, iframe, source, audio, video, embed, track, input).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_src(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+        {
+            let is_defined = name.eq_ignore_ascii_case("img")
+                || name.eq_ignore_ascii_case("script")
+                || name.eq_ignore_ascii_case("iframe")
+                || name.eq_ignore_ascii_case("source")
+                || name.eq_ignore_ascii_case("audio")
+                || name.eq_ignore_ascii_case("video")
+                || name.eq_ignore_ascii_case("embed")
+                || name.eq_ignore_ascii_case("track")
+                || name.eq_ignore_ascii_case("input");
+            if is_defined {
+                self.set_attribute(node, "src", value);
+            }
+        }
+    }
+
+    /// Sets the `id` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_id(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "id", value);
+        }
+    }
+
+    /// Sets the `class` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_class_name(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "class", value);
+        }
+    }
+
+    /// Sets the `alt` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_alt(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "alt", value);
+        }
+    }
+
+    /// Sets the `srcset` content attribute on a valid element node (img, source).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_srcset(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+        {
+            let is_defined =
+                name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("source");
+            if is_defined {
+                self.set_attribute(node, "srcset", value);
+            }
+        }
+    }
+
+    /// Sets the `sizes` content attribute on a valid element node (img, source, link).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_sizes(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+        {
+            let is_defined = name.eq_ignore_ascii_case("img")
+                || name.eq_ignore_ascii_case("source")
+                || name.eq_ignore_ascii_case("link");
+            if is_defined {
+                self.set_attribute(node, "sizes", value);
+            }
+        }
+    }
+
+    /// Sets the `decoding` content attribute on a valid `img` element.
+    /// No-op if the node is not an `img` element, or if the `NodeId` is invalid.
+    pub fn set_decoding(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("img")
+        {
+            self.set_attribute(node, "decoding", value);
+        }
+    }
+
+    /// Sets the `placeholder` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_placeholder(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "placeholder", value);
+        }
+    }
+
+    /// Sets the `name` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_name(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "name", value);
+        }
+    }
+
+    /// Sets the `download` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_download(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "download", value);
+        }
+    }
+
+    /// Sets the `action` content attribute on a valid `form` element.
+    /// No-op if the node is not a `form` element, or if the `NodeId` is invalid.
+    pub fn set_action(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            self.set_attribute(node, "action", value);
+        }
+    }
+
+    /// Sets the `method` content attribute on a valid `form` element.
+    /// No-op if the node is not a `form` element, or if the `NodeId` is invalid.
+    pub fn set_method(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            self.set_attribute(node, "method", value);
+        }
+    }
+
+    /// Sets the `enctype` content attribute on a valid `form` element.
+    /// No-op if the node is not a `form` element, or if the `NodeId` is invalid.
+    pub fn set_enctype(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            self.set_attribute(node, "enctype", value);
+        }
+    }
+
+    /// Sets the `width` content attribute on a valid `img` or `canvas` element.
+    /// No-op if the node is not an `img` or `canvas` element, or if the `NodeId` is invalid.
+    pub fn set_width(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("canvas"))
+        {
+            self.set_attribute(node, "width", value);
+        }
+    }
+
+    /// Sets the `height` content attribute on a valid `img` or `canvas` element.
+    /// No-op if the node is not an `img` or `canvas` element, or if the `NodeId` is invalid.
+    pub fn set_height(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("canvas"))
+        {
+            self.set_attribute(node, "height", value);
+        }
+    }
+
+    /// Sets the `max` content attribute on a valid `input` element.
+    /// No-op if the node is not an `input` element, or if the `NodeId` is invalid.
+    pub fn set_max(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            self.set_attribute(node, "max", value);
+        }
+    }
+
+    /// Sets the `min` content attribute on a valid `input` element.
+    /// No-op if the node is not an `input` element, or if the `NodeId` is invalid.
+    pub fn set_min(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            self.set_attribute(node, "min", value);
+        }
+    }
+
+    /// Sets the `step` content attribute on a valid `input` element.
+    /// No-op if the node is not an `input` element, or if the `NodeId` is invalid.
+    pub fn set_step(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            self.set_attribute(node, "step", value);
+        }
+    }
+
+    /// Sets the `pattern` content attribute on a valid `input` element.
+    /// No-op if the node is not an `input` element, or if the `NodeId` is invalid.
+    pub fn set_pattern(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            self.set_attribute(node, "pattern", value);
+        }
+    }
+
+    /// Sets the `accept` content attribute on a valid `input` element.
+    /// No-op if the node is not an `input` element, or if the `NodeId` is invalid.
+    pub fn set_accept(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            self.set_attribute(node, "accept", value);
+        }
+    }
+
+    /// Sets the `start` content attribute on a valid `ol` element.
+    /// No-op if the node is not an `ol` element, or if the `NodeId` is invalid.
+    pub fn set_start(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("ol")
+        {
+            self.set_attribute(node, "start", value);
+        }
+    }
+
+    /// Sets the `reversed` content attribute on a valid `ol` element.
+    /// No-op if the node is not an `ol` element, or if the `NodeId` is invalid.
+    pub fn set_reversed(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("ol")
+        {
+            self.set_attribute(node, "reversed", value);
+        }
+    }
+
+    /// Sets the `value` content attribute on a valid `li` element.
+    /// No-op if the node is not an `li` element, or if the `NodeId` is invalid.
+    pub fn set_value(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("li")
+        {
+            self.set_attribute(node, "value", value);
+        }
+    }
+
+    /// Sets the `content` content attribute on a valid `meta` element.
+    /// No-op if the node is not a `meta` element, or if the `NodeId` is invalid.
+    pub fn set_content(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("meta")
+        {
+            self.set_attribute(node, "content", value);
+        }
+    }
+
+    /// Sets the `http-equiv` content attribute on a valid `meta` element.
+    /// No-op if the node is not a `meta` element, or if the `NodeId` is invalid.
+    pub fn set_http_equiv(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("meta")
+        {
+            self.set_attribute(node, "http-equiv", value);
+        }
+    }
+
+    /// Sets the `charset` content attribute on a valid `meta` element.
+    /// No-op if the node is not a `meta` element, or if the `NodeId` is invalid.
+    pub fn set_charset(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("meta")
+        {
+            self.set_attribute(node, "charset", value);
+        }
+    }
+
+    /// Sets the `wrap` content attribute on a valid `textarea` element.
+    /// No-op if the node is not a `textarea` element, or if the `NodeId` is invalid.
+    pub fn set_wrap(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            self.set_attribute(node, "wrap", value);
+        }
+    }
+
+    /// Sets the `value` content attribute on a valid `<textarea>` element.
+    /// No-op if the node is not a `<textarea>` element, or if the `NodeId` is invalid.
+    pub fn set_textarea_value(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            self.set_attribute(node, "value", value);
+        }
+    }
+
+    /// Sets the `value` content attribute on a valid `<button>` element.
+    /// No-op if the node is not a `<button>` element, or if the `NodeId` is invalid.
+    pub fn set_button_value(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("button")
+        {
+            self.set_attribute(node, "value", value);
+        }
+    }
+
+    /// Sets the `value` content attribute on a valid `<option>` element.
+    /// No-op if the node is not an `<option>` element, or if the `NodeId` is invalid.
+    pub fn set_option_value(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("option")
+        {
+            self.set_attribute(node, "value", value);
+        }
+    }
+
+    /// Sets the `kind` content attribute on a valid `track` element.
+    /// No-op if the node is not a `track` element, or if the `NodeId` is invalid.
+    pub fn set_kind(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            self.set_attribute(node, "kind", value);
+        }
+    }
+
+    /// Sets the `srclang` content attribute on a valid `track` element.
+    /// No-op if the node is not a `track` element, or if the `NodeId` is invalid.
+    pub fn set_srclang(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            self.set_attribute(node, "srclang", value);
+        }
+    }
+
+    /// Sets the `label` content attribute on a valid `track` element.
+    /// No-op if the node is not a `track` element, or if the `NodeId` is invalid.
+    pub fn set_label(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            self.set_attribute(node, "label", value);
+        }
+    }
+
+    /// Sets the `sandbox` content attribute on a valid `iframe` element.
+    /// No-op if the node is not an `iframe` element, or if the `NodeId` is invalid.
+    pub fn set_sandbox(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            self.set_attribute(node, "sandbox", value);
+        }
+    }
+
+    /// Sets the `allow` content attribute on a valid `iframe` element.
+    /// No-op if the node is not an `iframe` element, or if the `NodeId` is invalid.
+    pub fn set_allow(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            self.set_attribute(node, "allow", value);
+        }
+    }
+
+    /// Sets the `formnovalidate` content attribute on a valid submit button element (input, button).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_formnovalidate(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            if value {
+                self.set_attribute(node, "formnovalidate", "");
+            } else {
+                self.remove_attribute(node, "formnovalidate");
+            }
+        }
+    }
+
+    /// Sets the `inputmode` content attribute on a valid form control element (input, textarea, select, button).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_inputmode(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("textarea")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("button"))
+        {
+            self.set_attribute(node, "inputmode", value);
+        }
+    }
+
+    /// Sets the `enterkeyhint` content attribute on a valid form control element (input, textarea, select, button).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_enterkeyhint(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("textarea")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("button"))
+        {
+            self.set_attribute(node, "enterkeyhint", value);
+        }
+    }
+
+    /// Sets the `dirname` content attribute on a valid form control element (input, textarea).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_dirname(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            self.set_attribute(node, "dirname", value);
+        }
+    }
+
+    /// Sets the `maxlength` content attribute on a valid form control element (input, textarea).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_maxlength(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            self.set_attribute(node, "maxlength", value);
+        }
+    }
+
+    /// Sets the `minlength` content attribute on a valid form control element (input, textarea).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_minlength(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            self.set_attribute(node, "minlength", value);
+        }
+    }
+
+    /// Sets the `size` content attribute on a valid form control element (input, select).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_size(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("select"))
+        {
+            self.set_attribute(node, "size", value);
+        }
+    }
+
     // TODO(spec): muted reflects defaultMuted
 }
 
@@ -4716,5 +5216,318 @@ mod tests {
         assert_eq!(dom.get_formaction(div_id), None);
         dom.set_formmethod(div_id, "post");
         assert_eq!(dom.get_formmethod(div_id), None);
+    }
+
+    #[test]
+    fn test_extended_reflected_attribute_accessors_t0828() {
+        let mut dom = Dom::new();
+
+        // 1. href (a, area, link, base)
+        let a_id = elem(&mut dom, "a");
+        let div_id = elem(&mut dom, "div");
+        assert_eq!(dom.get_href(a_id), None);
+        dom.set_href(a_id, "https://example.com");
+        assert_eq!(dom.get_href(a_id), Some("https://example.com"));
+        dom.set_href(div_id, "https://example.com"); // no-op on non-supported element
+        assert_eq!(dom.get_href(div_id), None);
+
+        // 2. src (img, script, iframe, source, audio, video, embed, track, input)
+        let img_id = elem(&mut dom, "img");
+        assert_eq!(dom.get_src(img_id), None);
+        dom.set_src(img_id, "image.png");
+        assert_eq!(dom.get_src(img_id), Some("image.png"));
+        dom.set_src(div_id, "image.png"); // no-op
+        assert_eq!(dom.get_src(div_id), None);
+
+        // 3. id (any element)
+        assert_eq!(dom.get_id(div_id), None);
+        dom.set_id(div_id, "my-id");
+        assert_eq!(dom.get_id(div_id), Some("my-id"));
+
+        // 4. className (any element)
+        assert_eq!(dom.get_class_name(div_id), None);
+        dom.set_class_name(div_id, "foo bar");
+        assert_eq!(dom.get_class_name(div_id), Some("foo bar"));
+
+        // 5. alt (any element)
+        assert_eq!(dom.get_alt(div_id), None);
+        dom.set_alt(div_id, "Alternative text");
+        assert_eq!(dom.get_alt(div_id), Some("Alternative text"));
+
+        // 6. srcset (img, source)
+        let source_id = elem(&mut dom, "source");
+        assert_eq!(dom.get_srcset(source_id), None);
+        dom.set_srcset(source_id, "srcset1 2x");
+        assert_eq!(dom.get_srcset(source_id), Some("srcset1 2x"));
+        dom.set_srcset(div_id, "srcset1 2x"); // no-op
+        assert_eq!(dom.get_srcset(div_id), None);
+
+        // 7. sizes (img, source, link)
+        let link_id = elem(&mut dom, "link");
+        assert_eq!(dom.get_sizes(link_id), None);
+        dom.set_sizes(link_id, "50vw");
+        assert_eq!(dom.get_sizes(link_id), Some("50vw"));
+        dom.set_sizes(div_id, "50vw"); // no-op
+        assert_eq!(dom.get_sizes(div_id), None);
+
+        // 8. decoding (img)
+        assert_eq!(dom.get_decoding(img_id), None);
+        dom.set_decoding(img_id, "async");
+        assert_eq!(dom.get_decoding(img_id), Some("async"));
+        dom.set_decoding(div_id, "async"); // no-op
+        assert_eq!(dom.get_decoding(div_id), None);
+
+        // 9. placeholder (any element)
+        assert_eq!(dom.get_placeholder(div_id), None);
+        dom.set_placeholder(div_id, "Enter text...");
+        assert_eq!(dom.get_placeholder(div_id), Some("Enter text..."));
+
+        // 10. name (any element)
+        assert_eq!(dom.get_name(div_id), None);
+        dom.set_name(div_id, "username");
+        assert_eq!(dom.get_name(div_id), Some("username"));
+
+        // 11. download (any element)
+        assert_eq!(dom.get_download(div_id), None);
+        dom.set_download(div_id, "file.txt");
+        assert_eq!(dom.get_download(div_id), Some("file.txt"));
+
+        // 12. action (form)
+        let form_id = elem(&mut dom, "form");
+        assert_eq!(dom.get_action(form_id), Some(""));
+        dom.set_action(form_id, "/submit");
+        assert_eq!(dom.get_action(form_id), Some("/submit"));
+        dom.set_action(div_id, "/submit"); // no-op
+        assert_eq!(dom.get_action(div_id), None);
+
+        // 13. method (form)
+        assert_eq!(dom.get_method(form_id), Some(""));
+        dom.set_method(form_id, "post");
+        assert_eq!(dom.get_method(form_id), Some("post"));
+        dom.set_method(div_id, "post"); // no-op
+        assert_eq!(dom.get_method(div_id), None);
+
+        // 14. enctype (form)
+        assert_eq!(dom.get_enctype(form_id), Some(""));
+        dom.set_enctype(form_id, "multipart/form-data");
+        assert_eq!(dom.get_enctype(form_id), Some("multipart/form-data"));
+        dom.set_enctype(div_id, "multipart/form-data"); // no-op
+        assert_eq!(dom.get_enctype(div_id), None);
+
+        // 15. width (img, canvas)
+        let canvas_id = elem(&mut dom, "canvas");
+        assert_eq!(dom.get_width(canvas_id), Some(""));
+        dom.set_width(canvas_id, "100");
+        assert_eq!(dom.get_width(canvas_id), Some("100"));
+        dom.set_width(div_id, "100"); // no-op
+        assert_eq!(dom.get_width(div_id), None);
+
+        // 16. height (img, canvas)
+        assert_eq!(dom.get_height(canvas_id), Some(""));
+        dom.set_height(canvas_id, "200");
+        assert_eq!(dom.get_height(canvas_id), Some("200"));
+        dom.set_height(div_id, "200"); // no-op
+        assert_eq!(dom.get_height(div_id), None);
+
+        // 17. max (input)
+        let input_id = elem(&mut dom, "input");
+        assert_eq!(dom.get_max(input_id), Some(""));
+        dom.set_max(input_id, "10");
+        assert_eq!(dom.get_max(input_id), Some("10"));
+        dom.set_max(div_id, "10"); // no-op
+        assert_eq!(dom.get_max(div_id), None);
+
+        // 18. min (input)
+        assert_eq!(dom.get_min(input_id), Some(""));
+        dom.set_min(input_id, "1");
+        assert_eq!(dom.get_min(input_id), Some("1"));
+        dom.set_min(div_id, "1"); // no-op
+        assert_eq!(dom.get_min(div_id), None);
+
+        // 19. step (input)
+        assert_eq!(dom.get_step(input_id), Some(""));
+        dom.set_step(input_id, "2");
+        assert_eq!(dom.get_step(input_id), Some("2"));
+        dom.set_step(div_id, "2"); // no-op
+        assert_eq!(dom.get_step(div_id), None);
+
+        // 20. pattern (input)
+        assert_eq!(dom.get_pattern(input_id), Some(""));
+        dom.set_pattern(input_id, "[0-9]+");
+        assert_eq!(dom.get_pattern(input_id), Some("[0-9]+"));
+        dom.set_pattern(div_id, "[0-9]+"); // no-op
+        assert_eq!(dom.get_pattern(div_id), None);
+
+        // 21. accept (input)
+        assert_eq!(dom.get_accept(input_id), Some(""));
+        dom.set_accept(input_id, "image/*");
+        assert_eq!(dom.get_accept(input_id), Some("image/*"));
+        dom.set_accept(div_id, "image/*"); // no-op
+        assert_eq!(dom.get_accept(div_id), None);
+
+        // 22. start (ol)
+        let ol_id = elem(&mut dom, "ol");
+        assert_eq!(dom.get_start(ol_id), None);
+        dom.set_start(ol_id, "5");
+        assert_eq!(dom.get_start(ol_id), Some("5"));
+        dom.set_start(div_id, "5"); // no-op
+        assert_eq!(dom.get_start(div_id), None);
+
+        // 23. reversed (ol)
+        assert_eq!(dom.get_reversed(ol_id), None);
+        dom.set_reversed(ol_id, "reversed");
+        assert_eq!(dom.get_reversed(ol_id), Some("reversed"));
+        dom.set_reversed(div_id, "reversed"); // no-op
+        assert_eq!(dom.get_reversed(div_id), None);
+
+        // 24. value (li)
+        let li_id = elem(&mut dom, "li");
+        assert_eq!(dom.get_value(li_id), None);
+        dom.set_value(li_id, "3");
+        assert_eq!(dom.get_value(li_id), Some("3"));
+        dom.set_value(div_id, "3"); // no-op
+        assert_eq!(dom.get_value(div_id), None);
+
+        // 25. content (meta)
+        let meta_id = elem(&mut dom, "meta");
+        assert_eq!(dom.get_content(meta_id), None);
+        dom.set_content(meta_id, "width=device-width");
+        assert_eq!(dom.get_content(meta_id), Some("width=device-width"));
+        dom.set_content(div_id, "width=device-width"); // no-op
+        assert_eq!(dom.get_content(div_id), None);
+
+        // 26. http-equiv (meta)
+        assert_eq!(dom.get_http_equiv(meta_id), None);
+        dom.set_http_equiv(meta_id, "refresh");
+        assert_eq!(dom.get_http_equiv(meta_id), Some("refresh"));
+        dom.set_http_equiv(div_id, "refresh"); // no-op
+        assert_eq!(dom.get_http_equiv(div_id), None);
+
+        // 27. charset (meta)
+        assert_eq!(dom.get_charset(meta_id), None);
+        dom.set_charset(meta_id, "utf-8");
+        assert_eq!(dom.get_charset(meta_id), Some("utf-8"));
+        dom.set_charset(div_id, "utf-8"); // no-op
+        assert_eq!(dom.get_charset(div_id), None);
+
+        // 28. wrap (textarea)
+        let textarea_id = elem(&mut dom, "textarea");
+        assert_eq!(dom.get_wrap(textarea_id), None);
+        dom.set_wrap(textarea_id, "hard");
+        assert_eq!(dom.get_wrap(textarea_id), Some("hard"));
+        dom.set_wrap(div_id, "hard"); // no-op
+        assert_eq!(dom.get_wrap(div_id), None);
+
+        // 29. textarea_value (textarea)
+        assert_eq!(dom.get_textarea_value(textarea_id), None);
+        dom.set_textarea_value(textarea_id, "some text");
+        assert_eq!(dom.get_textarea_value(textarea_id), Some("some text"));
+        dom.set_textarea_value(div_id, "some text"); // no-op
+        assert_eq!(dom.get_textarea_value(div_id), None);
+
+        // 30. button_value (button)
+        let button_id = elem(&mut dom, "button");
+        assert_eq!(dom.get_button_value(button_id), None);
+        dom.set_button_value(button_id, "clickme");
+        assert_eq!(dom.get_button_value(button_id), Some("clickme"));
+        dom.set_button_value(div_id, "clickme"); // no-op
+        assert_eq!(dom.get_button_value(div_id), None);
+
+        // 31. option_value (option)
+        let option_id = elem(&mut dom, "option");
+        assert_eq!(dom.get_option_value(option_id), None);
+        dom.set_option_value(option_id, "opt1");
+        assert_eq!(dom.get_option_value(option_id), Some("opt1"));
+        dom.set_option_value(div_id, "opt1"); // no-op
+        assert_eq!(dom.get_option_value(div_id), None);
+
+        // 32. kind (track)
+        let track_id = elem(&mut dom, "track");
+        assert_eq!(dom.get_kind(track_id), None);
+        dom.set_kind(track_id, "subtitles");
+        assert_eq!(dom.get_kind(track_id), Some("subtitles"));
+        dom.set_kind(div_id, "subtitles"); // no-op
+        assert_eq!(dom.get_kind(div_id), None);
+
+        // 33. srclang (track)
+        assert_eq!(dom.get_srclang(track_id), None);
+        dom.set_srclang(track_id, "en");
+        assert_eq!(dom.get_srclang(track_id), Some("en"));
+        dom.set_srclang(div_id, "en"); // no-op
+        assert_eq!(dom.get_srclang(div_id), None);
+
+        // 34. label (track)
+        assert_eq!(dom.get_label(track_id), None);
+        dom.set_label(track_id, "English");
+        assert_eq!(dom.get_label(track_id), Some("English"));
+        dom.set_label(div_id, "English"); // no-op
+        assert_eq!(dom.get_label(div_id), None);
+
+        // 35. sandbox (iframe)
+        let iframe_id = elem(&mut dom, "iframe");
+        assert_eq!(dom.get_sandbox(iframe_id), None);
+        dom.set_sandbox(iframe_id, "allow-scripts");
+        assert_eq!(dom.get_sandbox(iframe_id), Some("allow-scripts"));
+        dom.set_sandbox(div_id, "allow-scripts"); // no-op
+        assert_eq!(dom.get_sandbox(div_id), None);
+
+        // 36. allow (iframe)
+        assert_eq!(dom.get_allow(iframe_id), None);
+        dom.set_allow(iframe_id, "geolocation");
+        assert_eq!(dom.get_allow(iframe_id), Some("geolocation"));
+        dom.set_allow(div_id, "geolocation"); // no-op
+        assert_eq!(dom.get_allow(div_id), None);
+
+        // 37. formnovalidate (input, button)
+        assert_eq!(dom.get_formnovalidate(input_id), Some(false));
+        dom.set_formnovalidate(input_id, true);
+        assert_eq!(dom.get_formnovalidate(input_id), Some(true));
+        dom.set_formnovalidate(input_id, false);
+        assert_eq!(dom.get_formnovalidate(input_id), Some(false));
+        dom.set_formnovalidate(div_id, true); // no-op
+        assert_eq!(dom.get_formnovalidate(div_id), None);
+
+        // 38. inputmode (input, textarea, select, button)
+        let select_id = elem(&mut dom, "select");
+        assert_eq!(dom.get_inputmode(select_id), None);
+        dom.set_inputmode(select_id, "numeric");
+        assert_eq!(dom.get_inputmode(select_id), Some("numeric"));
+        dom.set_inputmode(div_id, "numeric"); // no-op
+        assert_eq!(dom.get_inputmode(div_id), None);
+
+        // 39. enterkeyhint (input, textarea, select, button)
+        assert_eq!(dom.get_enterkeyhint(select_id), None);
+        dom.set_enterkeyhint(select_id, "search");
+        assert_eq!(dom.get_enterkeyhint(select_id), Some("search"));
+        dom.set_enterkeyhint(div_id, "search"); // no-op
+        assert_eq!(dom.get_enterkeyhint(div_id), None);
+
+        // 40. dirname (input, textarea)
+        assert_eq!(dom.get_dirname(textarea_id), None);
+        dom.set_dirname(textarea_id, "test.dir");
+        assert_eq!(dom.get_dirname(textarea_id), Some("test.dir"));
+        dom.set_dirname(div_id, "test.dir"); // no-op
+        assert_eq!(dom.get_dirname(div_id), None);
+
+        // 41. maxlength (input, textarea)
+        assert_eq!(dom.get_maxlength(textarea_id), None);
+        dom.set_maxlength(textarea_id, "50");
+        assert_eq!(dom.get_maxlength(textarea_id), Some("50"));
+        dom.set_maxlength(div_id, "50"); // no-op
+        assert_eq!(dom.get_maxlength(div_id), None);
+
+        // 42. minlength (input, textarea)
+        assert_eq!(dom.get_minlength(textarea_id), None);
+        dom.set_minlength(textarea_id, "5");
+        assert_eq!(dom.get_minlength(textarea_id), Some("5"));
+        dom.set_minlength(div_id, "5"); // no-op
+        assert_eq!(dom.get_minlength(div_id), None);
+
+        // 43. size (input, select)
+        assert_eq!(dom.get_size(select_id), None);
+        dom.set_size(select_id, "4");
+        assert_eq!(dom.get_size(select_id), Some("4"));
+        dom.set_size(div_id, "4"); // no-op
+        assert_eq!(dom.get_size(div_id), None);
     }
 }
