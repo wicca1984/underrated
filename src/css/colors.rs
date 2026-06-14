@@ -1347,11 +1347,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let content = s[start..s.len() - 1].trim();
                 let parts_vec = get_color_parts("rgb", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 || parts.len() == 4 {
                     let r = parse_rgb_component(parts[0])?;
                     let g = parse_rgb_component(parts[1])?;
                     let b = parse_rgb_component(parts[2])?;
-                    let alpha = if parts.len() >= 4 {
+                    let alpha = if parts.len() == 4 {
                         parse_alpha_component(parts[3])?
                     } else {
                         1.0
@@ -1368,11 +1368,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let content = s[start..s.len() - 1].trim();
                 let parts_vec = get_color_parts("hsl", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 || parts.len() == 4 {
                     let h = parse_hue_angle(parts[0])?;
                     let s_val = parse_percentage_or_number(parts[1])?;
                     let l = parse_percentage_or_number(parts[2])?;
-                    let alpha = if parts.len() >= 4 {
+                    let alpha = if parts.len() == 4 {
                         parse_alpha_component(parts[3])?
                     } else {
                         1.0
@@ -1383,11 +1383,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let content = s[4..s.len() - 1].trim();
                 let parts_vec = get_color_parts("hwb", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 || parts.len() == 4 {
                     let h = parse_hue_angle(parts[0])?;
                     let w = parse_percentage_or_number(parts[1])?;
                     let b = parse_percentage_or_number(parts[2])?;
-                    let alpha = if parts.len() >= 4 {
+                    let alpha = if parts.len() == 4 {
                         parse_alpha_component(parts[3])?
                     } else {
                         1.0
@@ -1398,11 +1398,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let content = s[4..s.len() - 1].trim();
                 let parts_vec = get_color_parts("lab", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 || parts.len() == 4 {
                     let l = parse_lab_lightness(parts[0])?;
                     let a = parse_lab_ab(parts[1])?;
                     let b = parse_lab_ab(parts[2])?;
-                    let alpha = if parts.len() >= 4 {
+                    let alpha = if parts.len() == 4 {
                         parse_alpha_component(parts[3])?
                     } else {
                         1.0
@@ -1413,11 +1413,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let content = s[4..s.len() - 1].trim();
                 let parts_vec = get_color_parts("lch", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 || parts.len() == 4 {
                     let l = parse_lab_lightness(parts[0])?;
                     let c = parse_lch_chroma(parts[1])?;
                     let h = parse_hue_angle(parts[2])?;
-                    let alpha = if parts.len() >= 4 {
+                    let alpha = if parts.len() == 4 {
                         parse_alpha_component(parts[3])?
                     } else {
                         1.0
@@ -1428,11 +1428,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let content = s[6..s.len() - 1].trim();
                 let parts_vec = get_color_parts("oklab", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 || parts.len() == 4 {
                     let l = parse_percentage_or_number(parts[0])?;
                     let a = parse_oklab_ab(parts[1])?;
                     let b = parse_oklab_ab(parts[2])?;
-                    let alpha = if parts.len() >= 4 {
+                    let alpha = if parts.len() == 4 {
                         parse_alpha_component(parts[3])?
                     } else {
                         1.0
@@ -1443,11 +1443,11 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let content = s[6..s.len() - 1].trim();
                 let parts_vec = get_color_parts("oklch", content)?;
                 let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 || parts.len() == 4 {
                     let l = parse_percentage_or_number(parts[0])?;
                     let c = parse_oklch_chroma(parts[1])?;
                     let h = parse_hue_angle(parts[2])?;
-                    let alpha = if parts.len() >= 4 {
+                    let alpha = if parts.len() == 4 {
                         parse_alpha_component(parts[3])?
                     } else {
                         1.0
@@ -1456,19 +1456,67 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 }
             } else if s_lower.starts_with("color(") {
                 let content = s[6..s.len() - 1].trim();
-                let content_clean = content.replace(['/', ','], " ");
-                let parts: Vec<&str> = content_clean.split_whitespace().collect();
-                if parts.len() == 4 || parts.len() == 5 {
-                    let colorspace = parts[0];
-                    let c1 = parse_percentage_or_number(parts[1])?;
-                    let c2 = parse_percentage_or_number(parts[2])?;
-                    let c3 = parse_percentage_or_number(parts[3])?;
-                    let alpha = if parts.len() == 5 {
-                        parse_alpha_component(parts[4])?
-                    } else {
-                        1.0
-                    };
-                    return parse_predefined_color(colorspace, c1, c2, c3, alpha);
+                if content.to_ascii_lowercase().starts_with("from ") {
+                    let from_content = &content[5..].trim();
+                    let (origin_color_str, rest_str) = extract_relative_origin_color(from_content)?;
+                    let origin_color = parse_color(origin_color_str)?;
+
+                    let rest_clean = rest_str.replace(['/', ','], " ");
+                    let parts: Vec<&str> = rest_clean.split_whitespace().collect();
+                    if parts.len() == 4 || parts.len() == 5 {
+                        let colorspace = parts[0];
+                        let is_xyz = colorspace.eq_ignore_ascii_case("xyz")
+                            || colorspace.eq_ignore_ascii_case("xyz-d50")
+                            || colorspace.eq_ignore_ascii_case("xyz-d65");
+
+                        let (o1, o2, o3, o_alpha) = color_to_predefined(origin_color, colorspace);
+
+                        let mut resolved_parts: Vec<String> =
+                            parts[1..].iter().map(|&p| p.to_string()).collect();
+                        let o1_str = format!("{}", o1);
+                        let o2_str = format!("{}", o2);
+                        let o3_str = format!("{}", o3);
+                        let o_alpha_str = format!("{}", o_alpha);
+
+                        for p in resolved_parts.iter_mut() {
+                            *p = replace_word(p, "alpha", &o_alpha_str);
+                            if is_xyz {
+                                *p = replace_word(p, "x", &o1_str);
+                                *p = replace_word(p, "y", &o2_str);
+                                *p = replace_word(p, "z", &o3_str);
+                            } else {
+                                *p = replace_word(p, "r", &o1_str);
+                                *p = replace_word(p, "g", &o2_str);
+                                *p = replace_word(p, "b", &o3_str);
+                            }
+                        }
+
+                        let c1 = parse_percentage_or_number(&resolved_parts[0])?;
+                        let c2 = parse_percentage_or_number(&resolved_parts[1])?;
+                        let c3 = parse_percentage_or_number(&resolved_parts[2])?;
+                        let alpha = if resolved_parts.len() == 4 {
+                            parse_alpha_component(&resolved_parts[3])?
+                        } else {
+                            1.0
+                        };
+                        return parse_predefined_color(colorspace, c1, c2, c3, alpha);
+                    }
+                    return None;
+                } else {
+                    let content_clean = content.replace(['/', ','], " ");
+                    let parts: Vec<&str> = content_clean.split_whitespace().collect();
+                    if parts.len() == 4 || parts.len() == 5 {
+                        let colorspace = parts[0];
+                        let c1 = parse_percentage_or_number(parts[1])?;
+                        let c2 = parse_percentage_or_number(parts[2])?;
+                        let c3 = parse_percentage_or_number(parts[3])?;
+                        let alpha = if parts.len() == 5 {
+                            parse_alpha_component(parts[4])?
+                        } else {
+                            1.0
+                        };
+                        return parse_predefined_color(colorspace, c1, c2, c3, alpha);
+                    }
                 }
             } else if s_lower.starts_with("color-mix(") {
                 let content = s[10..s.len() - 1].trim();
@@ -1484,6 +1532,14 @@ pub fn parse_color(s: &str) -> Option<Color> {
                             } else {
                                 None
                             };
+
+                            let is_polar = colorspace.eq_ignore_ascii_case("hsl")
+                                || colorspace.eq_ignore_ascii_case("hwb")
+                                || colorspace.eq_ignore_ascii_case("lch")
+                                || colorspace.eq_ignore_ascii_case("oklch");
+                            if hue_method.is_some() && !is_polar {
+                                return None;
+                            }
 
                             let (color1, p1) = parse_color_mix_decl(&parts[1])?;
                             let (color2, p2) = parse_color_mix_decl(&parts[2])?;
@@ -3088,5 +3144,66 @@ mod tests {
         let serialized_oklch = serialize_color_oklch(parsed_oklch.clone());
         let parsed_back_oklch = parse_color(&serialized_oklch).unwrap();
         assert_eq!(parsed_oklch, parsed_back_oklch);
+    }
+
+    #[test]
+    fn test_strict_component_count_validation() {
+        // Validation of strict component counts (must be exactly 3 or 4)
+        assert!(parse_color("rgb(255 0 0 1)").is_some());
+        assert!(parse_color("rgb(255, 0, 0, 1)").is_some());
+        assert!(parse_color("rgb(255, 0, 0)").is_some());
+        assert_eq!(parse_color("rgb(255, 0, 0, 1, 2)"), None); // Too many
+        assert_eq!(parse_color("rgb(255, 0)"), None); // Too few
+
+        assert!(parse_color("hsl(120, 100%, 50%)").is_some());
+        assert_eq!(parse_color("hsl(120, 100%, 50%, 1.0, 2.0)"), None);
+
+        assert!(parse_color("oklch(0.6 0.12 240)").is_some());
+        assert_eq!(parse_color("oklch(0.6 0.12 240 1 2)"), None);
+    }
+
+    #[test]
+    fn test_color_mix_hue_validation() {
+        // Polar colorspaces allow hue method
+        assert!(parse_color("color-mix(in oklch shorter hue, red, blue)").is_some());
+        assert!(parse_color("color-mix(in lch longer hue, red, blue)").is_some());
+
+        // Non-polar colorspaces should reject hue method
+        assert_eq!(
+            parse_color("color-mix(in srgb shorter hue, red, blue)"),
+            None
+        );
+        assert_eq!(
+            parse_color("color-mix(in oklab shorter hue, red, blue)"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_color_relative_syntax() {
+        // relative color syntax in color() function
+        assert_eq!(
+            parse_color("color(from red srgb r g b)"),
+            Some(Color::Rgba(255, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("color(from #00ff00 srgb r g b / 0.5)"),
+            Some(Color::Rgba(0, 255, 0, 128))
+        );
+        assert_eq!(
+            parse_color("color(from white xyz x y z)"),
+            // White converts to 0.9504, 1.0000, 1.0888 in XYZ D65
+            // When converting back to sRGB it should be pure white
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+    }
+
+    #[test]
+    fn test_nested_color_mix_inside_relative_color() {
+        // nested color-mix inside relative color
+        assert_eq!(
+            parse_color("rgb(from color-mix(in srgb, red, blue) r g b)"),
+            Some(Color::Rgba(128, 0, 128, 255))
+        );
     }
 }
