@@ -138,10 +138,16 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                 get response() {
                     if (this._readyState === 0 || this._readyState === 1) {
-                        return "";
+                        if (this._responseType === "" || this._responseType === "text") {
+                            return "";
+                        }
+                        return null;
                     }
                     if (this._responseType === "" || this._responseType === "text") {
                         return this._responseText;
+                    }
+                    if (this._readyState !== 4) {
+                        return null;
                     }
                     if (this._responseType === "json") {
                         if (this._responseText === "") {
@@ -152,6 +158,26 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         } catch (e) {
                             return null;
                         }
+                    }
+                    if (this._responseType === "document") {
+                        return this.responseXML;
+                    }
+                    if (this._responseType === "arraybuffer") {
+                        if (this._responseText === "") {
+                            return new ArrayBuffer(0);
+                        }
+                        const buf = new ArrayBuffer(this._responseText.length);
+                        const bufView = new Uint8Array(buf);
+                        for (let i = 0; i < this._responseText.length; i++) {
+                            bufView[i] = this._responseText.charCodeAt(i) & 0xff;
+                        }
+                        return buf;
+                    }
+                    if (this._responseType === "blob") {
+                        if (typeof Blob !== "undefined") {
+                            return new Blob([this._responseText]);
+                        }
+                        return null;
                     }
                     return null;
                 }
@@ -193,7 +219,14 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     if (this._readyState === 0 || this._readyState === 1) {
                         return "";
                     }
-                    return this._url || "";
+                    if (!this._url) {
+                        return "";
+                    }
+                    const hashIdx = this._url.indexOf('#');
+                    if (hashIdx !== -1) {
+                        return this._url.substring(0, hashIdx);
+                    }
+                    return this._url;
                 }
 
                 get timeout() {
@@ -332,6 +365,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     }
 
                     this._changeReadyState(4); // DONE
+                    this._sendFlag = false;
 
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
@@ -426,8 +460,9 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         return "";
                     }
                     let res = "";
-                    for (const [key, val] of Object.entries(this._headers)) {
-                        res += key + ": " + val + "\r\n";
+                    const keys = Object.keys(this._headers).sort();
+                    for (const key of keys) {
+                        res += key + ": " + this._headers[key] + "\r\n";
                     }
                     return res;
                 }
@@ -455,6 +490,46 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                                 }));
                             }
                             this.dispatchEvent(new ProgressEventClass("abort", {
+                                lengthComputable: false,
+                                loaded: 0,
+                                total: 0
+                            }));
+                            this.dispatchEvent(new ProgressEventClass("loadend", {
+                                lengthComputable: false,
+                                loaded: 0,
+                                total: 0
+                            }));
+                        } catch (e) {}
+                    }
+                }
+
+                _simulateTimeout() {
+                    if (this._readyState === 0 || this._readyState === 4) {
+                        return;
+                    }
+                    this._status = 0;
+                    this._statusText = "";
+                    this._headers = {};
+                    this._sendFlag = false;
+
+                    this._changeReadyState(4); // DONE
+
+                    const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
+                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                        try {
+                            if (this._upload) {
+                                this._upload.dispatchEvent(new ProgressEventClass("timeout", {
+                                    lengthComputable: false,
+                                    loaded: 0,
+                                    total: 0
+                                }));
+                                this._upload.dispatchEvent(new ProgressEventClass("loadend", {
+                                    lengthComputable: false,
+                                    loaded: 0,
+                                    total: 0
+                                }));
+                            }
+                            this.dispatchEvent(new ProgressEventClass("timeout", {
                                 lengthComputable: false,
                                 loaded: 0,
                                 total: 0
@@ -1117,6 +1192,151 @@ mod tests {
                 "test_xhr_additive_improvements JS assert failed: {}",
                 error_str
             );
+        }
+    }
+
+    #[test]
+    fn test_xhr_new_gaps() {
+        let mut context = Context::default();
+        register_xhr(&mut context).expect("Failed to register XMLHttpRequest");
+
+        // We also need to mock DOMParser and Blob if we test document or blob
+        let setup_script = r#"
+            // Mock Event if it doesn't exist
+            if (typeof Event === "undefined") {
+                globalThis.Event = class Event {
+                    constructor(type) {
+                        this.type = type;
+                    }
+                };
+            }
+
+            // Mock DOMParser
+            class MockDocument {
+                constructor(text) {
+                    this.text = text;
+                }
+            }
+            globalThis.DOMParser = class DOMParser {
+                parseFromString(text, mime) {
+                    return new MockDocument(text);
+                }
+            };
+            
+            // Mock Blob if undefined
+            if (typeof Blob === "undefined") {
+                globalThis.Blob = class Blob {
+                    constructor(parts, options = {}) {
+                        this.parts = parts;
+                        this.type = options.type || "";
+                    }
+                };
+            }
+        "#;
+        context
+            .eval(Source::from_bytes(setup_script.as_bytes()))
+            .unwrap();
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Test responseType document, arraybuffer, blob
+                const xhr1 = new XMLHttpRequest();
+                xhr1.open("GET", "https://example.com/api#foo");
+                
+                // Set non-text response types
+                xhr1.responseType = "arraybuffer";
+                
+                // Should return null for non-text before DONE (even when states 2/3 are reached, but let's test in OPENED)
+                if (xhr1.response !== null) {
+                    throw new Error("response should be null in OPENED state for arraybuffer");
+                }
+                
+                xhr1.send("hello");
+                
+                // Now state is DONE. response should return the ArrayBuffer
+                const buf = xhr1.response;
+                if (!(buf instanceof ArrayBuffer)) {
+                    throw new Error("expected ArrayBuffer for arraybuffer responseType");
+                }
+                if (buf.byteLength !== 5) {
+                    throw new Error("ArrayBuffer byteLength should be 5, got: " + buf.byteLength);
+                }
+                const view = new Uint8Array(buf);
+                if (view[0] !== 104 || view[4] !== 111) { // "h" and "o"
+                    throw new Error("ArrayBuffer content is incorrect");
+                }
+                
+                // responseURL fragment strip
+                if (xhr1.responseURL !== "https://example.com/api") {
+                    throw new Error("expected responseURL to strip fragment, got: " + xhr1.responseURL);
+                }
+
+                // 2. Test responseType blob
+                const xhr2 = new XMLHttpRequest();
+                xhr2.open("GET", "https://example.com");
+                xhr2.responseType = "blob";
+                xhr2.send("blobData");
+                const blob = xhr2.response;
+                if (!blob) {
+                    throw new Error("expected Blob for blob responseType");
+                }
+
+                // 3. Test responseType document
+                const xhr3 = new XMLHttpRequest();
+                xhr3.open("GET", "https://example.com");
+                xhr3.responseType = "document";
+                xhr3.send("docData");
+                const doc = xhr3.response;
+                if (!doc || !(doc instanceof MockDocument) || doc.text !== "docData") {
+                    throw new Error("expected MockDocument for document responseType");
+                }
+
+                // 4. Test getAllResponseHeaders sorted lexicographically
+                const xhr4 = new XMLHttpRequest();
+                xhr4.open("GET", "https://example.com");
+                xhr4.setRequestHeader("Z-Header", "z-val");
+                xhr4.setRequestHeader("A-Header", "a-val");
+                xhr4.setRequestHeader("M-Header", "m-val");
+                xhr4.send();
+                
+                const headersStr = xhr4.getAllResponseHeaders();
+                const expected = "a-header: a-val\r\nm-header: m-val\r\nz-header: z-val\r\n";
+                if (headersStr !== expected) {
+                    throw new Error("getAllResponseHeaders not sorted correctly, got: " + JSON.stringify(headersStr));
+                }
+
+                // 5. Test _simulateTimeout() helper
+                const xhr7 = new XMLHttpRequest();
+                let timeoutFired = false;
+                let loadendFired = false;
+                xhr7.ontimeout = () => { timeoutFired = true; };
+                xhr7.onloadend = () => { loadendFired = true; };
+                xhr7.open("GET", "https://example.com");
+                
+                xhr7._simulateTimeout();
+                if (!timeoutFired || !loadendFired) {
+                    throw new Error("expected timeout and loadend to fire");
+                }
+                if (xhr7.readyState !== 4) {
+                    throw new Error("readyState should be DONE (4) after timeout, got: " + xhr7.readyState);
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        let res = context.eval(Source::from_bytes(script.as_bytes()));
+        assert!(res.is_ok(), "Evaluation itself failed: {:?}", res);
+
+        let error_val = context
+            .eval(Source::from_bytes("globalThis.test_error".as_bytes()))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!("test_xhr_new_gaps JS assert failed: {}", error_str);
         }
     }
 }
