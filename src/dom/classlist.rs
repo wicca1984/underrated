@@ -16,11 +16,17 @@ impl Dom {
     // spec: https://dom.spec.whatwg.org/#domtokenlist
     pub fn class_list(&self, node: NodeId) -> Vec<String> {
         if let Some(class_attr) = self.get_attribute(node, "class") {
-            class_attr
-                .split(crate::ascii::is_html_whitespace)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect()
+            let mut seen = std::collections::HashSet::new();
+            let mut result = Vec::new();
+            for token in class_attr.split(crate::ascii::is_html_whitespace) {
+                if !token.is_empty() {
+                    let s = token.to_string();
+                    if seen.insert(s.clone()) {
+                        result.push(s);
+                    }
+                }
+            }
+            result
         } else {
             Vec::new()
         }
@@ -382,7 +388,7 @@ mod tests {
         let el = elem(&mut dom, "div");
 
         dom.set_attribute(el, "class", "foo bar foo baz foo");
-        assert_eq!(dom.class_list(el), vec!["foo", "bar", "foo", "baz", "foo"]);
+        assert_eq!(dom.class_list(el), vec!["foo", "bar", "baz"]);
 
         // Remove foo
         dom.remove_class(el, "foo");
