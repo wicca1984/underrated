@@ -4096,6 +4096,22 @@ pub fn parse_property_value(
     property_name: &str,
     components: &[ComponentValue],
 ) -> Option<CssValue> {
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+    if let [ComponentValue::Token(CssToken::Ident(s))] = non_ws.as_slice() {
+        let lower = s.to_ascii_lowercase();
+        if lower == "inherit"
+            || lower == "initial"
+            || lower == "unset"
+            || lower == "revert"
+            || lower == "revert-layer"
+        {
+            return Some(CssValue::Keyword(s.clone()));
+        }
+    }
+
     let name_lower = property_name.to_ascii_lowercase();
     if name_lower == "grid-template-columns" || name_lower == "grid-template-rows" {
         return parse_grid_template(components);
@@ -4677,19 +4693,31 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
         }
         ComponentValue::Token(CssToken::Dimension { value, unit }) => {
             let lower_unit = unit.to_ascii_lowercase();
-            if lower_unit == "s" || lower_unit == "ms" || lower_unit == "fr" {
+            if lower_unit == "s"
+                || lower_unit == "ms"
+                || lower_unit == "fr"
+                || lower_unit == "ex"
+                || lower_unit == "ch"
+                || lower_unit == "vmin"
+                || lower_unit == "vmax"
+            {
                 return Some(CssValue::Keyword(format!("{}{}", value, lower_unit)));
             }
-            let unit_enum = match lower_unit.as_str() {
-                "px" => LengthUnit::Px,
-                "em" => LengthUnit::Em,
-                "rem" => LengthUnit::Rem,
-                "pt" => LengthUnit::Pt,
-                "vw" => LengthUnit::Vw,
-                "vh" => LengthUnit::Vh,
+            let (val, unit_enum) = match lower_unit.as_str() {
+                "px" => (*value as f32, LengthUnit::Px),
+                "em" => (*value as f32, LengthUnit::Em),
+                "rem" => (*value as f32, LengthUnit::Rem),
+                "pt" => (*value as f32, LengthUnit::Pt),
+                "vw" => (*value as f32, LengthUnit::Vw),
+                "vh" => (*value as f32, LengthUnit::Vh),
+                "in" => (*value as f32 * 96.0, LengthUnit::Px),
+                "cm" => (*value as f32 * 96.0 / 2.54, LengthUnit::Px),
+                "mm" => (*value as f32 * 9.6 / 2.54, LengthUnit::Px),
+                "pc" => (*value as f32 * 16.0, LengthUnit::Px),
+                "q" => (*value as f32 * 96.0 / 101.6, LengthUnit::Px),
                 _ => return None, // TODO(spec): other units
             };
-            Some(CssValue::Length(*value as f32, unit_enum))
+            Some(CssValue::Length(val, unit_enum))
         }
         ComponentValue::Token(CssToken::Percentage(v)) => {
             Some(CssValue::Length(*v as f32, LengthUnit::Percent))
@@ -5174,7 +5202,20 @@ fn is_length_percentage(cv: &ComponentValue) -> bool {
             let lower_unit = unit.to_ascii_lowercase();
             matches!(
                 lower_unit.as_str(),
-                "px" | "em" | "rem" | "pt" | "vw" | "vh"
+                "px" | "em"
+                    | "rem"
+                    | "pt"
+                    | "vw"
+                    | "vh"
+                    | "in"
+                    | "cm"
+                    | "mm"
+                    | "pc"
+                    | "q"
+                    | "ex"
+                    | "ch"
+                    | "vmin"
+                    | "vmax"
             )
         }
         ComponentValue::Token(CssToken::Number(v)) => *v == 0.0,
@@ -7297,17 +7338,23 @@ fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
 fn parse_length_or_percent(comp: &ComponentValue) -> Option<LengthOrPercent> {
     match comp {
         ComponentValue::Token(CssToken::Dimension { value, unit }) => {
-            let unit_enum = match unit.to_ascii_lowercase().as_str() {
-                "px" => LengthUnit::Px,
-                "em" => LengthUnit::Em,
-                "rem" => LengthUnit::Rem,
-                "pt" => LengthUnit::Pt,
-                "vw" => LengthUnit::Vw,
-                "vh" => LengthUnit::Vh,
+            let lower_unit = unit.to_ascii_lowercase();
+            let (val, unit_enum) = match lower_unit.as_str() {
+                "px" => (*value as f32, LengthUnit::Px),
+                "em" => (*value as f32, LengthUnit::Em),
+                "rem" => (*value as f32, LengthUnit::Rem),
+                "pt" => (*value as f32, LengthUnit::Pt),
+                "vw" => (*value as f32, LengthUnit::Vw),
+                "vh" => (*value as f32, LengthUnit::Vh),
+                "in" => (*value as f32 * 96.0, LengthUnit::Px),
+                "cm" => (*value as f32 * 96.0 / 2.54, LengthUnit::Px),
+                "mm" => (*value as f32 * 9.6 / 2.54, LengthUnit::Px),
+                "pc" => (*value as f32 * 16.0, LengthUnit::Px),
+                "q" => (*value as f32 * 96.0 / 101.6, LengthUnit::Px),
                 _ => return None,
             };
             Some(LengthOrPercent {
-                value: *value as f32,
+                value: val,
                 unit: unit_enum,
             })
         }
@@ -14953,5 +15000,71 @@ mod tests {
             parse_value(&[env_comp]),
             Some(CssValue::Keyword("env(safe-area-inset-top)".to_string()))
         );
+    }
+
+    #[test]
+    fn test_t0842_missing_css_value_features() {
+        // Test parsing of newly added length units in parse_property_value
+        let absolute_units = [
+            ("in", 5.0 * 96.0),
+            ("cm", 5.0 * 96.0 / 2.54),
+            ("mm", 5.0 * 9.6 / 2.54),
+            ("pc", 5.0 * 16.0),
+            ("q", 5.0 * 96.0 / 101.6),
+        ];
+
+        for &(unit_str, expected_px) in &absolute_units {
+            let comp = token(CssToken::Dimension {
+                value: 5.0,
+                unit: unit_str.to_string(),
+            });
+            // 1. Check general parse_property_value for "margin-left" (absolute units convert to Px on-the-fly)
+            assert_eq!(
+                parse_property_value("margin-left", std::slice::from_ref(&comp)),
+                Some(CssValue::Length(expected_px, LengthUnit::Px))
+            );
+
+            // 2. Check parse_length_or_percent
+            let parsed_lop = parse_length_or_percent(&comp);
+            assert!(parsed_lop.is_some());
+            let lop = parsed_lop.unwrap();
+            assert_eq!(lop.unit, LengthUnit::Px);
+            assert_eq!(lop.value, expected_px);
+        }
+
+        let relative_units = ["ex", "ch", "vmin", "vmax"];
+        for unit_str in &relative_units {
+            let comp = token(CssToken::Dimension {
+                value: 5.0,
+                unit: unit_str.to_string(),
+            });
+            // Relative units compile to Keyword
+            assert_eq!(
+                parse_property_value("margin-left", std::slice::from_ref(&comp)),
+                Some(CssValue::Keyword(format!("5{}", unit_str)))
+            );
+        }
+
+        // Test global keywords handled centrally in parse_property_value
+        let global_keywords = ["inherit", "initial", "unset", "revert", "revert-layer"];
+        for kw in &global_keywords {
+            let comp = token(CssToken::Ident(kw.to_string()));
+
+            // Check properties that use standard parser
+            assert_eq!(
+                parse_property_value("margin-left", std::slice::from_ref(&comp)),
+                Some(CssValue::Keyword(kw.to_string()))
+            );
+
+            // Check properties that usually use specialized parsers (like mix-blend-mode or resize)
+            assert_eq!(
+                parse_property_value("mix-blend-mode", std::slice::from_ref(&comp)),
+                Some(CssValue::Keyword(kw.to_string()))
+            );
+            assert_eq!(
+                parse_property_value("resize", std::slice::from_ref(&comp)),
+                Some(CssValue::Keyword(kw.to_string()))
+            );
+        }
     }
 }
