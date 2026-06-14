@@ -112,6 +112,46 @@ fn coalesce_unified_tokens(tokens: Vec<UnifiedToken>) -> Vec<UnifiedToken> {
     coalesced
 }
 
+fn unescape(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek() == Some(&'u') {
+            chars.next(); // 'u'
+            let mut hex = String::new();
+            for _ in 0..4 {
+                if let Some(hc) = chars.next() {
+                    hex.push(hc);
+                }
+            }
+            if let Some(rc) = u32::from_str_radix(&hex, 16)
+                .ok()
+                .and_then(std::char::from_u32)
+            {
+                result.push(rc);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn unescape_value(val: &Value) -> Value {
+    match val {
+        Value::String(s) => Value::String(unescape(s)),
+        Value::Array(arr) => Value::Array(arr.iter().map(unescape_value).collect()),
+        Value::Object(obj) => {
+            let mut new_obj = serde_json::Map::new();
+            for (k, v) in obj {
+                new_obj.insert(k.clone(), unescape_value(v));
+            }
+            Value::Object(new_obj)
+        }
+        other => other.clone(),
+    }
+}
+
 #[test]
 #[allow(clippy::absurd_extreme_comparisons)]
 fn test_html5lib_tokenizer_conformance() {
@@ -142,114 +182,140 @@ fn test_html5lib_tokenizer_conformance() {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            // 1. Skip if "doubleEscaped": true
             let is_double_escaped = test
                 .get("doubleEscaped")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if is_double_escaped {
-                skipped += 1;
-                continue;
-            }
 
-            // 2. Skip if "initialStates" present and contains states other than "Data state"
-            if let Some(states_arr) = test.get("initialStates").and_then(|v| v.as_array()) {
-                let is_only_data_state =
-                    states_arr.len() == 1 && states_arr[0].as_str() == Some("Data state");
-                if !is_only_data_state {
+            let initial_states =
+                if let Some(states_arr) = test.get("initialStates").and_then(|v| v.as_array()) {
+                    states_arr
+                        .iter()
+                        .map(|v| v.as_str().unwrap().to_string())
+                        .collect::<Vec<_>>()
+                } else {
+                    vec!["Data state".to_string()]
+                };
+
+            for state in initial_states {
+                // html5lib state names include: "Data state", "PLAINTEXT state", "RCDATA state", "RAWTEXT state", "Script data state", "CDATA section state"
+                let supported_states = [
+                    "Data state",
+                    "PLAINTEXT state",
+                    "RCDATA state",
+                    "RAWTEXT state",
+                    "Script data state",
+                    "CDATA section state",
+                ];
+                if !supported_states.contains(&state.as_str()) {
                     skipped += 1;
                     continue;
                 }
-            }
 
-            let input = test
-                .get("input")
-                .and_then(|v| v.as_str())
-                .unwrap_or_else(|| panic!("No input in test: {}", description));
+                let raw_input = test
+                    .get("input")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("No input in test: {}", description));
 
-            // Run Tokenizer
-            let stream = InputStream::from_utf8(input.as_bytes());
-            let mut tokenizer = Tokenizer::new(stream);
-            tokenizer.set_initial_state("Data state");
+                let input = if is_double_escaped {
+                    unescape(raw_input)
+                } else {
+                    raw_input.to_string()
+                };
 
-            if let Some(tag_str) = test.get("lastStartTag").and_then(|v| v.as_str()) {
-                tokenizer.set_last_start_tag(tag_str);
-            }
+                // Run Tokenizer
+                let stream = InputStream::from_utf8(input.as_bytes());
+                let mut tokenizer = Tokenizer::new(stream);
+                tokenizer.set_initial_state(&state);
 
-            let mut actual_tokens = Vec::new();
-            loop {
-                let tok = tokenizer.next_token();
-                if tok == Token::Eof {
-                    break;
+                if let Some(tag_str) = test.get("lastStartTag").and_then(|v| v.as_str()) {
+                    tokenizer.set_last_start_tag(tag_str);
                 }
-                actual_tokens.push(tok);
-            }
 
-            // Convert actual tokens to UnifiedToken
-            let mut actual_unified = Vec::new();
-            for tok in actual_tokens {
-                match tok {
-                    Token::Doctype {
-                        name,
-                        public_id,
-                        system_id,
-                        force_quirks,
-                    } => {
-                        actual_unified.push(UnifiedToken::Doctype {
+                let mut actual_tokens = Vec::new();
+                loop {
+                    let tok = tokenizer.next_token();
+                    if tok == Token::Eof {
+                        break;
+                    }
+                    actual_tokens.push(tok);
+                }
+
+                // Convert actual tokens to UnifiedToken
+                let mut actual_unified = Vec::new();
+                for tok in actual_tokens {
+                    match tok {
+                        Token::Doctype {
                             name,
                             public_id,
                             system_id,
                             force_quirks,
-                        });
-                    }
-                    Token::StartTag {
-                        name,
-                        mut attrs,
-                        self_closing,
-                    } => {
-                        attrs.sort_by(|a, b| a.0.cmp(&b.0));
-                        actual_unified.push(UnifiedToken::StartTag {
+                        } => {
+                            actual_unified.push(UnifiedToken::Doctype {
+                                name,
+                                public_id,
+                                system_id,
+                                force_quirks,
+                            });
+                        }
+                        Token::StartTag {
                             name,
-                            attrs,
+                            mut attrs,
                             self_closing,
-                        });
+                        } => {
+                            attrs.sort_by(|a, b| a.0.cmp(&b.0));
+                            actual_unified.push(UnifiedToken::StartTag {
+                                name,
+                                attrs,
+                                self_closing,
+                            });
+                        }
+                        Token::EndTag { name, .. } => {
+                            actual_unified.push(UnifiedToken::EndTag { name });
+                        }
+                        Token::Comment(data) => {
+                            actual_unified.push(UnifiedToken::Comment(data));
+                        }
+                        Token::Character(c) => {
+                            actual_unified.push(UnifiedToken::Character(c.to_string()));
+                        }
+                        Token::Eof => {}
                     }
-                    Token::EndTag { name, .. } => {
-                        actual_unified.push(UnifiedToken::EndTag { name });
-                    }
-                    Token::Comment(data) => {
-                        actual_unified.push(UnifiedToken::Comment(data));
-                    }
-                    Token::Character(c) => {
-                        actual_unified.push(UnifiedToken::Character(c.to_string()));
-                    }
-                    Token::Eof => {}
                 }
-            }
 
-            let actual_coalesced = coalesce_unified_tokens(actual_unified);
+                let actual_coalesced = coalesce_unified_tokens(actual_unified);
 
-            // Convert expected tokens to UnifiedToken
-            let mut expected_tokens = Vec::new();
-            if let Some(output_arr) = test.get("output").and_then(|v| v.as_array()) {
-                for val in output_arr {
-                    match json_to_unified_token(val) {
-                        Ok(tok) => expected_tokens.push(tok),
-                        Err(e) => {
-                            panic!(
-                                "Failed to parse expected token in test '{}': {}",
-                                description, e
-                            );
+                // Convert expected tokens to UnifiedToken
+                let mut expected_tokens = Vec::new();
+                if let Some(output_arr) = test.get("output").and_then(|v| v.as_array()) {
+                    for val in output_arr {
+                        let processed_val = if is_double_escaped {
+                            unescape_value(val)
+                        } else {
+                            val.clone()
+                        };
+                        match json_to_unified_token(&processed_val) {
+                            Ok(tok) => expected_tokens.push(tok),
+                            Err(e) => {
+                                panic!(
+                                    "Failed to parse expected token in test '{}': {}",
+                                    description, e
+                                );
+                            }
                         }
                     }
                 }
-            }
-            let expected_coalesced = coalesce_unified_tokens(expected_tokens);
+                let expected_coalesced = coalesce_unified_tokens(expected_tokens);
 
-            if actual_coalesced == expected_coalesced {
-                passed += 1;
-            } else {
-                failed += 1;
+                if actual_coalesced == expected_coalesced {
+                    passed += 1;
+                } else {
+                    failed += 1;
+                    eprintln!(
+                        "FAIL: {} (state: {})\n  Expected: {:?}\n  Actual:   {:?}",
+                        description, state, expected_coalesced, actual_coalesced
+                    );
+                }
             }
         }
     }
