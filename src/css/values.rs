@@ -1153,6 +1153,52 @@ impl TryFrom<&CssValue> for EmptyCellsValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum BackgroundAttachmentValue {
+    #[default]
+    Scroll,
+    Fixed,
+    Local,
+}
+
+impl BackgroundAttachmentValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "scroll" => Some(Self::Scroll),
+            "fixed" => Some(Self::Fixed),
+            "local" => Some(Self::Local),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Scroll => "scroll",
+            Self::Fixed => "fixed",
+            Self::Local => "local",
+        }
+    }
+}
+
+impl std::str::FromStr for BackgroundAttachmentValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for BackgroundAttachmentValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum BorderCollapseValue {
     #[default]
     Separate,
@@ -6572,6 +6618,79 @@ mod tests {
         assert_eq!(
             BorderCollapseValue::default(),
             BorderCollapseValue::Separate
+        );
+    }
+
+    #[test]
+    fn test_background_attachment_value() {
+        // Test parsing keyword strings to BackgroundAttachmentValue
+        assert_eq!(
+            BackgroundAttachmentValue::parse("scroll"),
+            Some(BackgroundAttachmentValue::Scroll)
+        );
+        assert_eq!(
+            BackgroundAttachmentValue::parse("fixed"),
+            Some(BackgroundAttachmentValue::Fixed)
+        );
+        assert_eq!(
+            BackgroundAttachmentValue::parse("local"),
+            Some(BackgroundAttachmentValue::Local)
+        );
+
+        // Case insensitivity
+        assert_eq!(
+            BackgroundAttachmentValue::parse("SCROLL"),
+            Some(BackgroundAttachmentValue::Scroll)
+        );
+        assert_eq!(
+            BackgroundAttachmentValue::parse("Fixed"),
+            Some(BackgroundAttachmentValue::Fixed)
+        );
+        assert_eq!(
+            BackgroundAttachmentValue::parse("lOcAl"),
+            Some(BackgroundAttachmentValue::Local)
+        );
+
+        assert_eq!(BackgroundAttachmentValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "scroll".parse::<BackgroundAttachmentValue>(),
+            Ok(BackgroundAttachmentValue::Scroll)
+        );
+        assert_eq!(
+            "fixed".parse::<BackgroundAttachmentValue>(),
+            Ok(BackgroundAttachmentValue::Fixed)
+        );
+        assert_eq!(
+            "local".parse::<BackgroundAttachmentValue>(),
+            Ok(BackgroundAttachmentValue::Local)
+        );
+        assert_eq!("BOGUS".parse::<BackgroundAttachmentValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(BackgroundAttachmentValue::Scroll.as_str(), "scroll");
+        assert_eq!(BackgroundAttachmentValue::Fixed.as_str(), "fixed");
+        assert_eq!(BackgroundAttachmentValue::Local.as_str(), "local");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            BackgroundAttachmentValue::try_from(&CssValue::Keyword("scroll".to_string())),
+            Ok(BackgroundAttachmentValue::Scroll)
+        );
+        assert_eq!(
+            BackgroundAttachmentValue::try_from(&CssValue::Keyword("FIXED".to_string())),
+            Ok(BackgroundAttachmentValue::Fixed)
+        );
+        assert_eq!(
+            BackgroundAttachmentValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+
+        // Test Default implementation (initial value is scroll)
+        assert_eq!(
+            BackgroundAttachmentValue::default(),
+            BackgroundAttachmentValue::Scroll
         );
     }
 
