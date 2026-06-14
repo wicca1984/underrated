@@ -681,6 +681,53 @@ impl TryFrom<&CssValue> for PrintColorAdjustValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ColorSchemeValue {
+    #[default]
+    Normal,
+    Light,
+    Dark,
+}
+
+impl ColorSchemeValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Some(Self::Normal),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+}
+
+impl std::str::FromStr for ColorSchemeValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ColorSchemeValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            CssValue::ColorScheme(v) => Ok(*v),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ForcedColorAdjustValue {
     #[default]
     Auto,
@@ -1832,6 +1879,7 @@ pub enum CssValue {
     ScrollBehavior(ScrollBehaviorValue),
     PrintColorAdjust(PrintColorAdjustValue),
     ForcedColorAdjust(ForcedColorAdjustValue),
+    ColorScheme(ColorSchemeValue),
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -1924,6 +1972,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "scroll-behavior"
             | "print-color-adjust"
             | "forced-color-adjust"
+            | "color-scheme"
             | "scroll-snap-type"
             | "scroll-snap-align"
             | "mix-blend-mode"
@@ -2279,6 +2328,16 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "auto" | "none")
             }
             CssValue::ForcedColorAdjust(_) => true,
+            _ => false,
+        },
+        "color-scheme" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "normal" | "light" | "dark"
+                )
+            }
+            CssValue::ColorScheme(_) => true,
             _ => false,
         },
         "image-rendering" => match value {
@@ -3019,6 +3078,26 @@ fn parse_forced_color_adjust(components: &[ComponentValue]) -> Option<CssValue> 
     Some(CssValue::ForcedColorAdjust(kw))
 }
 
+fn parse_color_scheme(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut idents = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace) => {}
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                idents.push(s.to_ascii_lowercase());
+            }
+            _ => return None, // invalid token for color-scheme recognition
+        }
+    }
+
+    if idents.len() != 1 {
+        return None;
+    }
+
+    let kw = ColorSchemeValue::parse(&idents[0])?;
+    Some(CssValue::ColorScheme(kw))
+}
+
 fn parse_text_rendering(components: &[ComponentValue]) -> Option<CssValue> {
     let mut idents = Vec::new();
     for component in components {
@@ -3202,6 +3281,9 @@ pub fn parse_property_value(
     }
     if name_lower == "forced-color-adjust" {
         return parse_forced_color_adjust(components);
+    }
+    if name_lower == "color-scheme" {
+        return parse_color_scheme(components);
     }
     if name_lower == "text-rendering" {
         return parse_text_rendering(components);
@@ -7432,6 +7514,69 @@ mod tests {
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
+        // Test parse_property_value for color-scheme (t0652)
+        assert_eq!(
+            parse_property_value(
+                "color-scheme",
+                &[token(CssToken::Ident("normal".to_string()))]
+            ),
+            Some(CssValue::ColorScheme(ColorSchemeValue::Normal))
+        );
+        assert_eq!(
+            parse_property_value(
+                "color-scheme",
+                &[token(CssToken::Ident("light".to_string()))]
+            ),
+            Some(CssValue::ColorScheme(ColorSchemeValue::Light))
+        );
+        assert_eq!(
+            parse_property_value(
+                "color-scheme",
+                &[token(CssToken::Ident("dark".to_string()))]
+            ),
+            Some(CssValue::ColorScheme(ColorSchemeValue::Dark))
+        );
+        assert_eq!(
+            parse_property_value(
+                "color-scheme",
+                &[token(CssToken::Ident("LIGHT".to_string()))]
+            ),
+            Some(CssValue::ColorScheme(ColorSchemeValue::Light))
+        );
+        assert_eq!(
+            parse_property_value(
+                "color-scheme",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_valid_property_value for color-scheme (t0652)
+        assert!(is_valid_property_value(
+            "color-scheme",
+            &CssValue::Keyword("normal".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "color-scheme",
+            &CssValue::Keyword("light".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "color-scheme",
+            &CssValue::Keyword("DARK".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "color-scheme",
+            &CssValue::ColorScheme(ColorSchemeValue::Normal)
+        ));
+        assert!(is_valid_property_value(
+            "color-scheme",
+            &CssValue::ColorScheme(ColorSchemeValue::Light)
+        ));
+        assert!(!is_valid_property_value(
+            "color-scheme",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
         // Test parse_property_value for user-select (t0475)
         for val in &["auto", "text", "none", "contain", "all", "AUTO", "None"] {
             assert_eq!(
@@ -9081,6 +9226,64 @@ mod tests {
         );
         assert_eq!(
             ForcedColorAdjustValue::try_from(&CssValue::Keyword("banana".to_string())),
+            Err(())
+        );
+    }
+
+    #[test]
+    fn test_color_scheme_direct() {
+        use std::str::FromStr;
+
+        // Test ColorSchemeValue::parse
+        assert_eq!(
+            ColorSchemeValue::parse("normal"),
+            Some(ColorSchemeValue::Normal)
+        );
+        assert_eq!(
+            ColorSchemeValue::parse("light"),
+            Some(ColorSchemeValue::Light)
+        );
+        assert_eq!(
+            ColorSchemeValue::parse("dark"),
+            Some(ColorSchemeValue::Dark)
+        );
+        assert_eq!(
+            ColorSchemeValue::parse("NORMAL"),
+            Some(ColorSchemeValue::Normal)
+        );
+        assert_eq!(ColorSchemeValue::parse("banana"), None);
+
+        // Test as_str
+        assert_eq!(ColorSchemeValue::Normal.as_str(), "normal");
+        assert_eq!(ColorSchemeValue::Light.as_str(), "light");
+        assert_eq!(ColorSchemeValue::Dark.as_str(), "dark");
+
+        // Test FromStr
+        assert_eq!(
+            ColorSchemeValue::from_str("normal"),
+            Ok(ColorSchemeValue::Normal)
+        );
+        assert_eq!(
+            ColorSchemeValue::from_str("light"),
+            Ok(ColorSchemeValue::Light)
+        );
+        assert_eq!(
+            ColorSchemeValue::from_str("dark"),
+            Ok(ColorSchemeValue::Dark)
+        );
+        assert_eq!(ColorSchemeValue::from_str("banana"), Err(()));
+
+        // Test TryFrom<&CssValue>
+        assert_eq!(
+            ColorSchemeValue::try_from(&CssValue::ColorScheme(ColorSchemeValue::Light)),
+            Ok(ColorSchemeValue::Light)
+        );
+        assert_eq!(
+            ColorSchemeValue::try_from(&CssValue::Keyword("dark".to_string())),
+            Ok(ColorSchemeValue::Dark)
+        );
+        assert_eq!(
+            ColorSchemeValue::try_from(&CssValue::Keyword("banana".to_string())),
             Err(())
         );
     }
