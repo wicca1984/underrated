@@ -263,6 +263,20 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `lang` content attribute of a valid element node.
+    /// Returns `None` if the node has no `lang` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_lang(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("lang"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -756,6 +770,44 @@ mod tests {
             foreign_node = elem(&mut foreign_dom, "div");
         }
         assert_eq!(dom.get_title(foreign_node), None);
+    }
+
+    #[test]
+    fn test_lang_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element with lang attribute -> returns Some(value)
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("lang".to_string(), "en".to_string())],
+        });
+        assert_eq!(dom.get_lang(div_id), Some("en"));
+
+        // 2. Element with case-insensitive lang attribute (e.g., LANG) -> returns Some(value)
+        let span_id = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![("LANG".to_string(), "fr".to_string())],
+        });
+        assert_eq!(dom.get_lang(span_id), Some("fr"));
+
+        // 3. Element without lang attribute -> returns None
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_lang(p_id), None);
+
+        // 4. Non-element node (e.g., Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_lang(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "div");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "div");
+        }
+        assert_eq!(dom.get_lang(foreign_node), None);
     }
 
     #[test]

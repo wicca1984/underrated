@@ -584,6 +584,43 @@ fn test_fixture_08_google_real() {
     );
     assert_centered(q_input, 800.0, 4.0);
 
+    // Find the Google logo by id="hplogo" or by tag "img"
+    let logo = find_element_by_attr(&snapshot, "id", "hplogo")
+        .or_else(|| find_element_by_tag(&snapshot, "img"))
+        .unwrap_or_else(|| panic!("Google logo image must exist"));
+
+    let logo_x = logo["rect"]["x"].as_f64().unwrap();
+    let logo_y = logo["rect"]["y"].as_f64().unwrap();
+    let logo_w = logo["rect"]["width"].as_f64().unwrap();
+    let logo_h = logo["rect"]["height"].as_f64().unwrap();
+    println!(
+        "DIAGNOSTIC: Google logo rect x={}, y={}, width={}, height={}",
+        logo_x, logo_y, logo_w, logo_h
+    );
+
+    // Verify the Google logo image layout box is decoded and not collapsed.
+    // The logo carries explicit width="272" and height="92" attributes.
+    // With its inline styles (e.g., padding-top: 28px, padding-bottom: 14px),
+    // the resulting border box height is 134.0 (92 + 28 + 14 = 134).
+    assert!(
+        logo_w > 0.0,
+        "Google logo width must be positive (not collapsed)"
+    );
+    assert!(
+        logo_h > 0.0,
+        "Google logo height must be positive (not collapsed)"
+    );
+    assert!(
+        (logo_w - 272.0).abs() <= 1.0,
+        "Google logo width is {}, expected close to 272.0",
+        logo_w
+    );
+    assert!(
+        (logo_h - 134.0).abs() <= 1.0,
+        "Google logo height is {}, expected close to 134.0 (92 content height + 42 padding)",
+        logo_h
+    );
+
     // Find BOTH <input class="lsb"> buttons (btnG, btnI)
     let mut lsb_buttons = Vec::new();
     find_elements_by_class(&snapshot, "lsb", &mut lsb_buttons);
