@@ -200,6 +200,14 @@ pub(crate) fn layout_and_position_float(
         candidate_y = cy;
     }
 
+    // CSS 2.1 Section 9.5.1 Rule 5:
+    // A floating box's outer top edge may not be higher than the outer top edge of any preceding floating box.
+    for f in &floats {
+        if f.y > candidate_y {
+            candidate_y = f.y;
+        }
+    }
+
     let final_x;
     let final_y;
 
@@ -847,5 +855,77 @@ mod tests {
         // Max bottom edge is 110.
         // p has margin-top = 10, so its border box y should be 110 + 10 = 120.
         assert!(approx_eq(p_layout.rect.origin.y, 120.0));
+    }
+
+    #[test]
+    fn test_float_top_edge_not_higher_than_preceding_float_top_edge() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let left_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f1".into())],
+        });
+        dom.append_child(body, left_1);
+
+        let left_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f2".into())],
+        });
+        dom.append_child(body, left_2);
+
+        let left_3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f3".into())],
+        });
+        dom.append_child(body, left_3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .f1 {
+                float: left;
+                width: 150px;
+                height: 50px;
+            }
+            .f2 {
+                float: left;
+                width: 150px;
+                height: 60px;
+            }
+            .f3 {
+                float: left;
+                width: 30px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 3);
+        let f1_layout = &body_box.children[0];
+        let f2_layout = &body_box.children[1];
+        let f3_layout = &body_box.children[2];
+
+        // f1 is at x=0, y=0
+        assert!(approx_eq(f1_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f1_layout.rect.origin.y, 0.0));
+
+        // f2 doesn't fit, wraps to y=50
+        assert!(approx_eq(f2_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f2_layout.rect.origin.y, 50.0));
+
+        // f3 must not have top edge higher than f2 (which is 50.0).
+        // Since f3 width is 30, it fits next to f2 (at x=150, y=50).
+        assert!(approx_eq(f3_layout.rect.origin.y, 50.0));
+        assert!(approx_eq(f3_layout.rect.origin.x, 150.0));
     }
 }
