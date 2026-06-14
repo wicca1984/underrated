@@ -2429,6 +2429,18 @@ pub fn is_known_layout_property(name: &str) -> bool {
 
 /// Validates that a CSS value is valid for a layout-related property.
 pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
+    if let CssValue::Keyword(kw) = value {
+        let kw_lower = kw.to_ascii_lowercase();
+        if kw_lower == "inherit"
+            || kw_lower == "initial"
+            || kw_lower == "unset"
+            || kw_lower == "revert"
+            || kw_lower == "revert-layer"
+        {
+            return true;
+        }
+    }
+
     let name_lower = name.to_ascii_lowercase();
     match name_lower.as_str() {
         "grid-template-columns" | "grid-template-rows" => true,
@@ -4739,6 +4751,781 @@ fn validate_math_expression(components: &[ComponentValue]) -> bool {
     true
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum RoundStrategy {
+    Nearest,
+    Up,
+    Down,
+    ToZero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MathOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MathFunc {
+    Calc,
+    Min,
+    Max,
+    Clamp,
+    Abs,
+    Sign,
+    Mod,
+    Rem,
+    Sqrt,
+    Pow,
+    Hypot,
+    Log,
+    Exp,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum MathExpr {
+    Length(f32, LengthUnit),
+    Number(f32),
+    Op(Box<MathExpr>, MathOp, Box<MathExpr>),
+    Round(RoundStrategy, Box<MathExpr>, Box<MathExpr>),
+    Func(MathFunc, Vec<MathExpr>),
+    Raw(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum MathToken {
+    Expr(MathExpr),
+    Op(MathOp),
+    LeftParen,
+    RightParen,
+    Comma,
+}
+
+struct MathParser {
+    tokens: Vec<MathToken>,
+    pos: usize,
+}
+
+impl MathParser {
+    fn peek(&self) -> Option<&MathToken> {
+        self.tokens.get(self.pos)
+    }
+
+    fn consume(&mut self) -> Option<&MathToken> {
+        let tok = self.tokens.get(self.pos);
+        if tok.is_some() {
+            self.pos += 1;
+        }
+        tok
+    }
+
+    fn parse_expr(&mut self, min_bp: u8) -> Option<MathExpr> {
+        let mut lhs = match self.consume()? {
+            MathToken::Expr(expr) => expr.clone(),
+            MathToken::LeftParen => {
+                let sub = self.parse_expr(0)?;
+                if !matches!(self.consume()?, MathToken::RightParen) {
+                    return None;
+                }
+                sub
+            }
+            _ => return None,
+        };
+
+        while let Some(tok) = self.peek() {
+            let op = match tok {
+                MathToken::Op(op) => *op,
+                _ => break,
+            };
+
+            let (l_bp, r_bp) = match op {
+                MathOp::Add | MathOp::Sub => (1, 2),
+                MathOp::Mul | MathOp::Div => (3, 4),
+            };
+
+            if l_bp < min_bp {
+                break;
+            }
+
+            self.consume(); // consume op
+            let rhs = self.parse_expr(r_bp)?;
+            lhs = MathExpr::Op(Box::new(lhs), op, Box::new(rhs));
+        }
+
+        Some(lhs)
+    }
+}
+
+fn parse_comma_separated_components(
+    components: &[ComponentValue],
+) -> Option<Vec<Vec<ComponentValue>>> {
+    let mut args = Vec::new();
+    let mut current = Vec::new();
+    for comp in components {
+        match comp {
+            ComponentValue::Token(CssToken::Comma) => {
+                if current.is_empty() {
+                    return None;
+                }
+                args.push(current.clone());
+                current.clear();
+            }
+            _ => {
+                current.push(comp.clone());
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    if args.is_empty() { None } else { Some(args) }
+}
+
+fn parse_round_arguments(components: &[ComponentValue]) -> Option<MathExpr> {
+    let args_raw = parse_comma_separated_components(components)?;
+    if args_raw.len() == 3 {
+        let strategy = match &args_raw[0][..] {
+            [ComponentValue::Token(CssToken::Ident(s))] => match s.to_ascii_lowercase().as_str() {
+                "nearest" => RoundStrategy::Nearest,
+                "up" => RoundStrategy::Up,
+                "down" => RoundStrategy::Down,
+                "to-zero" => RoundStrategy::ToZero,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let a = parse_math_expr(&args_raw[1])?;
+        let b = parse_math_expr(&args_raw[2])?;
+        Some(MathExpr::Round(strategy, Box::new(a), Box::new(b)))
+    } else if args_raw.len() == 2 {
+        let a = parse_math_expr(&args_raw[0])?;
+        let b = parse_math_expr(&args_raw[1])?;
+        Some(MathExpr::Round(
+            RoundStrategy::Nearest,
+            Box::new(a),
+            Box::new(b),
+        ))
+    } else {
+        None
+    }
+}
+
+fn parse_function_arguments(components: &[ComponentValue]) -> Option<Vec<MathExpr>> {
+    let args_raw = parse_comma_separated_components(components)?;
+    let mut args = Vec::new();
+    for arg_comp in args_raw {
+        args.push(parse_math_expr(&arg_comp)?);
+    }
+    Some(args)
+}
+
+fn parse_math_tokens(components: &[ComponentValue]) -> Option<Vec<MathToken>> {
+    let mut tokens = Vec::new();
+    for comp in components {
+        match comp {
+            ComponentValue::Token(token) => match token {
+                CssToken::Whitespace => {}
+                CssToken::Number(v) => {
+                    tokens.push(MathToken::Expr(MathExpr::Number(*v as f32)));
+                }
+                CssToken::Percentage(v) => {
+                    tokens.push(MathToken::Expr(MathExpr::Length(
+                        *v as f32,
+                        LengthUnit::Percent,
+                    )));
+                }
+                CssToken::Dimension { value, unit } => {
+                    let lower_unit = unit.to_ascii_lowercase();
+                    let (val, unit_enum) = match lower_unit.as_str() {
+                        "px" => (*value as f32, LengthUnit::Px),
+                        "em" => (*value as f32, LengthUnit::Em),
+                        "rem" => (*value as f32, LengthUnit::Rem),
+                        "pt" => (*value as f32 * 96.0 / 72.0, LengthUnit::Px),
+                        "vw" => (*value as f32, LengthUnit::Vw),
+                        "vh" => (*value as f32, LengthUnit::Vh),
+                        "in" => (*value as f32 * 96.0, LengthUnit::Px),
+                        "cm" => (*value as f32 * 96.0 / 2.54, LengthUnit::Px),
+                        "mm" => (*value as f32 * 9.6 / 2.54, LengthUnit::Px),
+                        "pc" => (*value as f32 * 16.0, LengthUnit::Px),
+                        "q" => (*value as f32 * 96.0 / 101.6, LengthUnit::Px),
+                        _ => return None,
+                    };
+                    tokens.push(MathToken::Expr(MathExpr::Length(val, unit_enum)));
+                }
+                CssToken::Delim('+') => tokens.push(MathToken::Op(MathOp::Add)),
+                CssToken::Delim('-') => tokens.push(MathToken::Op(MathOp::Sub)),
+                CssToken::Delim('*') => tokens.push(MathToken::Op(MathOp::Mul)),
+                CssToken::Delim('/') => tokens.push(MathToken::Op(MathOp::Div)),
+                CssToken::Comma => tokens.push(MathToken::Comma),
+                CssToken::LeftParen => tokens.push(MathToken::LeftParen),
+                CssToken::RightParen => tokens.push(MathToken::RightParen),
+                _ => {
+                    tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
+                        comp,
+                    ))));
+                }
+            },
+            ComponentValue::SimpleBlock { associated, value } => {
+                if *associated == '(' {
+                    tokens.push(MathToken::LeftParen);
+                    let sub_tokens = parse_math_tokens(value)?;
+                    tokens.extend(sub_tokens);
+                    tokens.push(MathToken::RightParen);
+                } else {
+                    tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
+                        comp,
+                    ))));
+                }
+            }
+            ComponentValue::Function { name, value } => {
+                let name_lower = name.to_ascii_lowercase();
+                if name_lower == "calc" {
+                    if let Some(inner) = parse_math_expr(value) {
+                        tokens.push(MathToken::Expr(inner));
+                    } else {
+                        tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
+                            comp,
+                        ))));
+                    }
+                } else if name_lower == "round" {
+                    if let Some(inner) = parse_round_arguments(value) {
+                        tokens.push(MathToken::Expr(inner));
+                    } else {
+                        tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
+                            comp,
+                        ))));
+                    }
+                } else if let Some(func) = match name_lower.as_str() {
+                    "min" => Some(MathFunc::Min),
+                    "max" => Some(MathFunc::Max),
+                    "clamp" => Some(MathFunc::Clamp),
+                    "abs" => Some(MathFunc::Abs),
+                    "sign" => Some(MathFunc::Sign),
+                    "mod" => Some(MathFunc::Mod),
+                    "rem" => Some(MathFunc::Rem),
+                    "sqrt" => Some(MathFunc::Sqrt),
+                    "pow" => Some(MathFunc::Pow),
+                    "hypot" => Some(MathFunc::Hypot),
+                    "log" => Some(MathFunc::Log),
+                    "exp" => Some(MathFunc::Exp),
+                    _ => None,
+                } {
+                    if let Some(args) = parse_function_arguments(value) {
+                        let ok = match func {
+                            MathFunc::Min | MathFunc::Max => !args.is_empty(),
+                            MathFunc::Clamp => args.len() == 3,
+                            MathFunc::Abs | MathFunc::Sign | MathFunc::Sqrt | MathFunc::Exp => {
+                                args.len() == 1
+                            }
+                            MathFunc::Mod | MathFunc::Rem | MathFunc::Pow => args.len() == 2,
+                            MathFunc::Hypot => !args.is_empty(),
+                            MathFunc::Log => args.len() == 1 || args.len() == 2,
+                            _ => false,
+                        };
+                        if ok {
+                            tokens.push(MathToken::Expr(MathExpr::Func(func, args)));
+                        } else {
+                            tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
+                                comp,
+                            ))));
+                        }
+                    } else {
+                        tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
+                            comp,
+                        ))));
+                    }
+                } else {
+                    tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
+                        comp,
+                    ))));
+                }
+            }
+        }
+    }
+    Some(tokens)
+}
+
+fn parse_math_expr(components: &[ComponentValue]) -> Option<MathExpr> {
+    let tokens = parse_math_tokens(components)?;
+    let mut parser = MathParser { tokens, pos: 0 };
+    let expr = parser.parse_expr(0)?;
+    if parser.pos != parser.tokens.len() {
+        None
+    } else {
+        Some(expr)
+    }
+}
+
+impl MathExpr {
+    fn simplify(&self) -> MathExpr {
+        match self {
+            MathExpr::Length(v, u) => MathExpr::Length(*v, u.clone()),
+            MathExpr::Number(v) => MathExpr::Number(*v),
+            MathExpr::Raw(s) => MathExpr::Raw(s.clone()),
+            MathExpr::Op(lhs, op, rhs) => {
+                let s_lhs = lhs.simplify();
+                let s_rhs = rhs.simplify();
+                match op {
+                    MathOp::Add => match (&s_lhs, &s_rhs) {
+                        (MathExpr::Length(v1, u1), MathExpr::Length(v2, u2)) if u1 == u2 => {
+                            MathExpr::Length(v1 + v2, u1.clone())
+                        }
+                        (MathExpr::Number(n1), MathExpr::Number(n2)) => MathExpr::Number(n1 + n2),
+                        _ => MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs)),
+                    },
+                    MathOp::Sub => match (&s_lhs, &s_rhs) {
+                        (MathExpr::Length(v1, u1), MathExpr::Length(v2, u2)) if u1 == u2 => {
+                            MathExpr::Length(v1 - v2, u1.clone())
+                        }
+                        (MathExpr::Number(n1), MathExpr::Number(n2)) => MathExpr::Number(n1 - n2),
+                        _ => MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs)),
+                    },
+                    MathOp::Mul => match (&s_lhs, &s_rhs) {
+                        (MathExpr::Length(v, u), MathExpr::Number(n))
+                        | (MathExpr::Number(n), MathExpr::Length(v, u)) => {
+                            MathExpr::Length(v * n, u.clone())
+                        }
+                        (MathExpr::Number(n1), MathExpr::Number(n2)) => MathExpr::Number(n1 * n2),
+                        _ => MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs)),
+                    },
+                    MathOp::Div => match (&s_lhs, &s_rhs) {
+                        (MathExpr::Length(v, u), MathExpr::Number(n)) => {
+                            if *n != 0.0 {
+                                MathExpr::Length(v / n, u.clone())
+                            } else {
+                                MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs))
+                            }
+                        }
+                        (MathExpr::Number(n1), MathExpr::Number(n2)) => {
+                            if *n2 != 0.0 {
+                                MathExpr::Number(n1 / n2)
+                            } else {
+                                MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs))
+                            }
+                        }
+                        _ => MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs)),
+                    },
+                }
+            }
+            MathExpr::Round(strategy, a, b) => {
+                let s_a = a.simplify();
+                let s_b = b.simplify();
+                match (&s_a, &s_b) {
+                    (MathExpr::Number(va), MathExpr::Number(vb)) => {
+                        if *vb != 0.0 {
+                            let ratio = va / vb;
+                            let rounded = match strategy {
+                                RoundStrategy::Nearest => ratio.round(),
+                                RoundStrategy::Up => ratio.ceil(),
+                                RoundStrategy::Down => ratio.floor(),
+                                RoundStrategy::ToZero => ratio.trunc(),
+                            };
+                            MathExpr::Number(rounded * vb)
+                        } else {
+                            MathExpr::Round(strategy.clone(), Box::new(s_a), Box::new(s_b))
+                        }
+                    }
+                    (MathExpr::Length(va, ua), MathExpr::Length(vb, ub)) if ua == ub => {
+                        if *vb != 0.0 {
+                            let ratio = va / vb;
+                            let rounded = match strategy {
+                                RoundStrategy::Nearest => ratio.round(),
+                                RoundStrategy::Up => ratio.ceil(),
+                                RoundStrategy::Down => ratio.floor(),
+                                RoundStrategy::ToZero => ratio.trunc(),
+                            };
+                            MathExpr::Length(rounded * vb, ua.clone())
+                        } else {
+                            MathExpr::Round(strategy.clone(), Box::new(s_a), Box::new(s_b))
+                        }
+                    }
+                    _ => MathExpr::Round(strategy.clone(), Box::new(s_a), Box::new(s_b)),
+                }
+            }
+            MathExpr::Func(func, args) => {
+                let s_args: Vec<MathExpr> = args.iter().map(|arg| arg.simplify()).collect();
+                match func {
+                    MathFunc::Calc => {
+                        if s_args.len() == 1 {
+                            s_args[0].clone()
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Min => {
+                        if s_args.iter().all(|a| matches!(a, MathExpr::Number(_))) {
+                            let mut min_val = f32::INFINITY;
+                            for arg in &s_args {
+                                if let MathExpr::Number(v) = arg {
+                                    min_val = min_val.min(*v);
+                                }
+                            }
+                            MathExpr::Number(min_val)
+                        } else if s_args.is_empty() {
+                            MathExpr::Func(*func, s_args)
+                        } else {
+                            let first_unit = match &s_args[0] {
+                                MathExpr::Length(_, u) => Some(u.clone()),
+                                _ => None,
+                            };
+                            if let Some(ref u) = first_unit {
+                                let all_same = s_args.iter().all(|a| match a {
+                                    MathExpr::Length(_, unit) => unit == u,
+                                    _ => false,
+                                });
+                                if all_same {
+                                    let mut min_val = f32::INFINITY;
+                                    for arg in &s_args {
+                                        if let MathExpr::Length(v, _) = arg {
+                                            min_val = min_val.min(*v);
+                                        }
+                                    }
+                                    MathExpr::Length(min_val, u.clone())
+                                } else {
+                                    MathExpr::Func(*func, s_args)
+                                }
+                            } else {
+                                MathExpr::Func(*func, s_args)
+                            }
+                        }
+                    }
+                    MathFunc::Max => {
+                        if s_args.iter().all(|a| matches!(a, MathExpr::Number(_))) {
+                            let mut max_val = f32::NEG_INFINITY;
+                            for arg in &s_args {
+                                if let MathExpr::Number(v) = arg {
+                                    max_val = max_val.max(*v);
+                                }
+                            }
+                            MathExpr::Number(max_val)
+                        } else if s_args.is_empty() {
+                            MathExpr::Func(*func, s_args)
+                        } else {
+                            let first_unit = match &s_args[0] {
+                                MathExpr::Length(_, u) => Some(u.clone()),
+                                _ => None,
+                            };
+                            if let Some(ref u) = first_unit {
+                                let all_same = s_args.iter().all(|a| match a {
+                                    MathExpr::Length(_, unit) => unit == u,
+                                    _ => false,
+                                });
+                                if all_same {
+                                    let mut max_val = f32::NEG_INFINITY;
+                                    for arg in &s_args {
+                                        if let MathExpr::Length(v, _) = arg {
+                                            max_val = max_val.max(*v);
+                                        }
+                                    }
+                                    MathExpr::Length(max_val, u.clone())
+                                } else {
+                                    MathExpr::Func(*func, s_args)
+                                }
+                            } else {
+                                MathExpr::Func(*func, s_args)
+                            }
+                        }
+                    }
+                    MathFunc::Clamp => {
+                        if s_args.len() == 3 {
+                            match (&s_args[0], &s_args[1], &s_args[2]) {
+                                (
+                                    MathExpr::Number(min),
+                                    MathExpr::Number(val),
+                                    MathExpr::Number(max),
+                                ) => {
+                                    let clamped = val.max(*min).min(*max);
+                                    MathExpr::Number(clamped)
+                                }
+                                (
+                                    MathExpr::Length(min, u1),
+                                    MathExpr::Length(val, u2),
+                                    MathExpr::Length(max, u3),
+                                ) if u1 == u2 && u2 == u3 => {
+                                    let clamped = val.max(*min).min(*max);
+                                    MathExpr::Length(clamped, u1.clone())
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Abs => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => MathExpr::Number(v.abs()),
+                                MathExpr::Length(v, u) => MathExpr::Length(v.abs(), u.clone()),
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Sign => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => {
+                                    let s = if *v > 0.0 {
+                                        1.0
+                                    } else if *v < 0.0 {
+                                        -1.0
+                                    } else {
+                                        0.0
+                                    };
+                                    MathExpr::Number(s)
+                                }
+                                MathExpr::Length(v, _) => {
+                                    let s = if *v > 0.0 {
+                                        1.0
+                                    } else if *v < 0.0 {
+                                        -1.0
+                                    } else {
+                                        0.0
+                                    };
+                                    MathExpr::Number(s)
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Mod => {
+                        if s_args.len() == 2 {
+                            match (&s_args[0], &s_args[1]) {
+                                (MathExpr::Number(va), MathExpr::Number(vb)) => {
+                                    if *vb != 0.0 {
+                                        MathExpr::Number(va - vb * (va / vb).floor())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                (MathExpr::Length(va, ua), MathExpr::Length(vb, ub))
+                                    if ua == ub =>
+                                {
+                                    if *vb != 0.0 {
+                                        MathExpr::Length(va - vb * (va / vb).floor(), ua.clone())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Rem => {
+                        if s_args.len() == 2 {
+                            match (&s_args[0], &s_args[1]) {
+                                (MathExpr::Number(va), MathExpr::Number(vb)) => {
+                                    if *vb != 0.0 {
+                                        MathExpr::Number(va - vb * (va / vb).trunc())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                (MathExpr::Length(va, ua), MathExpr::Length(vb, ub))
+                                    if ua == ub =>
+                                {
+                                    if *vb != 0.0 {
+                                        MathExpr::Length(va - vb * (va / vb).trunc(), ua.clone())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Sqrt => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => {
+                                    if *v >= 0.0 {
+                                        MathExpr::Number(v.sqrt())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Pow => {
+                        if s_args.len() == 2 {
+                            match (&s_args[0], &s_args[1]) {
+                                (MathExpr::Number(va), MathExpr::Number(vb)) => {
+                                    MathExpr::Number(va.powf(*vb))
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Hypot => {
+                        if s_args.iter().all(|a| matches!(a, MathExpr::Number(_))) {
+                            let mut sum_sq = 0.0;
+                            for arg in &s_args {
+                                if let MathExpr::Number(v) = arg {
+                                    sum_sq += v * v;
+                                }
+                            }
+                            MathExpr::Number(sum_sq.sqrt())
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Log => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => {
+                                    if *v > 0.0 {
+                                        MathExpr::Number(v.ln())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else if s_args.len() == 2 {
+                            match (&s_args[0], &s_args[1]) {
+                                (MathExpr::Number(va), MathExpr::Number(vb)) => {
+                                    if *va > 0.0 && *vb > 0.0 && *vb != 1.0 {
+                                        MathExpr::Number(va.ln() / vb.ln())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Exp => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => MathExpr::Number(v.exp()),
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn serialize(&self) -> String {
+        match self {
+            MathExpr::Length(v, u) => {
+                let unit_str = match u {
+                    LengthUnit::Px => "px",
+                    LengthUnit::Em => "em",
+                    LengthUnit::Rem => "rem",
+                    LengthUnit::Pt => "pt",
+                    LengthUnit::Percent => "%",
+                    LengthUnit::Vw => "vw",
+                    LengthUnit::Vh => "vh",
+                };
+                format!("{}{}", v, unit_str)
+            }
+            MathExpr::Number(v) => v.to_string(),
+            MathExpr::Raw(s) => s.clone(),
+            MathExpr::Op(lhs, op, rhs) => {
+                let op_str = match op {
+                    MathOp::Add => " + ",
+                    MathOp::Sub => " - ",
+                    MathOp::Mul => " * ",
+                    MathOp::Div => " / ",
+                };
+                format!("({}{}{})", lhs.serialize(), op_str, rhs.serialize())
+            }
+            MathExpr::Round(strategy, a, b) => {
+                let strat_str = match strategy {
+                    RoundStrategy::Nearest => "nearest",
+                    RoundStrategy::Up => "up",
+                    RoundStrategy::Down => "down",
+                    RoundStrategy::ToZero => "to-zero",
+                };
+                format!("round({},{},{})", strat_str, a.serialize(), b.serialize())
+            }
+            MathExpr::Func(func, args) => {
+                let func_name = match func {
+                    MathFunc::Calc => "calc",
+                    MathFunc::Min => "min",
+                    MathFunc::Max => "max",
+                    MathFunc::Clamp => "clamp",
+                    MathFunc::Abs => "abs",
+                    MathFunc::Sign => "sign",
+                    MathFunc::Mod => "mod",
+                    MathFunc::Rem => "rem",
+                    MathFunc::Sqrt => "sqrt",
+                    MathFunc::Pow => "pow",
+                    MathFunc::Hypot => "hypot",
+                    MathFunc::Log => "log",
+                    MathFunc::Exp => "exp",
+                };
+                let serialized_args: Vec<String> = args.iter().map(|a| a.serialize()).collect();
+                format!("{}({})", func_name, serialized_args.join(","))
+            }
+        }
+    }
+}
+
+fn serialize_top_level_math(expr: &MathExpr) -> String {
+    match expr {
+        MathExpr::Op(lhs, op, rhs) => {
+            let op_str = match op {
+                MathOp::Add => " + ",
+                MathOp::Sub => " - ",
+                MathOp::Mul => " * ",
+                MathOp::Div => " / ",
+            };
+            format!("calc({}{}{})", lhs.serialize(), op_str, rhs.serialize())
+        }
+        MathExpr::Round(strategy, a, b) => {
+            let strat_str = match strategy {
+                RoundStrategy::Nearest => "nearest",
+                RoundStrategy::Up => "up",
+                RoundStrategy::Down => "down",
+                RoundStrategy::ToZero => "to-zero",
+            };
+            format!("round({},{},{})", strat_str, a.serialize(), b.serialize())
+        }
+        MathExpr::Func(func, args) => {
+            let func_name = match func {
+                MathFunc::Calc => "calc",
+                MathFunc::Min => "min",
+                MathFunc::Max => "max",
+                MathFunc::Clamp => "clamp",
+                MathFunc::Abs => "abs",
+                MathFunc::Sign => "sign",
+                MathFunc::Mod => "mod",
+                MathFunc::Rem => "rem",
+                MathFunc::Sqrt => "sqrt",
+                MathFunc::Pow => "pow",
+                MathFunc::Hypot => "hypot",
+                MathFunc::Log => "log",
+                MathFunc::Exp => "exp",
+            };
+            let serialized_args: Vec<String> = args.iter().map(|a| a.serialize()).collect();
+            format!("{}({})", func_name, serialized_args.join(","))
+        }
+        _ => expr.serialize(),
+    }
+}
+
 fn parse_calc_function(
     _name: &str,
     value: &[ComponentValue],
@@ -4747,7 +5534,19 @@ fn parse_calc_function(
     if !validate_math_expression(value) {
         return None;
     }
-    Some(CssValue::Keyword(serialize_component_value(orig_comp)))
+    if let Some(expr) = parse_math_expr(std::slice::from_ref(orig_comp)) {
+        let simplified = expr.simplify();
+        match simplified {
+            MathExpr::Length(v, u) => Some(CssValue::Length(v, u)),
+            MathExpr::Number(v) => Some(CssValue::Number(v)),
+            _ => {
+                let serialized = serialize_top_level_math(&simplified);
+                Some(CssValue::Keyword(serialized))
+            }
+        }
+    } else {
+        Some(CssValue::Keyword(serialize_component_value(orig_comp)))
+    }
 }
 
 fn parse_env_function(components: &[ComponentValue]) -> Option<CssValue> {
@@ -15533,7 +16332,7 @@ mod tests {
         };
         assert_eq!(
             parse_value(&[calc_comp]),
-            Some(CssValue::Keyword("calc(10px + 20px)".to_string()))
+            Some(CssValue::Length(30.0, LengthUnit::Px))
         );
 
         // Test clamp(10px, 50%, 100px)
@@ -16101,7 +16900,7 @@ mod tests {
         };
         assert_eq!(
             parse_value(&[nested_calc_valid]),
-            Some(CssValue::Keyword("calc(10px + calc(5px * 2))".to_string()))
+            Some(CssValue::Length(20.0, LengthUnit::Px))
         );
 
         // Invalid nested calc (contains invalid token/function)
@@ -16234,9 +17033,7 @@ mod tests {
         };
         assert_eq!(
             parse_value(&[nested_calc_deep]),
-            Some(CssValue::Keyword(
-                "calc(1px + calc(2px + calc(3px + 4px)))".to_string()
-            ))
+            Some(CssValue::Length(10.0, LengthUnit::Px))
         );
 
         // 2. clamp(), min(), max() parsing with nested expressions
@@ -16269,7 +17066,7 @@ mod tests {
         };
         assert_eq!(
             parse_value(&[min_with_nested_calc]),
-            Some(CssValue::Keyword("min(10px,calc(5px + 2px))".to_string()))
+            Some(CssValue::Length(7.0, LengthUnit::Px))
         );
 
         // clamp(calc(1px + 1px), 50%, calc(100px - 10px))
@@ -16315,9 +17112,7 @@ mod tests {
         };
         assert_eq!(
             parse_value(&[clamp_with_nested_calcs]),
-            Some(CssValue::Keyword(
-                "clamp(calc(1px + 1px),50%,calc(100px - 10px))".to_string()
-            ))
+            Some(CssValue::Keyword("clamp(2px,50%,90px)".to_string()))
         );
 
         // 3. Additional unit conversions: physical absolute units to Px
@@ -16372,5 +17167,123 @@ mod tests {
             _ => panic!("Expected Px length"),
         };
         assert!((val_q - 96.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_t1003_css_values_extension_coverage() {
+        // 1. Math functions min/max/clamp evaluation and simplification
+        // min(120px, 80px) -> 80px
+        let min_comp = ComponentValue::Function {
+            name: "min".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 120.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 80.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[min_comp]),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+
+        // max(1in, 100px) -> 1in is 96px, so max(96px, 100px) -> 100px
+        let max_comp = ComponentValue::Function {
+            name: "max".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "in".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 100.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[max_comp]),
+            Some(CssValue::Length(100.0, LengthUnit::Px))
+        );
+
+        // clamp(50px, 75px, 100px) -> 75px
+        let clamp_comp = ComponentValue::Function {
+            name: "clamp".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 50.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 75.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 100.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[clamp_comp]),
+            Some(CssValue::Length(75.0, LengthUnit::Px))
+        );
+
+        // 2. Unit Normalization: pt unit conversion (12pt = 16px)
+        let pt_comp = token(CssToken::Dimension {
+            value: 12.0,
+            unit: "pt".to_string(),
+        });
+        // Non-calc pt parses to Length(12.0, Pt)
+        assert_eq!(
+            parse_value(std::slice::from_ref(&pt_comp)),
+            Some(CssValue::Length(12.0, LengthUnit::Pt))
+        );
+        // Inside calc(), pt gets normalized to Px
+        let calc_pt = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![pt_comp],
+        };
+        assert_eq!(
+            parse_value(&[calc_pt]),
+            Some(CssValue::Length(16.0, LengthUnit::Px))
+        );
+
+        // 3. Global keywords and is_valid_property_value case-insensitivity
+        let props = ["scroll-snap-type", "mix-blend-mode", "resize"];
+        let keywords = ["InHeRiT", "INITIAL", "unset", "revert-layer"];
+        for prop in &props {
+            for kw in &keywords {
+                let val = CssValue::Keyword(kw.to_string());
+                assert!(is_valid_property_value(prop, &val));
+            }
+        }
+
+        // 4. Edge-case serialization: sum/diff preserves spaces around operators
+        let mixed_calc = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                token(CssToken::Percentage(50.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[mixed_calc]),
+            Some(CssValue::Keyword("calc(10px + 50%)".to_string()))
+        );
     }
 }
