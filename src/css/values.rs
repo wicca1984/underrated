@@ -918,6 +918,52 @@ impl TryFrom<&CssValue> for CaptionSideValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ColorInterpolationValue {
+    Auto,
+    #[default]
+    Srgb,
+    LinearRgb,
+}
+
+impl ColorInterpolationValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "srgb" => Some(Self::Srgb),
+            "linearrgb" => Some(Self::LinearRgb),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Srgb => "sRGB",
+            Self::LinearRgb => "linearRGB",
+        }
+    }
+}
+
+impl std::str::FromStr for ColorInterpolationValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ColorInterpolationValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum BreakInsideValue {
     #[default]
     Auto,
@@ -6029,6 +6075,80 @@ mod tests {
             Ok(CaptionSideValue::Bottom)
         );
         assert_eq!(CaptionSideValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
+    fn test_color_interpolation_value() {
+        // Test parsing keyword strings to ColorInterpolationValue
+        assert_eq!(
+            ColorInterpolationValue::parse("auto"),
+            Some(ColorInterpolationValue::Auto)
+        );
+        assert_eq!(
+            ColorInterpolationValue::parse("srgb"),
+            Some(ColorInterpolationValue::Srgb)
+        );
+        assert_eq!(
+            ColorInterpolationValue::parse("linearrgb"),
+            Some(ColorInterpolationValue::LinearRgb)
+        );
+        assert_eq!(
+            ColorInterpolationValue::parse("AUTO"),
+            Some(ColorInterpolationValue::Auto)
+        );
+        assert_eq!(
+            ColorInterpolationValue::parse("sRGB"),
+            Some(ColorInterpolationValue::Srgb)
+        );
+        assert_eq!(
+            ColorInterpolationValue::parse("linearRGB"),
+            Some(ColorInterpolationValue::LinearRgb)
+        );
+        assert_eq!(ColorInterpolationValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "auto".parse::<ColorInterpolationValue>(),
+            Ok(ColorInterpolationValue::Auto)
+        );
+        assert_eq!(
+            "sRGB".parse::<ColorInterpolationValue>(),
+            Ok(ColorInterpolationValue::Srgb)
+        );
+        assert_eq!(
+            "linearrgb".parse::<ColorInterpolationValue>(),
+            Ok(ColorInterpolationValue::LinearRgb)
+        );
+        assert_eq!("BOGUS".parse::<ColorInterpolationValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(ColorInterpolationValue::Auto.as_str(), "auto");
+        assert_eq!(ColorInterpolationValue::Srgb.as_str(), "sRGB");
+        assert_eq!(ColorInterpolationValue::LinearRgb.as_str(), "linearRGB");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            ColorInterpolationValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(ColorInterpolationValue::Auto)
+        );
+        assert_eq!(
+            ColorInterpolationValue::try_from(&CssValue::Keyword("sRGB".to_string())),
+            Ok(ColorInterpolationValue::Srgb)
+        );
+        assert_eq!(
+            ColorInterpolationValue::try_from(&CssValue::Keyword("linearrgb".to_string())),
+            Ok(ColorInterpolationValue::LinearRgb)
+        );
+        assert_eq!(
+            ColorInterpolationValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+
+        // Test Default implementation
+        assert_eq!(
+            ColorInterpolationValue::default(),
+            ColorInterpolationValue::Srgb
+        );
     }
 
     #[test]
