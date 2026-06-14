@@ -828,6 +828,206 @@ fn serialize_rule(rule: &Rule) -> String {
     s
 }
 
+fn split_selector_list(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth_paren = 0;
+    let mut depth_bracket = 0;
+    let mut depth_brace = 0;
+    let mut in_string = false;
+    let mut string_char = '\0';
+    let mut chars = s.char_indices().peekable();
+
+    while let Some((idx, c)) = chars.next() {
+        if in_string {
+            if c == '\\' {
+                let _ = chars.next();
+            } else if c == string_char {
+                in_string = false;
+            }
+        } else {
+            match c {
+                '\'' | '"' => {
+                    in_string = true;
+                    string_char = c;
+                }
+                '\\' => {
+                    let _ = chars.next();
+                }
+                '(' => depth_paren += 1,
+                ')' => {
+                    if depth_paren > 0 {
+                        depth_paren -= 1;
+                    }
+                }
+                '[' => depth_bracket += 1,
+                ']' => {
+                    if depth_bracket > 0 {
+                        depth_bracket -= 1;
+                    }
+                }
+                '{' => depth_brace += 1,
+                '}' => {
+                    if depth_brace > 0 {
+                        depth_brace -= 1;
+                    }
+                }
+                ',' if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 => {
+                    parts.push(&s[start..idx]);
+                    start = idx + 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+fn parse_single_urange(s: &str) -> Option<(u32, u32)> {
+    let s = s.trim();
+    if s.len() < 3 {
+        return None;
+    }
+    if !s.starts_with('u') && !s.starts_with('U') {
+        return None;
+    }
+    if s.as_bytes()[1] != b'+' {
+        return None;
+    }
+    let suffix = &s[2..];
+    if suffix.is_empty() {
+        return None;
+    }
+
+    if let Some(dash_idx) = suffix.find('-') {
+        let start_str = &suffix[..dash_idx];
+        let end_str = &suffix[dash_idx + 1..];
+        if start_str.is_empty() || start_str.len() > 6 {
+            return None;
+        }
+        if end_str.is_empty() || end_str.len() > 6 {
+            return None;
+        }
+        if !start_str.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        if !end_str.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let start = u32::from_str_radix(start_str, 16).ok()?;
+        let end = u32::from_str_radix(end_str, 16).ok()?;
+        if start > end || end > 0x10FFFF {
+            return None;
+        }
+        Some((start, end))
+    } else {
+        if suffix.len() > 6 {
+            return None;
+        }
+        let mut has_wildcard = false;
+        let mut first_wildcard_idx = None;
+        for (i, c) in suffix.chars().enumerate() {
+            if c == '?' {
+                has_wildcard = true;
+                if first_wildcard_idx.is_none() {
+                    first_wildcard_idx = Some(i);
+                }
+            } else {
+                if has_wildcard {
+                    return None;
+                }
+                if !c.is_ascii_hexdigit() {
+                    return None;
+                }
+            }
+        }
+
+        if let Some(idx) = first_wildcard_idx {
+            let hex_part = &suffix[..idx];
+            let start_str = format!("{}{}", hex_part, "0".repeat(suffix.len() - idx));
+            let end_str = format!("{}{}", hex_part, "f".repeat(suffix.len() - idx));
+            let start = u32::from_str_radix(&start_str, 16).ok()?;
+            let end = u32::from_str_radix(&end_str, 16).ok()?;
+            if end > 0x10FFFF {
+                return None;
+            }
+            Some((start, end))
+        } else {
+            let val = u32::from_str_radix(suffix, 16).ok()?;
+            if val > 0x10FFFF {
+                return None;
+            }
+            Some((val, val))
+        }
+    }
+}
+
+fn serialize_urange_components(values: &[ComponentValue]) -> String {
+    let mut s = String::new();
+    let mut it = values.iter().peekable();
+    while let Some(val) = it.next() {
+        match val {
+            ComponentValue::Token(t) => match t {
+                CssToken::Ident(v) if v.eq_ignore_ascii_case("u") => {
+                    s.push_str(v);
+                    if let Some(ComponentValue::Token(
+                        CssToken::Number(_) | CssToken::Dimension { .. },
+                    )) = it.peek()
+                    {
+                        s.push('+');
+                    }
+                }
+                CssToken::Number(v) => {
+                    s.push_str(&v.to_string());
+                }
+                CssToken::Dimension { value, unit } => {
+                    s.push_str(&value.to_string());
+                    s.push_str(unit);
+                }
+                CssToken::Delim(c) => s.push(*c),
+                CssToken::Whitespace => s.push(' '),
+                CssToken::Comma => s.push(','),
+                _ => {
+                    s.push_str(&serialize_component_values(std::slice::from_ref(val)));
+                }
+            },
+            _ => {
+                s.push_str(&serialize_component_values(std::slice::from_ref(val)));
+            }
+        }
+    }
+    s
+}
+
+/// Parses a slice of component values into a list of Unicode ranges.
+/// spec: <https://drafts.csswg.org/css-fonts/#unicode-range-desc>
+pub fn parse_unicode_range(values: &[ComponentValue]) -> Option<Vec<(u32, u32)>> {
+    let mut ranges = Vec::new();
+    let mut current_part = Vec::new();
+    for cv in values {
+        if let ComponentValue::Token(CssToken::Comma) = cv {
+            if current_part.is_empty() {
+                return None;
+            }
+            let s = serialize_urange_components(&current_part);
+            let parsed = parse_single_urange(&s)?;
+            ranges.push(parsed);
+            current_part.clear();
+        } else {
+            current_part.push(cv.clone());
+        }
+    }
+    if !current_part.is_empty() {
+        let s = serialize_urange_components(&current_part);
+        let parsed = parse_single_urange(&s)?;
+        ranges.push(parsed);
+    } else {
+        return None;
+    }
+    Some(ranges)
+}
+
 fn combine_selectors(parent: &str, child: &str) -> String {
     let parent = parent.trim();
     let child = child.trim();
@@ -839,13 +1039,13 @@ fn combine_selectors(parent: &str, child: &str) -> String {
         return parent.to_string();
     }
 
-    let parents: Vec<&str> = parent
-        .split(',')
+    let parents: Vec<&str> = split_selector_list(parent)
+        .into_iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
-    let children: Vec<&str> = child
-        .split(',')
+    let children: Vec<&str> = split_selector_list(child)
+        .into_iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
@@ -1306,5 +1506,63 @@ mod tests {
         } else {
             panic!("Expected at-rule 4");
         }
+    }
+
+    #[test]
+    fn test_selector_list_nesting_commas() {
+        let input = "
+            div {
+                span:not(a, b) {
+                    color: blue;
+                }
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 2);
+        if let Rule::Qualified(r) = &stylesheet.rules[0] {
+            assert_eq!(serialize_component_values(&r.prelude).trim(), "div");
+            assert_eq!(r.declarations.len(), 0);
+        } else {
+            panic!("Expected qualified rule 1");
+        }
+        if let Rule::Qualified(r) = &stylesheet.rules[1] {
+            assert_eq!(
+                serialize_component_values(&r.prelude).trim(),
+                "div span:not(a, b)"
+            );
+            assert_eq!(r.declarations.len(), 1);
+            assert_eq!(r.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule 2");
+        }
+    }
+
+    #[test]
+    fn test_unicode_range_parsing() {
+        let single = parse_component_values("U+26");
+        let parsed_single = parse_unicode_range(&single).unwrap();
+        assert_eq!(parsed_single, vec![(38, 38)]);
+
+        let range = parse_component_values("U+0025-00FF");
+        let parsed_range = parse_unicode_range(&range).unwrap();
+        assert_eq!(parsed_range, vec![(37, 255)]);
+
+        let wildcard = parse_component_values("U+4??");
+        let parsed_wildcard = parse_unicode_range(&wildcard).unwrap();
+        assert_eq!(parsed_wildcard, vec![(1024, 1279)]);
+
+        let list = parse_component_values("U+26, U+0025-00FF, U+4??");
+        let parsed_list = parse_unicode_range(&list).unwrap();
+        assert_eq!(parsed_list, vec![(38, 38), (37, 255), (1024, 1279)]);
+
+        let wildcards_only = parse_component_values("U+????");
+        let parsed_wildcards_only = parse_unicode_range(&wildcards_only).unwrap();
+        assert_eq!(parsed_wildcards_only, vec![(0, 65535)]);
+
+        let invalid = parse_component_values("U+110000");
+        assert!(parse_unicode_range(&invalid).is_none());
+
+        let invalid_dash = parse_component_values("U+26-25-24");
+        assert!(parse_unicode_range(&invalid_dash).is_none());
     }
 }
