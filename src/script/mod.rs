@@ -1917,6 +1917,21 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'autocorrect', {
+                        get() {
+                            const attr = this.getAttribute('autocorrect');
+                            if (attr !== null && attr.toLowerCase() === 'off') {
+                                return false;
+                            }
+                            return true;
+                        },
+                        set(val) {
+                            this.setAttribute('autocorrect', val ? 'on' : 'off');
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'draggable', {
                         get() {
                             return this.getAttribute('draggable') || '';
@@ -13080,6 +13095,38 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|true|false||yes|no||true|false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_reflected_autocorrect() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            let ac1 = div.autocorrect; // absent default, should be true
+            
+            div.setAttribute('autocorrect', 'off');
+            let ac2 = div.autocorrect; // setting to off makes it false
+            
+            div.setAttribute('autocorrect', 'oFf');
+            let ac3 = div.autocorrect; // case-insensitive off makes it false
+            
+            div.autocorrect = false;
+            let ac4 = div.getAttribute('autocorrect'); // setting to false writes 'off'
+            
+            div.autocorrect = true;
+            let ac5 = div.getAttribute('autocorrect'); // setting to true writes 'on'
+            
+            div.setAttribute('autocorrect', 'foo');
+            let ac6 = div.autocorrect; // non-off value is true
+
+            [ac1, ac2, ac3, ac4, ac5, ac6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("true|false|false|off|on|true".to_string())
         );
     }
 
