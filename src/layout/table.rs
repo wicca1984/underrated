@@ -63,10 +63,10 @@ pub fn layout_table_container(
         get_px(style, "padding-bottom", 0.0)
     };
 
-    let border_left = get_px(style, "border-left-width", 0.0);
-    let border_right = get_px(style, "border-right-width", 0.0);
-    let border_top = get_px(style, "border-top-width", 0.0);
-    let border_bottom = get_px(style, "border-bottom-width", 0.0);
+    let mut border_left = get_px(style, "border-left-width", 0.0);
+    let mut border_right = get_px(style, "border-right-width", 0.0);
+    let mut border_top = get_px(style, "border-top-width", 0.0);
+    let mut border_bottom = get_px(style, "border-bottom-width", 0.0);
 
     // Resolve horizontal margins and width
     let (resolved_margin_left, resolved_margin_right, content_width, _auto_width) =
@@ -310,6 +310,30 @@ pub fn layout_table_container(
             && cell_style.reset_box.width != -1
         {
             col_is_explicit[placement.col_idx] = true;
+        }
+    }
+
+    // Update table's border widths under border-collapse: collapse by collapsing with outermost cells
+    if is_collapsed {
+        for placement in cell_placements.values() {
+            if let Some(cell_style) = styles.get(&placement.node) {
+                if placement.row_idx == 0 {
+                    let cell_border_top = get_px(cell_style, "border-top-width", 0.0);
+                    border_top = border_top.max(cell_border_top);
+                }
+                if placement.row_idx + placement.rowspan == rows.len() {
+                    let cell_border_bottom = get_px(cell_style, "border-bottom-width", 0.0);
+                    border_bottom = border_bottom.max(cell_border_bottom);
+                }
+                if placement.col_idx == 0 {
+                    let cell_border_left = get_px(cell_style, "border-left-width", 0.0);
+                    border_left = border_left.max(cell_border_left);
+                }
+                if placement.col_idx + placement.colspan == num_cols {
+                    let cell_border_right = get_px(cell_style, "border-right-width", 0.0);
+                    border_right = border_right.max(cell_border_right);
+                }
+            }
         }
     }
 
@@ -3253,5 +3277,98 @@ mod tests {
         let cell21_box = &r2.children[0];
         assert_eq!(cell21_box.node, Some(cell21_node));
         assert_eq!(cell21_box.rect.origin.x, 50.0); // pushed right
+    }
+
+    #[test]
+    fn test_border_collapse_outer_borders_resolution() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        let cell_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 200px, border-left: 2px, border-right: 2px, border-top: 2px, border-bottom: 2px, border-collapse: collapse
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        table_style.insert(
+            "border-left-width".to_string(),
+            CssValue::Length(2.0, LengthUnit::Px),
+        );
+        table_style.insert(
+            "border-right-width".to_string(),
+            CssValue::Length(2.0, LengthUnit::Px),
+        );
+        table_style.insert(
+            "border-top-width".to_string(),
+            CssValue::Length(2.0, LengthUnit::Px),
+        );
+        table_style.insert(
+            "border-bottom-width".to_string(),
+            CssValue::Length(2.0, LengthUnit::Px),
+        );
+        table_style.insert(
+            "border-collapse".to_string(),
+            CssValue::Keyword("collapse".to_string()),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Cell style: border-left: 5px (should win over table's 2px!), width: 100px, height: 30px
+        let mut cell_style = style_with_display("table-cell");
+        cell_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        cell_style.insert(
+            "border-left-width".to_string(),
+            CssValue::Length(5.0, LengthUnit::Px),
+        );
+        cell_style.insert(
+            "border-top-width".to_string(),
+            CssValue::Length(4.0, LengthUnit::Px),
+        ); // wins over table's 2px
+        cell_style.insert(
+            "border-bottom-width".to_string(),
+            CssValue::Length(1.0, LengthUnit::Px),
+        ); // table's 2px should win over cell's 1px
+        styles.insert(cell_node, cell_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 10.0, 20.0, 0)
+            .expect("should layout table");
+
+        // The collapsed table borders should be:
+        // border-left = max(table 2px, cell 5px) = 5px
+        // border-top = max(table 2px, cell 4px) = 4px
+        // border-bottom = max(table 2px, cell 1px) = 2px
+        // border-right = max(table 2px, cell 0px) = 2px
+
+        // Cell positioning should start at border_box_x (10.0) + border_left (5px) = 15.0
+        let r = &table_box.children[0];
+        let c = &r.children[0];
+        assert_eq!(c.rect.origin.x, 15.0);
+        // Cell y-offset should be row_start_y, which is border_box_y (20.0) + border_top (4px) = 24.0
+        assert_eq!(c.rect.origin.y, 24.0);
+
+        // Table width should be content width (200px) + border_left (5px) + border_right (2px) = 207.0
+        assert_eq!(table_box.rect.size.width, 207.0);
+
+        // Table height should be row_heights sum (35px, which includes cell borders 4px and 1px) + border_top (4px) + border_bottom (2px) = 41.0
+        assert_eq!(table_box.rect.size.height, 41.0);
     }
 }
