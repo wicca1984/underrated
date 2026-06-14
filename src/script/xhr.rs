@@ -330,6 +330,45 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                     this._sendFlag = true;
 
+                    let serializedBody = "";
+                    if (body !== undefined && body !== null) {
+                        if (typeof FormData !== "undefined" && body instanceof FormData) {
+                            const formDataBoundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2, 10);
+                            if (this._headers["content-type"] === undefined) {
+                                this._headers["content-type"] = "multipart/form-data; boundary=" + formDataBoundary;
+                            }
+                            let parts = [];
+                            body.forEach((val, key) => {
+                                parts.push("--" + formDataBoundary + "\r\nContent-Disposition: form-data; name=\"" + key + "\"\r\n\r\n" + val + "\r\n");
+                            });
+                            parts.push("--" + formDataBoundary + "--\r\n");
+                            serializedBody = parts.join("");
+                        } else if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+                            if (this._headers["content-type"] === undefined) {
+                                this._headers["content-type"] = "application/x-www-form-urlencoded;charset=UTF-8";
+                            }
+                            serializedBody = body.toString();
+                        } else if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) {
+                            const view = new Uint8Array(body);
+                            let str = "";
+                            for (let i = 0; i < view.length; i++) {
+                                str += String.fromCharCode(view[i]);
+                            }
+                            serializedBody = str;
+                        } else if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView && ArrayBuffer.isView(body)) {
+                            const view = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+                            let str = "";
+                            for (let i = 0; i < view.length; i++) {
+                                str += String.fromCharCode(view[i]);
+                            }
+                            serializedBody = str;
+                        } else {
+                            serializedBody = String(body);
+                        }
+                    } else {
+                        serializedBody = "mock response";
+                    }
+
                     const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
 
                     if (this._async !== false && typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
@@ -343,7 +382,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                                 this._upload.dispatchEvent(new ProgressEventClass("loadstart", {
                                     lengthComputable: true,
                                     loaded: 0,
-                                    total: String(body).length
+                                    total: serializedBody.length
                                 }));
                             }
                         } catch (e) {}
@@ -357,11 +396,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._changeReadyState(2); // HEADERS_RECEIVED
                     if (!this._sendFlag) return;
 
-                    if (body !== undefined && body !== null) {
-                        this._responseText = String(body);
-                    } else {
-                        this._responseText = "mock response";
-                    }
+                    this._responseText = serializedBody;
 
                     this._changeReadyState(3); // LOADING
                     if (!this._sendFlag) return;
@@ -375,7 +410,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                                 total: responseLen
                             }));
                             if (body !== undefined && body !== null && this._upload) {
-                                const bodyLen = String(body).length;
+                                const bodyLen = serializedBody.length;
                                 this._upload.dispatchEvent(new ProgressEventClass("progress", {
                                     lengthComputable: true,
                                     loaded: bodyLen,
@@ -394,7 +429,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     if (this._async !== false && typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
                             const responseLen = this._responseText ? this._responseText.length : 0;
-                            const bodyLen = body !== undefined && body !== null ? String(body).length : 0;
+                            const bodyLen = body !== undefined && body !== null ? serializedBody.length : 0;
 
                             if (body !== undefined && body !== null && this._upload) {
                                 this._upload.dispatchEvent(new ProgressEventClass("load", {
@@ -673,16 +708,15 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         if (this._async === false && newState !== 4) {
                             return;
                         }
-                        if (typeof this.onreadystatechange === "function") {
-                            try {
-                                this.onreadystatechange.call(this);
-                            } catch (e) {
-                                // Suppress or handle error
-                            }
-                        }
                         if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                             try {
                                 this.dispatchEvent(new Event("readystatechange"));
+                            } catch (e) {
+                                // Suppress or handle error
+                            }
+                        } else if (typeof this.onreadystatechange === "function") {
+                            try {
+                                this.onreadystatechange.call(this);
                             } catch (e) {
                                 // Suppress or handle error
                             }
@@ -691,7 +725,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                 }
 
                 dispatchEvent(event) {
-                    if (event && typeof event.type === "string" && event.type !== "readystatechange") {
+                    if (event && typeof event.type === "string") {
                         const handlerName = "on" + event.type;
                         if (typeof this[handlerName] === "function") {
                             try {
@@ -1900,6 +1934,145 @@ mod tests {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!(
                 "test_xhr_ms4_improved_spec_conformity JS assert failed: {}",
+                error_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_xhr_t1043_improvements() {
+        use crate::script::{BoaHost, ScriptHost};
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Verify readystatechange passing the event argument
+                const xhr1 = new XMLHttpRequest();
+                let lastEvent = null;
+                xhr1.onreadystatechange = (e) => {
+                    lastEvent = e;
+                };
+
+                xhr1.open("GET", "https://example.com");
+                if (!lastEvent) {
+                    throw new Error("onreadystatechange was not called on open()");
+                }
+                if (lastEvent.type !== "readystatechange") {
+                    throw new Error("Expected event type 'readystatechange', got: " + lastEvent.type);
+                }
+
+                // 2. Verify addEventListener("readystatechange")
+                let listenerCalled = false;
+                xhr1.addEventListener("readystatechange", (e) => {
+                    listenerCalled = true;
+                });
+
+                // Reset lastEvent
+                lastEvent = null;
+                xhr1.send();
+
+                if (!listenerCalled) {
+                    throw new Error("Event listener added via addEventListener was not called");
+                }
+                if (!lastEvent) {
+                    throw new Error("onreadystatechange was not called on send()");
+                }
+
+                // 3. Verify FormData serialization in send()
+                const xhr2 = new XMLHttpRequest();
+                xhr2.open("POST", "https://example.com");
+                const fd = new FormData();
+                fd.append("username", "testuser");
+                fd.append("email", "test@example.com");
+
+                xhr2.send(fd);
+
+                const ct = xhr2.getResponseHeader("Content-Type");
+                if (!ct || !ct.includes("multipart/form-data; boundary=")) {
+                    throw new Error("Content-Type header for FormData should be multipart/form-data with a boundary, got: " + ct);
+                }
+
+                const bodyText = xhr2.responseText;
+                if (!bodyText.includes("Content-Disposition: form-data; name=\"username\"") || !bodyText.includes("testuser")) {
+                    throw new Error("FormData payload not serialized correctly: " + bodyText);
+                }
+                if (!bodyText.includes("Content-Disposition: form-data; name=\"email\"") || !bodyText.includes("test@example.com")) {
+                    throw new Error("FormData payload not serialized correctly: " + bodyText);
+                }
+
+                // 4. Verify URLSearchParams serialization in send()
+                const xhr3 = new XMLHttpRequest();
+                xhr3.open("POST", "https://example.com");
+                const params = new URLSearchParams();
+                params.append("foo", "bar");
+                params.append("abc", "123");
+
+                xhr3.send(params);
+
+                const ct3 = xhr3.getResponseHeader("Content-Type");
+                if (ct3 !== "application/x-www-form-urlencoded;charset=UTF-8") {
+                    throw new Error("Content-Type header for URLSearchParams should be application/x-www-form-urlencoded;charset=UTF-8, got: " + ct3);
+                }
+                if (xhr3.responseText !== "foo=bar&abc=123") {
+                    throw new Error("URLSearchParams payload not serialized correctly: " + xhr3.responseText);
+                }
+
+                // 5. Verify ArrayBuffer serialization and roundtrip
+                const xhr4 = new XMLHttpRequest();
+                xhr4.open("POST", "https://example.com");
+                xhr4.responseType = "arraybuffer";
+
+                const arrayBuf = new ArrayBuffer(4);
+                const view = new Uint8Array(arrayBuf);
+                view[0] = 65; view[1] = 66; view[2] = 67; view[3] = 68; // "ABCD"
+
+                xhr4.send(arrayBuf);
+
+                const respBuf = xhr4.response;
+                if (!(respBuf instanceof ArrayBuffer)) {
+                    throw new Error("Expected response to be ArrayBuffer");
+                }
+                const respView = new Uint8Array(respBuf);
+                if (respView[0] !== 65 || respView[1] !== 66 || respView[2] !== 67 || respView[3] !== 68) {
+                    throw new Error("ArrayBuffer content not roundtripped correctly");
+                }
+
+                // 6. Verify TypedArray view serialization and roundtrip
+                const xhr5 = new XMLHttpRequest();
+                xhr5.open("POST", "https://example.com");
+                xhr5.responseType = "arraybuffer";
+
+                const typedArray = new Uint8Array([72, 69, 76, 76, 79]); // "HELLO"
+                xhr5.send(typedArray);
+
+                const respBuf5 = xhr5.response;
+                if (!(respBuf5 instanceof ArrayBuffer)) {
+                    throw new Error("Expected response to be ArrayBuffer");
+                }
+                const respView5 = new Uint8Array(respBuf5);
+                if (respView5[0] !== 72 || respView5[1] !== 69 || respView5[2] !== 76 || respView5[3] !== 76 || respView5[4] !== 79) {
+                    throw new Error("TypedArray content not roundtripped correctly");
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        host.eval(script).expect("Execution failed");
+
+        let error_val = host
+            .context
+            .eval(boa_engine::Source::from_bytes(
+                "globalThis.test_error".as_bytes(),
+            ))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!(
+                "test_xhr_t1043_improvements JS assert failed: {}",
                 error_str
             );
         }
