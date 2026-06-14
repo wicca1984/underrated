@@ -4396,6 +4396,101 @@ fn evaluate_channel_expression(
     }
 }
 
+enum HslChannel {
+    Hue,
+    Saturation,
+    Lightness,
+    Alpha,
+}
+
+fn rgba_to_hsla(r_u: u8, g_u: u8, b_u: u8, a_u: u8) -> (f32, f32, f32, f32) {
+    let r = r_u as f32 / 255.0;
+    let g = g_u as f32 / 255.0;
+    let b = b_u as f32 / 255.0;
+    let a = a_u as f32 / 255.0;
+
+    let mut max = r;
+    if g > max {
+        max = g;
+    }
+    if b > max {
+        max = b;
+    }
+
+    let mut min = r;
+    if g < min {
+        min = g;
+    }
+    if b < min {
+        min = b;
+    }
+
+    let l = (max + min) / 2.0;
+
+    let (h, s) = if (max - min).abs() < f32::EPSILON {
+        (0.0, 0.0)
+    } else {
+        let diff = max - min;
+        let s_val = if l <= 0.5 {
+            diff / (max + min)
+        } else {
+            diff / (2.0 - max - min)
+        };
+
+        let h_val = if (max - r).abs() < f32::EPSILON {
+            60.0 * (g - b) / diff
+        } else if (max - g).abs() < f32::EPSILON {
+            60.0 * (b - r) / diff + 120.0
+        } else {
+            60.0 * (r - g) / diff + 240.0
+        };
+
+        let h_final = (h_val + 360.0) % 360.0;
+        (h_final, s_val)
+    };
+
+    (h, s * 100.0, l * 100.0, a)
+}
+
+fn evaluate_hsl_channel_expression(
+    comp: &ComponentValue,
+    base_h: f32,
+    base_s: f32,
+    base_l: f32,
+    base_alpha: f32,
+    channel_type: HslChannel,
+) -> Option<f32> {
+    match comp {
+        ComponentValue::Token(CssToken::Number(v)) => Some(*v as f32),
+        ComponentValue::Token(CssToken::Percentage(v)) => {
+            let pct = *v as f32;
+            match channel_type {
+                HslChannel::Alpha => Some(pct / 100.0),
+                _ => Some(pct),
+            }
+        }
+        ComponentValue::Token(CssToken::Ident(s)) => {
+            if s.eq_ignore_ascii_case("h") {
+                Some(base_h)
+            } else if s.eq_ignore_ascii_case("s") {
+                Some(base_s)
+            } else if s.eq_ignore_ascii_case("l") {
+                Some(base_l)
+            } else if s.eq_ignore_ascii_case("alpha") {
+                Some(base_alpha)
+            } else if s.eq_ignore_ascii_case("none") {
+                Some(0.0)
+            } else {
+                None
+            }
+        }
+        _ => {
+            // TODO(spec): Support calc() or other functions in relative colors
+            None
+        }
+    }
+}
+
 fn parse_rgb_function(components: &[ComponentValue]) -> Option<Color> {
     // Filter out whitespace
     let non_ws: Vec<&ComponentValue> = components
@@ -4480,6 +4575,93 @@ fn parse_rgb_function(components: &[ComponentValue]) -> Option<Color> {
 }
 
 fn parse_hsl_function(components: &[ComponentValue]) -> Option<Color> {
+    // Filter out whitespace
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    let is_relative = match non_ws.first() {
+        Some(ComponentValue::Token(CssToken::Ident(s))) => s.eq_ignore_ascii_case("from"),
+        _ => false,
+    };
+
+    if is_relative {
+        if non_ws.len() != 5 && non_ws.len() != 7 {
+            return None;
+        }
+        // base color is at non_ws[1]
+        let base_color_components = vec![non_ws[1].clone()];
+        let base_color = parse_color_argument(&base_color_components)?;
+
+        let Color::Rgba(br, bg, bb, ba) = base_color;
+        let (base_h, base_s, base_l, base_alpha) = rgba_to_hsla(br, bg, bb, ba);
+
+        let h_val = evaluate_hsl_channel_expression(
+            non_ws[2],
+            base_h,
+            base_s,
+            base_l,
+            base_alpha,
+            HslChannel::Hue,
+        )?;
+        let s_val = evaluate_hsl_channel_expression(
+            non_ws[3],
+            base_h,
+            base_s,
+            base_l,
+            base_alpha,
+            HslChannel::Saturation,
+        )?;
+        let l_val = evaluate_hsl_channel_expression(
+            non_ws[4],
+            base_h,
+            base_s,
+            base_l,
+            base_alpha,
+            HslChannel::Lightness,
+        )?;
+
+        let a_val = if non_ws.len() == 7 {
+            if !matches!(non_ws[5], ComponentValue::Token(CssToken::Delim('/'))) {
+                return None;
+            }
+            evaluate_hsl_channel_expression(
+                non_ws[6],
+                base_h,
+                base_s,
+                base_l,
+                base_alpha,
+                HslChannel::Alpha,
+            )?
+        } else {
+            1.0
+        };
+
+        let h = ((h_val % 360.0) + 360.0) % 360.0;
+        let s = (s_val / 100.0).clamp(0.0, 1.0);
+        let l = (l_val / 100.0).clamp(0.0, 1.0);
+        let alpha = (a_val.clamp(0.0, 1.0) * 255.0) as u8;
+
+        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+        let hp = h / 60.0;
+        let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+        let (r1, g1, b1) = match hp as i32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x), // covers hp in [5,6)
+        };
+        let m = l - c / 2.0;
+        let r = ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+        let g = ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+        let b = ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+
+        return Some(Color::Rgba(r, g, b, alpha));
+    }
+
     enum HslArg {
         Number(f64),
         Percentage(f64),
@@ -6754,6 +6936,62 @@ mod tests {
             parse("rgb(from red r g b / alpha)"),
             Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
         );
+    }
+
+    #[test]
+    fn test_parse_relative_color_hsl() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // 1. Copy through: hsl(from red h s l) -> resolves to red (255,0,0,255)
+        assert_eq!(
+            parse("hsl(from red h s l)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // 2. Modify Hue: hsl(from red 120 s l) -> rotates hue to green (0,255,0,255)
+        assert_eq!(
+            parse("hsl(from red 120 s l)"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+
+        // 3. Modify alpha: hsl(from red h s l / 0.5) -> sets alpha to 127
+        assert_eq!(
+            parse("hsl(from red h s l / 0.5)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 127)))
+        );
+
+        // 4. Modify alpha as percentage: hsl(from red h s l / 50%) -> sets alpha to 127
+        assert_eq!(
+            parse("hsl(from red h s l / 50%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 127)))
+        );
+
+        // 5. Using alpha keyword: hsl(from red h s l / alpha) -> sets alpha to 255 (same as red's alpha)
+        assert_eq!(
+            parse("hsl(from red h s l / alpha)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // 6. Keywords 'none': hsl(from red none none none) -> hue=0, s=0, l=0 -> black (0,0,0,255)
+        assert_eq!(
+            parse("hsl(from red none none none)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // 7. Case insensitivity
+        assert_eq!(
+            parse("HSL(from Red H S L / ALPHA)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // 8. Arity errors return None
+        assert_eq!(parse("hsl(from red h s)"), None);
+        assert_eq!(parse("hsl(from red)"), None);
+        assert_eq!(parse("hsl(from red h s l /)"), None);
+        assert_eq!(parse("hsl(from red h s l / 0.5 0.5)"), None);
     }
 
     #[test]
