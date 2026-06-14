@@ -7,6 +7,25 @@ use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsError, JsNativeError, JsObject, JsString, JsValue, NativeFunction};
 
+/// Builds a generic `NotSupportedError`-like object used as a fallback when the
+/// `DOMException` constructor is unavailable. Per web API conventions the value a
+/// promise rejects with should be an object exposing `name`/`message`, not a bare string.
+fn not_supported_error_object(context: &mut Context) -> JsValue {
+    let error_object = ObjectInitializer::new(context)
+        .property(
+            JsString::from("name"),
+            JsString::from("NotSupportedError"),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("message"),
+            JsString::from("lock() is not supported on this device."),
+            Attribute::all(),
+        )
+        .build();
+    JsValue::from(error_object)
+}
+
 /// Native implementation of `screen.orientation.lock()`.
 fn screen_orientation_lock(
     _this: &JsValue,
@@ -30,10 +49,10 @@ fn screen_orientation_lock(
         if let Ok(exception_obj) = constructor_obj.construct(&args, None, context) {
             JsValue::from(exception_obj)
         } else {
-            JsValue::from(JsString::from("NotSupportedError"))
+            not_supported_error_object(context)
         }
     } else {
-        JsValue::from(JsString::from("NotSupportedError"))
+        not_supported_error_object(context)
     };
 
     let promise_constructor = context
