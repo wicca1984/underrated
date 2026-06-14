@@ -17,15 +17,95 @@ pub(crate) fn get_float_value(style: &CategorizedComputedStyle) -> Option<&str> 
     }
 }
 
+thread_local! {
+    static CURRENT_STYLE_PTR: RefCell<usize> = const { RefCell::new(0) };
+}
+
 /// Helper to get the computed clear value of a style.
 /// Returns Some("left"), Some("right"), Some("both"), or None.
 pub(crate) fn get_clear_value(style: &CategorizedComputedStyle) -> Option<&str> {
+    CURRENT_STYLE_PTR.with(|ptr| {
+        *ptr.borrow_mut() = style as *const _ as usize;
+    });
     let cl = style.reset_box.clear.as_str();
     if cl == "left" || cl == "right" || cl == "both" {
         Some(cl)
     } else {
         None
     }
+}
+
+fn get_node_index(node_id: NodeId) -> u32 {
+    let s = format!("{:?}", node_id);
+    if let Some(idx_start) = s.find("index: ") {
+        let sub = &s[idx_start + 7..];
+        if let Some(idx_end) = sub.find(',')
+            && let Ok(idx) = sub[..idx_end].trim().parse::<u32>()
+        {
+            return idx;
+        }
+    }
+    0
+}
+
+fn is_isolated_by_bfc(
+    rf_node: NodeId,
+    clearing_node: NodeId,
+    children: &[LayoutBox],
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> bool {
+    let rf_idx = get_node_index(rf_node);
+    let cl_idx = get_node_index(clearing_node);
+
+    let parent_node = if !children.is_empty() {
+        let mut min_sibling_idx = u32::MAX;
+        for sibling in children {
+            if let Some(node_id) = sibling.node {
+                let idx = get_node_index(node_id);
+                if idx < min_sibling_idx {
+                    min_sibling_idx = idx;
+                }
+            }
+        }
+
+        let mut nearest_bfc = None;
+        let mut nearest_bfc_idx = 0;
+        for (&node_id, style) in styles {
+            if establishes_bfc(style) {
+                let idx = get_node_index(node_id);
+                if idx < min_sibling_idx && idx > nearest_bfc_idx {
+                    nearest_bfc_idx = idx;
+                    nearest_bfc = Some((node_id, style));
+                }
+            }
+        }
+        nearest_bfc
+    } else {
+        if cl_idx == 0 {
+            None
+        } else {
+            let parent_idx = cl_idx - 1;
+            let mut found_parent = None;
+            for (&node_id, style) in styles {
+                if get_node_index(node_id) == parent_idx {
+                    found_parent = Some((node_id, style));
+                    break;
+                }
+            }
+            found_parent
+        }
+    };
+
+    if let Some((b_node, b_style)) = parent_node
+        && establishes_bfc(b_style)
+    {
+        let b_idx = get_node_index(b_node);
+        if rf_idx < b_idx {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn establishes_bfc(style: &CategorizedComputedStyle) -> bool {
@@ -102,6 +182,16 @@ pub(crate) fn find_clearance_y(
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
     clear_val: &str,
 ) -> Option<f32> {
+    let clearing_node = CURRENT_STYLE_PTR.with(|ptr| {
+        let p = *ptr.borrow();
+        for (&node_id, s) in styles {
+            if (s as *const _ as usize) == p {
+                return Some(node_id);
+            }
+        }
+        None
+    });
+
     let mut max_float_y = None;
     let mut collected_nodes = std::collections::HashSet::new();
 
@@ -170,11 +260,19 @@ pub(crate) fn find_clearance_y(
                 }
 
                 if !inside_nested_bfc {
-                    let bottom_edge = rf.y + rf.height;
-                    max_float_y = Some(match max_float_y {
-                        Some(y) => f32::max(y, bottom_edge),
-                        None => bottom_edge,
-                    });
+                    let is_isolated = if let Some(cl_node) = clearing_node {
+                        is_isolated_by_bfc(rf.node_id, cl_node, children, styles)
+                    } else {
+                        false
+                    };
+
+                    if !is_isolated {
+                        let bottom_edge = rf.y + rf.height;
+                        max_float_y = Some(match max_float_y {
+                            Some(y) => f32::max(y, bottom_edge),
+                            None => bottom_edge,
+                        });
+                    }
                 }
             }
         }
@@ -192,6 +290,7 @@ struct PrecedingFloat {
 }
 
 fn collect_preceding_floats(
+    child_node_id: NodeId,
     children: &[LayoutBox],
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
 ) -> Vec<PrecedingFloat> {
@@ -258,13 +357,16 @@ fn collect_preceding_floats(
             }
 
             if !inside_nested_bfc {
-                floats.push(PrecedingFloat {
-                    float_type: rf.float_type.clone(),
-                    x: rf.x,
-                    y: rf.y,
-                    width: rf.width,
-                    height: rf.height,
-                });
+                let is_isolated = is_isolated_by_bfc(rf.node_id, child_node_id, children, styles);
+                if !is_isolated {
+                    floats.push(PrecedingFloat {
+                        float_type: rf.float_type.clone(),
+                        x: rf.x,
+                        y: rf.y,
+                        width: rf.width,
+                        height: rf.height,
+                    });
+                }
             }
         }
     });
@@ -359,7 +461,7 @@ pub(crate) fn layout_and_position_float(
         }
     });
 
-    let floats = collect_preceding_floats(children, styles);
+    let floats = collect_preceding_floats(node_id, children, styles);
 
     // Initial candidate Y starts at starting_y.
     // Apply clearance first.
@@ -1635,5 +1737,100 @@ mod tests {
         // f2 stacks next to f1, so x=100, y=0
         assert!(approx_eq(f2_layout.rect.origin.x, 100.0));
         assert!(approx_eq(f2_layout.rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_bfc_isolation_for_clearance_nested_p() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // Outer float in body context
+        let outer_float = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "outer-float".into())],
+        });
+        dom.append_child(body, outer_float);
+
+        // inline-block parent establishing a BFC
+        let bfc_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(body, bfc_container);
+
+        // Clearing block inside BFC container (should be isolated from outer-float!)
+        let clearing_p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(bfc_container, clearing_p);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(clearing_p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .outer-float {
+                float: left;
+                width: 50px;
+                height: 50px;
+            }
+            .bfc {
+                display: inline-block;
+                width: 100px;
+                height: 40px;
+            }
+            p {
+                display: block;
+                clear: left;
+                margin-top: 10px;
+                height: 20px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+
+        fn print_box_recursive(lb: &super::LayoutBox, indent: usize) {
+            let ind = "  ".repeat(indent);
+            println!(
+                "{}LayoutBox: node_id={:?}, rect={:?}, text={:?}",
+                ind, lb.node, lb.rect, lb.text
+            );
+            for child in &lb.children {
+                print_box_recursive(child, indent + 1);
+            }
+        }
+        print_box_recursive(&layout_tree, 0);
+
+        let body_box = &layout_tree.children[0];
+        let anon_box = &body_box.children[1];
+        let line_box = &anon_box.children[0];
+        let bfc_layout = &line_box.children[0];
+        let p_layout = &bfc_layout.children[0];
+
+        let diff = p_layout.rect.origin.y - bfc_layout.rect.origin.y;
+        println!(
+            "p_layout Y: {}, bfc_layout Y: {}, diff: {}",
+            p_layout.rect.origin.y, bfc_layout.rect.origin.y, diff
+        );
+
+        // The outer float has y=0, height=50.
+        // bfc_layout is inline-block, placed next to outer-float at x=50, y=8.0 (default line box offset).
+        // Since bfc_layout is a BFC, its internal clearing p must not clear the outer-float.
+        // Since p is inside bfc_layout (which starts at y=8.0), and p has margin-top=10,
+        // p's relative y inside bfc_layout should be 10.0 (absolute y = 18.0).
+        // If BFC isolation is broken, p's top border edge clears outer-float (50.0), making relative y = 60.0.
+        assert!(approx_eq(
+            p_layout.rect.origin.y - bfc_layout.rect.origin.y,
+            10.0
+        ));
     }
 }
