@@ -9,6 +9,7 @@ pub struct Timer {
     pub id: i32,
     pub delay: i32,
     pub is_interval: bool,
+    pub nesting_level: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,7 @@ thread_local! {
     static NEXT_IDLE_ID: RefCell<i32> = const { RefCell::new(1) };
     static IDLE_CALLBACKS: RefCell<HashMap<i32, IdleCallback>> = RefCell::new(HashMap::new());
     static MICROTASK_QUEUE: RefCell<std::collections::VecDeque<JsValue>> = const { RefCell::new(std::collections::VecDeque::new()) };
+    static CURRENT_NESTING_LEVEL: RefCell<u32> = const { RefCell::new(0) };
 }
 
 /// Clear all timers and reset the ID counter (mainly for test isolation).
@@ -50,6 +52,9 @@ pub fn clear_all_timers() {
     });
     IDLE_CALLBACKS.with(|cell| {
         cell.borrow_mut().clear();
+    });
+    CURRENT_NESTING_LEVEL.with(|cell| {
+        *cell.borrow_mut() = 0;
     });
 }
 
@@ -141,10 +146,15 @@ fn get_or_create_idle_callbacks_obj(
 pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError> {
     let rust_timer = TIMERS.with(|cell| {
         let mut timers = cell.borrow_mut();
-        if let Some(t) = timers.get(&id) {
+        if let Some(t) = timers.get_mut(&id) {
             let t_clone = t.clone();
             if !t.is_interval {
                 timers.remove(&id);
+            } else {
+                t.nesting_level += 1;
+                if t.nesting_level >= 5 && t.delay < 4 {
+                    t.delay = 4;
+                }
             }
             Some(t_clone)
         } else {
@@ -152,8 +162,8 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
         }
     });
 
-    let is_interval = if let Some(t) = rust_timer {
-        t.is_interval
+    let (is_interval, nesting_level) = if let Some(t) = rust_timer {
+        (t.is_interval, t.nesting_level)
     } else {
         return Err(JsError::from_opaque(JsValue::from(JsString::from(
             "Timer not found",
@@ -189,6 +199,25 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
             callback_args.push(arg_val);
         }
     }
+
+    // Temporarily set CURRENT_NESTING_LEVEL to nesting_level during callback execution
+    struct NestingLevelGuard {
+        old_level: u32,
+    }
+    impl Drop for NestingLevelGuard {
+        fn drop(&mut self) {
+            CURRENT_NESTING_LEVEL.with(|cell| {
+                *cell.borrow_mut() = self.old_level;
+            });
+        }
+    }
+
+    let _guard = CURRENT_NESTING_LEVEL.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let old_level = *borrow;
+        *borrow = nesting_level;
+        NestingLevelGuard { old_level }
+    });
 
     let res = if let Some(callback_obj) = callback.as_object() {
         let global_this = context.global_object().clone();
@@ -342,11 +371,18 @@ pub fn set_timeout(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     let callback = args.first().cloned().unwrap_or(JsValue::undefined());
-    let delay = if let Some(delay_val) = args.get(1) {
-        js_value_to_i32(delay_val, context)
+    let current_level = CURRENT_NESTING_LEVEL.with(|cell| *cell.borrow());
+    let new_level = current_level + 1;
+
+    let mut delay = if let Some(delay_val) = args.get(1) {
+        js_value_to_i32(delay_val, context).max(0)
     } else {
         0
     };
+
+    if new_level >= 5 && delay < 4 {
+        delay = 4;
+    }
 
     let callback_args = if args.len() > 2 {
         args[2..].to_vec()
@@ -366,6 +402,7 @@ pub fn set_timeout(
         id,
         delay,
         is_interval: false,
+        nesting_level: new_level,
     };
     TIMERS.with(|cell| {
         cell.borrow_mut().insert(id, timer);
@@ -428,11 +465,18 @@ pub fn set_interval(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     let callback = args.first().cloned().unwrap_or(JsValue::undefined());
-    let delay = if let Some(delay_val) = args.get(1) {
-        js_value_to_i32(delay_val, context)
+    let current_level = CURRENT_NESTING_LEVEL.with(|cell| *cell.borrow());
+    let new_level = current_level + 1;
+
+    let mut delay = if let Some(delay_val) = args.get(1) {
+        js_value_to_i32(delay_val, context).max(0)
     } else {
         0
     };
+
+    if new_level >= 5 && delay < 4 {
+        delay = 4;
+    }
 
     let callback_args = if args.len() > 2 {
         args[2..].to_vec()
@@ -452,6 +496,7 @@ pub fn set_interval(
         id,
         delay,
         is_interval: true,
+        nesting_level: new_level,
     };
     TIMERS.with(|cell| {
         cell.borrow_mut().insert(id, timer);
@@ -1066,5 +1111,107 @@ mod tests {
         assert!(result.is_err());
         let err_str = result.err().unwrap().to_string();
         assert!(err_str.contains("TypeError") || err_str.contains("must be a function"));
+    }
+
+    #[test]
+    fn test_timer_nesting_clamp_set_timeout() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // Register the 1st timer with 0ms delay
+        let id1_val = context
+            .eval(Source::from_bytes(
+                r#"
+            var last_id = 0;
+            var id1 = setTimeout(() => {
+                var id2 = setTimeout(() => {
+                    var id3 = setTimeout(() => {
+                        var id4 = setTimeout(() => {
+                            var id5 = setTimeout(() => {}, 0);
+                            last_id = id5;
+                        }, 0);
+                    }, 0);
+                }, 0);
+            }, 0);
+            id1;
+        "#,
+            ))
+            .unwrap();
+        let id1 = id1_val.as_number().unwrap() as i32;
+        let t1 = get_timer(id1).unwrap();
+        assert_eq!(t1.delay, 0);
+        assert_eq!(t1.nesting_level, 1);
+
+        // Trigger 1st
+        trigger_timer(id1, &mut context).unwrap();
+        // Now id2 should be registered (ID 2), with delay 0, nesting level 2
+        let t2 = get_timer(2).unwrap();
+        assert_eq!(t2.delay, 0);
+        assert_eq!(t2.nesting_level, 2);
+
+        // Trigger 2nd
+        trigger_timer(2, &mut context).unwrap();
+        // Now id3 should be registered (ID 3), with delay 0, nesting level 3
+        let t3 = get_timer(3).unwrap();
+        assert_eq!(t3.delay, 0);
+        assert_eq!(t3.nesting_level, 3);
+
+        // Trigger 3rd
+        trigger_timer(3, &mut context).unwrap();
+        // Now id4 should be registered (ID 4), with delay 0, nesting level 4
+        let t4 = get_timer(4).unwrap();
+        assert_eq!(t4.delay, 0);
+        assert_eq!(t4.nesting_level, 4);
+
+        // Trigger 4th
+        trigger_timer(4, &mut context).unwrap();
+        // Now id5 should be registered (ID 5), but since nesting level is 5, delay must be clamped to 4!
+        let t5 = get_timer(5).unwrap();
+        assert_eq!(t5.delay, 4);
+        assert_eq!(t5.nesting_level, 5);
+    }
+
+    #[test]
+    fn test_timer_nesting_clamp_set_interval() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        let id_val = context
+            .eval(Source::from_bytes(
+                r#"
+            setInterval(() => {}, 0);
+        "#,
+            ))
+            .unwrap();
+        let id = id_val.as_number().unwrap() as i32;
+        let t = get_timer(id).unwrap();
+        assert_eq!(t.delay, 0);
+        assert_eq!(t.nesting_level, 1);
+
+        // Trigger 1st time
+        trigger_timer(id, &mut context).unwrap();
+        let t = get_timer(id).unwrap();
+        assert_eq!(t.delay, 0);
+        assert_eq!(t.nesting_level, 2);
+
+        // Trigger 2nd time
+        trigger_timer(id, &mut context).unwrap();
+        let t = get_timer(id).unwrap();
+        assert_eq!(t.delay, 0);
+        assert_eq!(t.nesting_level, 3);
+
+        // Trigger 3rd time
+        trigger_timer(id, &mut context).unwrap();
+        let t = get_timer(id).unwrap();
+        assert_eq!(t.delay, 0);
+        assert_eq!(t.nesting_level, 4);
+
+        // Trigger 4th time -> next execution nesting level becomes 5! So delay must clamp to 4.
+        trigger_timer(id, &mut context).unwrap();
+        let t = get_timer(id).unwrap();
+        assert_eq!(t.delay, 4);
+        assert_eq!(t.nesting_level, 5);
     }
 }
