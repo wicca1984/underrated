@@ -137,6 +137,24 @@ thread_local! {
     static CONTAINING_BLOCKS: RefCell<HashMap<NodeId, Option<NodeId>>> = RefCell::new(HashMap::new());
     static DOM_PARENT_MAP: RefCell<HashMap<NodeId, NodeId>> = RefCell::new(HashMap::new());
     static CURRENT_SHIFT_ORIGIN: RefCell<Option<NodeId>> = const { RefCell::new(None) };
+    static SCROLL_OFFSETS: RefCell<HashMap<NodeId, (f32, f32)>> = RefCell::new(HashMap::new());
+    static LAYOUT_BOX_RECTS: RefCell<HashMap<NodeId, crate::geom::Rect>> = RefCell::new(HashMap::new());
+}
+
+/// Sets the scroll offset (x, y) for a scroll container NodeId (for sticky clamping layout simulation).
+#[allow(dead_code)]
+pub fn set_scroll_offset(node: NodeId, x: f32, y: f32) {
+    SCROLL_OFFSETS.with(|map| {
+        map.borrow_mut().insert(node, (x, y));
+    });
+}
+
+/// Clears all stored scroll offsets.
+#[allow(dead_code)]
+pub fn clear_scroll_offsets() {
+    SCROLL_OFFSETS.with(|map| {
+        map.borrow_mut().clear();
+    });
 }
 
 fn populate_parent_map(dom: &Dom, node: NodeId) {
@@ -220,6 +238,234 @@ pub fn shift_layout_box(
     }
 }
 
+fn populate_layout_box_rects(layout_box: &LayoutBox, map: &mut HashMap<NodeId, crate::geom::Rect>) {
+    if let Some(node_id) = layout_box.node {
+        map.insert(node_id, layout_box.rect);
+    }
+    for child in &layout_box.children {
+        populate_layout_box_rects(child, map);
+    }
+}
+
+fn safe_clamp(val: f32, min: f32, max: f32) -> f32 {
+    if min > max { min } else { val.clamp(min, max) }
+}
+
+fn calculate_sticky_offset(
+    node_id: NodeId,
+    sticky_rect: crate::geom::Rect,
+    parent_node: Option<NodeId>,
+    parent_rect: Option<crate::geom::Rect>,
+    root_rect: crate::geom::Rect,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> (f32, f32) {
+    let style = match styles.get(&node_id) {
+        Some(s) => s,
+        None => return (0.0, 0.0),
+    };
+
+    // 1. Find parent content boundaries
+    let (parent_content_left, parent_content_top, parent_content_right, parent_content_bottom) = {
+        if let Some(p_node) = parent_node
+            && let Some(p_rect) = parent_rect
+        {
+            let p_style = styles.get(&p_node);
+            let border_left =
+                p_style.map_or(0.0, |s| crate::layout::get_px(s, "border-left-width", 0.0));
+            let border_top =
+                p_style.map_or(0.0, |s| crate::layout::get_px(s, "border-top-width", 0.0));
+            let border_right =
+                p_style.map_or(0.0, |s| crate::layout::get_px(s, "border-right-width", 0.0));
+            let border_bottom = p_style.map_or(0.0, |s| {
+                crate::layout::get_px(s, "border-bottom-width", 0.0)
+            });
+            let padding_left =
+                p_style.map_or(0.0, |s| crate::layout::get_px(s, "padding-left", 0.0));
+            let padding_top = p_style.map_or(0.0, |s| crate::layout::get_px(s, "padding-top", 0.0));
+            let padding_right =
+                p_style.map_or(0.0, |s| crate::layout::get_px(s, "padding-right", 0.0));
+            let padding_bottom =
+                p_style.map_or(0.0, |s| crate::layout::get_px(s, "padding-bottom", 0.0));
+
+            let left = p_rect.origin.x + border_left + padding_left;
+            let top = p_rect.origin.y + border_top + padding_top;
+            let right = p_rect.origin.x + p_rect.size.width - border_right - padding_right;
+            let bottom = p_rect.origin.y + p_rect.size.height - border_bottom - padding_bottom;
+            (left, top, right, bottom)
+        } else {
+            (
+                root_rect.origin.x,
+                root_rect.origin.y,
+                root_rect.max_x(),
+                root_rect.max_y(),
+            )
+        }
+    };
+
+    // 2. Find nearest scroll container and its visible viewport
+    let mut scroll_container_id = None;
+    let mut current = DOM_PARENT_MAP.with(|map| map.borrow().get(&node_id).copied());
+    while let Some(anc) = current {
+        if let Some(anc_style) = styles.get(&anc) {
+            let overflow = &anc_style.reset_box.overflow;
+            if overflow == "scroll" || overflow == "auto" {
+                scroll_container_id = Some(anc);
+                break;
+            }
+        }
+        current = DOM_PARENT_MAP.with(|map| map.borrow().get(&anc).copied());
+    }
+
+    let (sc_rect, scroll_x, scroll_y) = if let Some(sc_id) = scroll_container_id {
+        let sc_box_rect = LAYOUT_BOX_RECTS
+            .with(|map| map.borrow().get(&sc_id).copied())
+            .unwrap_or(root_rect);
+        let (s_x, s_y) = SCROLL_OFFSETS
+            .with(|map| map.borrow().get(&sc_id).copied())
+            .unwrap_or((0.0, 0.0));
+        (sc_box_rect, s_x, s_y)
+    } else {
+        // Viewport scroll
+        let (s_x, s_y) = SCROLL_OFFSETS.with(|map| {
+            let mut root = node_id;
+            DOM_PARENT_MAP.with(|m| {
+                while let Some(&p) = m.borrow().get(&root) {
+                    root = p;
+                }
+            });
+            map.borrow().get(&root).copied().unwrap_or((0.0, 0.0))
+        });
+        (root_rect, s_x, s_y)
+    };
+
+    // 3. Calculate target position with clamping
+    let static_x = sticky_rect.origin.x;
+    let static_y = sticky_rect.origin.y;
+    let mut target_x = static_x;
+    let mut target_y = static_y;
+
+    // Vertical sticky
+    if style.reset_surround.top != -1 {
+        let t_val = style.reset_surround.top as f32;
+        let wanted_y = sc_rect.origin.y + scroll_y + t_val;
+        let max_y = parent_content_bottom - sticky_rect.size.height;
+        let limit_y = if max_y > static_y { max_y } else { wanted_y };
+        target_y = safe_clamp(wanted_y, static_y, limit_y);
+    } else if style.reset_surround.bottom != -1 {
+        let b_val = style.reset_surround.bottom as f32;
+        let wanted_y =
+            sc_rect.origin.y + scroll_y + sc_rect.size.height - b_val - sticky_rect.size.height;
+        let min_y = parent_content_top;
+        let limit_y = if min_y < static_y { min_y } else { wanted_y };
+        target_y = safe_clamp(wanted_y, limit_y, static_y);
+    }
+
+    // Horizontal sticky
+    if style.reset_surround.left != -1 {
+        let l_val = style.reset_surround.left as f32;
+        let wanted_x = sc_rect.origin.x + scroll_x + l_val;
+        let max_x = parent_content_right - sticky_rect.size.width;
+        let limit_x = if max_x > static_x { max_x } else { wanted_x };
+        target_x = safe_clamp(wanted_x, static_x, limit_x);
+    } else if style.reset_surround.right != -1 {
+        let r_val = style.reset_surround.right as f32;
+        let wanted_x =
+            sc_rect.origin.x + scroll_x + sc_rect.size.width - r_val - sticky_rect.size.width;
+        let min_x = parent_content_left;
+        let limit_x = if min_x < static_x { min_x } else { wanted_x };
+        target_x = safe_clamp(wanted_x, limit_x, static_x);
+    }
+
+    let dx = target_x - static_x;
+    let dy = target_y - static_y;
+    (dx, dy)
+}
+
+fn resolve_relative_positions_inner(
+    layout_box: &mut LayoutBox,
+    parent_node: Option<NodeId>,
+    parent_rect: Option<crate::geom::Rect>,
+    root_rect: crate::geom::Rect,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    depth: usize,
+) {
+    if depth > crate::layout::MAX_DEPTH {
+        return;
+    }
+
+    let current_node = layout_box.node;
+    let current_rect = layout_box.rect;
+
+    for child in &mut layout_box.children {
+        resolve_relative_positions_inner(
+            child,
+            current_node,
+            Some(current_rect),
+            root_rect,
+            styles,
+            depth + 1,
+        );
+    }
+
+    if let Some(node_id) = layout_box.node
+        && let Some(style) = styles.get(&node_id)
+    {
+        if style.reset_box.position == "relative" {
+            let dx = if style.reset_surround.left != -1 && style.reset_surround.right != -1 {
+                if style.inherited_text.direction == "rtl" {
+                    -(style.reset_surround.right as f32)
+                } else {
+                    style.reset_surround.left as f32
+                }
+            } else if style.reset_surround.left != -1 {
+                style.reset_surround.left as f32
+            } else if style.reset_surround.right != -1 {
+                -(style.reset_surround.right as f32)
+            } else {
+                0.0
+            };
+            let dy = if style.reset_surround.top != -1 {
+                style.reset_surround.top as f32
+            } else if style.reset_surround.bottom != -1 {
+                -(style.reset_surround.bottom as f32)
+            } else {
+                0.0
+            };
+
+            CURRENT_SHIFT_ORIGIN.with(|origin| {
+                *origin.borrow_mut() = Some(node_id);
+            });
+
+            shift_layout_box(layout_box, styles, dx, dy, depth);
+
+            CURRENT_SHIFT_ORIGIN.with(|origin| {
+                *origin.borrow_mut() = None;
+            });
+        } else if style.reset_box.position == "sticky" {
+            let (dx, dy) = calculate_sticky_offset(
+                node_id,
+                layout_box.rect,
+                parent_node,
+                parent_rect,
+                root_rect,
+                styles,
+            );
+
+            if dx != 0.0 || dy != 0.0 {
+                CURRENT_SHIFT_ORIGIN.with(|origin| {
+                    *origin.borrow_mut() = Some(node_id);
+                });
+
+                shift_layout_box(layout_box, styles, dx, dy, depth);
+
+                CURRENT_SHIFT_ORIGIN.with(|origin| {
+                    *origin.borrow_mut() = None;
+                });
+            }
+        }
+    }
+}
+
 /// Recursively resolves relative positions for the entire layout tree.
 /// spec: S-31
 pub fn resolve_relative_positions(
@@ -227,52 +473,15 @@ pub fn resolve_relative_positions(
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
     depth: usize,
 ) {
-    if depth > crate::layout::MAX_DEPTH {
-        return;
-    }
-    for child in &mut layout_box.children {
-        resolve_relative_positions(child, styles, depth + 1);
-    }
-
-    if let Some(style) = layout_box.node.and_then(|node_id| styles.get(&node_id))
-        && (style.reset_box.position == "relative" || style.reset_box.position == "sticky")
-    {
-        let dx = if style.reset_surround.left != -1 && style.reset_surround.right != -1 {
-            if style.inherited_text.direction == "rtl" {
-                -(style.reset_surround.right as f32)
-            } else {
-                style.reset_surround.left as f32
-            }
-        } else if style.reset_surround.left != -1 {
-            style.reset_surround.left as f32
-        } else if style.reset_surround.right != -1 {
-            -(style.reset_surround.right as f32)
-        } else {
-            0.0
-        };
-        let dy = if style.reset_surround.top != -1 {
-            style.reset_surround.top as f32
-        } else if style.reset_surround.bottom != -1 {
-            -(style.reset_surround.bottom as f32)
-        } else {
-            0.0
-        };
-        if style.reset_box.position == "sticky" {
-            // TODO(spec): true scroll-threshold sticky behavior is deferred (no scroll context yet).
-        }
-
-        if let Some(node_id) = layout_box.node {
-            CURRENT_SHIFT_ORIGIN.with(|origin| {
-                *origin.borrow_mut() = Some(node_id);
-            });
-        }
-
-        shift_layout_box(layout_box, styles, dx, dy, depth);
-
-        CURRENT_SHIFT_ORIGIN.with(|origin| {
-            *origin.borrow_mut() = None;
+    if depth == 0 {
+        LAYOUT_BOX_RECTS.with(|map| {
+            map.borrow_mut().clear();
+            populate_layout_box_rects(layout_box, &mut map.borrow_mut());
         });
     }
+
+    let root_rect = layout_box.rect;
+    resolve_relative_positions_inner(layout_box, None, None, root_rect, styles, depth);
 }
 
 /// Recursively finds all absolute and fixed elements in pre-order, pruning on display: none.
@@ -832,6 +1041,7 @@ pub fn layout_absolute_and_fixed_elements(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::css::parser::parse_stylesheet;
     use crate::dom::{Dom, NodeData};
     use crate::layout::layout_document;
@@ -2188,5 +2398,164 @@ mod tests {
         // so its y-position should fallback to its static position, which is 80.0!
         assert_eq!(child_box.rect.origin.x, 15.0);
         assert_eq!(child_box.rect.origin.y, 80.0);
+    }
+
+    #[test]
+    fn test_sticky_position_clamping_vertical_scroll() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // A scrollable container parent
+        let scroll_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "scroll-container".into())],
+        });
+        dom.append_child(body, scroll_container);
+
+        // Parent block of the sticky item
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(scroll_container, parent);
+
+        // The sticky item
+        let sticky_item = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "sticky-item".into())],
+        });
+        dom.append_child(parent, sticky_item);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .scroll-container {
+                display: block;
+                overflow: scroll; /* Marks as scroll container */
+                height: 200px;
+                width: 500px;
+            }
+            .parent {
+                display: block;
+                height: 400px; /* parent is larger than scroll container */
+                width: 500px;
+            }
+            .sticky-item {
+                display: block;
+                position: sticky;
+                top: 10px;
+                height: 50px;
+                width: 500px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Case 1: scroll_y = 0.0
+        set_scroll_offset(scroll_container, 0.0, 0.0);
+        let layout_tree_0 = layout_document(&dom, &styles, 800.0);
+        let item_box_0 = find_layout_box(&layout_tree_0, sticky_item, 0).unwrap();
+        // Since static_y = 0.0, scroll_y = 0.0, top = 10.0:
+        // wanted_y = 0.0 + 0.0 + 10.0 = 10.0.
+        // It is pushed down to 10.0.
+        assert_eq!(item_box_0.rect.origin.y, 10.0);
+
+        // Case 2: scroll_y = 50.0
+        set_scroll_offset(scroll_container, 0.0, 50.0);
+        let layout_tree_50 = layout_document(&dom, &styles, 800.0);
+        let item_box_50 = find_layout_box(&layout_tree_50, sticky_item, 0).unwrap();
+        // wanted_y = sc_rect.origin.y (0.0) + scroll_y (50.0) + top (10.0) = 60.0.
+        // Clamp to [0.0, parent_content_bottom - height = 400.0 - 50.0 = 350.0]:
+        // It should cling to the scrolled viewport edge at 60.0!
+        assert_eq!(item_box_50.rect.origin.y, 60.0);
+
+        // Case 3: scroll_y = 380.0
+        set_scroll_offset(scroll_container, 0.0, 380.0);
+        let layout_tree_380 = layout_document(&dom, &styles, 800.0);
+        let item_box_380 = find_layout_box(&layout_tree_380, sticky_item, 0).unwrap();
+        // wanted_y = 0.0 + 380.0 + 10.0 = 390.0.
+        // Max clamp is 350.0 (stay inside parent).
+        // It should be clamped to 350.0!
+        assert_eq!(item_box_380.rect.origin.y, 350.0);
+
+        // Clean up
+        clear_scroll_offsets();
+    }
+
+    #[test]
+    fn test_z_index_stacking_positioned_boxes() {
+        let mut dom = Dom::new();
+        let id1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let id2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let id3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        let box1 = LayoutBox {
+            node: Some(id1),
+            rect: crate::geom::Rect::new(0.0, 0.0, 100.0, 100.0),
+            children: Vec::new(),
+            text: None,
+        };
+        let box2 = LayoutBox {
+            node: Some(id2),
+            rect: crate::geom::Rect::new(10.0, 10.0, 100.0, 100.0),
+            children: Vec::new(),
+            text: None,
+        };
+        let box3 = LayoutBox {
+            node: Some(id3),
+            rect: crate::geom::Rect::new(20.0, 20.0, 100.0, 100.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let children = vec![box1, box2, box3];
+
+        // Let's create styles with different z-indices and positions.
+        let mut styles = std::collections::HashMap::new();
+
+        // id1: position: relative, z-index: 10
+        let mut style1 = crate::style::CategorizedComputedStyle::initial();
+        std::sync::Arc::make_mut(&mut style1.reset_box).position = "relative".to_string();
+        style1.set_z_index(10);
+        styles.insert(id1, style1);
+
+        // id2: position: absolute, z-index: -5
+        let mut style2 = crate::style::CategorizedComputedStyle::initial();
+        std::sync::Arc::make_mut(&mut style2.reset_box).position = "absolute".to_string();
+        style2.set_z_index(-5);
+        styles.insert(id2, style2);
+
+        // id3: position: static, z-index: 15.
+        // Static elements' z-index is ignored and treated as auto (0).
+        let mut style3 = crate::style::CategorizedComputedStyle::initial();
+        std::sync::Arc::make_mut(&mut style3.reset_box).position = "static".to_string();
+        style3.set_z_index(i32::MIN); // i32::MIN represents Auto
+        styles.insert(id3, style3);
+
+        // Sort children using paint::stacking::sort_siblings
+        let sorted = crate::paint::stacking::sort_siblings(&children, &styles);
+
+        assert_eq!(sorted.len(), 3);
+        // Correct painting order (lowest z-index to highest):
+        // 1. id2 (z-index: -5)
+        // 2. id3 (z-index: static, ignored to 0)
+        // 3. id1 (z-index: 10)
+        assert_eq!(sorted[0].node, Some(id2));
+        assert_eq!(sorted[1].node, Some(id3));
+        assert_eq!(sorted[2].node, Some(id1));
     }
 }
