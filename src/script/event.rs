@@ -870,6 +870,40 @@ impl<'a> Drop for PassiveListenerGuard<'a> {
     }
 }
 
+fn is_listener_still_registered(
+    curr_node: &JsValue,
+    event_type: &str,
+    callback: &JsValue,
+    capture: bool,
+) -> bool {
+    if let Some(curr_obj) = curr_node.as_object()
+        && let Some(event_target) = curr_obj.downcast_ref::<EventTarget>()
+    {
+        let listeners = event_target.listeners.borrow();
+        if let Some(list) = listeners.get(event_type) {
+            return list
+                .iter()
+                .any(|l| l.callback.strict_equals(callback) && l.capture == capture);
+        }
+    }
+    true
+}
+
+fn remove_once_listener(curr_node: &JsValue, event_type: &str, callback: &JsValue, capture: bool) {
+    if let Some(curr_obj) = curr_node.as_object()
+        && let Some(event_target) = curr_obj.downcast_ref::<EventTarget>()
+    {
+        let mut listeners = event_target.listeners.borrow_mut();
+        if let Some(list) = listeners.get_mut(event_type)
+            && let Some(pos) = list
+                .iter()
+                .position(|l| l.callback.strict_equals(callback) && l.capture == capture && l.once)
+        {
+            list.remove(pos);
+        }
+    }
+}
+
 fn invoke_listeners_on(
     curr_node: &JsValue,
     event: &Event,
@@ -899,8 +933,6 @@ fn invoke_listeners_on(
             let event_type_ref = event.r#type.borrow();
             if let Some(list) = listeners.get_mut(&*event_type_ref) {
                 listeners_to_call = list.clone();
-                // Remove once listeners immediately
-                list.retain(|l| !l.once);
             }
         } else {
             // Legacy/Fallback DOM bridge path: read from JS property `__events__`
@@ -929,6 +961,9 @@ fn invoke_listeners_on(
         }
     }
 
+    let event_type_ref = event.r#type.borrow();
+    let event_type_str = event_type_ref.clone();
+
     for listener in listeners_to_call {
         if *event.immediate_propagation_stopped.borrow() {
             break;
@@ -945,9 +980,27 @@ fn invoke_listeners_on(
             continue;
         }
 
-        let _passive_guard =
-            PassiveListenerGuard::new(&event.in_passive_listener, listener.passive);
         if let Some(callable) = listener.callback.as_object() {
+            if !is_listener_still_registered(
+                curr_node,
+                &event_type_str,
+                &listener.callback,
+                listener.capture,
+            ) {
+                continue;
+            }
+
+            if listener.once {
+                remove_once_listener(
+                    curr_node,
+                    &event_type_str,
+                    &listener.callback,
+                    listener.capture,
+                );
+            }
+
+            let _passive_guard =
+                PassiveListenerGuard::new(&event.in_passive_listener, listener.passive);
             if callable.is_callable() {
                 callable.call(curr_node, std::slice::from_ref(event_val), context)?;
             } else if let Ok(handle_event_val) =
@@ -996,7 +1049,6 @@ fn invoke_listeners_on_plain(
 
             if let Some(list) = listeners.get_mut(event_type) {
                 listeners_to_call = list.clone();
-                list.retain(|l| !l.once);
             }
         } else {
             // Legacy path
@@ -1042,8 +1094,32 @@ fn invoke_listeners_on_plain(
         }
 
         if let Some(callable) = listener.callback.as_object() {
-            if callable.is_callable() {
-                callable.call(curr_node, std::slice::from_ref(event_val), context)?;
+            if !is_listener_still_registered(
+                curr_node,
+                event_type,
+                &listener.callback,
+                listener.capture,
+            ) {
+                continue;
+            }
+
+            if listener.once {
+                remove_once_listener(curr_node, event_type, &listener.callback, listener.capture);
+            }
+
+            let original_in_passive =
+                event_obj.get(JsString::from("__in_passive_listener__"), context)?;
+            if listener.passive {
+                event_obj.set(
+                    JsString::from("__in_passive_listener__"),
+                    JsValue::from(true),
+                    false,
+                    context,
+                )?;
+            }
+
+            let result = if callable.is_callable() {
+                callable.call(curr_node, std::slice::from_ref(event_val), context)
             } else if let Ok(handle_event_val) =
                 callable.get(JsString::from("handleEvent"), context)
                 && let Some(handle_event_callable) = handle_event_val.as_object()
@@ -1053,12 +1129,86 @@ fn invoke_listeners_on_plain(
                     &listener.callback,
                     std::slice::from_ref(event_val),
                     context,
+                )
+            } else {
+                Ok(JsValue::undefined())
+            };
+
+            if listener.passive {
+                event_obj.set(
+                    JsString::from("__in_passive_listener__"),
+                    original_in_passive,
+                    false,
+                    context,
                 )?;
             }
+
+            result?;
         }
     }
 
     Ok(())
+}
+
+fn plain_prevent_default(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let is_passive = if let Some(obj) = this.as_object() {
+        obj.get(JsString::from("__in_passive_listener__"), context)
+            .map(|v| v.to_boolean())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if is_passive {
+        return Ok(JsValue::undefined());
+    }
+
+    if let Some(obj) = this.as_object() {
+        obj.set(
+            JsString::from("defaultPrevented"),
+            JsValue::from(true),
+            false,
+            context,
+        )?;
+
+        // If it's a CustomEvent, also set its inner default_prevented
+        if let Some(custom_event) = obj.downcast_ref::<crate::script::CustomEvent>() {
+            *custom_event.default_prevented.borrow_mut() = true;
+        }
+    }
+
+    Ok(JsValue::undefined())
+}
+
+fn plain_stop_immediate_propagation(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    if let Some(obj) = this.as_object() {
+        obj.set(
+            JsString::from("immediatePropagationStopped"),
+            JsValue::from(true),
+            false,
+            context,
+        )?;
+        obj.set(
+            JsString::from("propagationStopped"),
+            JsValue::from(true),
+            false,
+            context,
+        )?;
+
+        // If it's a CustomEvent, also set its inner propagation_stopped
+        if let Some(custom_event) = obj.downcast_ref::<crate::script::CustomEvent>() {
+            *custom_event.propagation_stopped.borrow_mut() = true;
+        }
+    }
+    Ok(JsValue::undefined())
 }
 
 pub fn dispatch_event(
@@ -1222,6 +1372,45 @@ pub fn dispatch_event(
             }
         }
 
+        let original_prevent_default = event_obj.get(JsString::from("preventDefault"), context)?;
+        let plain_prevent_default_fn = FunctionObjectBuilder::new(
+            &context.realm().clone(),
+            NativeFunction::from_fn_ptr(plain_prevent_default),
+        )
+        .name("preventDefault")
+        .build();
+        event_obj.set(
+            JsString::from("preventDefault"),
+            JsValue::from(plain_prevent_default_fn),
+            false,
+            context,
+        )?;
+
+        let original_stop_immediate_propagation =
+            event_obj.get(JsString::from("stopImmediatePropagation"), context)?;
+        let plain_stop_immediate_propagation_fn = FunctionObjectBuilder::new(
+            &context.realm().clone(),
+            NativeFunction::from_fn_ptr(plain_stop_immediate_propagation),
+        )
+        .name("stopImmediatePropagation")
+        .build();
+        event_obj.set(
+            JsString::from("stopImmediatePropagation"),
+            JsValue::from(plain_stop_immediate_propagation_fn),
+            false,
+            context,
+        )?;
+
+        let def_prevented_val = event_obj.get(JsString::from("defaultPrevented"), context)?;
+        if def_prevented_val.is_undefined() {
+            event_obj.set(
+                JsString::from("defaultPrevented"),
+                JsValue::from(false),
+                false,
+                context,
+            )?;
+        }
+
         let res = (|| -> JsResult<()> {
             // Phase 1: Capturing Phase
             if path_list.len() > 1 {
@@ -1309,6 +1498,19 @@ pub fn dispatch_event(
 
             Ok(())
         })();
+
+        let _ = event_obj.set(
+            JsString::from("preventDefault"),
+            original_prevent_default,
+            false,
+            context,
+        );
+        let _ = event_obj.set(
+            JsString::from("stopImmediatePropagation"),
+            original_stop_immediate_propagation,
+            false,
+            context,
+        );
 
         event_obj.set(dispatch_flag_prop, JsValue::from(false), false, context)?;
         event_obj.set(event_phase_prop, JsValue::from(0), false, context)?;
@@ -2190,6 +2392,217 @@ mod tests {
             if (observed_detail_2 === null || observed_detail_2.payload !== "t1007-data2") {
                 throw new Error("observed_detail_2 incorrect");
             }
+            "OK";
+        }"#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "OK");
+    }
+
+    #[test]
+    fn test_t1018_event_propagation_phases_target_bubble_order() {
+        use crate::script::BoaHost;
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"{
+            const parent = new EventTarget();
+            const child = new EventTarget();
+            child.parentNode = parent;
+
+            const order = [];
+
+            parent.addEventListener('click', () => {
+                order.push('capture-parent');
+            }, { capture: true });
+
+            parent.addEventListener('click', () => {
+                order.push('bubble-parent');
+            }, { capture: false });
+
+            // On target itself: register bubble then capture. They must run in registration order regardless of capture flag!
+            child.addEventListener('click', () => {
+                order.push('target-bubble-first');
+            }, { capture: false });
+
+            child.addEventListener('click', () => {
+                order.push('target-capture-second');
+            }, { capture: true });
+
+            child.dispatchEvent(new Event('click', { bubbles: true }));
+            
+            const expected = ['capture-parent', 'target-bubble-first', 'target-capture-second', 'bubble-parent'];
+            if (order.length !== expected.length) throw new Error("order length mismatch");
+            for (let i = 0; i < expected.length; i++) {
+                if (order[i] !== expected[i]) throw new Error(`mismatch at index ${i}: expected ${expected[i]}, got ${order[i]}`);
+            }
+            "OK";
+        }"#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "OK");
+    }
+
+    #[test]
+    fn test_t1018_stop_propagation_vs_stop_immediate_propagation() {
+        use crate::script::BoaHost;
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"{
+            const parent = new EventTarget();
+            const child = new EventTarget();
+            child.parentNode = parent;
+
+            const stops = {
+                parent_bubble_called: false,
+                target_second_called: false,
+                immediate_parent_bubble_called: false,
+                immediate_target_second_called: false
+            };
+
+            // Scenario 1: stopPropagation()
+            child.addEventListener('test1', (e) => {
+                e.stopPropagation();
+            });
+            child.addEventListener('test1', (e) => {
+                stops.target_second_called = true;
+            });
+            parent.addEventListener('test1', (e) => {
+                stops.parent_bubble_called = true;
+            });
+            child.dispatchEvent(new Event('test1', { bubbles: true }));
+
+            // Scenario 2: stopImmediatePropagation()
+            child.addEventListener('test2', (e) => {
+                e.stopImmediatePropagation();
+            });
+            child.addEventListener('test2', (e) => {
+                stops.immediate_target_second_called = true;
+            });
+            parent.addEventListener('test2', (e) => {
+                stops.immediate_parent_bubble_called = true;
+            });
+            child.dispatchEvent(new Event('test2', { bubbles: true }));
+
+            if (stops.target_second_called !== true) throw new Error("target_second_called must be true");
+            if (stops.parent_bubble_called !== false) throw new Error("parent_bubble_called must be false");
+            if (stops.immediate_target_second_called !== false) throw new Error("immediate_target_second_called must be false");
+            if (stops.immediate_parent_bubble_called !== false) throw new Error("immediate_parent_bubble_called must be false");
+            "OK";
+        }"#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "OK");
+    }
+
+    #[test]
+    fn test_t1018_once_and_passive_options() {
+        use crate::script::BoaHost;
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"{
+            const parent = new EventTarget();
+            const child = new EventTarget();
+            child.parentNode = parent;
+
+            let parent_bubble_count = 0;
+            // Bubble once listener
+            parent.addEventListener('click', () => {
+                parent_bubble_count++;
+            }, { once: true, capture: false });
+
+            // Dispatched click on child. Click has both capture and bubble phases.
+            // During capture phase, the bubble once listener must NOT be removed from parent!
+            child.dispatchEvent(new Event('click', { bubbles: true }));
+            // It should have been called during bubbling.
+            const count1 = parent_bubble_count;
+
+            // Dispatch a second time. It should not be called again.
+            child.dispatchEvent(new Event('click', { bubbles: true }));
+            const count2 = parent_bubble_count;
+
+            // Passive listeners prevent preventDefault()
+            let passive_preventDefault_called = false;
+            let normal_preventDefault_called = false;
+
+            const target = new EventTarget();
+            const ev1 = new Event('test3');
+            target.addEventListener('test3', (e) => {
+                e.preventDefault();
+                passive_preventDefault_called = e.defaultPrevented;
+            }, { passive: true });
+            target.dispatchEvent(ev1);
+
+            const ev2 = new Event('test4');
+            target.addEventListener('test4', (e) => {
+                e.preventDefault();
+                normal_preventDefault_called = e.defaultPrevented;
+            }, { passive: false });
+            target.dispatchEvent(ev2);
+
+            if (count1 !== 1) throw new Error(`count1 mismatch: ${count1}`);
+            if (count2 !== 1) throw new Error(`count2 mismatch: ${count2}`);
+            if (passive_preventDefault_called !== false) throw new Error("passive preventDefault must have no effect");
+            if (normal_preventDefault_called !== true) throw new Error("normal preventDefault must have effect");
+            "OK";
+        }"#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "OK");
+    }
+
+    #[test]
+    fn test_t1018_custom_event_propagation_and_stops() {
+        use crate::script::BoaHost;
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"{
+            const parent = new EventTarget();
+            const child = new EventTarget();
+            child.parentNode = parent;
+
+            const stops = {
+                parent_called: false,
+                target_second_called: false
+            };
+
+            child.addEventListener('custom', (e) => {
+                e.stopImmediatePropagation();
+            });
+            child.addEventListener('custom', (e) => {
+                stops.target_second_called = true;
+            });
+            parent.addEventListener('custom', (e) => {
+                stops.parent_called = true;
+            });
+
+            const ev = new CustomEvent('custom', { bubbles: true });
+            const dispRes = child.dispatchEvent(ev);
+
+            let passive_preventDefault_called = false;
+            let normal_preventDefault_called = false;
+
+            child.addEventListener('custom_passive', (e) => {
+                e.preventDefault();
+                passive_preventDefault_called = e.defaultPrevented;
+            }, { passive: true });
+
+            child.addEventListener('custom_normal', (e) => {
+                e.preventDefault();
+                normal_preventDefault_called = e.defaultPrevented;
+            });
+
+            child.dispatchEvent(new CustomEvent('custom_passive'));
+            child.dispatchEvent(new CustomEvent('custom_normal'));
+
+            if (dispRes !== true) throw new Error("dispRes must be true");
+            if (stops.target_second_called !== false) throw new Error("target_second_called must be false for stopImmediatePropagation");
+            if (stops.parent_called !== false) throw new Error("parent_called must be false for stopImmediatePropagation");
+            if (passive_preventDefault_called !== false) throw new Error("passive_preventDefault_called must be false");
+            if (normal_preventDefault_called !== true) throw new Error("normal_preventDefault_called must be true");
             "OK";
         }"#;
 
