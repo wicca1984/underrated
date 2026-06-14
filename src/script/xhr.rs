@@ -117,22 +117,18 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     if (!allowedTypes.includes(valStr)) {
                         return;
                     }
-                    if (this._async === false && this._readyState !== 0 && this._readyState !== 1) {
-                        const err = new Error("InvalidAccessError");
-                        err.name = "InvalidAccessError";
-                        throw err;
-                    }
                     if (this._readyState === 3 || this._readyState === 4) {
                         const err = new Error("InvalidStateError");
                         err.name = "InvalidStateError";
                         throw err;
                     }
-                    this._responseType = valStr;
-                    if (this._async === false && this._responseType !== "") {
+                    // TODO(spec): Align with WHATWG standard: empty string and "text" are allowed responseTypes on synchronous requests.
+                    if (this._async === false && valStr !== "" && valStr !== "text") {
                         const err = new Error("InvalidAccessError");
                         err.name = "InvalidAccessError";
                         throw err;
                     }
+                    this._responseType = valStr;
                 }
 
                 get responseText() {
@@ -302,6 +298,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         throw err;
                     }
 
+                    const wasOpenedAlready = (this._readyState === 1);
                     this._method = methodStr;
                     this._url = String(url);
                     this._sendFlag = false;
@@ -313,6 +310,9 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._withCredentials = false;
                     this._responseType = "";
 
+                    if (wasOpenedAlready) {
+                        this._readyState = 0; // Reset temporarily to fire on transition 0 -> 1
+                    }
                     this._changeReadyState(1); // OPENED
                 }
 
@@ -680,12 +680,24 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         if (!line.trim()) continue;
                         const colonIdx = line.indexOf(":");
                         if (colonIdx === -1) continue;
-                        const key = line.substring(0, colonIdx).trim().toLowerCase();
+                        const key = line.substring(0, colonIdx).trim();
                         const val = line.substring(colonIdx + 1).trim();
-                        if (this._headers[key] !== undefined) {
-                            this._headers[key] += ", " + val;
+
+                        // Validate header name as a valid HTTP token
+                        if (!/^[!#$%&'*+\-.^_`|~a-zA-Z0-9]+$/.test(key)) {
+                            continue; // Skip invalid header name
+                        }
+
+                        // Validate header value
+                        if (!/^[\t\u0020-\u007E\u0080-\u00FF]*$/.test(val)) {
+                            continue; // Skip invalid header value
+                        }
+
+                        const lowerKey = key.toLowerCase();
+                        if (this._headers[lowerKey] !== undefined) {
+                            this._headers[lowerKey] += ", " + val;
                         } else {
-                            this._headers[key] = val;
+                            this._headers[lowerKey] = val;
                         }
                     }
                 }
@@ -1515,18 +1527,22 @@ mod tests {
                 const syncXhr = new XMLHttpRequest();
                 syncXhr.open("GET", "https://example.com", false);
                 
-                // setting responseType on sync XHR should throw InvalidAccessError
+                // setting responseType to json on sync XHR should throw InvalidAccessError
                 try {
                     syncXhr.responseType = "json";
                     throw new Error("setting responseType on sync XHR did not throw");
                 } catch (e) {
                     if (e.name !== "InvalidAccessError") throw e;
                 }
+                
+                // setting responseType to text on sync XHR should NOT throw (standard behavior)
                 try {
                     syncXhr.responseType = "text";
-                    throw new Error("setting responseType on sync XHR did not throw");
+                    if (syncXhr.responseType !== "text") {
+                        throw new Error("responseType was not set to text on sync XHR");
+                    }
                 } catch (e) {
-                    if (e.name !== "InvalidAccessError") throw e;
+                    throw new Error("setting responseType to text on sync XHR should NOT throw: " + e.message);
                 }
             } catch (e) {
                 globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
@@ -1858,11 +1874,14 @@ mod tests {
                     if (e.name !== "InvalidAccessError") throw e;
                 }
 
+                // Should NOT throw when setting to "text" (standard behavior)
                 try {
                     syncXhr1.responseType = "text";
-                    throw new Error("setting responseType to text on sync XHR should throw InvalidAccessError");
+                    if (syncXhr1.responseType !== "text") {
+                        throw new Error("responseType was not set to text on sync XHR");
+                    }
                 } catch (e) {
-                    if (e.name !== "InvalidAccessError") throw e;
+                    throw new Error("setting responseType to text on sync XHR should NOT throw: " + e.message);
                 }
 
                 // 2. Verify Set-Cookie and Set-Cookie2 case-insensitively return null in getResponseHeader
@@ -2073,6 +2092,127 @@ mod tests {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!(
                 "test_xhr_t1043_improvements JS assert failed: {}",
+                error_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_xhr_t1064_expanded_features() {
+        use crate::script::{BoaHost, ScriptHost};
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Verify readystatechange fires on multiple open() calls
+                const xhr1 = new XMLHttpRequest();
+                let eventCount = 0;
+                xhr1.onreadystatechange = () => {
+                    eventCount++;
+                };
+
+                xhr1.open("GET", "https://example.com");
+                if (eventCount !== 1) {
+                    throw new Error("Expected 1 readystatechange event on first open(), got: " + eventCount);
+                }
+
+                xhr1.open("GET", "https://example.com");
+                if (eventCount !== 2) {
+                    throw new Error("Expected 2 readystatechange events after second open(), got: " + eventCount);
+                }
+
+                // 2. Verify responseType handling on synchronous requests
+                const syncXhr = new XMLHttpRequest();
+                syncXhr.open("GET", "https://example.com", false); // sync = false
+
+                // text and empty string should NOT throw
+                syncXhr.responseType = "";
+                syncXhr.responseType = "text";
+
+                // other values should throw InvalidAccessError
+                try {
+                    syncXhr.responseType = "json";
+                    throw new Error("Setting json responseType on sync XHR should have thrown");
+                } catch (e) {
+                    if (e.name !== "InvalidAccessError") throw e;
+                }
+
+                try {
+                    syncXhr.responseType = "arraybuffer";
+                    throw new Error("Setting arraybuffer responseType on sync XHR should have thrown");
+                } catch (e) {
+                    if (e.name !== "InvalidAccessError") throw e;
+                }
+
+                // 3. Verify responseType setter works in HEADERS_RECEIVED state
+                const asyncXhr = new XMLHttpRequest();
+                asyncXhr.open("GET", "https://example.com");
+                // Simulate send and HEADERS_RECEIVED transition (state 2)
+                asyncXhr._status = 200;
+                asyncXhr._statusText = "OK";
+                asyncXhr._changeReadyState(2);
+
+                if (asyncXhr.readyState !== 2) {
+                    throw new Error("Expected state to be HEADERS_RECEIVED (2)");
+                }
+
+                // This should not throw in state 2
+                asyncXhr.responseType = "json";
+                if (asyncXhr.responseType !== "json") {
+                    throw new Error("Failed to set responseType to json in HEADERS_RECEIVED state");
+                }
+
+                // 4. Verify _parseResponseHeaders ignores invalid headers
+                const parserXhr = new XMLHttpRequest();
+                parserXhr.open("GET", "https://example.com");
+                
+                // Let's pass a mixture of valid and invalid headers
+                const rawHeaders = [
+                    "Content-Type: text/html",
+                    "Invalid@Header: bad-name",
+                    "My Header: spaces-in-name",
+                    "Valid-Header: \u0019control-char-in-value", // control char is invalid
+                    "X-Custom: safe-value"
+                ].join("\r\n") + "\r\n";
+
+                parserXhr._parseResponseHeaders(rawHeaders);
+                parserXhr.send();
+
+                if (parserXhr.getResponseHeader("content-type") !== "text/html") {
+                    throw new Error("Content-Type header was not parsed correctly");
+                }
+                if (parserXhr.getResponseHeader("Invalid@Header") !== null) {
+                    throw new Error("Header with invalid name should have been ignored");
+                }
+                if (parserXhr.getResponseHeader("My Header") !== null) {
+                    throw new Error("Header with space in name should have been ignored");
+                }
+                if (parserXhr.getResponseHeader("Valid-Header") !== null) {
+                    throw new Error("Header with invalid value (control character) should have been ignored");
+                }
+                if (parserXhr.getResponseHeader("x-custom") !== "safe-value") {
+                    throw new Error("X-Custom header was not parsed correctly");
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        host.eval(script).expect("Execution failed");
+
+        let error_val = host
+            .context
+            .eval(boa_engine::Source::from_bytes(
+                "globalThis.test_error".as_bytes(),
+            ))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!(
+                "test_xhr_t1064_expanded_features JS assert failed: {}",
                 error_str
             );
         }
