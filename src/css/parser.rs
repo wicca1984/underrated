@@ -569,6 +569,27 @@ impl<'a> Parser<'a> {
 
         let mut value_components: Vec<ComponentValue> = it.collect();
 
+        // Trim trailing semicolon and any trailing whitespaces after it (e.g. from direct parse_declaration input)
+        let mut semicolon_idx = None;
+        for (i, v) in value_components.iter().enumerate().rev() {
+            match v {
+                ComponentValue::Token(CssToken::Semicolon) => {
+                    semicolon_idx = Some(i);
+                    break;
+                }
+                ComponentValue::Token(CssToken::Whitespace) => {
+                    // continue looking back
+                }
+                _ => {
+                    // any other token means no trailing semicolon is present
+                    break;
+                }
+            }
+        }
+        if let Some(idx) = semicolon_idx {
+            value_components.truncate(idx);
+        }
+
         let mut important = false;
         let mut non_whitespace_indices = Vec::new();
         for (i, v) in value_components.iter().enumerate() {
@@ -590,6 +611,23 @@ impl<'a> Parser<'a> {
                 }
                 _ => {}
             }
+        }
+
+        // spec: https://www.w3.org/TR/css-syntax-3/#consume-declaration
+        // If any of the component values of the declaration is a <bad-string-token>, <bad-url-token>,
+        // <right-paren-token>, <right-bracket-token>, or <right-curly-bracket-token>, the declaration is invalid.
+        let is_invalid = value_components.iter().any(|v| {
+            matches!(
+                v,
+                ComponentValue::Token(CssToken::BadString)
+                    | ComponentValue::Token(CssToken::BadUrl)
+                    | ComponentValue::Token(CssToken::RightParen)
+                    | ComponentValue::Token(CssToken::RightBracket)
+                    | ComponentValue::Token(CssToken::RightBrace)
+            )
+        });
+        if is_invalid {
+            return None;
         }
 
         let is_custom_property = name.starts_with("--");
@@ -719,23 +757,68 @@ fn has_var_or_calc(components: &[ComponentValue]) -> bool {
     false
 }
 
+fn escape_css_identifier(ident: &str) -> String {
+    let chars: Vec<char> = ident.chars().collect();
+    let len = chars.len();
+    let mut result = String::new();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == '\0' {
+            result.push('\u{FFFD}');
+        } else if ('\u{0001}'..='\u{001F}').contains(&ch) || ch == '\u{007F}' {
+            result.push_str(&format!("\\{:x} ", ch as u32));
+        } else if ch.is_ascii_digit() {
+            if i == 0 || (i == 1 && chars[0] == '-') {
+                result.push_str(&format!("\\{:x} ", ch as u32));
+            } else {
+                result.push(ch);
+            }
+        } else if ch == '-' {
+            if len == 1 {
+                result.push_str("\\-");
+            } else {
+                result.push(ch);
+            }
+        } else if (ch as u32) < 0x0080 && ch != '_' && ch != '-' && !ch.is_ascii_alphanumeric() {
+            result.push('\\');
+            result.push(ch);
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn escape_hash_value(v: &str) -> String {
+    let mut s = String::new();
+    for c in v.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            s.push(c);
+        } else {
+            s.push('\\');
+            s.push(c);
+        }
+    }
+    s
+}
+
 fn serialize_component_values(values: &[ComponentValue]) -> String {
     let mut s = String::new();
     for val in values {
         match val {
             ComponentValue::Token(t) => match t {
-                CssToken::Ident(v) => s.push_str(v),
+                CssToken::Ident(v) => s.push_str(&escape_css_identifier(v)),
                 CssToken::Function(v) => {
-                    s.push_str(v);
+                    s.push_str(&escape_css_identifier(v));
                     s.push('(');
                 }
                 CssToken::AtKeyword(v) => {
                     s.push('@');
-                    s.push_str(v);
+                    s.push_str(&escape_css_identifier(v));
                 }
                 CssToken::Hash(v) => {
                     s.push('#');
-                    s.push_str(v);
+                    s.push_str(&escape_hash_value(v));
                 }
                 CssToken::String(v) => {
                     s.push('"');
@@ -749,7 +832,7 @@ fn serialize_component_values(values: &[ComponentValue]) -> String {
                 }
                 CssToken::Dimension { value, unit } => {
                     s.push_str(&value.to_string());
-                    s.push_str(unit);
+                    s.push_str(&escape_css_identifier(unit));
                 }
                 CssToken::Delim(c) => s.push(*c),
                 CssToken::Whitespace => s.push(' '),
@@ -772,7 +855,7 @@ fn serialize_component_values(values: &[ComponentValue]) -> String {
                 _ => {}
             },
             ComponentValue::Function { name, value } => {
-                s.push_str(name);
+                s.push_str(&escape_css_identifier(name));
                 s.push('(');
                 s.push_str(&serialize_component_values(value));
                 s.push(')');
@@ -794,7 +877,7 @@ fn serialize_component_values(values: &[ComponentValue]) -> String {
 
 fn serialize_declaration(decl: &Declaration) -> String {
     let mut s = String::new();
-    s.push_str(&decl.name);
+    s.push_str(&escape_css_identifier(&decl.name));
     s.push(':');
     s.push_str(&serialize_component_values(&decl.value));
     if decl.important {
@@ -817,7 +900,7 @@ fn serialize_rule(rule: &Rule) -> String {
         }
         Rule::At(at) => {
             s.push('@');
-            s.push_str(&at.name);
+            s.push_str(&escape_css_identifier(&at.name));
             if !at.prelude.is_empty() {
                 s.push(' ');
                 s.push_str(&serialize_component_values(&at.prelude));
@@ -1034,6 +1117,36 @@ pub fn parse_unicode_range(values: &[ComponentValue]) -> Option<Vec<(u32, u32)>>
     Some(ranges)
 }
 
+fn has_unescaped_ampersand(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let _ = chars.next();
+        } else if ch == '&' {
+            return true;
+        }
+    }
+    false
+}
+
+fn replace_unescaped_ampersand(c: &str, p: &str) -> String {
+    let mut result = String::new();
+    let mut chars = c.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            result.push(ch);
+            if let Some(next_ch) = chars.next() {
+                result.push(next_ch);
+            }
+        } else if ch == '&' {
+            result.push_str(p);
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 fn combine_selectors(parent: &str, child: &str) -> String {
     let parent = parent.trim();
     let child = child.trim();
@@ -1059,8 +1172,8 @@ fn combine_selectors(parent: &str, child: &str) -> String {
     let mut combined = Vec::new();
     for p in &parents {
         for c in &children {
-            if c.contains('&') {
-                combined.push(c.replace('&', p));
+            if has_unescaped_ampersand(c) {
+                combined.push(replace_unescaped_ampersand(c, p));
             } else {
                 combined.push(format!("{} {}", p, c));
             }
@@ -1620,6 +1733,124 @@ mod tests {
             );
         } else {
             panic!("Expected at-rule @media");
+        }
+    }
+
+    #[test]
+    fn test_css_parser_robustness_t1008() {
+        // 1. Error recovery on malformed declarations
+        // Semicolon padding and garbage recovery
+        let input_err = "
+            div {
+                color: red;;;
+                garbage-no-colon;
+                123: blue;
+                background: blue;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input_err);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            assert_eq!(rule.declarations.len(), 2);
+            assert_eq!(rule.declarations[0].name, "color");
+            assert_eq!(rule.declarations[1].name, "background");
+        } else {
+            panic!("Expected qualified rule");
+        }
+
+        // Direct parse_declaration with trailing semicolon and whitespace
+        let decl1 = parse_declaration("color: red;");
+        assert!(decl1.is_some());
+        assert_eq!(decl1.unwrap().name, "color");
+
+        let decl2 = parse_declaration("margin: 10px !important ; ");
+        assert!(decl2.is_some());
+        let d2 = decl2.unwrap();
+        assert_eq!(d2.name, "margin");
+        assert!(d2.important);
+
+        // 2. !important handling
+        // Whitespace between ! and important
+        let decl3 = parse_declaration("color: red !   important");
+        assert!(decl3.is_some());
+        let d3 = decl3.unwrap();
+        assert_eq!(d3.name, "color");
+        assert!(d3.important);
+
+        // Custom property with !important
+        let custom_decl = parse_declaration("--my-color: blue !important");
+        assert!(custom_decl.is_some());
+        let cd = custom_decl.unwrap();
+        assert_eq!(cd.name, "--my-color");
+        assert!(cd.important);
+        // check that !important is stripped from custom property value
+        let val_str = serialize_component_values(&cd.value);
+        assert!(!val_str.contains("important"));
+        assert!(val_str.contains("blue"));
+
+        // 3. Comment/whitespace tokenization edge cases
+        let comment_input = "
+            div {
+                color/* comment */:/* comment */red;
+            }
+            /* trailing unclosed comment
+        ";
+        let stylesheet_comment = parse_stylesheet(comment_input);
+        assert_eq!(stylesheet_comment.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet_comment.rules[0] {
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule");
+        }
+
+        // 4. Escaped identifiers and combine_selectors with escaped ampersand
+        let escaped_input = "
+            div {
+                \\&:hover {
+                    color: green;
+                }
+            }
+        ";
+        let stylesheet_escaped = parse_stylesheet(escaped_input);
+        // The nested rule should combined into "div \&:hover", NOT "div:hover"
+        assert_eq!(stylesheet_escaped.rules.len(), 2);
+        if let Rule::Qualified(rule) = &stylesheet_escaped.rules[1] {
+            let prelude_str = serialize_component_values(&rule.prelude);
+            assert!(prelude_str.contains("\\&"));
+            assert!(!prelude_str.contains("div:hover"));
+        } else {
+            panic!("Expected qualified rule");
+        }
+
+        // 5. At-rule prelude parsing
+        let at_input = "@media (min-width: 100px), screen { div { color: red; } }";
+        let stylesheet_at = parse_stylesheet(at_input);
+        assert_eq!(stylesheet_at.rules.len(), 1);
+        if let Rule::At(rule) = &stylesheet_at.rules[0] {
+            assert_eq!(rule.name, "media");
+            let prelude_str = serialize_component_values(&rule.prelude);
+            assert_eq!(prelude_str.trim(), "(min-width: 100px), screen");
+        } else {
+            panic!("Expected at-rule");
+        }
+
+        // 6. Custom-property value preservation
+        let custom_preserve = "
+            div {
+                --complex: var(--another, { color: red; });
+            }
+        ";
+        let stylesheet_cp = parse_stylesheet(custom_preserve);
+        assert_eq!(stylesheet_cp.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet_cp.rules[0] {
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "--complex");
+            let val_str = serialize_component_values(&rule.declarations[0].value);
+            assert!(val_str.contains("var"));
+            assert!(val_str.contains("color: red;"));
+        } else {
+            panic!("Expected qualified rule");
         }
     }
 }
