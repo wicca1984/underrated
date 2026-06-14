@@ -234,9 +234,29 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
     },
     PropertyMetadata {
+        name: "hyphenate-limit-chars",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "ruby-position",
         inherited: true,
         initial: "alternate",
+    },
+    PropertyMetadata {
+        name: "ruby-align",
+        inherited: true,
+        initial: "space-around",
+    },
+    PropertyMetadata {
+        name: "math-style",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "math-depth",
+        inherited: true,
+        initial: "0",
     },
     PropertyMetadata {
         name: "line-break",
@@ -267,6 +287,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         name: "text-emphasis-color",
         inherited: true,
         initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "text-emphasis-style",
+        inherited: true,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "text-emphasis-position",
+        inherited: true,
+        initial: "over right",
     },
     PropertyMetadata {
         name: "text-justify",
@@ -448,6 +478,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         name: "isolation",
         inherited: false,
         initial: "auto",
+    },
+    PropertyMetadata {
+        name: "initial-letter",
+        inherited: false,
+        initial: "normal",
     },
     PropertyMetadata {
         name: "resize",
@@ -1300,6 +1335,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "text-emphasis",
+        longhands: &["text-emphasis-style", "text-emphasis-color"],
+    },
+    ShorthandExpansion {
         name: "transition",
         longhands: &[
             "transition-property",
@@ -2057,6 +2096,84 @@ mod tests {
         assert_eq!(scroll_timeline_axis.name, "scroll-timeline-axis");
         assert!(!scroll_timeline_axis.inherited);
         assert_eq!(scroll_timeline_axis.initial, "block");
+    }
+
+    #[test]
+    fn test_property_text_emphasis_style_t0757() {
+        let prop = lookup("text-emphasis-style");
+        assert!(prop.is_some());
+        let prop = prop.unwrap();
+        assert_eq!(prop.name, "text-emphasis-style");
+        assert!(prop.inherited);
+        assert_eq!(prop.initial, "none");
+    }
+
+    #[test]
+    fn test_property_text_emphasis_position_t0757() {
+        let prop = lookup("text-emphasis-position");
+        assert!(prop.is_some());
+        let prop = prop.unwrap();
+        assert_eq!(prop.name, "text-emphasis-position");
+        assert!(prop.inherited);
+        assert_eq!(prop.initial, "over right");
+    }
+
+    #[test]
+    fn test_property_math_style_t0757() {
+        let prop = lookup("math-style");
+        assert!(prop.is_some());
+        let prop = prop.unwrap();
+        assert_eq!(prop.name, "math-style");
+        assert!(prop.inherited);
+        assert_eq!(prop.initial, "normal");
+    }
+
+    #[test]
+    fn test_property_math_depth_t0757() {
+        let prop = lookup("math-depth");
+        assert!(prop.is_some());
+        let prop = prop.unwrap();
+        assert_eq!(prop.name, "math-depth");
+        assert!(prop.inherited);
+        assert_eq!(prop.initial, "0");
+    }
+
+    #[test]
+    fn test_property_ruby_align_t0757() {
+        let prop = lookup("ruby-align");
+        assert!(prop.is_some());
+        let prop = prop.unwrap();
+        assert_eq!(prop.name, "ruby-align");
+        assert!(prop.inherited);
+        assert_eq!(prop.initial, "space-around");
+    }
+
+    #[test]
+    fn test_property_hyphenate_limit_chars_t0757() {
+        let prop = lookup("hyphenate-limit-chars");
+        assert!(prop.is_some());
+        let prop = prop.unwrap();
+        assert_eq!(prop.name, "hyphenate-limit-chars");
+        assert!(prop.inherited);
+        assert_eq!(prop.initial, "auto");
+    }
+
+    #[test]
+    fn test_property_initial_letter_t0757() {
+        let prop = lookup("initial-letter");
+        assert!(prop.is_some());
+        let prop = prop.unwrap();
+        assert_eq!(prop.name, "initial-letter");
+        assert!(!prop.inherited);
+        assert_eq!(prop.initial, "normal");
+    }
+
+    #[test]
+    fn test_property_text_emphasis_shorthand_t0757() {
+        let lh = shorthand_longhands("text-emphasis");
+        assert!(lh.is_some());
+        let lh = lh.unwrap();
+        assert_eq!(lh, &["text-emphasis-style", "text-emphasis-color"][..]);
     }
 
     #[test]
