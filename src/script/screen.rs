@@ -97,7 +97,8 @@ fn screen_orientation_unlock(
 /// - `availTop` (returns 0)
 /// - `left` (returns 0)
 /// - `top` (returns 0)
-/// - `orientation` (returns a ScreenOrientation-like object)
+/// - `isExtended` (returns false)
+/// - `orientation` (returns a ScreenOrientation-like object inheriting from EventTarget)
 pub fn create_screen(context: &mut Context) -> JsObject {
     let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
 
@@ -125,6 +126,16 @@ pub fn create_screen(context: &mut Context) -> JsObject {
         )
         .build();
 
+    if let Ok(event_target_val) = context
+        .global_object()
+        .get(JsString::from("EventTarget"), context)
+        && let Some(event_target_obj) = event_target_val.as_object()
+        && let Ok(proto_val) = event_target_obj.get(JsString::from("prototype"), context)
+        && let Some(proto_obj) = proto_val.as_object()
+    {
+        let _ = orientation.set_prototype(Some(proto_obj.clone()));
+    }
+
     ObjectInitializer::new(context)
         .property(JsString::from("width"), 1280, Attribute::all())
         .property(JsString::from("height"), 720, Attribute::all())
@@ -136,6 +147,7 @@ pub fn create_screen(context: &mut Context) -> JsObject {
         .property(JsString::from("availTop"), 0, Attribute::all())
         .property(JsString::from("left"), 0, Attribute::all())
         .property(JsString::from("top"), 0, Attribute::all())
+        .property(JsString::from("isExtended"), false, ro)
         .property(JsString::from("orientation"), orientation, ro)
         .build()
 }
@@ -143,6 +155,7 @@ pub fn create_screen(context: &mut Context) -> JsObject {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::script::event::{Event, EventTarget};
     use boa_engine::Source;
 
     #[test]
@@ -163,7 +176,8 @@ mod tests {
             screen.availLeft === 0 &&
             screen.availTop === 0 &&
             screen.left === 0 &&
-            screen.top === 0
+            screen.top === 0 &&
+            screen.isExtended === false
             "#,
         );
         let res = context.eval(source).unwrap();
@@ -173,6 +187,9 @@ mod tests {
     #[test]
     fn test_screen_orientation_properties() {
         let mut context = Context::default();
+        context.register_global_class::<EventTarget>().unwrap();
+        context.register_global_class::<Event>().unwrap();
+
         let screen = create_screen(&mut context);
         let _ =
             context.register_global_property(JsString::from("screen"), screen, Attribute::all());
@@ -183,7 +200,8 @@ mod tests {
             screen.orientation.angle === 0 &&
             screen.orientation.onchange === null &&
             (screen.orientation.lock("landscape") instanceof Promise) &&
-            screen.orientation.unlock() === undefined
+            screen.orientation.unlock() === undefined &&
+            screen.orientation instanceof EventTarget
             "#,
         );
         let res = context.eval(source).unwrap();
@@ -198,5 +216,19 @@ mod tests {
         );
         let res_assign = context.eval(source_assign).unwrap();
         assert_eq!(res_assign.as_boolean(), Some(true));
+
+        // Test EventTarget behavior: adding an event listener and dispatching an event
+        let source_event = Source::from_bytes(
+            r#"
+            let called = false;
+            screen.orientation.addEventListener("change", () => {
+                called = true;
+            });
+            screen.orientation.dispatchEvent(new Event("change"));
+            called
+            "#,
+        );
+        let res_event = context.eval(source_event).unwrap();
+        assert_eq!(res_event.as_boolean(), Some(true));
     }
 }
