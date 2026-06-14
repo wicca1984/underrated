@@ -256,12 +256,61 @@ pub fn setup_storage(context: &mut Context) {
             if (typeof window.Event === 'function') {
                 class StorageEvent extends window.Event {
                     constructor(type, eventInitDict = {}) {
+                        if (arguments.length < 1) {
+                            throw new TypeError("Failed to construct 'StorageEvent': 1 argument required, but only 0 present.");
+                        }
                         super(type, eventInitDict);
-                        this.key = eventInitDict.key !== undefined ? eventInitDict.key : null;
-                        this.oldValue = eventInitDict.oldValue !== undefined ? eventInitDict.oldValue : null;
-                        this.newValue = eventInitDict.newValue !== undefined ? eventInitDict.newValue : null;
-                        this.url = eventInitDict.url !== undefined ? String(eventInitDict.url) : "";
-                        this.storageArea = eventInitDict.storageArea !== undefined ? eventInitDict.storageArea : null;
+                        this._key = eventInitDict.key !== undefined ? eventInitDict.key : null;
+                        this._oldValue = eventInitDict.oldValue !== undefined ? eventInitDict.oldValue : null;
+                        this._newValue = eventInitDict.newValue !== undefined ? eventInitDict.newValue : null;
+                        this._url = eventInitDict.url !== undefined ? String(eventInitDict.url) : "";
+                        this._storageArea = eventInitDict.storageArea !== undefined ? eventInitDict.storageArea : null;
+                    }
+
+                    get key() {
+                        if (!(this instanceof StorageEvent)) {
+                            throw new TypeError("Failed to read the 'key' property from 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
+                        }
+                        return this._key;
+                    }
+
+                    get oldValue() {
+                        if (!(this instanceof StorageEvent)) {
+                            throw new TypeError("Failed to read the 'oldValue' property from 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
+                        }
+                        return this._oldValue;
+                    }
+
+                    get newValue() {
+                        if (!(this instanceof StorageEvent)) {
+                            throw new TypeError("Failed to read the 'newValue' property from 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
+                        }
+                        return this._newValue;
+                    }
+
+                    get url() {
+                        if (!(this instanceof StorageEvent)) {
+                            throw new TypeError("Failed to read the 'url' property from 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
+                        }
+                        return this._url;
+                    }
+
+                    get storageArea() {
+                        if (!(this instanceof StorageEvent)) {
+                            throw new TypeError("Failed to read the 'storageArea' property from 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
+                        }
+                        return this._storageArea;
+                    }
+
+                    initStorageEvent(type, bubbles = false, cancelable = false, key = null, oldValue = null, newValue = null, url = "", storageArea = null) {
+                        if (!(this instanceof StorageEvent)) {
+                            throw new TypeError("Failed to execute 'initStorageEvent' on 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
+                        }
+                        this._key = key;
+                        this._oldValue = oldValue;
+                        this._newValue = newValue;
+                        this._url = String(url);
+                        this._storageArea = storageArea;
                     }
                 }
 
@@ -309,7 +358,10 @@ fn throw_dom_exception(name: &str, message: &str, context: &mut Context) -> JsEr
 fn get_storage_size(store: &HashMap<String, String>) -> usize {
     store
         .iter()
-        .map(|(k, v)| k.chars().count() + v.chars().count())
+        .map(|(k, v)| {
+            k.chars().map(|c| c.len_utf16()).sum::<usize>()
+                + v.chars().map(|c| c.len_utf16()).sum::<usize>()
+        })
         .sum()
 }
 
@@ -345,9 +397,13 @@ fn storage_set_item(
             let current_size = get_storage_size(&s);
             let old_size = s
                 .get(&key)
-                .map(|v| key.chars().count() + v.chars().count())
+                .map(|v| {
+                    key.chars().map(|c| c.len_utf16()).sum::<usize>()
+                        + v.chars().map(|c| c.len_utf16()).sum::<usize>()
+                })
                 .unwrap_or(0);
-            let new_size = key.chars().count() + value.chars().count();
+            let new_size = key.chars().map(|c| c.len_utf16()).sum::<usize>()
+                + value.chars().map(|c| c.len_utf16()).sum::<usize>();
             if current_size - old_size + new_size > quota {
                 quota_exceeded = true;
             } else {
@@ -360,9 +416,13 @@ fn storage_set_item(
             let current_size = get_storage_size(&s);
             let old_size = s
                 .get(&key)
-                .map(|v| key.chars().count() + v.chars().count())
+                .map(|v| {
+                    key.chars().map(|c| c.len_utf16()).sum::<usize>()
+                        + v.chars().map(|c| c.len_utf16()).sum::<usize>()
+                })
                 .unwrap_or(0);
-            let new_size = key.chars().count() + value.chars().count();
+            let new_size = key.chars().map(|c| c.len_utf16()).sum::<usize>()
+                + value.chars().map(|c| c.len_utf16()).sum::<usize>();
             if current_size - old_size + new_size > quota {
                 quota_exceeded = true;
             } else {
@@ -1013,6 +1073,100 @@ mod tests {
             if (ev2.newValue !== 'bob') throw 'error11';
             if (ev2.url !== 'http://example.com/') throw 'error12';
             if (ev2.storageArea !== localStorage) throw 'error13';
+        "#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_storage_event_compliance_edge_cases() {
+        let mut host = new_host();
+
+        assert!(
+            host.eval(
+                r#"
+            (function() {
+                // 1. Missing type argument throws TypeError
+                let constructorThrew = false;
+                try {
+                    new StorageEvent();
+                } catch (e) {
+                    if (e instanceof TypeError && e.message.indexOf("1 argument required") !== -1) {
+                        constructorThrew = true;
+                    }
+                }
+                if (!constructorThrew) throw new Error("Expected StorageEvent constructor to throw TypeError on missing type argument");
+
+                // 2. Prototype properties are accessors (getters), not plain data values
+                const desc = Object.getOwnPropertyDescriptor(StorageEvent.prototype, 'key');
+                if (!desc || typeof desc.get !== 'function') {
+                    throw new Error("Expected StorageEvent.prototype.key to be an accessor property with a getter");
+                }
+                if (desc.set !== undefined) {
+                    throw new Error("Expected StorageEvent.prototype.key setter to be undefined");
+                }
+
+                // 3. Receiver validation (getters throw TypeError when called on non-StorageEvent)
+                const ev = new StorageEvent('storage', { key: 'foo' });
+                const plainObj = {};
+                let getterThrew = false;
+                try {
+                    desc.get.call(plainObj);
+                } catch (e) {
+                    if (e instanceof TypeError && e.message.indexOf("Receiver does not implement interface") !== -1) {
+                        getterThrew = true;
+                    }
+                }
+                if (!getterThrew) throw new Error("Expected StorageEvent.prototype.key getter to throw TypeError on non-StorageEvent receiver");
+
+                // 4. initStorageEvent exists and initializes correctly
+                if (typeof StorageEvent.prototype.initStorageEvent !== 'function') {
+                    throw new Error("Expected initStorageEvent to be a function on StorageEvent.prototype");
+                }
+                const evInit = new StorageEvent('storage');
+                evInit.initStorageEvent('storage', false, false, 'initKey', 'oldVal', 'newVal', 'http://init.url/', localStorage);
+                if (evInit.key !== 'initKey') throw new Error("initStorageEvent failed to set key");
+                if (evInit.oldValue !== 'oldVal') throw new Error("initStorageEvent failed to set oldValue");
+                if (evInit.newValue !== 'newVal') throw new Error("initStorageEvent failed to set newValue");
+                if (evInit.url !== 'http://init.url/') throw new Error("initStorageEvent failed to set url");
+                if (evInit.storageArea !== localStorage) throw new Error("initStorageEvent failed to set storageArea");
+            })()
+        "#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_storage_quota_utf16_compliance() {
+        let mut host = new_host();
+
+        // Set quota limit to 6 characters (measured in UTF-16 code units)
+        set_storage_quota(6);
+
+        // Key: 'abc' (3 UTF-16 units)
+        // Value: 'de' (2 UTF-16 units)
+        // Total: 5 units <= 6 quota (Fits!)
+        assert!(host.eval("localStorage.setItem('abc', 'de')").is_ok());
+
+        // Now change value to 'de🚀'
+        // '🚀' is U+1F680, which is represented as surrogate pairs in UTF-16 (length 2 code units)
+        // Key: 'abc' (3 units)
+        // Value: 'de🚀' (4 units)
+        // Total: 7 units > 6 quota (Should throw QuotaExceededError!)
+        assert!(
+            host.eval(
+                r#"
+            let threwQuota = false;
+            try {
+                localStorage.setItem('abc', 'de🚀');
+            } catch (e) {
+                if (e instanceof DOMException && e.name === "QuotaExceededError") {
+                    threwQuota = true;
+                }
+            }
+            if (!threwQuota) throw new Error("Expected QuotaExceededError because of surrogate pair UTF-16 length");
         "#
             )
             .is_ok()
