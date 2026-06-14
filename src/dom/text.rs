@@ -719,4 +719,65 @@ mod tests {
         assert_eq!(dom.whole_text(comment_node), None);
         assert_eq!(dom.whole_text(element_node), None);
     }
+
+    #[test]
+    fn test_t0871_character_data_mutation_api() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+
+        // 1. data getter/setter
+        assert_eq!(dom.character_data(text_node), Some("hello".into()));
+        assert_eq!(dom.set_character_data(text_node, "world"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("world".into()));
+
+        // 2. length on ASCII and non-BMP text (e.g. an emoji counts as 2 UTF-16 units)
+        let ascii_node = dom.create_node(NodeData::Text("abc".into()));
+        assert_eq!(dom.character_data_len(ascii_node), Some(3));
+        let emoji_node = dom.create_node(NodeData::Text("🚀".into())); // Rocket emoji is U+1F680 (surrogate pair, length 2)
+        assert_eq!(dom.character_data_len(emoji_node), Some(2));
+        let mixed_node = dom.create_node(NodeData::Text("a🚀b".into()));
+        assert_eq!(dom.character_data_len(mixed_node), Some(4));
+
+        // 3. substringData normal + clamped + out-of-range error
+        assert_eq!(dom.substring_data(mixed_node, 0, 1), Ok("a".into()));
+        assert_eq!(dom.substring_data(mixed_node, 1, 2), Ok("🚀".into()));
+        assert_eq!(dom.substring_data(mixed_node, 3, 1), Ok("b".into()));
+        // clamped count
+        assert_eq!(dom.substring_data(mixed_node, 1, 100), Ok("🚀b".into()));
+        // out-of-range error (IndexSize)
+        assert_eq!(
+            dom.substring_data(mixed_node, 5, 1),
+            Err(DomError::IndexSize)
+        );
+
+        // 4. appendData
+        let append_node = dom.create_node(NodeData::Text("foo".into()));
+        assert_eq!(dom.append_data(append_node, "bar"), Ok(()));
+        assert_eq!(dom.character_data(append_node), Some("foobar".into()));
+
+        // 5. insertData at start, middle, and end
+        let insert_node = dom.create_node(NodeData::Text("ace".into()));
+        // insert at start
+        assert_eq!(dom.insert_data(insert_node, 0, "1"), Ok(()));
+        assert_eq!(dom.character_data(insert_node), Some("1ace".into()));
+        // insert in middle
+        assert_eq!(dom.insert_data(insert_node, 2, "b"), Ok(()));
+        assert_eq!(dom.character_data(insert_node), Some("1abce".into()));
+        // insert at end
+        assert_eq!(dom.insert_data(insert_node, 5, "2"), Ok(()));
+        assert_eq!(dom.character_data(insert_node), Some("1abce2".into()));
+
+        // 6. deleteData with clamping
+        let delete_node = dom.create_node(NodeData::Text("abcdef".into()));
+        assert_eq!(dom.delete_data(delete_node, 2, 2), Ok(())); // delete "cd"
+        assert_eq!(dom.character_data(delete_node), Some("abef".into()));
+        // clamping count past end
+        assert_eq!(dom.delete_data(delete_node, 2, 100), Ok(())); // delete "ef" (clamped count)
+        assert_eq!(dom.character_data(delete_node), Some("ab".into()));
+
+        // 7. replaceData
+        let replace_node = dom.create_node(NodeData::Text("abcde".into()));
+        assert_eq!(dom.replace_data(replace_node, 1, 3, "xyz"), Ok(())); // replace "bcd" with "xyz"
+        assert_eq!(dom.character_data(replace_node), Some("axyze".into()));
+    }
 }
