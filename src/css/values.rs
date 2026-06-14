@@ -4275,6 +4275,12 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("oklch") {
                 return parse_oklch_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("lab") {
+                return parse_lab_function(value).map(CssValue::Color);
+            }
+            if name.eq_ignore_ascii_case("lch") {
+                return parse_lch_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -4702,6 +4708,198 @@ fn linear_srgb_to_srgb(c: f64) -> u8 {
         1.055 * c.powf(1.0 / 2.4) - 0.055
     };
     (s * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+fn parse_lab_function(components: &[ComponentValue]) -> Option<Color> {
+    enum LabArg {
+        Number(f64),
+        Percentage(f64),
+        Angle(f64),
+    }
+
+    let mut args = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(LabArg::Number(*v)),
+            ComponentValue::Token(CssToken::Percentage(v)) => args.push(LabArg::Percentage(*v)),
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let deg = match unit.to_ascii_lowercase().as_str() {
+                    "deg" => *value,
+                    "rad" => *value * 180.0 / std::f64::consts::PI,
+                    "grad" => *value * 0.9,
+                    "turn" => *value * 360.0,
+                    _ => return None,
+                };
+                args.push(LabArg::Angle(deg));
+            }
+            _ => return None,
+        }
+    }
+
+    if args.len() != 3 && args.len() != 4 {
+        return None;
+    }
+
+    // L (lightness): Number [0,100] or Percentage (100% = 100). Clamp L >= 0.
+    let l_val = match args[0] {
+        LabArg::Number(v) => v,
+        LabArg::Percentage(v) => v,
+        _ => return None,
+    };
+    let l_val = l_val.max(0.0);
+
+    // a: Number roughly [-125, 125] or Percentage (100% = 125, -100% = -125 -> (v / 100.0) * 125.0).
+    let a_val = match args[1] {
+        LabArg::Number(v) => v,
+        LabArg::Percentage(v) => (v / 100.0) * 125.0,
+        _ => return None,
+    };
+
+    // b: Number roughly [-125, 125] or Percentage (100% = 125, -100% = -125 -> (v / 100.0) * 125.0).
+    let b_val = match args[2] {
+        LabArg::Number(v) => v,
+        LabArg::Percentage(v) => (v / 100.0) * 125.0,
+        _ => return None,
+    };
+
+    // alpha: Number [0,1] or Percentage. Default 1.0.
+    let alpha = if args.len() == 4 {
+        let alpha_val = match args[3] {
+            LabArg::Number(v) => v,
+            LabArg::Percentage(v) => v / 100.0,
+            _ => return None,
+        };
+        (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8
+    } else {
+        255
+    };
+
+    let color = lab_to_color(l_val, a_val, b_val, alpha);
+    Some(color)
+}
+
+fn parse_lch_function(components: &[ComponentValue]) -> Option<Color> {
+    enum LchArg {
+        Number(f64),
+        Percentage(f64),
+        Angle(f64),
+    }
+
+    let mut args = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(LchArg::Number(*v)),
+            ComponentValue::Token(CssToken::Percentage(v)) => args.push(LchArg::Percentage(*v)),
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let deg = match unit.to_ascii_lowercase().as_str() {
+                    "deg" => *value,
+                    "rad" => *value * 180.0 / std::f64::consts::PI,
+                    "grad" => *value * 0.9,
+                    "turn" => *value * 360.0,
+                    _ => return None,
+                };
+                args.push(LchArg::Angle(deg));
+            }
+            _ => return None,
+        }
+    }
+
+    if args.len() != 3 && args.len() != 4 {
+        return None;
+    }
+
+    // L (lightness): Number [0,100] or Percentage (100% = 100). Clamp L >= 0.
+    let l_val = match args[0] {
+        LchArg::Number(v) => v,
+        LchArg::Percentage(v) => v,
+        _ => return None,
+    };
+    let l_val = l_val.max(0.0);
+
+    // C (chroma): Number >= 0 or Percentage (100% = 150 -> percent/100*150); clamp C >= 0.
+    let c_val = match args[1] {
+        LchArg::Number(v) => v,
+        LchArg::Percentage(v) => (v / 100.0) * 150.0,
+        _ => return None,
+    };
+    let c_val = c_val.max(0.0);
+
+    // H (hue): Number (degrees) or Angle. Normalize ((H % 360) + 360) % 360.
+    let h_deg = match args[2] {
+        LchArg::Number(v) => v,
+        LchArg::Angle(v) => v,
+        _ => return None,
+    };
+    let h_deg = ((h_deg % 360.0) + 360.0) % 360.0;
+
+    // alpha: Number [0,1] or Percentage. Default 1.0.
+    let alpha = if args.len() == 4 {
+        let alpha_val = match args[3] {
+            LchArg::Number(v) => v,
+            LchArg::Percentage(v) => v / 100.0,
+            _ => return None,
+        };
+        (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8
+    } else {
+        255
+    };
+
+    let h_rad = h_deg.to_radians();
+    let a_val = c_val * h_rad.cos();
+    let b_val = c_val * h_rad.sin();
+
+    let color = lab_to_color(l_val, a_val, b_val, alpha);
+    Some(color)
+}
+
+fn lab_to_color(l_val: f64, a_val: f64, b_val: f64, alpha: u8) -> Color {
+    let fy = (l_val + 16.0) / 116.0;
+    let fx = fy + a_val / 500.0;
+    let fz = fy - b_val / 200.0;
+
+    let finv = |t: f64| {
+        let d = 6.0 / 29.0;
+        if t > d {
+            t * t * t
+        } else {
+            3.0 * d * d * (t - 4.0 / 29.0)
+        }
+    };
+
+    let xr = finv(fx);
+    let yr = finv(fy);
+    let zr = finv(fz);
+
+    let x = xr * 0.96422;
+    let y = yr * 1.0;
+    let z = zr * 0.82521;
+
+    // Bradford-adapted D50 XYZ -> linear sRGB:
+    let r_lin = 3.1338561 * x - 1.6168667 * y - 0.4906146 * z;
+    let g_lin = -0.9787684 * x + 1.9161415 * y + 0.0334540 * z;
+    let b_lin = 0.0719453 * x - 0.2289914 * y + 1.4052427 * z;
+
+    let gamma_encode = |c: f64| {
+        let c = c.clamp(0.0, 1.0);
+        let s = if c <= 0.0031308 {
+            12.92 * c
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+
+    let r = gamma_encode(r_lin);
+    let g = gamma_encode(g_lin);
+    let b = gamma_encode(b_lin);
+
+    Color::Rgba(r, g, b, alpha)
 }
 
 fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
@@ -5745,6 +5943,76 @@ mod tests {
         // Angle unit for hue in oklch: oklch(1 0 180deg)
         assert_eq!(
             parse("oklch(1 0 180deg)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+    }
+
+    #[test]
+    fn test_parse_color_lab_and_lch() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // lab(0 0 0) -> black
+        assert_eq!(
+            parse("lab(0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // lab(100 0 0) -> white (255,255,255,255)
+        assert_eq!(
+            parse("lab(100 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // lab(100% 0 0) -> white
+        assert_eq!(
+            parse("lab(100% 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // lch(0 0 0) -> black
+        assert_eq!(
+            parse("lch(0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // lch(100 0 0) -> white
+        assert_eq!(
+            parse("lch(100 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // lab(100 0 0 / 0.5) -> alpha within +/-1 of 128 (round(0.5*255) = 128)
+        let alpha_lab = parse("lab(100 0 0 / 0.5)");
+        match alpha_lab {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 255);
+                assert_eq!(b, 255);
+                assert!((alpha as i32 - 128).abs() <= 1);
+            }
+            _ => panic!("Expected lab(100 0 0 / 0.5) to parse with alpha"),
+        }
+
+        // Chromatic input: lch(52.2 72.2 50.0) -> all channels in [0, 255]
+        let chromatic_lch = parse("lch(52.2 72.2 50.0)");
+        match chromatic_lch {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(alpha, 255);
+                let _ = (r, g, b);
+            }
+            _ => panic!("Expected lch(52.2 72.2 50.0) to parse as a color"),
+        }
+
+        // Percentage for chroma and a/b
+        assert_eq!(
+            parse("lab(100% 0% 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+        assert_eq!(
+            parse("lch(100% 0% 0deg)"),
             Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
         );
     }
