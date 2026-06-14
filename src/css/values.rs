@@ -4700,6 +4700,34 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 || lower_unit == "ch"
                 || lower_unit == "vmin"
                 || lower_unit == "vmax"
+                || lower_unit == "svw"
+                || lower_unit == "svh"
+                || lower_unit == "lvw"
+                || lower_unit == "lvh"
+                || lower_unit == "dvw"
+                || lower_unit == "dvh"
+                || lower_unit == "svmin"
+                || lower_unit == "svmax"
+                || lower_unit == "lvmin"
+                || lower_unit == "lvmax"
+                || lower_unit == "dvmin"
+                || lower_unit == "dvmax"
+                || lower_unit == "vi"
+                || lower_unit == "svi"
+                || lower_unit == "lvi"
+                || lower_unit == "dvi"
+                || lower_unit == "vb"
+                || lower_unit == "svb"
+                || lower_unit == "lvb"
+                || lower_unit == "dvb"
+                || lower_unit == "rex"
+                || lower_unit == "rch"
+                || lower_unit == "ric"
+                || lower_unit == "rcap"
+                || lower_unit == "ic"
+                || lower_unit == "cap"
+                || lower_unit == "lh"
+                || lower_unit == "rlh"
             {
                 return Some(CssValue::Keyword(format!("{}{}", value, lower_unit)));
             }
@@ -5652,13 +5680,45 @@ fn evaluate_color_component(
                 None
             }
         }
-        ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("calc") => {
+        ComponentValue::Function { name, value }
+            if name.eq_ignore_ascii_case("calc")
+                || name.eq_ignore_ascii_case("min")
+                || name.eq_ignore_ascii_case("max")
+                || name.eq_ignore_ascii_case("clamp")
+                || name.eq_ignore_ascii_case("round")
+                || name.eq_ignore_ascii_case("mod")
+                || name.eq_ignore_ascii_case("rem")
+                || name.eq_ignore_ascii_case("abs")
+                || name.eq_ignore_ascii_case("sign")
+                || name.eq_ignore_ascii_case("sin")
+                || name.eq_ignore_ascii_case("cos")
+                || name.eq_ignore_ascii_case("tan")
+                || name.eq_ignore_ascii_case("asin")
+                || name.eq_ignore_ascii_case("acos")
+                || name.eq_ignore_ascii_case("atan")
+                || name.eq_ignore_ascii_case("atan2")
+                || name.eq_ignore_ascii_case("pow")
+                || name.eq_ignore_ascii_case("sqrt")
+                || name.eq_ignore_ascii_case("hypot")
+                || name.eq_ignore_ascii_case("log")
+                || name.eq_ignore_ascii_case("exp") =>
+        {
             let substituted = substitute_color_variables(value, variables);
             let vars_map = std::collections::HashMap::new();
-            if let Some(css_val) =
+            let css_val = if name.eq_ignore_ascii_case("calc") {
                 crate::css::resolve::evaluate_calc(&substituted, 16.0, 1000.0, 1000.0, &vars_map)
-            {
-                match css_val {
+            } else {
+                crate::css::resolve::evaluate_math_fn(
+                    &name.to_ascii_lowercase(),
+                    &substituted,
+                    16.0,
+                    1000.0,
+                    1000.0,
+                    &vars_map,
+                )
+            };
+            if let Some(val) = css_val {
+                match val {
                     CssValue::Number(num) => Some(num),
                     CssValue::Length(px, _) => Some(px),
                     _ => None,
@@ -5704,10 +5764,55 @@ fn evaluate_channel_expression(
                 None
             }
         }
-        _ => {
-            // TODO(spec): Support calc() or other functions in relative colors
-            None
+        ComponentValue::Function { name, value }
+            if name.eq_ignore_ascii_case("calc")
+                || name.eq_ignore_ascii_case("min")
+                || name.eq_ignore_ascii_case("max")
+                || name.eq_ignore_ascii_case("clamp")
+                || name.eq_ignore_ascii_case("round")
+                || name.eq_ignore_ascii_case("mod")
+                || name.eq_ignore_ascii_case("rem")
+                || name.eq_ignore_ascii_case("abs")
+                || name.eq_ignore_ascii_case("sign")
+                || name.eq_ignore_ascii_case("sin")
+                || name.eq_ignore_ascii_case("cos")
+                || name.eq_ignore_ascii_case("tan")
+                || name.eq_ignore_ascii_case("asin")
+                || name.eq_ignore_ascii_case("acos")
+                || name.eq_ignore_ascii_case("atan")
+                || name.eq_ignore_ascii_case("atan2")
+                || name.eq_ignore_ascii_case("pow")
+                || name.eq_ignore_ascii_case("sqrt")
+                || name.eq_ignore_ascii_case("hypot")
+                || name.eq_ignore_ascii_case("log")
+                || name.eq_ignore_ascii_case("exp") =>
+        {
+            let variables = [("r", br_f), ("g", bg_f), ("b", bb_f), ("alpha", ba_f)];
+            let substituted = substitute_color_variables(value, &variables);
+            let vars_map = std::collections::HashMap::new();
+            let css_val = if name.eq_ignore_ascii_case("calc") {
+                crate::css::resolve::evaluate_calc(&substituted, 16.0, 1000.0, 1000.0, &vars_map)
+            } else {
+                crate::css::resolve::evaluate_math_fn(
+                    &name.to_ascii_lowercase(),
+                    &substituted,
+                    16.0,
+                    1000.0,
+                    1000.0,
+                    &vars_map,
+                )
+            };
+            if let Some(val) = css_val {
+                match val {
+                    CssValue::Number(num) => Some(num),
+                    CssValue::Length(px, _) => Some(px),
+                    _ => None,
+                }
+            } else {
+                None
+            }
         }
+        _ => None,
     }
 }
 
@@ -5799,10 +5904,60 @@ fn evaluate_hsl_channel_expression(
                 None
             }
         }
-        _ => {
-            // TODO(spec): Support calc() or other functions in relative colors
-            None
+        ComponentValue::Function { name, value }
+            if name.eq_ignore_ascii_case("calc")
+                || name.eq_ignore_ascii_case("min")
+                || name.eq_ignore_ascii_case("max")
+                || name.eq_ignore_ascii_case("clamp")
+                || name.eq_ignore_ascii_case("round")
+                || name.eq_ignore_ascii_case("mod")
+                || name.eq_ignore_ascii_case("rem")
+                || name.eq_ignore_ascii_case("abs")
+                || name.eq_ignore_ascii_case("sign")
+                || name.eq_ignore_ascii_case("sin")
+                || name.eq_ignore_ascii_case("cos")
+                || name.eq_ignore_ascii_case("tan")
+                || name.eq_ignore_ascii_case("asin")
+                || name.eq_ignore_ascii_case("acos")
+                || name.eq_ignore_ascii_case("atan")
+                || name.eq_ignore_ascii_case("atan2")
+                || name.eq_ignore_ascii_case("pow")
+                || name.eq_ignore_ascii_case("sqrt")
+                || name.eq_ignore_ascii_case("hypot")
+                || name.eq_ignore_ascii_case("log")
+                || name.eq_ignore_ascii_case("exp") =>
+        {
+            let variables = [
+                ("h", base_h),
+                ("s", base_s),
+                ("l", base_l),
+                ("alpha", base_alpha),
+            ];
+            let substituted = substitute_color_variables(value, &variables);
+            let vars_map = std::collections::HashMap::new();
+            let css_val = if name.eq_ignore_ascii_case("calc") {
+                crate::css::resolve::evaluate_calc(&substituted, 16.0, 1000.0, 1000.0, &vars_map)
+            } else {
+                crate::css::resolve::evaluate_math_fn(
+                    &name.to_ascii_lowercase(),
+                    &substituted,
+                    16.0,
+                    1000.0,
+                    1000.0,
+                    &vars_map,
+                )
+            };
+            if let Some(val) = css_val {
+                match val {
+                    CssValue::Number(num) => Some(num),
+                    CssValue::Length(px, _) => Some(px),
+                    _ => None,
+                }
+            } else {
+                None
+            }
         }
+        _ => None,
     }
 }
 
@@ -15355,6 +15510,72 @@ mod tests {
         assert_eq!(
             parse_color_mix_function(&color_mix_linear),
             Some(Color::Rgba(188, 0, 188, 255))
+        );
+    }
+
+    #[test]
+    fn test_t0906_css_values_additive_parsing() {
+        // 1. Test parsing of new viewport & relative units to Keyword in parse_single_value
+        let test_units = [
+            "svw", "svh", "lvw", "lvh", "dvw", "dvh", "svmin", "svmax", "lvmin", "lvmax", "dvmin",
+            "dvmax", "vi", "svi", "lvi", "dvi", "vb", "svb", "lvb", "dvb", "rex", "rch", "ric",
+            "rcap", "ic", "cap", "lh", "rlh",
+        ];
+        for unit in &test_units {
+            let comp = token(CssToken::Dimension {
+                value: 42.0,
+                unit: unit.to_string(),
+            });
+            assert_eq!(
+                parse_value(&[comp]),
+                Some(CssValue::Keyword(format!("42{}", unit)))
+            );
+        }
+
+        // 2. Test relative RGB with min() function evaluation
+        let rgb_components = vec![
+            token(CssToken::Ident("from".to_string())),
+            token(CssToken::Ident("red".to_string())),
+            ComponentValue::Function {
+                name: "min".to_string(),
+                value: vec![
+                    token(CssToken::Ident("r".to_string())),
+                    token(CssToken::Comma),
+                    token(CssToken::Number(100.0)),
+                ],
+            },
+            token(CssToken::Number(0.0)),
+            token(CssToken::Number(0.0)),
+        ];
+        // red is rgba(255, 0, 0). min(r, 100) -> min(255, 100) -> 100.
+        // Result should be rgba(100, 0, 0, 255).
+        assert_eq!(
+            parse_rgb_function(&rgb_components),
+            Some(Color::Rgba(100, 0, 0, 255))
+        );
+
+        // 3. Test relative HSL with clamp() function evaluation
+        let hsl_components = vec![
+            token(CssToken::Ident("from".to_string())),
+            token(CssToken::Ident("green".to_string())), // green is rgba(0, 128, 0), H=120, S=100%, L=25.1%
+            token(CssToken::Ident("h".to_string())),
+            token(CssToken::Percentage(100.0)),
+            ComponentValue::Function {
+                name: "clamp".to_string(),
+                value: vec![
+                    token(CssToken::Number(30.0)),
+                    token(CssToken::Comma),
+                    token(CssToken::Ident("l".to_string())),
+                    token(CssToken::Comma),
+                    token(CssToken::Number(40.0)),
+                ],
+            },
+        ];
+        // green's L is 25.1%. clamp(30, l, 40) -> clamp(30, 25.1, 40) -> 30.
+        // Result should be HSL(120, 100%, 30%) -> rgba(0, 153, 0, 255)
+        assert_eq!(
+            parse_hsl_function(&hsl_components),
+            Some(Color::Rgba(0, 153, 0, 255))
         );
     }
 }
