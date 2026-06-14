@@ -298,6 +298,34 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `type` content attribute of a valid element node,
+    /// but only if `type` is a defined attribute for its element tag (button, input, embed, object, ol, script, source, style, link, menu, command).
+    /// Returns `None` if the node is not one of those element tags, has no `type` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_type(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined = name.eq_ignore_ascii_case("button")
+                || name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("embed")
+                || name.eq_ignore_ascii_case("object")
+                || name.eq_ignore_ascii_case("ol")
+                || name.eq_ignore_ascii_case("script")
+                || name.eq_ignore_ascii_case("source")
+                || name.eq_ignore_ascii_case("style")
+                || name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("menu")
+                || name.eq_ignore_ascii_case("command");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -1016,5 +1044,113 @@ mod tests {
             attrs: vec![("TARGET".to_string(), "_blank".to_string())],
         });
         assert_eq!(dom.get_target(a_attr_caps), Some("_blank"));
+    }
+
+    #[test]
+    fn test_type_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Valid tags with 'type' attribute should return Some
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("type".to_string(), "text".to_string())],
+        });
+        assert_eq!(dom.get_type(input_id), Some("text"));
+
+        let button_id = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![("type".to_string(), "submit".to_string())],
+        });
+        assert_eq!(dom.get_type(button_id), Some("submit"));
+
+        let ol_id = dom.create_node(NodeData::Element {
+            name: "ol".to_string(),
+            attrs: vec![("type".to_string(), "1".to_string())],
+        });
+        assert_eq!(dom.get_type(ol_id), Some("1"));
+
+        let link_id = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![("type".to_string(), "text/css".to_string())],
+        });
+        assert_eq!(dom.get_type(link_id), Some("text/css"));
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("type".to_string(), "module".to_string())],
+        });
+        assert_eq!(dom.get_type(script_id), Some("module"));
+
+        let embed_id = dom.create_node(NodeData::Element {
+            name: "embed".to_string(),
+            attrs: vec![("type".to_string(), "video/mp4".to_string())],
+        });
+        assert_eq!(dom.get_type(embed_id), Some("video/mp4"));
+
+        let object_id = dom.create_node(NodeData::Element {
+            name: "object".to_string(),
+            attrs: vec![("type".to_string(), "application/pdf".to_string())],
+        });
+        assert_eq!(dom.get_type(object_id), Some("application/pdf"));
+
+        let source_id = dom.create_node(NodeData::Element {
+            name: "source".to_string(),
+            attrs: vec![("type".to_string(), "audio/ogg".to_string())],
+        });
+        assert_eq!(dom.get_type(source_id), Some("audio/ogg"));
+
+        let style_id = dom.create_node(NodeData::Element {
+            name: "style".to_string(),
+            attrs: vec![("type".to_string(), "text/css".to_string())],
+        });
+        assert_eq!(dom.get_type(style_id), Some("text/css"));
+
+        let menu_id = dom.create_node(NodeData::Element {
+            name: "menu".to_string(),
+            attrs: vec![("type".to_string(), "context".to_string())],
+        });
+        assert_eq!(dom.get_type(menu_id), Some("context"));
+
+        let command_id = dom.create_node(NodeData::Element {
+            name: "command".to_string(),
+            attrs: vec![("type".to_string(), "checkbox".to_string())],
+        });
+        assert_eq!(dom.get_type(command_id), Some("checkbox"));
+
+        // 2. Undefined tag with 'type' attribute should return None
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("type".to_string(), "text".to_string())],
+        });
+        assert_eq!(dom.get_type(div_id), None);
+
+        // 3. Defined tag missing 'type' attribute should return None
+        let input_no_type_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_type(input_no_type_id), None);
+
+        // 4. Non-element node should return None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_type(text_id), None);
+
+        // 5. Case-insensitivity should be honored for tag name
+        let input_caps_id = dom.create_node(NodeData::Element {
+            name: "InPuT".to_string(),
+            attrs: vec![("type".to_string(), "password".to_string())],
+        });
+        assert_eq!(dom.get_type(input_caps_id), Some("password"));
+
+        // 6. Case-insensitivity should be honored for attribute name
+        let input_attr_caps_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("TyPe".to_string(), "email".to_string())],
+        });
+        assert_eq!(dom.get_type(input_attr_caps_id), Some("email"));
+
+        // 7. Invalid NodeId should return None
+        let dom2 = Dom::new();
+        assert_eq!(dom2.get_type(input_id), None);
     }
 }
