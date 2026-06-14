@@ -4330,6 +4330,11 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 }
                 return url_str.map(|s| CssValue::Keyword(format!("url({})", s)));
             }
+            if name.eq_ignore_ascii_case("image-set")
+                || name.eq_ignore_ascii_case("-webkit-image-set")
+            {
+                return parse_image_set_function(value);
+            }
             if name.eq_ignore_ascii_case("linear-gradient")
                 || name.eq_ignore_ascii_case("radial-gradient")
                 || name.eq_ignore_ascii_case("conic-gradient")
@@ -4340,6 +4345,130 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
         }
         _ => None,
     }
+}
+
+fn extract_url_from_url_function(value: &[ComponentValue]) -> Option<String> {
+    for val in value {
+        match val {
+            ComponentValue::Token(CssToken::String(s)) => {
+                return Some(s.clone());
+            }
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                return Some(s.clone());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_image_set_option(option_components: &[&ComponentValue]) -> Option<String> {
+    let mut image_url: Option<String> = None;
+    let mut resolution_seen = false;
+    let mut type_seen = false;
+
+    for comp in option_components {
+        match comp {
+            ComponentValue::Token(CssToken::String(s)) => {
+                if image_url.is_some() {
+                    return None;
+                }
+                image_url = Some(s.clone());
+            }
+            ComponentValue::Token(CssToken::Url(s)) => {
+                if image_url.is_some() {
+                    return None;
+                }
+                image_url = Some(s.clone());
+            }
+            ComponentValue::Function { name, value } => {
+                if name.eq_ignore_ascii_case("url") {
+                    if image_url.is_some() {
+                        return None;
+                    }
+                    let u = extract_url_from_url_function(value)?;
+                    image_url = Some(u);
+                } else if name.eq_ignore_ascii_case("type") {
+                    if type_seen {
+                        return None;
+                    }
+                    let type_args: Vec<&ComponentValue> = value
+                        .iter()
+                        .filter(|v| !matches!(v, ComponentValue::Token(CssToken::Whitespace)))
+                        .collect();
+                    if type_args.len() != 1 {
+                        return None;
+                    }
+                    match type_args[0] {
+                        ComponentValue::Token(CssToken::String(_)) => {}
+                        _ => return None,
+                    }
+                    type_seen = true;
+                } else {
+                    return None;
+                }
+            }
+            ComponentValue::Token(CssToken::Dimension { value: _, unit }) => {
+                if resolution_seen {
+                    return None;
+                }
+                let unit_lower = unit.to_ascii_lowercase();
+                if unit_lower != "x"
+                    && unit_lower != "dpi"
+                    && unit_lower != "dpcm"
+                    && unit_lower != "dppx"
+                {
+                    return None;
+                }
+                resolution_seen = true;
+            }
+            _ => {
+                return None;
+            }
+        }
+    }
+
+    image_url
+}
+
+fn parse_image_set_function(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut options_components: Vec<Vec<&ComponentValue>> = Vec::new();
+    let mut current_option: Vec<&ComponentValue> = Vec::new();
+
+    for comp in components {
+        if matches!(comp, ComponentValue::Token(CssToken::Whitespace)) {
+            continue;
+        }
+        if matches!(comp, ComponentValue::Token(CssToken::Comma)) {
+            if current_option.is_empty() {
+                return None;
+            }
+            options_components.push(current_option);
+            current_option = Vec::new();
+        } else {
+            current_option.push(comp);
+        }
+    }
+    if current_option.is_empty() {
+        return None;
+    }
+    options_components.push(current_option);
+
+    if options_components.is_empty() {
+        return None;
+    }
+
+    let mut first_resolved_url: Option<String> = None;
+
+    for opt_comps in options_components {
+        let url_str = parse_image_set_option(&opt_comps)?;
+        if first_resolved_url.is_none() {
+            first_resolved_url = Some(url_str);
+        }
+    }
+
+    // TODO(spec): true resolution-based selection needs DPR plumbing.
+    first_resolved_url.map(|url_str| CssValue::Keyword(format!("url({})", url_str)))
 }
 
 fn parse_cubic_bezier_function(components: &[ComponentValue]) -> Option<CssValue> {
@@ -6593,6 +6722,147 @@ mod tests {
             value: vec![token(CssToken::Number(0.0))],
         };
         assert_eq!(parse_value(&[linear_invalid_len]), None);
+    }
+
+    #[test]
+    fn test_parse_image_set_functions() {
+        // image-set("a.png" 1x, "b.png" 2x)
+        let is_valid1 = ComponentValue::Function {
+            name: "image-set".to_string(),
+            value: vec![
+                token(CssToken::String("a.png".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "x".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Whitespace),
+                token(CssToken::String("b.png".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 2.0,
+                    unit: "x".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[is_valid1]),
+            Some(CssValue::Keyword("url(a.png)".to_string()))
+        );
+
+        // image-set(url(a.png) 1x, url(b.png) 2x)
+        let is_valid2 = ComponentValue::Function {
+            name: "image-set".to_string(),
+            value: vec![
+                ComponentValue::Function {
+                    name: "url".to_string(),
+                    value: vec![token(CssToken::Ident("a.png".to_string()))],
+                },
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "x".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "url".to_string(),
+                    value: vec![token(CssToken::Ident("b.png".to_string()))],
+                },
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 2.0,
+                    unit: "x".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[is_valid2]),
+            Some(CssValue::Keyword("url(a.png)".to_string()))
+        );
+
+        // -webkit-image-set(url(a.png) 1x)
+        let is_valid3 = ComponentValue::Function {
+            name: "-webkit-image-set".to_string(),
+            value: vec![
+                ComponentValue::Function {
+                    name: "url".to_string(),
+                    value: vec![token(CssToken::Ident("a.png".to_string()))],
+                },
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "x".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[is_valid3]),
+            Some(CssValue::Keyword("url(a.png)".to_string()))
+        );
+
+        // image-set(url(a.png) type("image/png"), url(b.png))
+        let is_valid4 = ComponentValue::Function {
+            name: "image-set".to_string(),
+            value: vec![
+                ComponentValue::Function {
+                    name: "url".to_string(),
+                    value: vec![token(CssToken::Ident("a.png".to_string()))],
+                },
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "type".to_string(),
+                    value: vec![token(CssToken::String("image/png".to_string()))],
+                },
+                token(CssToken::Comma),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "url".to_string(),
+                    value: vec![token(CssToken::Ident("b.png".to_string()))],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[is_valid4]),
+            Some(CssValue::Keyword("url(a.png)".to_string()))
+        );
+
+        // malformed: empty
+        let is_invalid_empty = ComponentValue::Function {
+            name: "image-set".to_string(),
+            value: vec![],
+        };
+        assert_eq!(parse_value(&[is_invalid_empty]), None);
+
+        // malformed: no image source
+        let is_invalid_no_source = ComponentValue::Function {
+            name: "image-set".to_string(),
+            value: vec![token(CssToken::Dimension {
+                value: 1.0,
+                unit: "x".to_string(),
+            })],
+        };
+        assert_eq!(parse_value(&[is_invalid_no_source]), None);
+
+        // malformed: multiple resolutions in one option
+        let is_invalid_multiple_res = ComponentValue::Function {
+            name: "image-set".to_string(),
+            value: vec![
+                token(CssToken::String("a.png".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "x".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 2.0,
+                    unit: "x".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(parse_value(&[is_invalid_multiple_res]), None);
     }
 
     #[test]
