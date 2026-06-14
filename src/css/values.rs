@@ -1195,6 +1195,61 @@ impl TryFrom<&CssValue> for BorderCollapseValue {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum ClearValue {
+    #[default]
+    None,
+    Left,
+    Right,
+    Both,
+    InlineStart,
+    InlineEnd,
+}
+
+impl ClearValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "both" => Some(Self::Both),
+            "inline-start" => Some(Self::InlineStart),
+            "inline-end" => Some(Self::InlineEnd),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Both => "both",
+            Self::InlineStart => "inline-start",
+            Self::InlineEnd => "inline-end",
+        }
+    }
+}
+
+impl std::str::FromStr for ClearValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for ClearValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Default)]
 pub enum TextAlignLastValue {
     #[default]
@@ -6518,6 +6573,70 @@ mod tests {
             BorderCollapseValue::default(),
             BorderCollapseValue::Separate
         );
+    }
+
+    #[test]
+    fn test_clear_value() {
+        // Test parsing keyword strings to ClearValue
+        assert_eq!(ClearValue::parse("none"), Some(ClearValue::None));
+        assert_eq!(ClearValue::parse("left"), Some(ClearValue::Left));
+        assert_eq!(ClearValue::parse("right"), Some(ClearValue::Right));
+        assert_eq!(ClearValue::parse("both"), Some(ClearValue::Both));
+        assert_eq!(
+            ClearValue::parse("inline-start"),
+            Some(ClearValue::InlineStart)
+        );
+        assert_eq!(ClearValue::parse("inline-end"), Some(ClearValue::InlineEnd));
+
+        // Case insensitivity
+        assert_eq!(ClearValue::parse("NONE"), Some(ClearValue::None));
+        assert_eq!(ClearValue::parse("Left"), Some(ClearValue::Left));
+        assert_eq!(ClearValue::parse("rIgHt"), Some(ClearValue::Right));
+        assert_eq!(ClearValue::parse("BoTh"), Some(ClearValue::Both));
+        assert_eq!(
+            ClearValue::parse("InLiNe-StArT"),
+            Some(ClearValue::InlineStart)
+        );
+        assert_eq!(ClearValue::parse("iNlInE-eNd"), Some(ClearValue::InlineEnd));
+
+        assert_eq!(ClearValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!("none".parse::<ClearValue>(), Ok(ClearValue::None));
+        assert_eq!("left".parse::<ClearValue>(), Ok(ClearValue::Left));
+        assert_eq!("right".parse::<ClearValue>(), Ok(ClearValue::Right));
+        assert_eq!("both".parse::<ClearValue>(), Ok(ClearValue::Both));
+        assert_eq!(
+            "inline-start".parse::<ClearValue>(),
+            Ok(ClearValue::InlineStart)
+        );
+        assert_eq!(
+            "inline-end".parse::<ClearValue>(),
+            Ok(ClearValue::InlineEnd)
+        );
+        assert_eq!("BOGUS".parse::<ClearValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(ClearValue::None.as_str(), "none");
+        assert_eq!(ClearValue::Left.as_str(), "left");
+        assert_eq!(ClearValue::Right.as_str(), "right");
+        assert_eq!(ClearValue::Both.as_str(), "both");
+        assert_eq!(ClearValue::InlineStart.as_str(), "inline-start");
+        assert_eq!(ClearValue::InlineEnd.as_str(), "inline-end");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            ClearValue::try_from(&CssValue::Keyword("none".to_string())),
+            Ok(ClearValue::None)
+        );
+        assert_eq!(
+            ClearValue::try_from(&CssValue::Keyword("LEFT".to_string())),
+            Ok(ClearValue::Left)
+        );
+        assert_eq!(ClearValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation (initial value)
+        assert_eq!(ClearValue::default(), ClearValue::None);
     }
 
     #[test]
