@@ -1314,6 +1314,151 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "none",
     },
+    PropertyMetadata {
+        name: "position-anchor",
+        inherited: false,
+        initial: "implicit",
+    },
+    PropertyMetadata {
+        name: "contain-intrinsic-block-size",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "contain-intrinsic-inline-size",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "block-size",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "inline-size",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "min-block-size",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "min-inline-size",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "max-block-size",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "max-inline-size",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "margin-inline-start",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "margin-inline-end",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "padding-inline-start",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "padding-inline-end",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-block-start-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "border-block-start-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "border-block-start-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "border-block-end-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "border-block-end-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "border-block-end-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "border-inline-start-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "border-inline-start-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "border-inline-start-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "border-inline-end-width",
+        inherited: false,
+        initial: "medium",
+    },
+    PropertyMetadata {
+        name: "border-inline-end-style",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "border-inline-end-color",
+        inherited: false,
+        initial: "currentcolor",
+    },
+    PropertyMetadata {
+        name: "border-start-start-radius",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-start-end-radius",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-end-start-radius",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "border-end-end-radius",
+        inherited: false,
+        initial: "0",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1683,6 +1828,77 @@ mod tests {
         assert_eq!(align_content.name, "align-content");
         assert!(!align_content.inherited);
         assert_eq!(align_content.initial, "normal");
+    }
+
+    #[test]
+    fn test_additive_properties_t0789() {
+        // Test anchor positioning
+        let pos_anchor = lookup("position-anchor").expect("position-anchor must be registered");
+        assert_eq!(pos_anchor.name, "position-anchor");
+        assert!(!pos_anchor.inherited);
+        assert_eq!(pos_anchor.initial, "implicit");
+
+        // Test containment properties
+        let contain_block = lookup("contain-intrinsic-block-size")
+            .expect("contain-intrinsic-block-size must be registered");
+        assert_eq!(contain_block.name, "contain-intrinsic-block-size");
+        assert!(!contain_block.inherited);
+        assert_eq!(contain_block.initial, "none");
+
+        // Test logical sizing
+        let block_size = lookup("block-size").expect("block-size must be registered");
+        assert_eq!(block_size.name, "block-size");
+        assert!(!block_size.inherited);
+        assert_eq!(block_size.initial, "auto");
+
+        let min_block_size = lookup("min-block-size").expect("min-block-size must be registered");
+        assert_eq!(min_block_size.name, "min-block-size");
+        assert!(!min_block_size.inherited);
+        assert_eq!(min_block_size.initial, "0");
+
+        let max_block_size = lookup("max-block-size").expect("max-block-size must be registered");
+        assert_eq!(max_block_size.name, "max-block-size");
+        assert!(!max_block_size.inherited);
+        assert_eq!(max_block_size.initial, "none");
+
+        // Test logical margin & padding
+        let margin_start =
+            lookup("margin-inline-start").expect("margin-inline-start must be registered");
+        assert_eq!(margin_start.name, "margin-inline-start");
+        assert!(!margin_start.inherited);
+        assert_eq!(margin_start.initial, "0");
+
+        let padding_end =
+            lookup("padding-inline-end").expect("padding-inline-end must be registered");
+        assert_eq!(padding_end.name, "padding-inline-end");
+        assert!(!padding_end.inherited);
+        assert_eq!(padding_end.initial, "0");
+
+        // Test logical border width, style, color
+        let border_block_start_w = lookup("border-block-start-width")
+            .expect("border-block-start-width must be registered");
+        assert_eq!(border_block_start_w.name, "border-block-start-width");
+        assert!(!border_block_start_w.inherited);
+        assert_eq!(border_block_start_w.initial, "medium");
+
+        let border_inline_end_s =
+            lookup("border-inline-end-style").expect("border-inline-end-style must be registered");
+        assert_eq!(border_inline_end_s.name, "border-inline-end-style");
+        assert!(!border_inline_end_s.inherited);
+        assert_eq!(border_inline_end_s.initial, "none");
+
+        let border_block_end_c =
+            lookup("border-block-end-color").expect("border-block-end-color must be registered");
+        assert_eq!(border_block_end_c.name, "border-block-end-color");
+        assert!(!border_block_end_c.inherited);
+        assert_eq!(border_block_end_c.initial, "currentcolor");
+
+        // Test logical border radius
+        let border_start_start_r = lookup("border-start-start-radius")
+            .expect("border-start-start-radius must be registered");
+        assert_eq!(border_start_start_r.name, "border-start-start-radius");
+        assert!(!border_start_start_r.inherited);
+        assert_eq!(border_start_start_r.initial, "0");
     }
 
     #[test]
