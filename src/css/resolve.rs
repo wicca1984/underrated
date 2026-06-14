@@ -36,6 +36,7 @@ pub struct ResolveContext {
     pub percentage_basis: Option<f32>,
     pub property_name: Option<String>,
     pub parent_value: Option<CssValue>,
+    pub current_color: Option<CssValue>,
 }
 
 impl Default for ResolveContext {
@@ -50,6 +51,7 @@ impl Default for ResolveContext {
             percentage_basis: None,
             property_name: None,
             parent_value: None,
+            current_color: None,
         }
     }
 }
@@ -1405,6 +1407,47 @@ pub fn resolve_components(
                     value: resolved_block,
                 });
             }
+            ComponentValue::Token(CssToken::Ident(name)) => {
+                let lower = name.to_ascii_lowercase();
+                if lower == "currentcolor" {
+                    let color_val = if let Some("color") = context.property_name.as_deref() {
+                        if let Some(parent) = &context.parent_value {
+                            Some(parent.clone())
+                        } else if let Some(init_str) = crate::css::property::initial_value("color")
+                        {
+                            resolve_string_with_context(init_str, context)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let resolved_color = color_val
+                        .or_else(|| context.current_color.clone())
+                        .unwrap_or_else(|| {
+                            if let Some(init_str) = crate::css::property::initial_value("color") {
+                                resolve_string_with_context(init_str, context).unwrap_or(
+                                    CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 255)),
+                                )
+                            } else {
+                                CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 255))
+                            }
+                        });
+
+                    if let CssValue::Color(crate::css::values::Color::Rgba(r, g, b, a)) =
+                        resolved_color
+                    {
+                        let color_str = format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, a);
+                        let comps = crate::css::parser::parse_component_values(&color_str);
+                        result.extend(comps);
+                    } else {
+                        result.push(comp.clone());
+                    }
+                } else {
+                    result.push(comp.clone());
+                }
+            }
             _ => {
                 result.push(comp.clone());
             }
@@ -1500,6 +1543,27 @@ pub fn resolve_value_with_context(
                         }
                     } else {
                         return Some(CssValue::Keyword("unset".to_string()));
+                    }
+                }
+                "currentcolor" => {
+                    if let Some("color") = context.property_name.as_deref() {
+                        if let Some(parent) = &context.parent_value {
+                            return Some(parent.clone());
+                        } else if let Some(init_str) = crate::css::property::initial_value("color")
+                        {
+                            return resolve_string_with_context(init_str, context);
+                        }
+                    }
+                    if let Some(current) = &context.current_color {
+                        return Some(current.clone());
+                    } else {
+                        if let Some(init_str) = crate::css::property::initial_value("color") {
+                            return resolve_string_with_context(init_str, context);
+                        } else {
+                            return Some(CssValue::Color(crate::css::values::Color::Rgba(
+                                0, 0, 0, 255,
+                            )));
+                        }
                     }
                 }
                 _ => {}
@@ -2585,5 +2649,62 @@ mod tests {
                 }
             ]))
         );
+    }
+
+    #[test]
+    fn test_currentcolor_propagation() {
+        // Test basic currentColor propagation as a standalone value.
+        let ctx_standalone = ResolveContext {
+            current_color: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 100, 50, 255,
+            ))),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("currentcolor", &ctx_standalone),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 100, 50, 255
+            )))
+        );
+
+        // Test basic currentColor fallback to initial/default (black) when not set.
+        let ctx_no_current = ResolveContext {
+            current_color: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("currentcolor", &ctx_no_current),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 0, 255
+            )))
+        );
+
+        // Test currentColor on the color property itself with parent color (behaves as inherit).
+        let parent_color = CssValue::Color(crate::css::values::Color::Rgba(0, 255, 0, 255));
+        let ctx_color_prop_inherit = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(parent_color.clone()),
+            current_color: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255,
+            ))), // Should ignore this and inherit
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("currentcolor", &ctx_color_prop_inherit),
+            Some(parent_color)
+        );
+
+        // Test currentColor inside multi-component values (e.g. lists).
+        let ctx_multi = ResolveContext {
+            current_color: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255,
+            ))),
+            ..Default::default()
+        };
+        let comps = crate::css::parser::parse_component_values("1px solid currentcolor");
+        let resolved = resolve_components(&comps, &ctx_multi, &HashMap::new()).unwrap();
+        // The resulting components should have currentcolor replaced by the hex formatted color.
+        let parsed = crate::css::values::parse_value(&resolved);
+        assert!(parsed.is_some());
     }
 }
