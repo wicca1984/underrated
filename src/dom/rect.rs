@@ -91,6 +91,50 @@ impl DomRect {
             "left": self.left(),
         })
     }
+
+    /// Static-like factory to create a new `DomRect` from a dictionary-like JSON representation.
+    /// It takes an optional DOMRectInit-like object `{x, y, width, height}` (each defaulting to 0.0 when absent)
+    /// and returns a new `DomRect` with those values.
+    pub fn from_rect(other: Option<&serde_json::Value>) -> Self {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut width = 0.0;
+        let mut height = 0.0;
+
+        if let Some(obj) = other.and_then(|v| v.as_object()) {
+            if let Some(val) = obj.get("x").and_then(|v| v.as_f64()) {
+                x = val;
+            }
+            if let Some(val) = obj.get("y").and_then(|v| v.as_f64()) {
+                y = val;
+            }
+            if let Some(val) = obj.get("width").and_then(|v| v.as_f64()) {
+                width = val;
+            }
+            if let Some(val) = obj.get("height").and_then(|v| v.as_f64()) {
+                height = val;
+            }
+        }
+
+        Self::new(x, y, width, height)
+    }
+
+    /// Non-snake-case alias of `from_rect` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn fromRect(other: Option<&serde_json::Value>) -> Self {
+        Self::from_rect(other)
+    }
+
+    /// Returns a plain JSON object with keys x, y, width, height, top, right, bottom, left holding current numeric values.
+    pub fn to_json(&self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Non-snake-case alias of `to_json` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn toJSON(&self) -> serde_json::Value {
+        self.serialize()
+    }
 }
 
 /// `DomRectList` represents a list of `DomRect` objects, mirroring DOM's DOMRectList.
@@ -242,5 +286,68 @@ mod tests {
         let serialized_list = rects.serialize();
         assert!(serialized_list.is_array());
         assert_eq!(serialized_list.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_domrect_from_rect_with_init() {
+        let init = serde_json::json!({
+            "x": 10.0,
+            "y": 20.0,
+            "width": 100.0,
+            "height": 50.0
+        });
+        let rect = DomRect::from_rect(Some(&init));
+        assert_eq!(rect.x(), 10.0);
+        assert_eq!(rect.y(), 20.0);
+        assert_eq!(rect.width(), 100.0);
+        assert_eq!(rect.height(), 50.0);
+
+        // Test non-snake-case alias fromRect
+        let rect_camel = DomRect::fromRect(Some(&init));
+        assert_eq!(rect_camel.x(), 10.0);
+        assert_eq!(rect_camel.y(), 20.0);
+        assert_eq!(rect_camel.width(), 100.0);
+        assert_eq!(rect_camel.height(), 50.0);
+    }
+
+    #[test]
+    fn test_domrect_from_rect_empty() {
+        let rect_empty = DomRect::from_rect(None);
+        assert_eq!(rect_empty.x(), 0.0);
+        assert_eq!(rect_empty.y(), 0.0);
+        assert_eq!(rect_empty.width(), 0.0);
+        assert_eq!(rect_empty.height(), 0.0);
+
+        let init_empty = serde_json::json!({});
+        let rect_init_empty = DomRect::from_rect(Some(&init_empty));
+        assert_eq!(rect_init_empty.x(), 0.0);
+        assert_eq!(rect_init_empty.y(), 0.0);
+        assert_eq!(rect_init_empty.width(), 0.0);
+        assert_eq!(rect_init_empty.height(), 0.0);
+    }
+
+    #[test]
+    fn test_domrect_to_json() {
+        let rect = DomRect::new(10.0, 20.0, 100.0, 50.0);
+        let json_val = rect.to_json();
+        assert_eq!(json_val["x"], 10.0);
+        assert_eq!(json_val["y"], 20.0);
+        assert_eq!(json_val["width"], 100.0);
+        assert_eq!(json_val["height"], 50.0);
+        assert_eq!(json_val["top"], 20.0);
+        assert_eq!(json_val["right"], 110.0);
+        assert_eq!(json_val["bottom"], 70.0);
+        assert_eq!(json_val["left"], 10.0);
+
+        // Test non-snake-case alias toJSON
+        let json_camel = rect.toJSON();
+        assert_eq!(json_camel["x"], 10.0);
+        assert_eq!(json_camel["y"], 20.0);
+        assert_eq!(json_camel["width"], 100.0);
+        assert_eq!(json_camel["height"], 50.0);
+        assert_eq!(json_camel["top"], 20.0);
+        assert_eq!(json_camel["right"], 110.0);
+        assert_eq!(json_camel["bottom"], 70.0);
+        assert_eq!(json_camel["left"], 10.0);
     }
 }
