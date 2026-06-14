@@ -413,33 +413,6 @@ pub fn layout_table_container(
         }
     }
 
-    // Update table's border widths under border-collapse: collapse by collapsing with outermost cells
-    if is_collapsed {
-        let mut sorted_collapse_placements: Vec<&CellPlacement> =
-            cell_placements.values().collect();
-        sorted_collapse_placements.sort_by_key(|p| (p.row_idx, p.col_idx));
-        for placement in sorted_collapse_placements {
-            if let Some(cell_style) = styles.get(&placement.node) {
-                if placement.row_idx == 0 {
-                    let cell_border_top = get_px(cell_style, "border-top-width", 0.0);
-                    border_top = border_top.max(cell_border_top);
-                }
-                if placement.row_idx + placement.rowspan == rows.len() {
-                    let cell_border_bottom = get_px(cell_style, "border-bottom-width", 0.0);
-                    border_bottom = border_bottom.max(cell_border_bottom);
-                }
-                if placement.col_idx == 0 {
-                    let cell_border_left = get_px(cell_style, "border-left-width", 0.0);
-                    border_left = border_left.max(cell_border_left);
-                }
-                if placement.col_idx + placement.colspan == num_cols {
-                    let cell_border_right = get_px(cell_style, "border-right-width", 0.0);
-                    border_right = border_right.max(cell_border_right);
-                }
-            }
-        }
-    }
-
     // Let's create a local modified styles map if border-collapse is active
     let mut local_styles;
     let styles_ref = if is_collapsed {
@@ -489,6 +462,28 @@ pub fn layout_table_container(
         let t_bl_style = table_style.reset_surround.border_left_style.clone();
         let t_br_style = table_style.reset_surround.border_right_style.clone();
 
+        let (col_elements, colgroup_elements) = gather_cols_and_colgroups(dom, node, num_cols);
+
+        let is_row_group_element = |dom: &Dom, node: NodeId| -> bool {
+            if let Some(NodeData::Element { name, .. }) = dom.data(node) {
+                name == "tbody" || name == "thead" || name == "tfoot"
+            } else {
+                false
+            }
+        };
+
+        let get_row_group = |r: usize| -> Option<NodeId> {
+            if r < rows.len()
+                && let Some(row_node) = rows[r].node
+                && let Some(parent) = dom.parent(row_node)
+                && is_row_group_element(dom, parent)
+            {
+                Some(parent)
+            } else {
+                None
+            }
+        };
+
         // Resolve borders for each cell
         for (&cell_node, placement) in &cell_placements {
             let info = if let Some(i) = cell_borders.get(&cell_node) {
@@ -497,81 +492,333 @@ pub fn layout_table_container(
                 continue;
             };
 
+            let row_idx = placement.row_idx;
+            let col_idx = placement.col_idx;
+            let colspan = placement.colspan;
+            let rowspan = placement.rowspan;
+
             // Top Border Resolution
-            let mut top_conflicts = vec![info.top.clone()];
-            if placement.row_idx == 0 {
-                top_conflicts.push((t_bt, t_bt_style.clone()));
-            } else {
+            let mut top_conflicts = vec![BorderConflict {
+                width: info.top.0,
+                style: info.top.1.clone(),
+                element_priority: 5,
+            }];
+            if let Some(row_node) = rows[row_idx].node {
+                let (row_bt, row_bt_style) = get_element_borders(styles, row_node).0;
+                top_conflicts.push(BorderConflict {
+                    width: row_bt,
+                    style: row_bt_style,
+                    element_priority: 4,
+                });
+            }
+            if let Some(rg_node) = get_row_group(row_idx) {
+                let is_first_row_of_rg =
+                    row_idx == 0 || get_row_group(row_idx - 1) != Some(rg_node);
+                if is_first_row_of_rg {
+                    let (rg_bt, rg_bt_style) = get_element_borders(styles, rg_node).0;
+                    top_conflicts.push(BorderConflict {
+                        width: rg_bt,
+                        style: rg_bt_style,
+                        element_priority: 3,
+                    });
+                }
+            }
+            if row_idx == 0 {
+                top_conflicts.push(BorderConflict {
+                    width: t_bt,
+                    style: t_bt_style.clone(),
+                    element_priority: 0,
+                });
+            }
+            if row_idx > 0 {
                 for (&other_node, other_p) in &cell_placements {
-                    if other_p.row_idx + other_p.rowspan == placement.row_idx {
-                        let overlap = other_p.col_idx < placement.col_idx + placement.colspan
-                            && placement.col_idx < other_p.col_idx + other_p.colspan;
+                    if other_p.row_idx + other_p.rowspan == row_idx {
+                        let overlap = other_p.col_idx < col_idx + colspan
+                            && col_idx < other_p.col_idx + other_p.colspan;
                         if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            top_conflicts.push(other_info.bottom.clone());
+                            top_conflicts.push(BorderConflict {
+                                width: other_info.bottom.0,
+                                style: other_info.bottom.1.clone(),
+                                element_priority: 5,
+                            });
                         }
                     }
                 }
+                if let Some(prev_row_node) = rows[row_idx - 1].node {
+                    let (row_bb, row_bb_style) = get_element_borders(styles, prev_row_node).1;
+                    top_conflicts.push(BorderConflict {
+                        width: row_bb,
+                        style: row_bb_style,
+                        element_priority: 4,
+                    });
+                }
+                if let Some(prev_rg_node) = get_row_group(row_idx - 1) {
+                    let is_last_row_of_prev_rg = get_row_group(row_idx) != Some(prev_rg_node);
+                    if is_last_row_of_prev_rg {
+                        let (rg_bb, rg_bb_style) = get_element_borders(styles, prev_rg_node).1;
+                        top_conflicts.push(BorderConflict {
+                            width: rg_bb,
+                            style: rg_bb_style,
+                            element_priority: 3,
+                        });
+                    }
+                }
             }
-            let resolved_top = resolve_multiple_collapsed_borders(&top_conflicts);
+            let (resolved_top_w, resolved_top_s) = resolve_collapsed_borders_new(&top_conflicts);
 
             // Bottom Border Resolution
-            let mut bottom_conflicts = vec![info.bottom.clone()];
-            if placement.row_idx + placement.rowspan == rows.len() {
-                bottom_conflicts.push((t_bb, t_bb_style.clone()));
-            } else {
+            let mut bottom_conflicts = vec![BorderConflict {
+                width: info.bottom.0,
+                style: info.bottom.1.clone(),
+                element_priority: 5,
+            }];
+            if let Some(row_node) = rows[row_idx + rowspan - 1].node {
+                let (row_bb, row_bb_style) = get_element_borders(styles, row_node).1;
+                bottom_conflicts.push(BorderConflict {
+                    width: row_bb,
+                    style: row_bb_style,
+                    element_priority: 4,
+                });
+            }
+            if let Some(rg_node) = get_row_group(row_idx + rowspan - 1) {
+                let is_last_row_of_rg = (row_idx + rowspan) == rows.len()
+                    || get_row_group(row_idx + rowspan) != Some(rg_node);
+                if is_last_row_of_rg {
+                    let (rg_bb, rg_bb_style) = get_element_borders(styles, rg_node).1;
+                    bottom_conflicts.push(BorderConflict {
+                        width: rg_bb,
+                        style: rg_bb_style,
+                        element_priority: 3,
+                    });
+                }
+            }
+            if row_idx + rowspan == rows.len() {
+                bottom_conflicts.push(BorderConflict {
+                    width: t_bb,
+                    style: t_bb_style.clone(),
+                    element_priority: 0,
+                });
+            }
+            if row_idx + rowspan < rows.len() {
                 for (&other_node, other_p) in &cell_placements {
-                    if placement.row_idx + placement.rowspan == other_p.row_idx {
-                        let overlap = other_p.col_idx < placement.col_idx + placement.colspan
-                            && placement.col_idx < other_p.col_idx + other_p.colspan;
+                    if other_p.row_idx == row_idx + rowspan {
+                        let overlap = other_p.col_idx < col_idx + colspan
+                            && col_idx < other_p.col_idx + other_p.colspan;
                         if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            bottom_conflicts.push(other_info.top.clone());
+                            bottom_conflicts.push(BorderConflict {
+                                width: other_info.top.0,
+                                style: other_info.top.1.clone(),
+                                element_priority: 5,
+                            });
                         }
                     }
                 }
+                if let Some(next_row_node) = rows[row_idx + rowspan].node {
+                    let (row_bt, row_bt_style) = get_element_borders(styles, next_row_node).0;
+                    bottom_conflicts.push(BorderConflict {
+                        width: row_bt,
+                        style: row_bt_style,
+                        element_priority: 4,
+                    });
+                }
+                if let Some(next_rg_node) = get_row_group(row_idx + rowspan) {
+                    let is_first_row_of_next_rg =
+                        get_row_group(row_idx + rowspan - 1) != Some(next_rg_node);
+                    if is_first_row_of_next_rg {
+                        let (rg_bt, rg_bt_style) = get_element_borders(styles, next_rg_node).0;
+                        bottom_conflicts.push(BorderConflict {
+                            width: rg_bt,
+                            style: rg_bt_style,
+                            element_priority: 3,
+                        });
+                    }
+                }
             }
-            let resolved_bottom = resolve_multiple_collapsed_borders(&bottom_conflicts);
+            let (resolved_bottom_w, resolved_bottom_s) =
+                resolve_collapsed_borders_new(&bottom_conflicts);
 
             // Left Border Resolution
-            let mut left_conflicts = vec![info.left.clone()];
-            if placement.col_idx == 0 {
-                left_conflicts.push((t_bl, t_bl_style.clone()));
-            } else {
+            let mut left_conflicts = vec![BorderConflict {
+                width: info.left.0,
+                style: info.left.1.clone(),
+                element_priority: 5,
+            }];
+            if col_idx < num_cols
+                && let Some(col_node) = col_elements[col_idx]
+            {
+                let (col_bl, col_bl_style) = get_element_borders(styles, col_node).2;
+                left_conflicts.push(BorderConflict {
+                    width: col_bl,
+                    style: col_bl_style,
+                    element_priority: 2,
+                });
+            }
+            if col_idx < num_cols
+                && let Some(cg_node) = colgroup_elements[col_idx]
+            {
+                let is_first_col_of_cg =
+                    col_idx == 0 || colgroup_elements[col_idx - 1] != Some(cg_node);
+                if is_first_col_of_cg {
+                    let (cg_bl, cg_bl_style) = get_element_borders(styles, cg_node).2;
+                    left_conflicts.push(BorderConflict {
+                        width: cg_bl,
+                        style: cg_bl_style,
+                        element_priority: 1,
+                    });
+                }
+            }
+            if col_idx == 0 {
+                left_conflicts.push(BorderConflict {
+                    width: t_bl,
+                    style: t_bl_style.clone(),
+                    element_priority: 0,
+                });
+            }
+            if col_idx > 0 {
                 for (&other_node, other_p) in &cell_placements {
-                    if other_p.col_idx + other_p.colspan == placement.col_idx {
-                        let overlap = other_p.row_idx < placement.row_idx + placement.rowspan
-                            && placement.row_idx < other_p.row_idx + other_p.rowspan;
+                    if other_p.col_idx + other_p.colspan == col_idx {
+                        let overlap = other_p.row_idx < row_idx + rowspan
+                            && row_idx < other_p.row_idx + other_p.rowspan;
                         if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            left_conflicts.push(other_info.right.clone());
+                            left_conflicts.push(BorderConflict {
+                                width: other_info.right.0,
+                                style: other_info.right.1.clone(),
+                                element_priority: 5,
+                            });
                         }
                     }
                 }
+                if let Some(prev_col_node) = col_elements[col_idx - 1] {
+                    let (col_br, col_br_style) = get_element_borders(styles, prev_col_node).3;
+                    left_conflicts.push(BorderConflict {
+                        width: col_br,
+                        style: col_br_style,
+                        element_priority: 2,
+                    });
+                }
+                if let Some(prev_cg_node) = colgroup_elements[col_idx - 1] {
+                    let is_last_col_of_prev_cg =
+                        col_idx == num_cols || colgroup_elements[col_idx] != Some(prev_cg_node);
+                    if is_last_col_of_prev_cg {
+                        let (cg_br, cg_br_style) = get_element_borders(styles, prev_cg_node).3;
+                        left_conflicts.push(BorderConflict {
+                            width: cg_br,
+                            style: cg_br_style,
+                            element_priority: 1,
+                        });
+                    }
+                }
             }
-            let resolved_left = resolve_multiple_collapsed_borders(&left_conflicts);
+            let (resolved_left_w, resolved_left_s) = resolve_collapsed_borders_new(&left_conflicts);
 
             // Right Border Resolution
-            let mut right_conflicts = vec![info.right.clone()];
-            if placement.col_idx + placement.colspan == num_cols {
-                right_conflicts.push((t_br, t_br_style.clone()));
-            } else {
+            let mut right_conflicts = vec![BorderConflict {
+                width: info.right.0,
+                style: info.right.1.clone(),
+                element_priority: 5,
+            }];
+            if col_idx + colspan - 1 < num_cols
+                && let Some(col_node) = col_elements[col_idx + colspan - 1]
+            {
+                let (col_br, col_br_style) = get_element_borders(styles, col_node).3;
+                right_conflicts.push(BorderConflict {
+                    width: col_br,
+                    style: col_br_style,
+                    element_priority: 2,
+                });
+            }
+            if col_idx + colspan - 1 < num_cols
+                && let Some(cg_node) = colgroup_elements[col_idx + colspan - 1]
+            {
+                let is_last_col_of_cg = (col_idx + colspan) == num_cols
+                    || colgroup_elements[col_idx + colspan] != Some(cg_node);
+                if is_last_col_of_cg {
+                    let (cg_br, cg_br_style) = get_element_borders(styles, cg_node).3;
+                    right_conflicts.push(BorderConflict {
+                        width: cg_br,
+                        style: cg_br_style,
+                        element_priority: 1,
+                    });
+                }
+            }
+            if col_idx + colspan == num_cols {
+                right_conflicts.push(BorderConflict {
+                    width: t_br,
+                    style: t_br_style.clone(),
+                    element_priority: 0,
+                });
+            }
+            if col_idx + colspan < num_cols {
                 for (&other_node, other_p) in &cell_placements {
-                    if placement.col_idx + placement.colspan == other_p.col_idx {
-                        let overlap = other_p.row_idx < placement.row_idx + placement.rowspan
-                            && placement.row_idx < other_p.row_idx + other_p.rowspan;
+                    if other_p.col_idx == col_idx + colspan {
+                        let overlap = other_p.row_idx < row_idx + rowspan
+                            && row_idx < other_p.row_idx + other_p.rowspan;
                         if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            right_conflicts.push(other_info.left.clone());
+                            right_conflicts.push(BorderConflict {
+                                width: other_info.left.0,
+                                style: other_info.left.1.clone(),
+                                element_priority: 5,
+                            });
                         }
                     }
                 }
+                if let Some(next_col_node) = col_elements[col_idx + colspan] {
+                    let (col_bl, col_bl_style) = get_element_borders(styles, next_col_node).2;
+                    right_conflicts.push(BorderConflict {
+                        width: col_bl,
+                        style: col_bl_style,
+                        element_priority: 2,
+                    });
+                }
+                if let Some(next_cg_node) = colgroup_elements[col_idx + colspan] {
+                    let is_first_col_of_next_cg =
+                        colgroup_elements[col_idx + colspan - 1] != Some(next_cg_node);
+                    if is_first_col_of_next_cg {
+                        let (cg_bl, cg_bl_style) = get_element_borders(styles, next_cg_node).2;
+                        right_conflicts.push(BorderConflict {
+                            width: cg_bl,
+                            style: cg_bl_style,
+                            element_priority: 1,
+                        });
+                    }
+                }
             }
-            let resolved_right = resolve_multiple_collapsed_borders(&right_conflicts);
+            let (resolved_right_w, resolved_right_s) =
+                resolve_collapsed_borders_new(&right_conflicts);
 
             // Mutate in local_styles
             if let Some(cell_style) = local_styles.get_mut(&cell_node) {
                 let surround = std::sync::Arc::make_mut(&mut cell_style.reset_surround);
-                surround.border_top_width = resolved_top.round() as i32;
-                surround.border_bottom_width = resolved_bottom.round() as i32;
-                surround.border_left_width = resolved_left.round() as i32;
-                surround.border_right_width = resolved_right.round() as i32;
+                surround.border_top_width = resolved_top_w.round() as i32;
+                surround.border_bottom_width = resolved_bottom_w.round() as i32;
+                surround.border_left_width = resolved_left_w.round() as i32;
+                surround.border_right_width = resolved_right_w.round() as i32;
+
+                surround.border_top_style = resolved_top_s;
+                surround.border_bottom_style = resolved_bottom_s;
+                surround.border_left_style = resolved_left_s;
+                surround.border_right_style = resolved_right_s;
+            }
+        }
+
+        // Update table's outer borders by taking max of resolved outer borders of outer cells
+        for (&cell_node, placement) in &cell_placements {
+            if let Some(cell_style) = local_styles.get(&cell_node) {
+                if placement.row_idx == 0 {
+                    border_top = border_top.max(cell_style.reset_surround.border_top_width as f32);
+                }
+                if placement.row_idx + placement.rowspan == rows.len() {
+                    border_bottom =
+                        border_bottom.max(cell_style.reset_surround.border_bottom_width as f32);
+                }
+                if placement.col_idx == 0 {
+                    border_left =
+                        border_left.max(cell_style.reset_surround.border_left_width as f32);
+                }
+                if placement.col_idx + placement.colspan == num_cols {
+                    border_right =
+                        border_right.max(cell_style.reset_surround.border_right_width as f32);
+                }
             }
         }
 
@@ -786,6 +1033,9 @@ pub fn layout_table_container(
                     *w *= scale;
                 }
             }
+        } else if num_cols > 0 && avail_col_width > 0.0 {
+            let share = avail_col_width / num_cols as f32;
+            col_widths.fill(share);
         }
         final_content_width
     };
@@ -1460,71 +1710,214 @@ fn cell_has_rendered_content(dom: &Dom, node_id: NodeId) -> bool {
     false
 }
 
+fn gather_cols_and_colgroups(
+    dom: &Dom,
+    table_node: NodeId,
+    num_cols: usize,
+) -> (Vec<Option<NodeId>>, Vec<Option<NodeId>>) {
+    let mut col_elements = vec![None; num_cols];
+    let mut colgroup_elements = vec![None; num_cols];
+
+    let mut col_idx = 0;
+    for &child in dom.children(table_node) {
+        if col_idx >= num_cols {
+            break;
+        }
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if name == "colgroup" {
+                let colgroup_children = dom.children(child);
+                let has_cols = colgroup_children.iter().any(|&c| {
+                    if let Some(NodeData::Element {
+                        name: child_name, ..
+                    }) = dom.data(c)
+                    {
+                        child_name == "col"
+                    } else {
+                        false
+                    }
+                });
+
+                if has_cols {
+                    for &colgroup_child in colgroup_children {
+                        if col_idx >= num_cols {
+                            break;
+                        }
+                        if let Some(NodeData::Element {
+                            name: child_name, ..
+                        }) = dom.data(colgroup_child)
+                            && child_name == "col"
+                        {
+                            let span =
+                                parse_span_attribute(dom, colgroup_child, "span").clamp(1, 1000);
+                            for _ in 0..span {
+                                if col_idx < num_cols {
+                                    col_elements[col_idx] = Some(colgroup_child);
+                                    colgroup_elements[col_idx] = Some(child);
+                                    col_idx += 1;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let span = parse_span_attribute(dom, child, "span").clamp(1, 1000);
+                    for _ in 0..span {
+                        if col_idx < num_cols {
+                            colgroup_elements[col_idx] = Some(child);
+                            col_idx += 1;
+                        }
+                    }
+                }
+            } else if name == "col" {
+                let span = parse_span_attribute(dom, child, "span").clamp(1, 1000);
+                for _ in 0..span {
+                    if col_idx < num_cols {
+                        col_elements[col_idx] = Some(child);
+                        col_idx += 1;
+                    }
+                }
+            }
+        }
+    }
+    (col_elements, colgroup_elements)
+}
+
+fn style_priority(style: &str) -> i32 {
+    match style {
+        "hidden" => 9,
+        "double" => 8,
+        "solid" => 7,
+        "dashed" => 6,
+        "dotted" => 5,
+        "ridge" => 4,
+        "outset" => 3,
+        "groove" => 2,
+        "inset" => 1,
+        _ => 0, // "none" or any other value
+    }
+}
+
+#[derive(Clone)]
+struct BorderConflict {
+    width: f32,
+    style: String,
+    element_priority: i32,
+}
+
+fn resolve_collapsed_borders_new(conflicts: &[BorderConflict]) -> (f32, String) {
+    if conflicts.is_empty() {
+        return (0.0, "none".to_string());
+    }
+
+    // Coerce "none" style to "solid" if width is > 0.0, to match original codebase behavior
+    let coerced_conflicts: Vec<BorderConflict> = conflicts
+        .iter()
+        .map(|c| {
+            let mut style = c.style.clone();
+            if c.width > 0.0 && style == "none" {
+                style = "solid".to_string();
+            }
+            BorderConflict {
+                width: c.width,
+                style,
+                element_priority: c.element_priority,
+            }
+        })
+        .collect();
+
+    // 1. Check for "hidden"
+    for conflict in &coerced_conflicts {
+        if conflict.style == "hidden" {
+            return (0.0, "hidden".to_string());
+        }
+    }
+
+    // 2. Filter out "none"
+    let mut active: Vec<&BorderConflict> = coerced_conflicts
+        .iter()
+        .filter(|c| c.style != "none")
+        .collect();
+
+    if active.is_empty() {
+        return (0.0, "none".to_string());
+    }
+
+    // 3. Find max width
+    let mut max_w = -1.0_f32;
+    for c in &active {
+        if c.width > max_w {
+            max_w = c.width;
+        }
+    }
+
+    // Keep those with max width (with a small float tolerance)
+    active.retain(|c| (c.width - max_w).abs() < 1e-4);
+
+    if active.len() == 1 {
+        return (active[0].width, active[0].style.clone());
+    }
+
+    // 4. Find max style priority
+    let mut max_style_pri = -1;
+    for c in &active {
+        let pri = style_priority(&c.style);
+        if pri > max_style_pri {
+            max_style_pri = pri;
+        }
+    }
+
+    active.retain(|c| style_priority(&c.style) == max_style_pri);
+
+    if active.len() == 1 {
+        return (active[0].width, active[0].style.clone());
+    }
+
+    // 5. Find max element priority
+    let mut max_elem_pri = -1;
+    for c in &active {
+        if c.element_priority > max_elem_pri {
+            max_elem_pri = c.element_priority;
+        }
+    }
+
+    active.retain(|c| c.element_priority == max_elem_pri);
+
+    (active[0].width, active[0].style.clone())
+}
+
+#[allow(clippy::type_complexity)]
+fn get_element_borders(
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    node: NodeId,
+) -> ((f32, String), (f32, String), (f32, String), (f32, String)) {
+    if let Some(style) = styles.get(&node) {
+        let bt = get_px(style, "border-top-width", 0.0);
+        let bb = get_px(style, "border-bottom-width", 0.0);
+        let bl = get_px(style, "border-left-width", 0.0);
+        let br = get_px(style, "border-right-width", 0.0);
+
+        let bt_style = style.reset_surround.border_top_style.clone();
+        let bb_style = style.reset_surround.border_bottom_style.clone();
+        let bl_style = style.reset_surround.border_left_style.clone();
+        let br_style = style.reset_surround.border_right_style.clone();
+
+        (
+            (bt, bt_style),
+            (bb, bb_style),
+            (bl, bl_style),
+            (br, br_style),
+        )
+    } else {
+        (
+            (0.0, "none".to_string()),
+            (0.0, "none".to_string()),
+            (0.0, "none".to_string()),
+            (0.0, "none".to_string()),
+        )
+    }
+}
+
 fn is_cell_empty(dom: &Dom, cell_node: NodeId) -> bool {
     !cell_has_rendered_content(dom, cell_node)
-}
-
-fn resolve_collapsed_border(border_1: (f32, &str), border_2: (f32, &str)) -> f32 {
-    if border_1.1 == "hidden" || border_2.1 == "hidden" {
-        return 0.0;
-    }
-    let s1 = if border_1.0 > 0.0 && border_1.1 == "none" {
-        "solid"
-    } else {
-        border_1.1
-    };
-    let s2 = if border_2.0 > 0.0 && border_2.1 == "none" {
-        "solid"
-    } else {
-        border_2.1
-    };
-
-    if s1 == "none" && s2 == "none" {
-        return 0.0;
-    }
-    if s1 == "none" {
-        return border_2.0;
-    }
-    if s2 == "none" {
-        return border_1.0;
-    }
-    border_1.0.max(border_2.0)
-}
-
-fn resolve_multiple_collapsed_borders(borders: &[(f32, String)]) -> f32 {
-    if borders.is_empty() {
-        return 0.0;
-    }
-    let mut resolved_w = borders[0].0;
-    let mut resolved_s = if borders[0].0 > 0.0 && borders[0].1 == "none" {
-        "solid".to_string()
-    } else {
-        borders[0].1.clone()
-    };
-    for b in &borders[1..] {
-        let b_style = if b.0 > 0.0 && b.1 == "none" {
-            "solid".to_string()
-        } else {
-            b.1.clone()
-        };
-        let w = resolve_collapsed_border((resolved_w, &resolved_s), (b.0, &b_style));
-        let s = if resolved_s == "hidden" || b_style == "hidden" {
-            "hidden".to_string()
-        } else if resolved_s == "none" && b_style == "none" {
-            "none".to_string()
-        } else if resolved_s == "none" {
-            b_style.clone()
-        } else if b_style == "none" {
-            resolved_s.clone()
-        } else if b.0 > resolved_w {
-            b_style.clone()
-        } else {
-            resolved_s.clone()
-        };
-        resolved_w = w;
-        resolved_s = s;
-    }
-    resolved_w
 }
 
 #[cfg(test)]
@@ -4700,5 +5093,103 @@ mod tests {
 
         assert_eq!(c11_box.rect.size.width, 120.0);
         assert_eq!(c12_box.rect.size.width, 80.0);
+    }
+
+    #[test]
+    fn test_col_width_distribution_empty_table_fixed_width() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        let cell1_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell1_node);
+
+        let cell2_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell2_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 200px, border-collapse: collapse
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        table_style.insert(
+            "border-collapse".to_string(),
+            CssValue::Keyword("collapse".to_string()),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Both cells are empty and have no width. Column widths are 0 initially.
+        let cell1_style = style_with_display("table-cell");
+        styles.insert(cell1_node, cell1_style);
+
+        let cell2_style = style_with_display("table-cell");
+        styles.insert(cell2_node, cell2_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // The columns should be expanded to fill the table width (200px / 2 = 100px each)
+        assert_eq!(table_box.rect.size.width, 200.0);
+        let r = &table_box.children[0];
+        assert_eq!(r.children[0].rect.size.width, 100.0);
+        assert_eq!(r.children[1].rect.size.width, 100.0);
+    }
+
+    #[test]
+    fn test_border_collapse_equal_width_style_priority() {
+        let c1 = BorderConflict {
+            width: 3.0,
+            style: "solid".to_string(),
+            element_priority: 5,
+        };
+        let c2 = BorderConflict {
+            width: 3.0,
+            style: "double".to_string(),
+            element_priority: 0,
+        };
+        let (resolved_w, resolved_s) = resolve_collapsed_borders_new(&[c1, c2]);
+        assert_eq!(resolved_w, 3.0);
+        assert_eq!(resolved_s, "double");
+    }
+
+    #[test]
+    fn test_border_collapse_equal_width_and_style_element_priority() {
+        let c1 = BorderConflict {
+            width: 2.0,
+            style: "solid".to_string(),
+            element_priority: 5, // cell
+        };
+        let c2 = BorderConflict {
+            width: 2.0,
+            style: "solid".to_string(),
+            element_priority: 4, // row
+        };
+        let c3 = BorderConflict {
+            width: 2.0,
+            style: "solid".to_string(),
+            element_priority: 3, // row group
+        };
+        let (resolved_w, resolved_s) = resolve_collapsed_borders_new(&[c1, c2, c3]);
+        assert_eq!(resolved_w, 2.0);
+        assert_eq!(resolved_s, "solid");
     }
 }
