@@ -293,11 +293,19 @@ impl DomRectReadOnly {
     /// Returns a normalized copy of the rectangle where the width and height are guaranteed to be non-negative,
     /// while preserving the same spatial boundary coordinates.
     pub fn normalize(&self) -> Self {
-        if self.width.is_nan() || self.height.is_nan() {
-            Self::new(self.x, self.y, self.width, self.height)
+        let (new_x, new_width) = if self.width.is_nan() {
+            (self.x, self.width)
         } else {
-            Self::new(self.left(), self.top(), self.width.abs(), self.height.abs())
-        }
+            (self.left(), self.width.abs())
+        };
+
+        let (new_y, new_height) = if self.height.is_nan() {
+            (self.y, self.height)
+        } else {
+            (self.top(), self.height.abs())
+        };
+
+        Self::new(new_x, new_y, new_width, new_height)
     }
 
     /// Returns the intersection of this rectangle and another rectangle.
@@ -2033,6 +2041,21 @@ mod tests {
         let norm_ro = ro.normalize();
         assert_eq!(norm_ro.x(), -90.0);
         assert_eq!(norm_ro.width(), 100.0);
+
+        // One dimension is NaN
+        let r_nan_w = DomRect::new(10.0, 20.0, f64::NAN, -50.0);
+        let norm_nan_w = r_nan_w.normalize();
+        assert!(norm_nan_w.width().is_nan());
+        assert_eq!(norm_nan_w.x(), 10.0);
+        assert_eq!(norm_nan_w.height(), 50.0);
+        assert_eq!(norm_nan_w.y(), -30.0);
+
+        let r_nan_h = DomRectReadOnly::new(10.0, 20.0, -100.0, f64::NAN);
+        let norm_nan_h = r_nan_h.normalize();
+        assert!(norm_nan_h.height().is_nan());
+        assert_eq!(norm_nan_h.y(), 20.0);
+        assert_eq!(norm_nan_h.width(), 100.0);
+        assert_eq!(norm_nan_h.x(), -90.0);
     }
 
     #[test]
