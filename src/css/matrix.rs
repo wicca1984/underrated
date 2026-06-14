@@ -204,10 +204,150 @@ impl Matrix3d {
     }
 
     #[inline]
+    pub fn translate_x(tx: f32) -> Self {
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, tx, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn translate_y(ty: f32) -> Self {
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, ty, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn translate_z(tz: f32) -> Self {
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, tz, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
     pub fn scale(sx: f32, sy: f32, sz: f32) -> Self {
         Matrix3d {
             m: [
                 sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, sz, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn scale_x(sx: f32) -> Self {
+        Matrix3d {
+            m: [
+                sx, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn scale_y(sy: f32) -> Self {
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn scale_z(sz: f32) -> Self {
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, sz, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn skew_x(deg_x: f32) -> Self {
+        let rad_x = deg_x.to_radians();
+        Matrix3d {
+            m: [
+                1.0,
+                rad_x.tan(),
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn skew_y(deg_y: f32) -> Self {
+        let rad_y = deg_y.to_radians();
+        Matrix3d {
+            m: [
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                rad_y.tan(),
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn skew(deg_x: f32, deg_y: f32) -> Self {
+        let rad_x = deg_x.to_radians();
+        let rad_y = deg_y.to_radians();
+        Matrix3d {
+            m: [
+                1.0,
+                rad_x.tan(),
+                0.0,
+                0.0,
+                rad_y.tan(),
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn from_col_major(m: [f32; 16]) -> Self {
+        Matrix3d {
+            m: [
+                m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], m[3],
+                m[7], m[11], m[15],
             ],
         }
     }
@@ -370,8 +510,23 @@ impl Matrix3d {
     }
 
     pub fn from_transform_fns(fns: &[TransformFn]) -> Self {
-        let aff = Affine::from_transform_fns(fns);
-        Matrix3d::from(aff)
+        let mut result = Matrix3d::identity();
+        for func in fns {
+            let next = match func {
+                TransformFn::Scale { x, y } => Matrix3d::scale(*x, *y, 1.0),
+                TransformFn::ScaleX(x) => Matrix3d::scale_x(*x),
+                TransformFn::ScaleY(y) => Matrix3d::scale_y(*y),
+                TransformFn::Rotate(AngleDeg(deg)) => Matrix3d::rotate_z(*deg),
+                TransformFn::Matrix(m) => Matrix3d::from(Affine { m: *m }),
+                TransformFn::Translate { x, y } => {
+                    Matrix3d::translate(resolve_length(x), resolve_length(y), 0.0)
+                }
+                TransformFn::TranslateX(x) => Matrix3d::translate_x(resolve_length(x)),
+                TransformFn::TranslateY(y) => Matrix3d::translate_y(resolve_length(y)),
+            };
+            result = result.multiply(&next);
+        }
+        result
     }
 }
 
@@ -1055,5 +1210,80 @@ mod tests {
         for i in 0..16 {
             assert!((orig.m[i] - recomposed.m[i]).abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn test_matrix3d_new_constructors_t0918() {
+        // translate_x/y/z
+        let tx = Matrix3d::translate_x(5.0);
+        assert_eq!(tx.apply_point_3d(1.0, 1.0, 1.0), (6.0, 1.0, 1.0));
+
+        let ty = Matrix3d::translate_y(6.0);
+        assert_eq!(ty.apply_point_3d(1.0, 1.0, 1.0), (1.0, 7.0, 1.0));
+
+        let tz = Matrix3d::translate_z(7.0);
+        assert_eq!(tz.apply_point_3d(1.0, 1.0, 1.0), (1.0, 1.0, 8.0));
+
+        // scale_x/y/z
+        let sx = Matrix3d::scale_x(2.0);
+        assert_eq!(sx.apply_point_3d(1.0, 2.0, 3.0), (2.0, 2.0, 3.0));
+
+        let sy = Matrix3d::scale_y(3.0);
+        assert_eq!(sy.apply_point_3d(1.0, 2.0, 3.0), (1.0, 6.0, 3.0));
+
+        let sz = Matrix3d::scale_z(4.0);
+        assert_eq!(sz.apply_point_3d(1.0, 2.0, 3.0), (1.0, 2.0, 12.0));
+
+        // skew_x/y/skew
+        let skx = Matrix3d::skew_x(45.0);
+        let p_skx = skx.apply_point_3d(1.0, 2.0, 3.0); // x' = 1 + 2 * 1 = 3, y' = 2, z' = 3
+        assert!((p_skx.0 - 3.0).abs() < 1e-4);
+        assert!((p_skx.1 - 2.0).abs() < 1e-4);
+        assert!((p_skx.2 - 3.0).abs() < 1e-4);
+
+        let sky = Matrix3d::skew_y(45.0);
+        let p_sky = sky.apply_point_3d(2.0, 1.0, 3.0); // x' = 2, y' = 1 + 2 * 1 = 3, z' = 3
+        assert!((p_sky.0 - 2.0).abs() < 1e-4);
+        assert!((p_sky.1 - 3.0).abs() < 1e-4);
+        assert!((p_sky.2 - 3.0).abs() < 1e-4);
+
+        let sk = Matrix3d::skew(45.0, 45.0);
+        let p_sk = sk.apply_point_3d(2.0, 3.0, 4.0); // x' = 2 + 3 * 1 = 5, y' = 3 + 2 * 1 = 5, z' = 4
+        assert!((p_sk.0 - 5.0).abs() < 1e-4);
+        assert!((p_sk.1 - 5.0).abs() < 1e-4);
+        assert!((p_sk.2 - 4.0).abs() < 1e-4);
+
+        // matrix3d constructor
+        let m3d = Matrix3d::from_col_major([
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ]);
+        assert_eq!(
+            m3d.m,
+            [
+                1.0, 5.0, 9.0, 13.0, 2.0, 6.0, 10.0, 14.0, 3.0, 7.0, 11.0, 15.0, 4.0, 8.0, 12.0,
+                16.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_matrix3d_from_transform_fns_direct_t0918() {
+        let fns = vec![
+            TransformFn::Translate {
+                x: LengthOrPercent {
+                    value: 10.0,
+                    unit: LengthUnit::Px,
+                },
+                y: LengthOrPercent {
+                    value: 20.0,
+                    unit: LengthUnit::Px,
+                },
+            },
+            TransformFn::Scale { x: 3.0, y: 3.0 },
+        ];
+        let aff = Affine::from_transform_fns(&fns);
+        let m3d = Matrix3d::from_transform_fns(&fns);
+        let aff_back = m3d.to_2d().unwrap();
+        assert_eq!(aff, aff_back);
     }
 }
