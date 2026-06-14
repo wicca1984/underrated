@@ -4284,6 +4284,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("color") {
                 return parse_color_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("color-mix") {
+                return parse_color_mix_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -5010,6 +5013,178 @@ fn parse_color_function(components: &[ComponentValue]) -> Option<Color> {
     };
 
     Some(Color::Rgba(r, g, b, alpha))
+}
+
+fn split_by_comma(components: &[ComponentValue]) -> Vec<&[ComponentValue]> {
+    let mut args = Vec::new();
+    let mut start = 0;
+    for (i, comp) in components.iter().enumerate() {
+        if matches!(comp, ComponentValue::Token(CssToken::Comma)) {
+            args.push(&components[start..i]);
+            start = i + 1;
+        }
+    }
+    args.push(&components[start..]);
+    args
+}
+
+fn parse_colorspace(components: &[ComponentValue]) -> Option<String> {
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    if non_ws.len() != 2 {
+        return None;
+    }
+
+    let is_in = match non_ws[0] {
+        ComponentValue::Token(CssToken::Ident(s)) => s.eq_ignore_ascii_case("in"),
+        _ => false,
+    };
+
+    if !is_in {
+        return None;
+    }
+
+    match non_ws[1] {
+        ComponentValue::Token(CssToken::Ident(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn parse_color_with_optional_percentage(
+    components: &[ComponentValue],
+) -> Option<(Color, Option<f64>)> {
+    // Filter out whitespace
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    match non_ws.len() {
+        1 => {
+            // It must be a color
+            let css_val = parse_single_value(&[non_ws[0]])?;
+            if let CssValue::Color(color) = css_val {
+                Some((color, None))
+            } else {
+                None
+            }
+        }
+        2 => {
+            // One must be a color, one must be a percentage
+            let p0 = match non_ws[0] {
+                ComponentValue::Token(CssToken::Percentage(p)) => Some(*p),
+                _ => None,
+            };
+            let p1 = match non_ws[1] {
+                ComponentValue::Token(CssToken::Percentage(p)) => Some(*p),
+                _ => None,
+            };
+
+            match (p0, p1) {
+                (Some(p), None) => {
+                    let css_val = parse_single_value(&[non_ws[1]])?;
+                    if let CssValue::Color(color) = css_val {
+                        Some((color, Some(p)))
+                    } else {
+                        None
+                    }
+                }
+                (None, Some(p)) => {
+                    let css_val = parse_single_value(&[non_ws[0]])?;
+                    if let CssValue::Color(color) = css_val {
+                        Some((color, Some(p)))
+                    } else {
+                        None
+                    }
+                }
+                _ => None, // Invalid: either both or neither are percentages
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_color_mix_function(components: &[ComponentValue]) -> Option<Color> {
+    let args = split_by_comma(components);
+    if args.len() != 3 {
+        return None;
+    }
+
+    let colorspace = parse_colorspace(args[0])?;
+    if !colorspace.eq_ignore_ascii_case("srgb") {
+        // TODO(spec): Support non-srgb interpolation colorspaces in color-mix()
+        return None;
+    }
+
+    let (color1, p1) = parse_color_with_optional_percentage(args[1])?;
+    let (color2, p2) = parse_color_with_optional_percentage(args[2])?;
+
+    // Determine weights
+    let (w1, w2) = match (p1, p2) {
+        (None, None) => (50.0, 50.0),
+        (Some(p), None) => (p, 100.0 - p),
+        (None, Some(p)) => (100.0 - p, p),
+        (Some(p1_val), Some(p2_val)) => (p1_val, p2_val),
+    };
+
+    let sum = w1 + w2;
+    if sum <= 0.0 {
+        return None;
+    }
+
+    let weight1 = w1 / sum;
+    let weight2 = w2 / sum;
+
+    let alpha_multiplier = if sum < 100.0 { sum / 100.0 } else { 1.0 };
+
+    // Convert colors to sRGB float channels
+    let Color::Rgba(r1_u8, g1_u8, b1_u8, a1_u8) = color1;
+    let Color::Rgba(r2_u8, g2_u8, b2_u8, a2_u8) = color2;
+
+    let r1 = r1_u8 as f64 / 255.0;
+    let g1 = g1_u8 as f64 / 255.0;
+    let b1 = b1_u8 as f64 / 255.0;
+    let a1 = a1_u8 as f64 / 255.0;
+
+    let r2 = r2_u8 as f64 / 255.0;
+    let g2 = g2_u8 as f64 / 255.0;
+    let b2 = b2_u8 as f64 / 255.0;
+    let a2 = a2_u8 as f64 / 255.0;
+
+    // Premultiply
+    let pr1 = r1 * a1;
+    let pg1 = g1 * a1;
+    let pb1 = b1 * a1;
+
+    let pr2 = r2 * a2;
+    let pg2 = g2 * a2;
+    let pb2 = b2 * a2;
+
+    // Linearly interpolate
+    let mixed_pr = pr1 * weight1 + pr2 * weight2;
+    let mixed_pg = pg1 * weight1 + pg2 * weight2;
+    let mixed_pb = pb1 * weight1 + pb2 * weight2;
+    let mixed_a = a1 * weight1 + a2 * weight2;
+
+    // Un-premultiply
+    let (mixed_r, mixed_g, mixed_b) = if mixed_a > 0.0 {
+        (mixed_pr / mixed_a, mixed_pg / mixed_a, mixed_pb / mixed_a)
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+
+    let final_a = mixed_a * alpha_multiplier;
+
+    // Convert back to u8 RGBA
+    let r_out = (mixed_r * 255.0).round().clamp(0.0, 255.0) as u8;
+    let g_out = (mixed_g * 255.0).round().clamp(0.0, 255.0) as u8;
+    let b_out = (mixed_b * 255.0).round().clamp(0.0, 255.0) as u8;
+    let a_out = (final_a * 255.0).round().clamp(0.0, 255.0) as u8;
+
+    Some(Color::Rgba(r_out, g_out, b_out, a_out))
 }
 
 fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
@@ -6202,6 +6377,51 @@ mod tests {
 
         // Unsupported color space: color(rec2020 1 0 0) -> None
         assert_eq!(parse("color(rec2020 1 0 0)"), None);
+    }
+
+    #[test]
+    fn test_parse_color_mix_function() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // Standard srgb interpolation: color-mix(in srgb, red, blue)
+        // Red is rgb(255, 0, 0), Blue is rgb(0, 0, 255). 50/50 mix should yield rgb(128, 0, 128)
+        assert_eq!(
+            parse("color-mix(in srgb, red, blue)"),
+            Some(CssValue::Color(Color::Rgba(128, 0, 128, 255)))
+        );
+
+        // Weighted mix: color-mix(in srgb, white 25%, black)
+        // White is rgb(255, 255, 255), Black is rgb(0, 0, 0). 25% white / 75% black yields rgb(64, 64, 64)
+        assert_eq!(
+            parse("color-mix(in srgb, white 25%, black)"),
+            Some(CssValue::Color(Color::Rgba(64, 64, 64, 255)))
+        );
+
+        // Weighted mix with percentage specified first: color-mix(in srgb, 25% white, black)
+        assert_eq!(
+            parse("color-mix(in srgb, 25% white, black)"),
+            Some(CssValue::Color(Color::Rgba(64, 64, 64, 255)))
+        );
+
+        // Non-srgb interpolation colorspace should return None (and log a todo)
+        assert_eq!(parse("color-mix(in oklch, red, blue)"), None);
+
+        // Edge case: sum of percentages is 0% -> None
+        assert_eq!(parse("color-mix(in srgb, red 0%, blue 0%)"), None);
+
+        // Edge case: percentages sum to S < 100% -> alpha scaling
+        // red 20%, blue 30% -> weights are 0.4 and 0.6. alpha scale is 0.5.
+        // red (255,0,0,255) and blue (0,0,255,255)
+        // pr = 255 * 0.4 = 102, pg = 0, pb = 255 * 0.6 = 153, mixed_a = 1.0.
+        // un-premultiply is 102, 0, 153.
+        // final_a = 0.5 * 255 = 128 (127.5 rounded up to 128)
+        assert_eq!(
+            parse("color-mix(in srgb, red 20%, blue 30%)"),
+            Some(CssValue::Color(Color::Rgba(102, 0, 153, 128)))
+        );
     }
 
     #[test]
