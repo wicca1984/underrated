@@ -1346,4 +1346,126 @@ mod tests {
             Ok("lo".into())
         );
     }
+
+    #[test]
+    fn test_t1029_detailed_bounds_and_split_text_and_whole_text() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("abcdef".into()));
+
+        // 1. substring_data bounds and offsets
+        // offset == len, count == 0 -> OK
+        assert_eq!(dom.substring_data(text_node, 6, 0), Ok("".into()));
+        // offset == len, count > 0 -> OK
+        assert_eq!(dom.substring_data(text_node, 6, 10), Ok("".into()));
+        // offset > len -> IndexSize
+        assert_eq!(
+            dom.substring_data(text_node, 7, 0),
+            Err(DomError::IndexSize)
+        );
+        // offset < 0 -> IndexSize
+        assert_eq!(
+            dom.substring_data(text_node, -1, 3),
+            Err(DomError::IndexSize)
+        );
+        // count < 0 -> IndexSize
+        assert_eq!(
+            dom.substring_data(text_node, 2, -1),
+            Err(DomError::IndexSize)
+        );
+
+        // 2. append_data bounds and operations
+        assert_eq!(dom.append_data(text_node, "ghi"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("abcdefghi".into()));
+
+        // 3. insert_data bounds
+        // offset == len -> append
+        assert_eq!(dom.insert_data(text_node, 9, "jkl"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("abcdefghijkl".into()));
+        // offset == 0 -> prepend
+        assert_eq!(dom.insert_data(text_node, 0, "123"), Ok(()));
+        assert_eq!(
+            dom.character_data(text_node),
+            Some("123abcdefghijkl".into())
+        );
+        // offset > len -> IndexSize
+        assert_eq!(
+            dom.insert_data(text_node, 20, "xyz"),
+            Err(DomError::IndexSize)
+        );
+
+        // 4. delete_data bounds
+        let del_node = dom.create_node(NodeData::Text("123456".into()));
+        // offset == len, count == 0 -> OK, no-op
+        assert_eq!(dom.delete_data(del_node, 6, 0), Ok(()));
+        assert_eq!(dom.character_data(del_node), Some("123456".into()));
+        // offset == len, count > 0 -> OK, no-op
+        assert_eq!(dom.delete_data(del_node, 6, 5), Ok(()));
+        assert_eq!(dom.character_data(del_node), Some("123456".into()));
+        // offset > len -> IndexSize
+        assert_eq!(dom.delete_data(del_node, 7, 1), Err(DomError::IndexSize));
+
+        // 5. replace_data bounds
+        let rep_node = dom.create_node(NodeData::Text("123456".into()));
+        // offset == len, count == 0 -> append
+        assert_eq!(dom.replace_data(rep_node, 6, 0, "789"), Ok(()));
+        assert_eq!(dom.character_data(rep_node), Some("123456789".into()));
+        // offset > len -> IndexSize
+        assert_eq!(
+            dom.replace_data(rep_node, 10, 1, "abc"),
+            Err(DomError::IndexSize)
+        );
+
+        // 6. split_text bounds and behavior
+        let split_node = dom.create_node(NodeData::Text("hello".into()));
+        // offset == len -> splits into "hello" and ""
+        let new_part1 = dom.split_text(split_node, 5).unwrap();
+        assert_eq!(dom.character_data(split_node), Some("hello".into()));
+        assert_eq!(dom.character_data(new_part1), Some("".into()));
+        // offset == 0 -> splits into "" and "hello"
+        let split_node2 = dom.create_node(NodeData::Text("hello".into()));
+        let new_part2 = dom.split_text(split_node2, 0).unwrap();
+        assert_eq!(dom.character_data(split_node2), Some("".into()));
+        assert_eq!(dom.character_data(new_part2), Some("hello".into()));
+        // offset > len -> IndexSize
+        assert_eq!(dom.split_text(split_node2, 10), Err(DomError::IndexSize));
+
+        // 7. split_text parent hierarchy updating
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let mid_node = dom.create_node(NodeData::Text("abcxyz".into()));
+        dom.append_child(parent, mid_node);
+        dom.clear_dirty();
+        assert!(!dom.is_dirty(parent));
+
+        // Split "abcxyz" at 3 -> "abc" and "xyz"
+        let right_node = dom.split_text(mid_node, 3).unwrap();
+        assert_eq!(dom.character_data(mid_node), Some("abc".into()));
+        assert_eq!(dom.character_data(right_node), Some("xyz".into()));
+        // Verify siblings/children of parent
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0], mid_node);
+        assert_eq!(children[1], right_node);
+        assert_eq!(dom.parent(right_node), Some(parent));
+        // Verify dirty marking
+        assert!(dom.is_dirty(parent));
+
+        // 8. whole_text verification
+        let t1 = dom.create_node(NodeData::Text("hello ".into()));
+        let t2 = dom.create_node(NodeData::Text("beautiful ".into()));
+        let t3 = dom.create_node(NodeData::Text("world".into()));
+        let p2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(p2, t1);
+        dom.append_child(p2, t2);
+        dom.append_child(p2, t3);
+        assert_eq!(dom.whole_text(t2), Some("hello beautiful world".into()));
+
+        // non-text node -> None
+        assert_eq!(dom.whole_text(p2), None);
+    }
 }
