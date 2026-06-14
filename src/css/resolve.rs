@@ -286,6 +286,11 @@ fn component_to_calc_tokens(
             } else if name.eq_ignore_ascii_case("min")
                 || name.eq_ignore_ascii_case("max")
                 || name.eq_ignore_ascii_case("clamp")
+                || name.eq_ignore_ascii_case("abs")
+                || name.eq_ignore_ascii_case("sign")
+                || name.eq_ignore_ascii_case("round")
+                || name.eq_ignore_ascii_case("mod")
+                || name.eq_ignore_ascii_case("rem")
             {
                 evaluate_math_fn(
                     name,
@@ -315,8 +320,7 @@ fn component_to_calc_tokens(
     }
 }
 
-/// Evaluates CSS math functions `min()`, `max()`, and `clamp()`.
-/// `kind` must be "min", "max", or "clamp".
+/// Evaluates CSS math functions `min()`, `max()`, `clamp()`, `abs()`, `sign()`, `round()`, `mod()`, and `rem()`.
 pub fn evaluate_math_fn(
     kind: &str,
     components: &[ComponentValue],
@@ -336,9 +340,75 @@ pub fn evaluate_math_fn(
     }
     args.push(&components[start..]);
 
-    // 2. Evaluate each argument group with the existing evaluate_calc.
+    let kind_lower = kind.to_ascii_lowercase();
+    let kind_str = kind_lower.as_str();
+
+    // 2. Extract strategy keyword if this is a round() function.
+    let mut strategy = None;
+    let numeric_args_slices = if kind_str == "round" {
+        if args.len() == 3 {
+            let first_trimmed = trim_whitespace(args[0]);
+            if first_trimmed.len() != 1 {
+                return None;
+            }
+            let strat = match &first_trimmed[0] {
+                ComponentValue::Token(CssToken::Ident(s)) => {
+                    let s_low = s.to_ascii_lowercase();
+                    match s_low.as_str() {
+                        "nearest" => "nearest",
+                        "up" => "up",
+                        "down" => "down",
+                        "to-zero" => "to-zero",
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            };
+            strategy = Some(strat);
+            vec![args[1], args[2]]
+        } else if args.len() == 2 {
+            strategy = Some("nearest");
+            vec![args[0], args[1]]
+        } else {
+            return None;
+        }
+    } else {
+        args.clone()
+    };
+
+    // Arity validation
+    match kind_str {
+        "abs" | "sign" => {
+            if numeric_args_slices.len() != 1 {
+                return None;
+            }
+        }
+        "mod" | "rem" => {
+            if numeric_args_slices.len() != 2 {
+                return None;
+            }
+        }
+        "round" => {
+            if numeric_args_slices.len() != 2 {
+                return None;
+            }
+        }
+        "clamp" => {
+            if numeric_args_slices.len() != 3 {
+                return None;
+            }
+        }
+        "min" | "max" => {
+            if numeric_args_slices.is_empty() {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+
+    // 3. Evaluate each argument group with the existing evaluate_calc.
     let mut evaluated_args = Vec::new();
-    for arg_group in args {
+    for arg_group in numeric_args_slices {
         let trimmed_group = trim_whitespace(arg_group);
         if trimmed_group.is_empty() {
             return None;
@@ -357,7 +427,7 @@ pub fn evaluate_math_fn(
         return None;
     }
 
-    // 3. Ensure all arguments are of the same kind: all Lengths in Px or all Numbers.
+    // 4. Ensure all arguments are of the same kind: all Lengths in Px or all Numbers.
     let is_length = match evaluated_args[0] {
         CssValue::Length(_, LengthUnit::Px) => true,
         CssValue::Number(_) => false,
@@ -372,7 +442,7 @@ pub fn evaluate_math_fn(
         }
     }
 
-    // 4. Extract f32 values.
+    // 5. Extract f32 values.
     let values: Vec<f32> = if is_length {
         evaluated_args
             .iter()
@@ -391,37 +461,94 @@ pub fn evaluate_math_fn(
             .collect()
     };
 
-    // 5. Combine values based on math function kind.
-    let result = if kind.eq_ignore_ascii_case("min") {
+    // 6. Combine values based on math function kind.
+    let result = if kind_str == "min" {
         let &first = values.first()?;
         let mut min_val = first;
         for &v in &values[1..] {
             min_val = min_val.min(v);
         }
         min_val
-    } else if kind.eq_ignore_ascii_case("max") {
+    } else if kind_str == "max" {
         let &first = values.first()?;
         let mut max_val = first;
         for &v in &values[1..] {
             max_val = max_val.max(v);
         }
         max_val
-    } else if kind.eq_ignore_ascii_case("clamp") {
+    } else if kind_str == "clamp" {
         if values.len() != 3 {
             return None;
         }
         let min_val = values[0];
         let val_val = values[1];
         let max_val = values[2];
-        // clamp(MIN, VAL, MAX) = max(MIN, min(VAL, MAX))
         min_val.max(val_val.min(max_val))
+    } else if kind_str == "abs" {
+        if values.len() != 1 {
+            return None;
+        }
+        values[0].abs()
+    } else if kind_str == "sign" {
+        if values.len() != 1 {
+            return None;
+        }
+        let val = values[0];
+        if val > 0.0 {
+            1.0
+        } else if val < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    } else if kind_str == "round" {
+        if values.len() != 2 {
+            return None;
+        }
+        let a = values[0];
+        let b = values[1];
+        if b == 0.0 {
+            return None;
+        }
+        let b_abs = b.abs();
+        let frac = a / b_abs;
+        let strat = strategy.unwrap_or("nearest");
+        let frac_rounded = match strat {
+            "nearest" => (frac + 0.5).floor(),
+            "up" => frac.ceil(),
+            "down" => frac.floor(),
+            "to-zero" => frac.trunc(),
+            _ => return None,
+        };
+        frac_rounded * b_abs
+    } else if kind_str == "mod" {
+        if values.len() != 2 {
+            return None;
+        }
+        let a = values[0];
+        let b = values[1];
+        if b == 0.0 {
+            return None;
+        }
+        a - b * (a / b).floor()
+    } else if kind_str == "rem" {
+        if values.len() != 2 {
+            return None;
+        }
+        let a = values[0];
+        let b = values[1];
+        if b == 0.0 {
+            return None;
+        }
+        a - b * (a / b).trunc()
     } else {
         return None;
     };
 
-    // 6. Return the result in the corresponding variant.
-    // TODO(spec): percentage arguments in min/max/clamp are not resolved against a layout reference
-    if is_length {
+    // 7. Return the result in the corresponding variant.
+    if kind_str == "sign" {
+        Some(CssValue::Number(result))
+    } else if is_length {
         Some(CssValue::Length(result, LengthUnit::Px))
     } else {
         Some(CssValue::Number(result))
@@ -553,6 +680,56 @@ pub fn resolve_value(
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("clamp") => {
                 evaluate_math_fn(
                     "clamp",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("abs") => {
+                evaluate_math_fn(
+                    "abs",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sign") => {
+                evaluate_math_fn(
+                    "sign",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("round") => {
+                evaluate_math_fn(
+                    "round",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("mod") => {
+                evaluate_math_fn(
+                    "mod",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("rem") => {
+                evaluate_math_fn(
+                    "rem",
                     value,
                     root_font_size,
                     viewport_w,
@@ -848,6 +1025,111 @@ mod tests {
         assert_eq!(
             resolve_string("clamp(20px, 15px, 10px)", 16.0, 1000.0, 800.0, &vars),
             Some(CssValue::Length(20.0, LengthUnit::Px))
+        );
+    }
+
+    #[test]
+    fn test_resolve_new_math_fns() {
+        let vars = HashMap::new();
+
+        // abs
+        assert_eq!(
+            resolve_string("abs(-5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(5.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("abs(5)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(5.0))
+        );
+        assert_eq!(
+            resolve_string("abs(-42)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(42.0))
+        );
+
+        // sign
+        assert_eq!(
+            resolve_string("sign(-3px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(-1.0))
+        );
+        assert_eq!(
+            resolve_string("sign(0)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(0.0))
+        );
+        assert_eq!(
+            resolve_string("sign(7)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(1.0))
+        );
+        assert_eq!(
+            resolve_string("sign(10px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(1.0))
+        );
+
+        // round
+        assert_eq!(
+            resolve_string("round(11px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("round(up, 11px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(15.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("round(down, 14px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("round(to-zero, -14px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(-10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("round(13, 5)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(15.0))
+        );
+        assert_eq!(
+            resolve_string("round(13, 0)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+        assert_eq!(
+            resolve_string("round(up, 13, 0)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // mod
+        assert_eq!(
+            resolve_string("mod(18px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(3.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("mod(-18px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(2.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("mod(18px, 0px)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // rem
+        assert_eq!(
+            resolve_string("rem(18px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(3.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("rem(-18px, 5px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(-3.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("rem(18px, 0px)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // nested math functions inside round/mod/rem/abs/sign
+        assert_eq!(
+            resolve_string("abs(min(-10px, -20px))", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(20.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("sign(max(5px, 10px))", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(1.0))
         );
     }
 }
