@@ -79,7 +79,13 @@ pub fn resolve_relative_positions(
     if let Some(style) = layout_box.node.and_then(|node_id| styles.get(&node_id))
         && (style.reset_box.position == "relative" || style.reset_box.position == "sticky")
     {
-        let dx = if style.reset_surround.left != -1 {
+        let dx = if style.reset_surround.left != -1 && style.reset_surround.right != -1 {
+            if style.inherited_text.direction == "rtl" {
+                -(style.reset_surround.right as f32)
+            } else {
+                style.reset_surround.left as f32
+            }
+        } else if style.reset_surround.left != -1 {
             style.reset_surround.left as f32
         } else if style.reset_surround.right != -1 {
             -(style.reset_surround.right as f32)
@@ -234,7 +240,14 @@ pub fn layout_absolute_and_fixed_elements(
         // Layout the node with viewport width as containing width, and top/left as offsets
         if let Some(mut child_box) = layout_node(dom, styles, node, viewport_width, left, top, 0) {
             // If left is auto (-1) and right is set (not -1), position from the right offset.
-            if style.reset_surround.left == -1 && style.reset_surround.right != -1 {
+            // Also, if both are set and direction is RTL, right wins over left.
+            let use_right_for_rtl = style.reset_surround.left != -1
+                && style.reset_surround.right != -1
+                && style.inherited_text.direction == "rtl";
+
+            if (style.reset_surround.left == -1 && style.reset_surround.right != -1)
+                || use_right_for_rtl
+            {
                 let right = style.reset_surround.right as f32;
                 let target_x = viewport_width - right - child_box.rect.size.width;
                 let shift_dx = target_x - child_box.rect.origin.x;
@@ -543,5 +556,246 @@ mod tests {
         // So the offset position should be (-30.0, -25.0).
         assert_eq!(div_box.rect.origin.x, -30.0);
         assert_eq!(div_box.rect.origin.y, -25.0);
+    }
+
+    #[test]
+    fn test_relative_position_rtl_both_offsets() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: relative;
+                left: 20px;
+                right: 30px;
+                direction: rtl;
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Relative div box not found");
+        // Since direction is rtl and both are specified, right (30px) wins over left (20px).
+        // Vertical shift is 0.0. Horizontal shift is -30.0.
+        assert_eq!(div_box.rect.origin.x, -30.0);
+        assert_eq!(div_box.rect.origin.y, 0.0);
+    }
+
+    #[test]
+    fn test_absolute_position_nested_inside_relative() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let relative_parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, relative_parent);
+
+        let absolute_child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(relative_parent, absolute_child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .parent {
+                display: block;
+                position: relative;
+                left: 50px;
+                top: 40px;
+                width: 400px;
+                height: 300px;
+            }
+            .child {
+                display: block;
+                position: absolute;
+                left: 15px;
+                top: 25px;
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(absolute_child) {
+                child_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let child_box = child_box.expect("Absolute child box not found");
+        // In this engine (V1), absolute descendants of relative parents are positioned relative to viewport.
+        // So they are at (15, 25).
+        assert_eq!(child_box.rect.origin.x, 15.0);
+        assert_eq!(child_box.rect.origin.y, 25.0);
+    }
+
+    #[test]
+    fn test_absolute_position_rtl_both_offsets() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                left: 10px;
+                right: 20px;
+                width: 100px;
+                height: 50px;
+                top: 10px;
+                direction: rtl;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // Since both are specified and direction is rtl, right wins.
+        // x = viewport_width - right - width = 800.0 - 20.0 - 100.0 = 680.0
+        assert_eq!(div_box.rect.origin.x, 680.0);
+    }
+
+    #[test]
+    fn test_fixed_position_ignores_positioned_ancestor() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let relative_parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, relative_parent);
+
+        let fixed_child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(relative_parent, fixed_child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .parent {
+                display: block;
+                position: relative;
+                left: 100px;
+                top: 100px;
+                width: 400px;
+                height: 300px;
+            }
+            .child {
+                display: block;
+                position: fixed;
+                left: 15px;
+                top: 25px;
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(fixed_child) {
+                child_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let child_box = child_box.expect("Fixed child box not found");
+        // Fixed child ignores relative ancestor shift and position. It should be positioned at viewport (15, 25).
+        assert_eq!(child_box.rect.origin.x, 15.0);
+        assert_eq!(child_box.rect.origin.y, 25.0);
     }
 }
