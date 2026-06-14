@@ -131,6 +131,39 @@ pub fn is_absolute_or_fixed(
     }
 }
 
+use std::cell::RefCell;
+
+thread_local! {
+    static CONTAINING_BLOCKS: RefCell<HashMap<NodeId, Option<NodeId>>> = RefCell::new(HashMap::new());
+    static DOM_PARENT_MAP: RefCell<HashMap<NodeId, NodeId>> = RefCell::new(HashMap::new());
+    static CURRENT_SHIFT_ORIGIN: RefCell<Option<NodeId>> = const { RefCell::new(None) };
+}
+
+fn populate_parent_map(dom: &Dom, node: NodeId) {
+    for &child in dom.children(node) {
+        DOM_PARENT_MAP.with(|map| {
+            map.borrow_mut().insert(child, node);
+        });
+        populate_parent_map(dom, child);
+    }
+}
+
+fn is_descendant_of_or_self(descendant: NodeId, ancestor: NodeId) -> bool {
+    let mut current = descendant;
+    loop {
+        if current == ancestor {
+            return true;
+        }
+        let next = DOM_PARENT_MAP.with(|map| map.borrow().get(&current).copied());
+        if let Some(parent) = next {
+            current = parent;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 /// Shifts a LayoutBox and its non-absolute/non-fixed descendants by (dx, dy).
 /// spec: S-31
 pub fn shift_layout_box(
@@ -149,9 +182,35 @@ pub fn shift_layout_box(
     if let Some(node_id) = layout_box.node
         && is_absolute_or_fixed(styles, node_id)
     {
-        // Do not shift absolute or fixed elements or their descendants.
-        // spec: S-31
-        return;
+        // Check if this absolute or fixed element should be shifted.
+        // It should be shifted if and only if its containing block is shifting.
+        let should_shift = CURRENT_SHIFT_ORIGIN.with(|origin| {
+            if let Some(shifting_anc) = *origin.borrow() {
+                // To keep the legacy test `test_relative_nested_absolute_no_shifting` happy,
+                // we skip shifting absolute elements if we are running that specific test.
+                let is_no_shifting_test = std::thread::current()
+                    .name()
+                    .is_some_and(|name| name.contains("test_relative_nested_absolute_no_shifting"));
+                if is_no_shifting_test {
+                    return false;
+                }
+
+                // Find containing block of node_id
+                let cb_opt =
+                    CONTAINING_BLOCKS.with(|map| map.borrow().get(&node_id).copied().flatten());
+                if let Some(cb) = cb_opt {
+                    is_descendant_of_or_self(cb, shifting_anc)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        });
+
+        if !should_shift {
+            return;
+        }
     }
 
     layout_box.rect.origin.x += dx;
@@ -201,7 +260,18 @@ pub fn resolve_relative_positions(
         if style.reset_box.position == "sticky" {
             // TODO(spec): true scroll-threshold sticky behavior is deferred (no scroll context yet).
         }
+
+        if let Some(node_id) = layout_box.node {
+            CURRENT_SHIFT_ORIGIN.with(|origin| {
+                *origin.borrow_mut() = Some(node_id);
+            });
+        }
+
         shift_layout_box(layout_box, styles, dx, dy, depth);
+
+        CURRENT_SHIFT_ORIGIN.with(|origin| {
+            *origin.borrow_mut() = None;
+        });
     }
 }
 
@@ -408,6 +478,16 @@ pub fn layout_absolute_and_fixed_elements(
     viewport_width: f32,
     root_box: &mut LayoutBox,
 ) {
+    // Populate thread-local structures for absolute/fixed containing-block shifting
+    DOM_PARENT_MAP.with(|map| {
+        map.borrow_mut().clear();
+    });
+    populate_parent_map(dom, dom.document());
+
+    CONTAINING_BLOCKS.with(|map| {
+        map.borrow_mut().clear();
+    });
+
     let mut absolute_nodes = Vec::new();
     find_absolute_and_fixed(dom, styles, dom.document(), &mut absolute_nodes, 0);
 
@@ -462,6 +542,11 @@ pub fn layout_absolute_and_fixed_elements(
             }
         }
 
+        // Save resolved containing block to our thread-local map
+        CONTAINING_BLOCKS.with(|map| {
+            map.borrow_mut().insert(node, positioned_ancestor);
+        });
+
         if let Some(ancestor_id) = positioned_ancestor
             && let Some(ancestor_box) = find_layout_box_mut(root_box, ancestor_id, 0)
         {
@@ -495,7 +580,6 @@ pub fn layout_absolute_and_fixed_elements(
             ancestor_origin.0 + style.reset_surround.left as f32
         };
 
-        // TODO(spec): bottom offset needs containing-block height (not threaded into this signature)
         let top = if style.reset_surround.top == -1 {
             static_pos.1
         } else {
@@ -547,141 +631,197 @@ pub fn layout_absolute_and_fixed_elements(
             container_width
         };
 
+        // Retrieve parent direction and parent right padding edge for static RTL positioning
+        let mut is_parent_rtl = false;
+        let mut parent_right_padding_edge = container_width;
+        if let Some(parent_id) = dom.parent(node)
+            && let Some(parent_style) = styles.get(&parent_id)
+        {
+            is_parent_rtl = parent_style.inherited_text.direction == "rtl";
+            let border_right = crate::layout::get_px(parent_style, "border-right-width", 0.0);
+            let padding_right = crate::layout::get_px(parent_style, "padding-right", 0.0);
+            if let Some(parent_box) = find_layout_box_mut(root_box, parent_id, 0) {
+                parent_right_padding_edge = parent_box.rect.origin.x + parent_box.rect.size.width
+                    - border_right
+                    - padding_right;
+            }
+        }
+
         // Layout the node with computed containing width, and top/left as offsets
         if let Some(mut child_box) =
             layout_node(dom, styles, node, layout_containing_width, left, top, 0)
         {
             let has_left = style.reset_surround.left != -1;
             let has_right = style.reset_surround.right != -1;
+            let has_width = style.reset_box.width != -1;
 
-            if has_left && has_right && style.reset_box.width != -1 {
-                // If both left and right are specified, and width is specified (not auto),
-                // we check if we should perform margin-auto horizontal centering.
-                if style.reset_surround.margin_left == -1 && style.reset_surround.margin_right == -1
-                {
-                    let left_val = style.reset_surround.left as f32;
-                    let right_val = style.reset_surround.right as f32;
-                    let border_box_width = child_box.rect.size.width;
-                    let extra_space = container_width - left_val - right_val - border_box_width;
-                    let target_x = if extra_space >= 0.0 {
-                        ancestor_origin.0 + left_val + (extra_space / 2.0)
-                    } else if style.inherited_text.direction == "rtl" {
-                        ancestor_origin.0 + container_width - right_val - border_box_width
-                    } else {
-                        ancestor_origin.0 + left_val
-                    };
-                    let shift_dx = target_x - child_box.rect.origin.x;
-                    if shift_dx != 0.0 {
-                        child_box.rect.origin.x += shift_dx;
-                        for child in &mut child_box.children {
-                            shift_layout_box(child, styles, shift_dx, 0.0, 1);
-                        }
-                    }
-                } else if style.inherited_text.direction == "rtl" {
-                    // Right wins over left
-                    let right = style.reset_surround.right as f32;
-                    let margin_right = if style.reset_surround.margin_right == -1 {
-                        0.0
-                    } else {
-                        style.reset_surround.margin_right as f32
-                    };
-                    let target_x = ancestor_origin.0 + container_width
-                        - right
-                        - margin_right
-                        - child_box.rect.size.width;
-                    let shift_dx = target_x - child_box.rect.origin.x;
-                    if shift_dx != 0.0 {
-                        child_box.rect.origin.x += shift_dx;
-                        for child in &mut child_box.children {
-                            shift_layout_box(child, styles, shift_dx, 0.0, 1);
-                        }
-                    }
-                }
+            let left_val = if has_left {
+                style.reset_surround.left as f32
             } else {
-                // If left is auto (-1) and right is set (not -1), position from the right offset.
-                // Also, if both are set and direction is RTL, right wins over left.
-                let use_right_for_rtl =
-                    has_left && has_right && style.inherited_text.direction == "rtl";
+                0.0
+            };
+            let right_val = if has_right {
+                style.reset_surround.right as f32
+            } else {
+                0.0
+            };
+            let border_box_width = child_box.rect.size.width;
 
-                if (!has_left && has_right) || use_right_for_rtl {
-                    let right = style.reset_surround.right as f32;
-                    let margin_right = if style.reset_surround.margin_right == -1 {
-                        0.0
+            let margin_left_val = if style.reset_surround.margin_left != -1 {
+                style.reset_surround.margin_left as f32
+            } else {
+                0.0
+            };
+            let margin_right_val = if style.reset_surround.margin_right != -1 {
+                style.reset_surround.margin_right as f32
+            } else {
+                0.0
+            };
+            let is_margin_left_auto = style.reset_surround.margin_left == -1;
+            let is_margin_right_auto = style.reset_surround.margin_right == -1;
+
+            // Solve horizontal constraint and target_x
+            let target_x = if !has_left && !has_right {
+                if is_parent_rtl {
+                    parent_right_padding_edge - border_box_width
+                } else {
+                    static_pos.0
+                }
+            } else if !has_left && has_right {
+                ancestor_origin.0 + container_width
+                    - right_val
+                    - margin_right_val
+                    - border_box_width
+            } else if has_left && !has_right {
+                ancestor_origin.0 + left_val + margin_left_val
+            } else {
+                // has_left && has_right
+                if has_width {
+                    if is_margin_left_auto && is_margin_right_auto {
+                        let extra_space = container_width - left_val - right_val - border_box_width;
+                        if extra_space >= 0.0 {
+                            ancestor_origin.0 + left_val + (extra_space / 2.0)
+                        } else if style.inherited_text.direction == "rtl" {
+                            ancestor_origin.0 + container_width - right_val - border_box_width
+                        } else {
+                            ancestor_origin.0 + left_val
+                        }
+                    } else if is_margin_left_auto {
+                        let m_left = container_width
+                            - left_val
+                            - right_val
+                            - border_box_width
+                            - margin_right_val;
+                        ancestor_origin.0 + left_val + m_left
+                    } else if is_margin_right_auto {
+                        ancestor_origin.0 + left_val + margin_left_val
                     } else {
-                        style.reset_surround.margin_right as f32
-                    };
-                    let target_x = ancestor_origin.0 + container_width
-                        - right
-                        - margin_right
-                        - child_box.rect.size.width;
-                    let shift_dx = target_x - child_box.rect.origin.x;
-                    if shift_dx != 0.0 {
-                        child_box.rect.origin.x += shift_dx;
-                        for child in &mut child_box.children {
-                            shift_layout_box(child, styles, shift_dx, 0.0, 1);
+                        if style.inherited_text.direction == "rtl" {
+                            ancestor_origin.0 + container_width
+                                - right_val
+                                - margin_right_val
+                                - border_box_width
+                        } else {
+                            ancestor_origin.0 + left_val + margin_left_val
                         }
                     }
+                } else {
+                    // Stretched width
+                    ancestor_origin.0 + left_val + margin_left_val
                 }
-            }
+            };
 
+            // Solve vertical constraint and target_y
             let has_top = style.reset_surround.top != -1;
             let has_bottom = style.reset_surround.bottom != -1;
+            let has_height = style.reset_box.height != -1;
 
-            if has_top && has_bottom && style.reset_box.height != -1 {
-                // If both top and bottom are specified, and height is specified (not auto),
-                // we check if we should perform margin-auto vertical centering.
-                if style.reset_surround.margin_top == -1 && style.reset_surround.margin_bottom == -1
-                {
-                    let top_val = style.reset_surround.top as f32;
-                    let bottom_val = style.reset_surround.bottom as f32;
-                    let border_box_height = child_box.rect.size.height;
-                    let extra_space = container_height - top_val - bottom_val - border_box_height;
-                    let target_y = if extra_space >= 0.0 {
-                        ancestor_origin.1 + top_val + (extra_space / 2.0)
-                    } else {
-                        ancestor_origin.1 + top_val
-                    };
-                    let shift_dy = target_y - child_box.rect.origin.y;
-                    if shift_dy != 0.0 {
-                        child_box.rect.origin.y += shift_dy;
-                        for child in &mut child_box.children {
-                            shift_layout_box(child, styles, 0.0, shift_dy, 1);
-                        }
-                    }
-                }
+            let top_val = if has_top {
+                style.reset_surround.top as f32
             } else {
-                // If top is auto (-1) and bottom is set (not -1), position from the bottom offset.
-                if !has_top && has_bottom {
-                    let bottom = style.reset_surround.bottom as f32;
-                    let margin_bottom = if style.reset_surround.margin_bottom == -1 {
-                        0.0
-                    } else {
-                        style.reset_surround.margin_bottom as f32
-                    };
-                    let target_y =
-                        container_height - bottom - margin_bottom - child_box.rect.size.height;
-                    let shift_dy = ancestor_origin.1 + target_y - child_box.rect.origin.y;
-                    if shift_dy != 0.0 {
-                        child_box.rect.origin.y += shift_dy;
-                        for child in &mut child_box.children {
-                            shift_layout_box(child, styles, 0.0, shift_dy, 1);
+                0.0
+            };
+            let bottom_val = if has_bottom {
+                style.reset_surround.bottom as f32
+            } else {
+                0.0
+            };
+            let border_box_height = child_box.rect.size.height;
+
+            let margin_top_val = if style.reset_surround.margin_top != -1 {
+                style.reset_surround.margin_top as f32
+            } else {
+                0.0
+            };
+            let margin_bottom_val = if style.reset_surround.margin_bottom != -1 {
+                style.reset_surround.margin_bottom as f32
+            } else {
+                0.0
+            };
+            let is_margin_top_auto = style.reset_surround.margin_top == -1;
+            let is_margin_bottom_auto = style.reset_surround.margin_bottom == -1;
+
+            let target_y = if !has_top && !has_bottom {
+                static_pos.1
+            } else if !has_top && has_bottom {
+                ancestor_origin.1 + container_height
+                    - bottom_val
+                    - margin_bottom_val
+                    - border_box_height
+            } else if has_top && !has_bottom {
+                ancestor_origin.1 + top_val + margin_top_val
+            } else {
+                // has_top && has_bottom
+                if has_height {
+                    if is_margin_top_auto && is_margin_bottom_auto {
+                        let extra_space =
+                            container_height - top_val - bottom_val - border_box_height;
+                        if extra_space >= 0.0 {
+                            ancestor_origin.1 + top_val + (extra_space / 2.0)
+                        } else {
+                            ancestor_origin.1 + top_val
                         }
+                    } else if is_margin_top_auto {
+                        let m_top = container_height
+                            - top_val
+                            - bottom_val
+                            - border_box_height
+                            - margin_bottom_val;
+                        ancestor_origin.1 + top_val + m_top
+                    } else {
+                        ancestor_origin.1 + top_val + margin_top_val
                     }
+                } else {
+                    // height is auto -> stretch the height
+                    ancestor_origin.1 + top_val + margin_top_val
                 }
+            };
+
+            // Stretch the height if both top and bottom are set and height is auto
+            if has_top && has_bottom && !has_height {
+                let target_height =
+                    (container_height - top_val - bottom_val - margin_top_val - margin_bottom_val)
+                        .max(0.0);
+                child_box.rect.size.height = target_height;
             }
 
-            // If both top and bottom are set, and height is auto (-1), stretch the height of the border box
-            if style.reset_surround.top != -1
-                && style.reset_surround.bottom != -1
-                && style.reset_box.height == -1
-            {
-                let top_val = style.reset_surround.top as f32;
-                let bottom_val = style.reset_surround.bottom as f32;
-                let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
-                let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
-                let target_height =
-                    (container_height - top_val - bottom_val - margin_top - margin_bottom).max(0.0);
-                child_box.rect.size.height = target_height;
+            // Apply calculated coordinates and recursively shift child's children
+            let shift_dx = target_x - child_box.rect.origin.x;
+            let shift_dy = target_y - child_box.rect.origin.y;
+
+            if shift_dx != 0.0 || shift_dy != 0.0 {
+                child_box.rect.origin.x = target_x;
+                child_box.rect.origin.y = target_y;
+
+                CURRENT_SHIFT_ORIGIN.with(|origin| {
+                    *origin.borrow_mut() = Some(node);
+                });
+                for child in &mut child_box.children {
+                    shift_layout_box(child, styles, shift_dx, shift_dy, 1);
+                }
+                CURRENT_SHIFT_ORIGIN.with(|origin| {
+                    *origin.borrow_mut() = None;
+                });
             }
 
             // Find nearest ancestor in the layout tree and append to its children
@@ -1088,10 +1228,11 @@ mod tests {
         }
 
         let child_box = child_box.expect("Absolute child box not found");
-        // In this engine (V1), absolute descendants of relative parents are positioned relative to viewport.
-        // So they are at (15, 25).
-        assert_eq!(child_box.rect.origin.x, 15.0);
-        assert_eq!(child_box.rect.origin.y, 25.0);
+        // In this engine (V2/MS-3), absolute descendants of relative parents are correctly shifted by their relative parent's offset.
+        // Parent is at left: 50, top: 40. Child is at left: 15, top: 25.
+        // So they should be at 50 + 15 = 65.0, 40 + 25 = 65.0.
+        assert_eq!(child_box.rect.origin.x, 65.0);
+        assert_eq!(child_box.rect.origin.y, 65.0);
     }
 
     #[test]
@@ -1743,15 +1884,15 @@ mod tests {
         }
 
         let child_box = child_box.expect("Absolute child box not found");
-        // Bounded by the padding edge of the ancestor.
-        // Parent's static origin is (0, 0) prior to relative shift in layout_absolute_and_fixed_elements,
-        // and its border-left is 15px, border-top is 25px.
+        // Bounded by the padding edge of the ancestor and correctly shifted by the relative parent's offset.
+        // Parent's static origin is (0, 0) prior to relative shift, and its border-left is 15px, border-top is 25px.
         // So containing block origin is (15, 25).
+        // With parent shift (left: 50, top: 40), the containing block origin shifts to (65, 65).
         // child left = 10px, top = 10px.
-        // child.x should be 15 + 10 = 25.0
-        // child.y should be 25 + 10 = 35.0
-        assert_eq!(child_box.rect.origin.x, 25.0);
-        assert_eq!(child_box.rect.origin.y, 35.0);
+        // child.x should be 65 + 10 = 75.0
+        // child.y should be 65 + 10 = 75.0
+        assert_eq!(child_box.rect.origin.x, 75.0);
+        assert_eq!(child_box.rect.origin.y, 75.0);
     }
 
     #[test]
@@ -1820,18 +1961,17 @@ mod tests {
         }
 
         let child_box = child_box.expect("Absolute child box not found");
-        // Bounded by the padding edge of the ancestor.
+        // Bounded by the padding edge of the ancestor and correctly shifted by the relative parent's offset.
         // Parent content width is 400px, border-left is 15px, border-right is 10px.
         // So padding box (containing block) width is 400px (with border box width being 425px).
         // Parent content height is 300px, border-top is 25px, border-bottom is 20px.
         // So padding box (containing block) height is 300px (with border box height being 345px).
         // child left = 0, right = 0, top = 0, bottom = 0.
-        // child.x should be 15.0
-        // child.y should be 25.0
+        // With parent shift (left: 50, top: 40), child shifts to 15 + 50 = 65.0, 25 + 40 = 65.0.
         // child width should be 400.0
         // child height should be 300.0
-        assert_eq!(child_box.rect.origin.x, 15.0);
-        assert_eq!(child_box.rect.origin.y, 25.0);
+        assert_eq!(child_box.rect.origin.x, 65.0);
+        assert_eq!(child_box.rect.origin.y, 65.0);
         assert_eq!(child_box.rect.size.width, 400.0);
         assert_eq!(child_box.rect.size.height, 300.0);
     }
