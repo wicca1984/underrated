@@ -686,6 +686,103 @@ pub fn serialize_color(color: Color) -> String {
     }
 }
 
+fn format_float(val: f32) -> String {
+    let formatted = format!("{:.5}", val);
+    let mut trimmed = formatted.trim_end_matches('0');
+    if trimmed.ends_with('.') {
+        trimmed = &trimmed[..trimmed.len() - 1];
+    }
+    if trimmed.is_empty() || trimmed == "-0" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Serializes a Color into its CSS lab() functional notation.
+pub fn serialize_color_lab(color: Color) -> String {
+    let (l, a, b, alpha) = color_to_lab(color);
+    if alpha == 1.0 {
+        format!(
+            "lab({} {} {})",
+            format_float(l),
+            format_float(a),
+            format_float(b)
+        )
+    } else {
+        format!(
+            "lab({} {} {} / {})",
+            format_float(l),
+            format_float(a),
+            format_float(b),
+            format_float(alpha)
+        )
+    }
+}
+
+/// Serializes a Color into its CSS lch() functional notation.
+pub fn serialize_color_lch(color: Color) -> String {
+    let (l, c, h, alpha) = color_to_lch(color);
+    if alpha == 1.0 {
+        format!(
+            "lch({} {} {})",
+            format_float(l),
+            format_float(c),
+            format_float(h)
+        )
+    } else {
+        format!(
+            "lch({} {} {} / {})",
+            format_float(l),
+            format_float(c),
+            format_float(h),
+            format_float(alpha)
+        )
+    }
+}
+
+/// Serializes a Color into its CSS oklab() functional notation.
+pub fn serialize_color_oklab(color: Color) -> String {
+    let (l, a, b, alpha) = color_to_oklab(color);
+    if alpha == 1.0 {
+        format!(
+            "oklab({} {} {})",
+            format_float(l),
+            format_float(a),
+            format_float(b)
+        )
+    } else {
+        format!(
+            "oklab({} {} {} / {})",
+            format_float(l),
+            format_float(a),
+            format_float(b),
+            format_float(alpha)
+        )
+    }
+}
+
+/// Serializes a Color into its CSS oklch() functional notation.
+pub fn serialize_color_oklch(color: Color) -> String {
+    let (l, c, h, alpha) = color_to_oklch(color);
+    if alpha == 1.0 {
+        format!(
+            "oklch({} {} {})",
+            format_float(l),
+            format_float(c),
+            format_float(h)
+        )
+    } else {
+        format!(
+            "oklch({} {} {} / {})",
+            format_float(l),
+            format_float(c),
+            format_float(h),
+            format_float(alpha)
+        )
+    }
+}
+
 fn replace_word(s: &str, target: &str, replacement: &str) -> String {
     let mut result = String::new();
     let target_len = target.len();
@@ -1093,10 +1190,10 @@ fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[Strin
             let b_val = format!("{}", b);
             let a_val = format!("{}", a as f32 / 255.0);
             for t in resolved.iter_mut() {
+                *t = replace_word(t, "alpha", &a_val);
                 *t = replace_word(t, "r", &r_val);
                 *t = replace_word(t, "g", &g_val);
                 *t = replace_word(t, "b", &b_val);
-                *t = replace_word(t, "alpha", &a_val);
             }
         }
         "hsl" | "hsla" => {
@@ -1106,10 +1203,10 @@ fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[Strin
             let l_val = format!("{}%", l * 100.0);
             let a_val = format!("{}", a);
             for t in resolved.iter_mut() {
+                *t = replace_word(t, "alpha", &a_val);
                 *t = replace_word(t, "h", &h_val);
                 *t = replace_word(t, "s", &s_val);
                 *t = replace_word(t, "l", &l_val);
-                *t = replace_word(t, "alpha", &a_val);
             }
         }
         "hwb" => {
@@ -1119,10 +1216,10 @@ fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[Strin
             let b_val = format!("{}%", b * 100.0);
             let a_val = format!("{}", a);
             for t in resolved.iter_mut() {
+                *t = replace_word(t, "alpha", &a_val);
                 *t = replace_word(t, "h", &h_val);
                 *t = replace_word(t, "w", &w_val);
                 *t = replace_word(t, "b", &b_val);
-                *t = replace_word(t, "alpha", &a_val);
             }
         }
         "lab" => {
@@ -1132,10 +1229,10 @@ fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[Strin
             let b_val_str = format!("{}", b_val);
             let alpha_str = format!("{}", alpha);
             for t in resolved.iter_mut() {
+                *t = replace_word(t, "alpha", &alpha_str);
                 *t = replace_word(t, "l", &l_val);
                 *t = replace_word(t, "a", &a_val);
                 *t = replace_word(t, "b", &b_val_str);
-                *t = replace_word(t, "alpha", &alpha_str);
             }
         }
         "lch" => {
@@ -1145,10 +1242,10 @@ fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[Strin
             let h_val = format!("{}", h);
             let alpha_str = format!("{}", alpha);
             for t in resolved.iter_mut() {
+                *t = replace_word(t, "alpha", &alpha_str);
                 *t = replace_word(t, "l", &l_val);
                 *t = replace_word(t, "c", &c_val);
                 *t = replace_word(t, "h", &h_val);
-                *t = replace_word(t, "alpha", &alpha_str);
             }
         }
         "oklab" => {
@@ -1158,10 +1255,10 @@ fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[Strin
             let b_val_str = format!("{}", b_val);
             let alpha_str = format!("{}", alpha);
             for t in resolved.iter_mut() {
+                *t = replace_word(t, "alpha", &alpha_str);
                 *t = replace_word(t, "l", &l_val);
                 *t = replace_word(t, "a", &a_val);
                 *t = replace_word(t, "b", &b_val_str);
-                *t = replace_word(t, "alpha", &alpha_str);
             }
         }
         "oklch" => {
@@ -1171,10 +1268,10 @@ fn resolve_relative_tokens(func_name: &str, origin_color: Color, tokens: &[Strin
             let h_val = format!("{}", h);
             let alpha_str = format!("{}", alpha);
             for t in resolved.iter_mut() {
+                *t = replace_word(t, "alpha", &alpha_str);
                 *t = replace_word(t, "l", &l_val);
                 *t = replace_word(t, "c", &c_val);
                 *t = replace_word(t, "h", &h_val);
-                *t = replace_word(t, "alpha", &alpha_str);
             }
         }
         _ => {}
@@ -1612,8 +1709,55 @@ fn split_top_level_commas(s: &str) -> Vec<String> {
     parts
 }
 
+fn extract_calc_and_color(decl: &str) -> Option<(String, String, bool)> {
+    let decl_trimmed = decl.trim();
+    let decl_lower = decl_trimmed.to_ascii_lowercase();
+    if let Some(calc_idx) = decl_lower.find("calc(") {
+        // Find matching closing paren
+        let mut depth = 0;
+        let mut closing_idx = None;
+        for (i, c) in decl_trimmed[calc_idx..].char_indices() {
+            if c == '(' {
+                depth += 1;
+            } else if c == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    closing_idx = Some(calc_idx + i);
+                    break;
+                }
+            }
+        }
+        if let Some(c_idx) = closing_idx {
+            let calc_part = decl_trimmed[calc_idx..=c_idx].to_string();
+            if calc_idx == 0 {
+                // Calc is first
+                let rest = decl_trimmed[c_idx + 1..].trim().to_string();
+                Some((calc_part, rest, true))
+            } else {
+                // Calc is second
+                let rest = decl_trimmed[..calc_idx].trim().to_string();
+                Some((calc_part, rest, false))
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 fn parse_color_mix_decl(decl: &str) -> Option<(Color, Option<f32>)> {
     let decl = decl.trim();
+    if let Some((calc_part, color_part, _is_first)) = extract_calc_and_color(decl) {
+        let (val, unit) = parse_calc_expression(&calc_part)?;
+        if unit.as_deref() == Some("%") && (0.0..=100.0).contains(&val) {
+            let color = parse_color(&color_part)?;
+            return Some((color, Some(val)));
+        } else {
+            return None;
+        }
+    }
+
     if decl.starts_with(|c: char| c.is_ascii_digit() || c == '.' || c == '-') {
         let first_space_idx = decl.find(char::is_whitespace)?;
         let pct_str = decl[..first_space_idx].trim();
@@ -2901,5 +3045,48 @@ mod tests {
         // Mix in xyz-d65
         let mixed_xyz = mix_colors(red.clone(), blue.clone(), 0.5, "xyz-d65", None);
         assert!(mixed_xyz.is_some());
+    }
+
+    #[test]
+    fn test_color_mix_calc_weights() {
+        assert_eq!(
+            parse_color("color-mix(in srgb, red calc(40% + 10%), blue)"),
+            Some(Color::Rgba(128, 0, 128, 255))
+        );
+        assert_eq!(
+            parse_color("color-mix(in srgb, red, blue calc(50%))"),
+            Some(Color::Rgba(128, 0, 128, 255))
+        );
+        assert_eq!(
+            parse_color("color-mix(in srgb, red calc(20%), blue calc(30%))"),
+            Some(Color::Rgba(102, 0, 153, 128)) // 20% + 30% = 50% sum -> alpha scale = 0.5; ratio is 40% red, 60% blue
+        );
+    }
+
+    #[test]
+    fn test_lab_lch_oklch_serialization_round_trip() {
+        let lab_str = "lab(50 10 -20)";
+        let parsed_lab = parse_color(lab_str).unwrap();
+        let serialized_lab = serialize_color_lab(parsed_lab.clone());
+        let parsed_back_lab = parse_color(&serialized_lab).unwrap();
+        assert_eq!(parsed_lab, parsed_back_lab);
+
+        let lch_str = "lch(50 15 120)";
+        let parsed_lch = parse_color(lch_str).unwrap();
+        let serialized_lch = serialize_color_lch(parsed_lch.clone());
+        let parsed_back_lch = parse_color(&serialized_lch).unwrap();
+        assert_eq!(parsed_lch, parsed_back_lch);
+
+        let oklab_str = "oklab(0.6 0.1 -0.1)";
+        let parsed_oklab = parse_color(oklab_str).unwrap();
+        let serialized_oklab = serialize_color_oklab(parsed_oklab.clone());
+        let parsed_back_oklab = parse_color(&serialized_oklab).unwrap();
+        assert_eq!(parsed_oklab, parsed_back_oklab);
+
+        let oklch_str = "oklch(0.6 0.12 240)";
+        let parsed_oklch = parse_color(oklch_str).unwrap();
+        let serialized_oklch = serialize_color_oklch(parsed_oklch.clone());
+        let parsed_back_oklch = parse_color(&serialized_oklch).unwrap();
+        assert_eq!(parsed_oklch, parsed_back_oklch);
     }
 }
