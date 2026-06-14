@@ -310,6 +310,40 @@ fn component_to_calc_tokens(
                     )));
                     true
                 }
+                "vmin" => {
+                    let vmin = viewport_w.min(viewport_h);
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * vmin / 100.0,
+                    )));
+                    true
+                }
+                "vmax" => {
+                    let vmax = viewport_w.max(viewport_h);
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * vmax / 100.0,
+                    )));
+                    true
+                }
+                "in" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * 96.0)));
+                    true
+                }
+                "cm" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * 96.0 / 2.54,
+                    )));
+                    true
+                }
+                "mm" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * 9.6 / 2.54,
+                    )));
+                    true
+                }
+                "pc" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * 16.0)));
+                    true
+                }
                 "pt" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * 96.0 / 72.0,
@@ -1253,6 +1287,27 @@ pub fn resolve_value(
                         *value as f32 * viewport_h / 100.0,
                         LengthUnit::Px,
                     )),
+                    "vmin" => {
+                        let vmin = viewport_w.min(viewport_h);
+                        Some(CssValue::Length(
+                            *value as f32 * vmin / 100.0,
+                            LengthUnit::Px,
+                        ))
+                    }
+                    "vmax" => {
+                        let vmax = viewport_w.max(viewport_h);
+                        Some(CssValue::Length(
+                            *value as f32 * vmax / 100.0,
+                            LengthUnit::Px,
+                        ))
+                    }
+                    "in" => Some(CssValue::Length(*value as f32 * 96.0, LengthUnit::Px)),
+                    "cm" => Some(CssValue::Length(
+                        *value as f32 * 96.0 / 2.54,
+                        LengthUnit::Px,
+                    )),
+                    "mm" => Some(CssValue::Length(*value as f32 * 9.6 / 2.54, LengthUnit::Px)),
+                    "pc" => Some(CssValue::Length(*value as f32 * 16.0, LengthUnit::Px)),
                     "em" => Some(CssValue::Length(*value as f32, LengthUnit::Em)),
                     "pt" => Some(CssValue::Length(
                         *value as f32 * 96.0 / 72.0,
@@ -1330,6 +1385,30 @@ mod tests {
             resolve_string("10vh", 16.0, 1000.0, 800.0, &vars),
             Some(CssValue::Length(80.0, LengthUnit::Px))
         );
+        assert_eq!(
+            resolve_string("50vmin", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(400.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50vmax", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("2in", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(192.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("127cm", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(4800.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("1270mm", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(4800.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("6pc", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(96.0, LengthUnit::Px))
+        );
     }
 
     #[test]
@@ -1384,6 +1463,16 @@ mod tests {
         assert_eq!(
             resolve_string("calc(1rem + 10vw)", 16.0, 1000.0, 800.0, &vars),
             Some(CssValue::Length(116.0, LengthUnit::Px))
+        );
+        // calc(10vmin + 10vmax) -> 10% of 800 + 10% of 1000 -> 80.0 + 100.0 = 180.0
+        assert_eq!(
+            resolve_string("calc(10vmin + 10vmax)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(180.0, LengthUnit::Px))
+        );
+        // calc(1in + 6pc) -> 96px + 96px = 192px
+        assert_eq!(
+            resolve_string("calc(1in + 6pc)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(192.0, LengthUnit::Px))
         );
     }
 
