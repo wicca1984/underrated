@@ -852,9 +852,80 @@ pub fn parse_color(s: &str) -> Option<Color> {
                     };
                     return Some(parse_oklch(l, c, h, alpha));
                 }
+            } else if s_lower.starts_with("color(") {
+                let content = s[6..s.len() - 1].trim();
+                let content_clean = content.replace(['/', ','], " ");
+                let parts: Vec<&str> = content_clean.split_whitespace().collect();
+                if parts.len() == 4 || parts.len() == 5 {
+                    let colorspace = parts[0];
+                    let c1 = parse_percentage_or_number(parts[1])?;
+                    let c2 = parse_percentage_or_number(parts[2])?;
+                    let c3 = parse_percentage_or_number(parts[3])?;
+                    let alpha = if parts.len() == 5 {
+                        parse_alpha_component(parts[4])?
+                    } else {
+                        1.0
+                    };
+                    return parse_predefined_color(colorspace, c1, c2, c3, alpha);
+                }
             }
         }
         named_color(s)
+    }
+}
+
+fn parse_predefined_color(
+    colorspace: &str,
+    c1: f32,
+    c2: f32,
+    c3: f32,
+    alpha: f32,
+) -> Option<Color> {
+    let alpha_u8 = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let c1 = c1 as f64;
+    let c2 = c2 as f64;
+    let c3 = c3 as f64;
+    match colorspace.to_ascii_lowercase().as_str() {
+        "srgb" => {
+            let r = (c1 * 255.0).round().clamp(0.0, 255.0) as u8;
+            let g = (c2 * 255.0).round().clamp(0.0, 255.0) as u8;
+            let b = (c3 * 255.0).round().clamp(0.0, 255.0) as u8;
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
+        "srgb-linear" => {
+            let r = linear_to_srgb(c1 as f32);
+            let g = linear_to_srgb(c2 as f32);
+            let b = linear_to_srgb(c3 as f32);
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
+        "display-p3" => {
+            let r_lin = 1.2249401 * c1 - 0.2249404 * c2 + 0.0 * c3;
+            let g_lin = -0.0420569 * c1 + 1.0420571 * c2 + 0.0 * c3;
+            let b_lin = -0.0197376 * c1 - 0.0786361 * c2 + 1.0983735 * c3;
+            let r = linear_to_srgb(r_lin as f32);
+            let g = linear_to_srgb(g_lin as f32);
+            let b = linear_to_srgb(b_lin as f32);
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
+        "xyz" | "xyz-d65" => {
+            let r_lin = 3.24096994 * c1 - 1.53738318 * c2 - 0.49861076 * c3;
+            let g_lin = -0.96924364 * c1 + 1.87596750 * c2 + 0.04155506 * c3;
+            let b_lin = 0.05563008 * c1 - 0.20397696 * c2 + 1.05697151 * c3;
+            let r = linear_to_srgb(r_lin as f32);
+            let g = linear_to_srgb(g_lin as f32);
+            let b = linear_to_srgb(b_lin as f32);
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
+        "xyz-d50" => {
+            let r_lin = 3.1338561 * c1 - 1.6168667 * c2 - 0.4906146 * c3;
+            let g_lin = -0.9787684 * c1 + 1.9161415 * c2 + 0.0334540 * c3;
+            let b_lin = 0.0719453 * c1 - 0.2289914 * c2 + 1.4052427 * c3;
+            let r = linear_to_srgb(r_lin as f32);
+            let g = linear_to_srgb(g_lin as f32);
+            let b = linear_to_srgb(b_lin as f32);
+            Some(Color::Rgba(r, g, b, alpha_u8))
+        }
+        _ => None,
     }
 }
 
@@ -1766,6 +1837,45 @@ mod tests {
         assert_eq!(
             parse_color("oklab(none none none / none)"),
             Some(Color::Rgba(0, 0, 0, 0))
+        );
+
+        // color() predefined color space parsing
+        assert_eq!(
+            parse_color("color(srgb 1 1 1)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("color(srgb 0.5 0 0 / 0.5)"),
+            Some(Color::Rgba(128, 0, 0, 128))
+        );
+        assert_eq!(
+            parse_color("color(srgb-linear 1 0 0)"),
+            Some(Color::Rgba(255, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("color(display-p3 1 1 1)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("color(xyz-d50 0 0 0)"),
+            Some(Color::Rgba(0, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("color(xyz-d65 1 1 1)"),
+            Some(Color::Rgba(255, 249, 244, 255))
+        );
+        assert_eq!(
+            parse_color("color(xyz-d65 0.95047 1.0 1.08883)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("color(srgb none none none / none)"),
+            Some(Color::Rgba(0, 0, 0, 0))
+        );
+        // commas/slashes inside color()
+        assert_eq!(
+            parse_color("color(srgb, 0.5, 0, 0 / 0.5)"),
+            Some(Color::Rgba(128, 0, 0, 128))
         );
     }
 
