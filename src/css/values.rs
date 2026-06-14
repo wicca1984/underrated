@@ -2400,6 +2400,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "accent-color"
             | "caret-color"
             | "transition-timing-function"
+            | "animation-timing-function"
             | "transition-delay"
             | "grid-template-columns"
             | "grid-template-rows"
@@ -2990,10 +2991,11 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             }
             _ => false,
         },
-        "transition-timing-function" => match value {
+        "transition-timing-function" | "animation-timing-function" => match value {
             CssValue::Keyword(kw) => {
+                let kw_lower = kw.to_ascii_lowercase();
                 matches!(
-                    kw.to_ascii_lowercase().as_str(),
+                    kw_lower.as_str(),
                     "ease"
                         | "linear"
                         | "ease-in"
@@ -3001,7 +3003,9 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                         | "ease-in-out"
                         | "step-start"
                         | "step-end"
-                )
+                ) || kw_lower.starts_with("cubic-bezier(")
+                    || kw_lower.starts_with("steps(")
+                    || kw_lower.starts_with("linear(")
             }
             _ => false,
         },
@@ -4121,11 +4125,18 @@ pub fn parse_property_value(
             },
             _ => None,
         },
-        "transition-timing-function" => {
+        "transition-timing-function" | "animation-timing-function" => {
             if let CssValue::Keyword(kw) = &val {
-                match kw.to_ascii_lowercase().as_str() {
+                let kw_lower = kw.to_ascii_lowercase();
+                match kw_lower.as_str() {
                     "ease" | "linear" | "ease-in" | "ease-out" | "ease-in-out" | "step-start"
                     | "step-end" => Some(val),
+                    _ if kw_lower.starts_with("cubic-bezier(")
+                        || kw_lower.starts_with("steps(")
+                        || kw_lower.starts_with("linear(") =>
+                    {
+                        Some(val)
+                    }
                     _ => None,
                 }
             } else {
@@ -4260,6 +4271,15 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
         ComponentValue::Token(CssToken::Delim('/')) => Some(CssValue::Keyword("/".to_string())),
         ComponentValue::Token(CssToken::Url(s)) => Some(CssValue::Keyword(format!("url({})", s))),
         ComponentValue::Function { name, value } => {
+            if name.eq_ignore_ascii_case("cubic-bezier") {
+                return parse_cubic_bezier_function(value);
+            }
+            if name.eq_ignore_ascii_case("steps") {
+                return parse_steps_function(value);
+            }
+            if name.eq_ignore_ascii_case("linear") {
+                return parse_linear_function(value);
+            }
             if name.eq_ignore_ascii_case("rgb") || name.eq_ignore_ascii_case("rgba") {
                 return parse_rgb_function(value).map(CssValue::Color);
             }
@@ -4320,6 +4340,193 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
         }
         _ => None,
     }
+}
+
+fn parse_cubic_bezier_function(components: &[ComponentValue]) -> Option<CssValue> {
+    let tokens: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    if tokens.len() != 7 {
+        return None;
+    }
+
+    let x1 = match tokens[0] {
+        ComponentValue::Token(CssToken::Number(v)) => *v as f32,
+        _ => return None,
+    };
+    if !matches!(tokens[1], ComponentValue::Token(CssToken::Comma)) {
+        return None;
+    }
+    let y1 = match tokens[2] {
+        ComponentValue::Token(CssToken::Number(v)) => *v as f32,
+        _ => return None,
+    };
+    if !matches!(tokens[3], ComponentValue::Token(CssToken::Comma)) {
+        return None;
+    }
+    let x2 = match tokens[4] {
+        ComponentValue::Token(CssToken::Number(v)) => *v as f32,
+        _ => return None,
+    };
+    if !matches!(tokens[5], ComponentValue::Token(CssToken::Comma)) {
+        return None;
+    }
+    let y2 = match tokens[6] {
+        ComponentValue::Token(CssToken::Number(v)) => *v as f32,
+        _ => return None,
+    };
+
+    if !x1.is_finite() || !y1.is_finite() || !x2.is_finite() || !y2.is_finite() {
+        return None;
+    }
+
+    if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) {
+        return None;
+    }
+
+    Some(CssValue::Keyword(format!(
+        "cubic-bezier({}, {}, {}, {})",
+        x1, y1, x2, y2
+    )))
+}
+
+fn parse_steps_function(components: &[ComponentValue]) -> Option<CssValue> {
+    let tokens: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let n_float = match tokens[0] {
+        ComponentValue::Token(CssToken::Number(v)) => *v,
+        _ => return None,
+    };
+    if n_float != n_float.round() || n_float < 1.0 || !n_float.is_finite() {
+        return None;
+    }
+    let n = n_float as i32;
+
+    let position = if tokens.len() == 1 {
+        "end".to_string()
+    } else if tokens.len() == 3 {
+        if !matches!(tokens[1], ComponentValue::Token(CssToken::Comma)) {
+            return None;
+        }
+        match tokens[2] {
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                let s_lower = s.to_ascii_lowercase();
+                match s_lower.as_str() {
+                    "jump-start" | "jump-end" | "jump-none" | "jump-both" | "start" | "end" => {}
+                    _ => return None,
+                }
+                s_lower
+            }
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+
+    if tokens.len() == 1 {
+        Some(CssValue::Keyword(format!("steps({})", n)))
+    } else {
+        Some(CssValue::Keyword(format!("steps({}, {})", n, position)))
+    }
+}
+
+fn parse_linear_function(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut stops_components: Vec<Vec<&ComponentValue>> = Vec::new();
+    let mut current_stop: Vec<&ComponentValue> = Vec::new();
+    for comp in components {
+        if matches!(comp, ComponentValue::Token(CssToken::Comma)) {
+            stops_components.push(current_stop);
+            current_stop = Vec::new();
+        } else {
+            current_stop.push(comp);
+        }
+    }
+    if !current_stop.is_empty() {
+        stops_components.push(current_stop);
+    }
+
+    if stops_components.len() < 2 {
+        return None;
+    }
+
+    let mut parsed_stops = Vec::new();
+    for stop_comps in stops_components {
+        let non_ws: Vec<&ComponentValue> = stop_comps
+            .iter()
+            .copied()
+            .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+            .collect();
+
+        if non_ws.is_empty() {
+            return None;
+        }
+
+        let val = match non_ws[0] {
+            ComponentValue::Token(CssToken::Number(v)) => *v as f32,
+            _ => return None,
+        };
+        if !val.is_finite() {
+            return None;
+        }
+
+        let p1 = if non_ws.len() > 1 {
+            match non_ws[1] {
+                ComponentValue::Token(CssToken::Percentage(p)) => {
+                    let pf = *p as f32;
+                    if !pf.is_finite() {
+                        return None;
+                    }
+                    Some(pf)
+                }
+                _ => return None,
+            }
+        } else {
+            None
+        };
+
+        let p2 = if non_ws.len() > 2 {
+            match non_ws[2] {
+                ComponentValue::Token(CssToken::Percentage(p)) => {
+                    let pf = *p as f32;
+                    if !pf.is_finite() {
+                        return None;
+                    }
+                    Some(pf)
+                }
+                _ => return None,
+            }
+        } else {
+            None
+        };
+
+        if non_ws.len() > 3 {
+            return None;
+        }
+
+        parsed_stops.push((val, p1, p2));
+    }
+
+    // We implement the full linear() stop grammar: linear(<number> [<percentage> <percentage>?]? ...)
+    // per the CSS Easing Functions Level 1 spec.
+    let mut parts = Vec::new();
+    for (val, p1, p2) in parsed_stops {
+        match (p1, p2) {
+            (None, None) => parts.push(format!("{}", val)),
+            (Some(pct1), None) => parts.push(format!("{} {}%", val, pct1)),
+            (Some(pct1), Some(pct2)) => parts.push(format!("{} {}% {}%", val, pct1, pct2)),
+            _ => unreachable!(),
+        }
+    }
+    Some(CssValue::Keyword(format!("linear({})", parts.join(", "))))
 }
 
 fn parse_named_color(name: &str) -> Option<Color> {
@@ -6227,6 +6434,227 @@ mod tests {
 
     fn token(t: CssToken) -> ComponentValue {
         ComponentValue::Token(t)
+    }
+
+    #[test]
+    fn test_parse_easing_functions() {
+        // Test cubic-bezier
+        // Valid
+        let cb_valid = ComponentValue::Function {
+            name: "cubic-bezier".to_string(),
+            value: vec![
+                token(CssToken::Number(0.25)),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.1)),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.25)),
+                token(CssToken::Comma),
+                token(CssToken::Number(1.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[cb_valid]),
+            Some(CssValue::Keyword(
+                "cubic-bezier(0.25, 0.1, 0.25, 1)".to_string()
+            ))
+        );
+
+        // Invalid: x coordinate out of range [0, 1]
+        let cb_invalid_x1 = ComponentValue::Function {
+            name: "cubic-bezier".to_string(),
+            value: vec![
+                token(CssToken::Number(-0.1)),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.1)),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.25)),
+                token(CssToken::Comma),
+                token(CssToken::Number(1.0)),
+            ],
+        };
+        assert_eq!(parse_value(&[cb_invalid_x1]), None);
+
+        let cb_invalid_x2 = ComponentValue::Function {
+            name: "cubic-bezier".to_string(),
+            value: vec![
+                token(CssToken::Number(0.25)),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.1)),
+                token(CssToken::Comma),
+                token(CssToken::Number(1.5)),
+                token(CssToken::Comma),
+                token(CssToken::Number(1.0)),
+            ],
+        };
+        assert_eq!(parse_value(&[cb_invalid_x2]), None);
+
+        // Test steps
+        // steps(4, end)
+        let steps_two_args = ComponentValue::Function {
+            name: "steps".to_string(),
+            value: vec![
+                token(CssToken::Number(4.0)),
+                token(CssToken::Comma),
+                token(CssToken::Ident("end".to_string())),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[steps_two_args]),
+            Some(CssValue::Keyword("steps(4, end)".to_string()))
+        );
+
+        // steps(4) (implicit position)
+        let steps_one_arg = ComponentValue::Function {
+            name: "steps".to_string(),
+            value: vec![token(CssToken::Number(4.0))],
+        };
+        assert_eq!(
+            parse_value(&[steps_one_arg]),
+            Some(CssValue::Keyword("steps(4)".to_string()))
+        );
+
+        // steps(4, jump-none)
+        let steps_jump_none = ComponentValue::Function {
+            name: "steps".to_string(),
+            value: vec![
+                token(CssToken::Number(4.0)),
+                token(CssToken::Comma),
+                token(CssToken::Ident("jump-none".to_string())),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[steps_jump_none]),
+            Some(CssValue::Keyword("steps(4, jump-none)".to_string()))
+        );
+
+        // steps invalid: non-positive integer
+        let steps_invalid_n = ComponentValue::Function {
+            name: "steps".to_string(),
+            value: vec![
+                token(CssToken::Number(0.0)),
+                token(CssToken::Comma),
+                token(CssToken::Ident("end".to_string())),
+            ],
+        };
+        assert_eq!(parse_value(&[steps_invalid_n]), None);
+
+        let steps_invalid_fraction = ComponentValue::Function {
+            name: "steps".to_string(),
+            value: vec![
+                token(CssToken::Number(4.5)),
+                token(CssToken::Comma),
+                token(CssToken::Ident("end".to_string())),
+            ],
+        };
+        assert_eq!(parse_value(&[steps_invalid_fraction]), None);
+
+        // Test linear
+        // linear(0, 0.25, 1)
+        let linear_valid = ComponentValue::Function {
+            name: "linear".to_string(),
+            value: vec![
+                token(CssToken::Number(0.0)),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.25)),
+                token(CssToken::Comma),
+                token(CssToken::Number(1.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[linear_valid]),
+            Some(CssValue::Keyword("linear(0, 0.25, 1)".to_string()))
+        );
+
+        // linear stops with percentages
+        let linear_pct = ComponentValue::Function {
+            name: "linear".to_string(),
+            value: vec![
+                token(CssToken::Number(0.0)),
+                token(CssToken::Percentage(0.0)),
+                token(CssToken::Comma),
+                token(CssToken::Number(0.25)),
+                token(CssToken::Percentage(25.0)),
+                token(CssToken::Percentage(50.0)),
+                token(CssToken::Comma),
+                token(CssToken::Number(1.0)),
+                token(CssToken::Percentage(100.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[linear_pct]),
+            Some(CssValue::Keyword(
+                "linear(0 0%, 0.25 25% 50%, 1 100%)".to_string()
+            ))
+        );
+
+        // invalid linear: only one stop
+        let linear_invalid_len = ComponentValue::Function {
+            name: "linear".to_string(),
+            value: vec![token(CssToken::Number(0.0))],
+        };
+        assert_eq!(parse_value(&[linear_invalid_len]), None);
+    }
+
+    #[test]
+    fn test_property_validation_timing_functions() {
+        // Validate transitions and animations with timing functions
+        for prop in &["transition-timing-function", "animation-timing-function"] {
+            // cubic-bezier
+            let components = [ComponentValue::Function {
+                name: "cubic-bezier".to_string(),
+                value: vec![
+                    token(CssToken::Number(0.25)),
+                    token(CssToken::Comma),
+                    token(CssToken::Number(0.1)),
+                    token(CssToken::Comma),
+                    token(CssToken::Number(0.25)),
+                    token(CssToken::Comma),
+                    token(CssToken::Number(1.0)),
+                ],
+            }];
+            let val = parse_property_value(prop, &components);
+            assert_eq!(
+                val,
+                Some(CssValue::Keyword(
+                    "cubic-bezier(0.25, 0.1, 0.25, 1)".to_string()
+                ))
+            );
+            assert!(is_valid_property_value(prop, &val.unwrap()));
+
+            // steps
+            let components_steps = [ComponentValue::Function {
+                name: "steps".to_string(),
+                value: vec![
+                    token(CssToken::Number(4.0)),
+                    token(CssToken::Comma),
+                    token(CssToken::Ident("jump-none".to_string())),
+                ],
+            }];
+            let val_steps = parse_property_value(prop, &components_steps);
+            assert_eq!(
+                val_steps,
+                Some(CssValue::Keyword("steps(4, jump-none)".to_string()))
+            );
+            assert!(is_valid_property_value(prop, &val_steps.unwrap()));
+
+            // linear()
+            let components_linear = [ComponentValue::Function {
+                name: "linear".to_string(),
+                value: vec![
+                    token(CssToken::Number(0.0)),
+                    token(CssToken::Comma),
+                    token(CssToken::Number(0.25)),
+                    token(CssToken::Comma),
+                    token(CssToken::Number(1.0)),
+                ],
+            }];
+            let val_linear = parse_property_value(prop, &components_linear);
+            assert_eq!(
+                val_linear,
+                Some(CssValue::Keyword("linear(0, 0.25, 1)".to_string()))
+            );
+            assert!(is_valid_property_value(prop, &val_linear.unwrap()));
+        }
     }
 
     #[test]
