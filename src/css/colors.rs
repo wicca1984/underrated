@@ -436,6 +436,233 @@ pub fn color_to_hwb(color: Color) -> (f32, f32, f32, f32) {
     (h, w, b_val, a)
 }
 
+/// Parses a Lab color into RGBA.
+/// l, a, b are in the standard Lab ranges, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#lab-to-rgb>
+pub fn parse_lab(l: f32, a: f32, b: f32, alpha: f32) -> Color {
+    fn finite_or_zero(v: f32) -> f32 {
+        if v.is_finite() { v } else { 0.0 }
+    }
+    let l_val = finite_or_zero(l).max(0.0) as f64;
+    let a_val = finite_or_zero(a) as f64;
+    let b_val = finite_or_zero(b) as f64;
+    let alpha_val = (finite_or_zero(alpha).clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    let fy = (l_val + 16.0) / 116.0;
+    let fx = fy + a_val / 500.0;
+    let fz = fy - b_val / 200.0;
+
+    let finv = |t: f64| {
+        let d = 6.0 / 29.0;
+        if t > d {
+            t * t * t
+        } else {
+            3.0 * d * d * (t - 4.0 / 29.0)
+        }
+    };
+
+    let xr = finv(fx);
+    let yr = finv(fy);
+    let zr = finv(fz);
+
+    let x = xr * 0.96422;
+    let y = yr * 1.0;
+    let z = zr * 0.82521;
+
+    // Bradford-adapted D50 XYZ -> linear sRGB:
+    let r_lin = 3.1338561 * x - 1.6168667 * y - 0.4906146 * z;
+    let g_lin = -0.9787684 * x + 1.9161415 * y + 0.0334540 * z;
+    let b_lin = 0.0719453 * x - 0.2289914 * y + 1.4052427 * z;
+
+    let gamma_encode = |c: f64| {
+        let c = c.clamp(0.0, 1.0);
+        let s = if c <= 0.0031308 {
+            12.92 * c
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+
+    let r = gamma_encode(r_lin);
+    let g = gamma_encode(g_lin);
+    let b = gamma_encode(b_lin);
+
+    Color::Rgba(r, g, b, alpha_val)
+}
+
+/// Parses an LCH color into RGBA.
+/// l, c are in standard ranges, h is in degrees, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#lch-to-rgb>
+pub fn parse_lch(l: f32, c: f32, h: f32, alpha: f32) -> Color {
+    fn finite_or_zero(v: f32) -> f32 {
+        if v.is_finite() { v } else { 0.0 }
+    }
+    let l_val = finite_or_zero(l).max(0.0);
+    let c_val = finite_or_zero(c).max(0.0);
+    let h_deg = finite_or_zero(h);
+    let h_deg = ((h_deg % 360.0) + 360.0) % 360.0;
+    let h_rad = h_deg.to_radians();
+
+    let a_val = c_val * h_rad.cos();
+    let b_val = c_val * h_rad.sin();
+
+    parse_lab(l_val, a_val, b_val, alpha)
+}
+
+/// Parses an OKLAB color into RGBA.
+/// l, a, b are in standard OKLAB ranges, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#oklab-to-rgb>
+pub fn parse_oklab(l: f32, a: f32, b: f32, alpha: f32) -> Color {
+    fn finite_or_zero(v: f32) -> f32 {
+        if v.is_finite() { v } else { 0.0 }
+    }
+    let l_val = finite_or_zero(l).max(0.0) as f64;
+    let a_val = finite_or_zero(a) as f64;
+    let b_val = finite_or_zero(b) as f64;
+    let alpha_val = (finite_or_zero(alpha).clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    let l_ = l_val + 0.3963377774 * a_val + 0.2158037573 * b_val;
+    let m_ = l_val - 0.1055613458 * a_val - 0.0638541728 * b_val;
+    let s_ = l_val - 0.0894841775 * a_val - 1.2914855480 * b_val;
+
+    let l_cube = l_ * l_ * l_;
+    let m_cube = m_ * m_ * m_;
+    let s_cube = s_ * s_ * s_;
+
+    let r_lin = 4.0767416621 * l_cube - 3.3077115913 * m_cube + 0.2309699292 * s_cube;
+    let g_lin = -1.2684380046 * l_cube + 2.6097574011 * m_cube - 0.3413193965 * s_cube;
+    let b_lin = -0.0041960863 * l_cube - 0.7034186147 * m_cube + 1.7076147010 * s_cube;
+
+    let gamma_encode = |c: f64| {
+        let c = c.clamp(0.0, 1.0);
+        let s = if c <= 0.0031308 {
+            12.92 * c
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+
+    let r = gamma_encode(r_lin);
+    let g = gamma_encode(g_lin);
+    let b = gamma_encode(b_lin);
+
+    Color::Rgba(r, g, b, alpha_val)
+}
+
+/// Parses an OKLCH color into RGBA.
+/// l, c are in standard ranges, h is in degrees, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#oklch-to-rgb>
+pub fn parse_oklch(l: f32, c: f32, h: f32, alpha: f32) -> Color {
+    fn finite_or_zero(v: f32) -> f32 {
+        if v.is_finite() { v } else { 0.0 }
+    }
+    let l_val = finite_or_zero(l).max(0.0);
+    let c_val = finite_or_zero(c).max(0.0);
+    let h_deg = finite_or_zero(h);
+    let h_deg = ((h_deg % 360.0) + 360.0) % 360.0;
+    let h_rad = h_deg.to_radians();
+
+    let a_val = c_val * h_rad.cos();
+    let b_val = c_val * h_rad.sin();
+
+    parse_oklab(l_val, a_val, b_val, alpha)
+}
+
+/// Converts an RGBA Color to Lab components.
+/// Returns (l, a, b, alpha) where l, a, b are in standard Lab ranges, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#rgb-to-lab>
+pub fn color_to_lab(color: Color) -> (f32, f32, f32, f32) {
+    let Color::Rgba(r_u, g_u, b_u, a_u) = color;
+    let r_lin = srgb_to_linear(r_u) as f64;
+    let g_lin = srgb_to_linear(g_u) as f64;
+    let b_lin = srgb_to_linear(b_u) as f64;
+
+    // srgb_to_xyz_d50 matrix multiplication:
+    let x = 0.4360747 * r_lin + 0.3850649 * g_lin + 0.1430804 * b_lin;
+    let y = 0.2225045 * r_lin + 0.7168786 * g_lin + 0.0606169 * b_lin;
+    let z = 0.0139322 * r_lin + 0.0971045 * g_lin + 0.7141733 * b_lin;
+
+    let f = |t: f64| {
+        let d = 6.0 / 29.0;
+        if t > d * d * d {
+            t.powf(1.0 / 3.0)
+        } else {
+            t / (3.0 * d * d) + 4.0 / 29.0
+        }
+    };
+
+    let xr = x / 0.96422;
+    let yr = y / 1.0;
+    let zr = z / 0.82521;
+
+    let fx = f(xr);
+    let fy = f(yr);
+    let fz = f(zr);
+
+    let l = 116.0 * fy - 16.0;
+    let a = 500.0 * (fx - fy);
+    let b = 200.0 * (fy - fz);
+    let alpha = a_u as f32 / 255.0;
+
+    (l as f32, a as f32, b as f32, alpha)
+}
+
+/// Converts an RGBA Color to LCH components.
+/// Returns (l, c, h, alpha) where l, c are in standard ranges, h is in degrees, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#rgb-to-lch>
+pub fn color_to_lch(color: Color) -> (f32, f32, f32, f32) {
+    let (l, a, b, alpha) = color_to_lab(color);
+    let c = (a * a + b * b).sqrt();
+    let mut h = b.atan2(a).to_degrees();
+    if h < 0.0 {
+        h += 360.0;
+    }
+    (l, c, h, alpha)
+}
+
+/// Converts an RGBA Color to OKLAB components.
+/// Returns (l, a, b, alpha) where l, a, b are in standard ranges, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#rgb-to-oklab>
+pub fn color_to_oklab(color: Color) -> (f32, f32, f32, f32) {
+    let Color::Rgba(r_u, g_u, b_u, a_u) = color;
+    let r_lin = srgb_to_linear(r_u) as f64;
+    let g_lin = srgb_to_linear(g_u) as f64;
+    let b_lin = srgb_to_linear(b_u) as f64;
+
+    // linear_srgb_to_lms:
+    let l_lms = 0.4122214708 * r_lin + 0.5363325363 * g_lin + 0.0514459929 * b_lin;
+    let m_lms = 0.2119034982 * r_lin + 0.6806995451 * g_lin + 0.1073969566 * b_lin;
+    let s_lms = 0.0883024619 * r_lin + 0.2817188376 * g_lin + 0.6299787005 * b_lin;
+
+    let l_ = l_lms.cbrt();
+    let m_ = m_lms.cbrt();
+    let s_ = s_lms.cbrt();
+
+    // lms_to_oklab:
+    let l = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_;
+    let a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_;
+    let b = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_;
+
+    let alpha = a_u as f32 / 255.0;
+
+    (l as f32, a as f32, b as f32, alpha)
+}
+
+/// Converts an RGBA Color to OKLCH components.
+/// Returns (l, c, h, alpha) where l, c are in standard ranges, h is in degrees, alpha is in [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#rgb-to-oklch>
+pub fn color_to_oklch(color: Color) -> (f32, f32, f32, f32) {
+    let (l, a, b, alpha) = color_to_oklab(color);
+    let c = (a * a + b * b).sqrt();
+    let mut h = b.atan2(a).to_degrees();
+    if h < 0.0 {
+        h += 360.0;
+    }
+    (l, c, h, alpha)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +880,89 @@ mod tests {
             assert!((b1 as i32 - b2 as i32).abs() <= 1);
             assert_eq!(a1, a2);
         }
+    }
+
+    #[test]
+    fn test_parse_lab_and_back() {
+        // Test lab(100 0 0) -> white
+        assert_eq!(
+            parse_lab(100.0, 0.0, 0.0, 1.0),
+            Color::Rgba(255, 255, 255, 255)
+        );
+        // Test lab(0 0 0) -> black
+        assert_eq!(parse_lab(0.0, 0.0, 0.0, 1.0), Color::Rgba(0, 0, 0, 255));
+
+        // Test roundtrip
+        let red = Color::Rgba(255, 0, 0, 255);
+        let (l, a, b, alpha) = color_to_lab(red);
+        let back = parse_lab(l, a, b, alpha);
+        let Color::Rgba(r, g, b_val, a_val) = back;
+        assert!((255 - r as i32).abs() <= 1);
+        assert!((g as i32).abs() <= 1);
+        assert!((b_val as i32).abs() <= 1);
+        assert_eq!(a_val, 255);
+    }
+
+    #[test]
+    fn test_parse_lch_and_back() {
+        // Test lch(100 0 0) -> white
+        assert_eq!(
+            parse_lch(100.0, 0.0, 0.0, 1.0),
+            Color::Rgba(255, 255, 255, 255)
+        );
+        // Test lch(0 0 0) -> black
+        assert_eq!(parse_lch(0.0, 0.0, 0.0, 1.0), Color::Rgba(0, 0, 0, 255));
+
+        // Test roundtrip
+        let green = Color::Rgba(0, 255, 0, 255);
+        let (l, c, h, alpha) = color_to_lch(green);
+        let back = parse_lch(l, c, h, alpha);
+        let Color::Rgba(r, g, b_val, a_val) = back;
+        assert!((r as i32).abs() <= 1);
+        assert!((255 - g as i32).abs() <= 1);
+        assert!((b_val as i32).abs() <= 1);
+        assert_eq!(a_val, 255);
+    }
+
+    #[test]
+    fn test_parse_oklab_and_back() {
+        // Test oklab(1 0 0) -> white
+        assert_eq!(
+            parse_oklab(1.0, 0.0, 0.0, 1.0),
+            Color::Rgba(255, 255, 255, 255)
+        );
+        // Test oklab(0 0 0) -> black
+        assert_eq!(parse_oklab(0.0, 0.0, 0.0, 1.0), Color::Rgba(0, 0, 0, 255));
+
+        // Test roundtrip
+        let blue = Color::Rgba(0, 0, 255, 255);
+        let (l, a, b, alpha) = color_to_oklab(blue);
+        let back = parse_oklab(l, a, b, alpha);
+        let Color::Rgba(r, g, b_val, a_val) = back;
+        assert!((r as i32).abs() <= 1);
+        assert!((g as i32).abs() <= 1);
+        assert!((255 - b_val as i32).abs() <= 1);
+        assert_eq!(a_val, 255);
+    }
+
+    #[test]
+    fn test_parse_oklch_and_back() {
+        // Test oklch(1 0 0) -> white
+        assert_eq!(
+            parse_oklch(1.0, 0.0, 0.0, 1.0),
+            Color::Rgba(255, 255, 255, 255)
+        );
+        // Test oklch(0 0 0) -> black
+        assert_eq!(parse_oklch(0.0, 0.0, 0.0, 1.0), Color::Rgba(0, 0, 0, 255));
+
+        // Test roundtrip
+        let gray = Color::Rgba(128, 128, 128, 255);
+        let (l, c, h, alpha) = color_to_oklch(gray);
+        let back = parse_oklch(l, c, h, alpha);
+        let Color::Rgba(r, g, b_val, a_val) = back;
+        assert!((128 - r as i32).abs() <= 1);
+        assert!((128 - g as i32).abs() <= 1);
+        assert!((128 - b_val as i32).abs() <= 1);
+        assert_eq!(a_val, 255);
     }
 }
