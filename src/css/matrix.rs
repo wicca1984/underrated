@@ -780,10 +780,26 @@ impl Affine {
             }
         }
 
-        let norm_a = if scale_x != 0.0 { a / scale_x } else { 0.0 };
-        let norm_b = if scale_x != 0.0 { b / scale_x } else { 0.0 };
-        let norm_c = if scale_y != 0.0 { c / scale_y } else { 0.0 };
-        let norm_d = if scale_y != 0.0 { d / scale_y } else { 0.0 };
+        let norm_a = if scale_x.abs() >= 1e-12 {
+            a / scale_x
+        } else {
+            0.0
+        };
+        let norm_b = if scale_x.abs() >= 1e-12 {
+            b / scale_x
+        } else {
+            0.0
+        };
+        let norm_c = if scale_y.abs() >= 1e-12 {
+            c / scale_y
+        } else {
+            0.0
+        };
+        let norm_d = if scale_y.abs() >= 1e-12 {
+            d / scale_y
+        } else {
+            0.0
+        };
 
         let rad = norm_b.atan2(norm_a);
         let angle = rad.to_degrees();
@@ -793,7 +809,11 @@ impl Affine {
         let row1x = cs * norm_c - sn * norm_d;
         let row1y = sn * norm_c + cs * norm_d;
 
-        let skew = if row1y != 0.0 { row1x / row1y } else { 0.0 };
+        let skew = if row1y.abs() >= 1e-12 {
+            row1x / row1y
+        } else {
+            0.0
+        };
         let scale_y = scale_y * row1y;
 
         Some(Decomposed2d {
@@ -847,8 +867,12 @@ impl Vec3 {
 
     fn normalize(&self) -> Self {
         let l = self.len();
-        if l == 0.0 {
-            *self
+        if l < 1e-12 {
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }
         } else {
             Vec3 {
                 x: self.x / l,
@@ -946,7 +970,7 @@ impl Matrix3d {
         }
 
         let t15 = t[15];
-        if t15 == 0.0 {
+        if t15.abs() < 1e-12 {
             return None;
         }
         for val in t.iter_mut() {
@@ -1063,7 +1087,7 @@ impl Matrix3d {
                 0.25 / s,
             );
         } else if row00 > row11 && row00 > row22 {
-            let s = (1.0 + row00 - row11 - row22).sqrt() * 2.0;
+            let s = (1.0 + row00 - row11 - row22).max(0.0).sqrt() * 2.0;
             quaternion = (
                 0.25 * s,
                 (row01 + row10) / s,
@@ -1071,7 +1095,7 @@ impl Matrix3d {
                 (row21 - row12) / s,
             );
         } else if row11 > row22 {
-            let s = (1.0 + row11 - row00 - row22).sqrt() * 2.0;
+            let s = (1.0 + row11 - row00 - row22).max(0.0).sqrt() * 2.0;
             quaternion = (
                 (row01 + row10) / s,
                 0.25 * s,
@@ -1079,7 +1103,7 @@ impl Matrix3d {
                 (row02 - row20) / s,
             );
         } else {
-            let s = (1.0 + row22 - row00 - row11).sqrt() * 2.0;
+            let s = (1.0 + row22 - row00 - row11).max(0.0).sqrt() * 2.0;
             quaternion = (
                 (row02 + row20) / s,
                 (row12 + row21) / s,
@@ -1127,6 +1151,12 @@ impl Decomposed3d {
         let qy = self.quaternion.1;
         let qz = self.quaternion.2;
         let qw = self.quaternion.3;
+        let len = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt();
+        let (qx, qy, qz, qw) = if len > 1e-12 {
+            (qx / len, qy / len, qz / len, qw / len)
+        } else {
+            (0.0, 0.0, 0.0, 1.0)
+        };
         let x2 = qx + qx;
         let y2 = qy + qy;
         let z2 = qz + qz;
@@ -1201,6 +1231,7 @@ impl Decomposed3d {
         let q1 = self.quaternion;
         let q2 = other.quaternion;
         let mut dot = q1.0 * q2.0 + q1.1 * q2.1 + q1.2 * q2.2 + q1.3 * q2.3;
+        dot = dot.clamp(-1.0, 1.0);
 
         let mut q2_adj = q2;
         if dot < 0.0 {
@@ -1826,5 +1857,54 @@ mod tests {
         let fallback_res = singular1.interpolate(&singular2, 0.5);
         let expected_fallback = Matrix3d::scale(2.0, 0.0, 3.0);
         assert_eq!(fallback_res.m, expected_fallback.m);
+    }
+
+    #[test]
+    fn test_matrix_edge_cases_t1021() {
+        // 1. Tiny non-zero vector normalization
+        let tiny_vec = Vec3::new(1e-20, 1e-20, 1e-20);
+        let normalized = tiny_vec.normalize();
+        assert_eq!(normalized.x, 0.0);
+        assert_eq!(normalized.y, 0.0);
+        assert_eq!(normalized.z, 0.0);
+
+        // 2. 2D decomposition with near-zero scale/skew factor checks
+        let m2d = Affine::matrix(1e-15, 0.0, 0.0, 1e-15, 0.0, 0.0);
+        // determinant is 1e-30, which is < 1e-12, so decomposition should return None
+        assert!(m2d.decompose().is_none());
+
+        // 3. Quaternion interpolation with dot > 1.0 clamping
+        let d1 = Decomposed3d {
+            translate: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 1.0),
+            skew: (0.0, 0.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 1.00001), // Slightly unnormalized
+        };
+        let d2 = Decomposed3d {
+            translate: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 1.0),
+            skew: (0.0, 0.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 1.00001),
+        };
+        // This triggers slerp or lerp. With our clamp, it shouldn't produce NaN.
+        let interpolated = d1.interpolate(&d2, 0.5);
+        assert!(!interpolated.quaternion.3.is_nan());
+        assert!((interpolated.quaternion.3 - 1.0).abs() < 1e-4);
+
+        // 4. Recomposing a denormalized quaternion
+        let denormalized = Decomposed3d {
+            translate: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 1.0),
+            skew: (0.0, 0.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 5.0), // Far from normalized
+        };
+        let recomposed = denormalized.recompose();
+        let expected_identity = Matrix3d::identity();
+        for i in 0..16 {
+            assert!((recomposed.m[i] - expected_identity.m[i]).abs() < 1e-5);
+        }
     }
 }
