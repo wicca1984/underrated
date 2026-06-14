@@ -529,6 +529,24 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "auto",
         animatable: false,
     },
+    PropertyMetadata {
+        name: "font-feature-settings",
+        inherited: true,
+        initial: "normal",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "font-variation-settings",
+        inherited: true,
+        initial: "normal",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "font-language-override",
+        inherited: true,
+        initial: "normal",
+        animatable: false,
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -861,10 +879,34 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "background-repeat-x",
+        inherited: false,
+        initial: "repeat",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "background-repeat-y",
+        inherited: false,
+        initial: "repeat",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "background-position",
         inherited: false,
         initial: "0% 0%",
         animatable: false,
+    },
+    PropertyMetadata {
+        name: "background-position-x",
+        inherited: false,
+        initial: "0%",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "background-position-y",
+        inherited: false,
+        initial: "0%",
+        animatable: true,
     },
     PropertyMetadata {
         name: "background-size",
@@ -1341,6 +1383,12 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "appearance",
+        inherited: false,
+        initial: "none",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "transition-duration",
         inherited: false,
         initial: "0s",
@@ -1389,6 +1437,24 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "column-rule-width",
+        inherited: false,
+        initial: "medium",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "column-rule-style",
+        inherited: false,
+        initial: "none",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "column-rule-color",
+        inherited: false,
+        initial: "currentcolor",
+        animatable: true,
+    },
+    PropertyMetadata {
         name: "image-rendering",
         inherited: true,
         initial: "auto",
@@ -1420,6 +1486,12 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
     },
     PropertyMetadata {
         name: "counter-increment",
+        inherited: false,
+        initial: "none",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "counter-set",
         inherited: false,
         initial: "none",
         animatable: false,
@@ -2144,6 +2216,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "column-rule",
+        longhands: &[
+            "column-rule-width",
+            "column-rule-style",
+            "column-rule-color",
+        ],
+    },
+    ShorthandExpansion {
         name: "columns",
         longhands: &["column-width", "column-count"],
     },
@@ -2177,6 +2257,17 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "gap",
         longhands: &["row-gap", "column-gap"],
+    },
+    ShorthandExpansion {
+        name: "grid",
+        longhands: &[
+            "grid-template-rows",
+            "grid-template-columns",
+            "grid-template-areas",
+            "grid-auto-rows",
+            "grid-auto-columns",
+            "grid-auto-flow",
+        ],
     },
     ShorthandExpansion {
         name: "grid-area",
@@ -4107,5 +4198,61 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn test_additive_properties_t0905() {
+        let props = [
+            ("font-feature-settings", true, "normal", false),
+            ("font-variation-settings", true, "normal", true),
+            ("font-language-override", true, "normal", false),
+            ("appearance", false, "none", false),
+            ("counter-set", false, "none", false),
+            ("column-rule-width", false, "medium", true),
+            ("column-rule-style", false, "none", false),
+            ("column-rule-color", false, "currentcolor", true),
+            ("background-repeat-x", false, "repeat", false),
+            ("background-repeat-y", false, "repeat", false),
+            ("background-position-x", false, "0%", true),
+            ("background-position-y", false, "0%", true),
+        ];
+
+        for (name, inherited, initial, animatable) in props {
+            let meta =
+                lookup(name).unwrap_or_else(|| panic!("property {} must be registered", name));
+            assert_eq!(meta.name, name);
+            assert_eq!(meta.inherited, inherited, "inherited mismatch for {}", name);
+            assert_eq!(meta.initial, initial, "initial mismatch for {}", name);
+            assert_eq!(
+                meta.animatable, animatable,
+                "animatable mismatch for {}",
+                name
+            );
+        }
+
+        // Test shorthands
+        let cr =
+            shorthand_longhands("column-rule").expect("column-rule shorthand must be registered");
+        assert_eq!(
+            cr,
+            &[
+                "column-rule-width",
+                "column-rule-style",
+                "column-rule-color"
+            ]
+        );
+
+        let grid = shorthand_longhands("grid").expect("grid shorthand must be registered");
+        assert_eq!(
+            grid,
+            &[
+                "grid-template-rows",
+                "grid-template-columns",
+                "grid-template-areas",
+                "grid-auto-rows",
+                "grid-auto-columns",
+                "grid-auto-flow",
+            ]
+        );
     }
 }
