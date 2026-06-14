@@ -234,6 +234,56 @@ impl Dom {
             })
             .collect()
     }
+
+    /// Returns the first child of the given `node`, if any.
+    // spec: https://dom.spec.whatwg.org/#dom-node-firstchild
+    pub fn first_child(&self, node: NodeId) -> Option<NodeId> {
+        self.children(node).first().copied()
+    }
+
+    /// Returns the last child of the given `node`, if any.
+    // spec: https://dom.spec.whatwg.org/#dom-node-lastchild
+    pub fn last_child(&self, node: NodeId) -> Option<NodeId> {
+        self.children(node).last().copied()
+    }
+
+    /// Returns the previous sibling of the given `node`, if any.
+    // spec: https://dom.spec.whatwg.org/#dom-node-previoussibling
+    pub fn previous_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent(node)?;
+        let children = self.children(parent);
+        let pos = children.iter().position(|&id| id == node)?;
+        if pos > 0 {
+            children.get(pos - 1).copied()
+        } else {
+            None
+        }
+    }
+
+    /// Returns the next sibling of the given `node`, if any.
+    // spec: https://dom.spec.whatwg.org/#dom-node-nextsibling
+    pub fn next_sibling(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent(node)?;
+        let children = self.children(parent);
+        let pos = children.iter().position(|&id| id == node)?;
+        children.get(pos + 1).copied()
+    }
+
+    /// Returns true if the given `node` has any child nodes.
+    // spec: https://dom.spec.whatwg.org/#dom-node-haschildnodes
+    pub fn has_child_nodes(&self, node: NodeId) -> bool {
+        !self.children(node).is_empty()
+    }
+
+    /// Returns the root of the given `node` (its furthest ancestor, or itself if it has no ancestor).
+    // spec: https://dom.spec.whatwg.org/#dom-node-getrootnode
+    pub fn get_root_node(&self, node: NodeId) -> NodeId {
+        let mut curr = node;
+        while let Some(parent) = self.parent(curr) {
+            curr = parent;
+        }
+        curr
+    }
 }
 
 #[cfg(test)]
@@ -625,5 +675,70 @@ mod tests {
 
         let nonexistent_name = dom.get_elements_by_name("nonexistent");
         assert!(nonexistent_name.is_empty());
+    }
+
+    #[test]
+    fn test_node_traversal_gap_apis() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, parent);
+
+        let child_text = dom.create_node(NodeData::Text("Hello".into()));
+        let child_element = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let child_comment = dom.create_node(NodeData::Comment("World".into()));
+
+        dom.append_child(parent, child_text);
+        dom.append_child(parent, child_element);
+        dom.append_child(parent, child_comment);
+
+        // 1. first_child & last_child
+        assert_eq!(dom.first_child(parent), Some(child_text));
+        assert_eq!(dom.last_child(parent), Some(child_comment));
+        assert_eq!(dom.first_child(child_text), None);
+        assert_eq!(dom.last_child(child_text), None);
+
+        // 2. has_child_nodes
+        assert!(dom.has_child_nodes(parent));
+        assert!(dom.has_child_nodes(doc));
+        assert!(!dom.has_child_nodes(child_text));
+        assert!(!dom.has_child_nodes(child_element));
+
+        // 3. previous_sibling & next_sibling
+        assert_eq!(dom.previous_sibling(child_text), None);
+        assert_eq!(dom.next_sibling(child_text), Some(child_element));
+
+        assert_eq!(dom.previous_sibling(child_element), Some(child_text));
+        assert_eq!(dom.next_sibling(child_element), Some(child_comment));
+
+        assert_eq!(dom.previous_sibling(child_comment), Some(child_element));
+        assert_eq!(dom.next_sibling(child_comment), None);
+
+        // 4. get_root_node
+        assert_eq!(dom.get_root_node(doc), doc);
+        assert_eq!(dom.get_root_node(parent), doc);
+        assert_eq!(dom.get_root_node(child_text), doc);
+        assert_eq!(dom.get_root_node(child_comment), doc);
+
+        // Detached nodes
+        let detached_parent = dom.create_node(NodeData::Element {
+            name: "ul".into(),
+            attrs: vec![],
+        });
+        let detached_child = dom.create_node(NodeData::Element {
+            name: "li".into(),
+            attrs: vec![],
+        });
+        dom.append_child(detached_parent, detached_child);
+
+        assert_eq!(dom.get_root_node(detached_parent), detached_parent);
+        assert_eq!(dom.get_root_node(detached_child), detached_parent);
     }
 }
