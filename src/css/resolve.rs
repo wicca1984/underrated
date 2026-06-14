@@ -325,26 +325,26 @@ fn component_to_calc_tokens(
                     )));
                     true
                 }
-                "vw" => {
+                "vw" | "svw" | "lvw" | "dvw" | "vi" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * context.viewport_w / 100.0,
                     )));
                     true
                 }
-                "vh" => {
+                "vh" | "svh" | "lvh" | "dvh" | "vb" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * context.viewport_h / 100.0,
                     )));
                     true
                 }
-                "vmin" => {
+                "vmin" | "svmin" | "lvmin" | "dvmin" => {
                     let vmin = context.viewport_w.min(context.viewport_h);
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * vmin / 100.0,
                     )));
                     true
                 }
-                "vmax" => {
+                "vmax" | "svmax" | "lvmax" | "dvmax" => {
                     let vmax = context.viewport_w.max(context.viewport_h);
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * vmax / 100.0,
@@ -377,6 +377,12 @@ fn component_to_calc_tokens(
                     )));
                     true
                 }
+                "q" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * 2.4 / 2.54,
+                    )));
+                    true
+                }
                 "em" => {
                     let fs = context.current_font_size.unwrap_or(context.root_font_size);
                     tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * fs)));
@@ -392,6 +398,16 @@ fn component_to_calc_tokens(
                     tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * fs * 0.5)));
                     true
                 }
+                "ic" => {
+                    let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * fs)));
+                    true
+                }
+                "cap" => {
+                    let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * fs * 0.7)));
+                    true
+                }
                 "lh" => {
                     let lh = context.line_height.unwrap_or_else(|| {
                         context.current_font_size.unwrap_or(context.root_font_size) * 1.2
@@ -404,6 +420,30 @@ fn component_to_calc_tokens(
                         .root_line_height
                         .unwrap_or(context.root_font_size * 1.2);
                     tokens.push(CalcToken::Val(CalcValue::Length(*value as f32 * rlh)));
+                    true
+                }
+                "rex" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * context.root_font_size * 0.5,
+                    )));
+                    true
+                }
+                "rch" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * context.root_font_size * 0.5,
+                    )));
+                    true
+                }
+                "ric" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * context.root_font_size,
+                    )));
+                    true
+                }
+                "rcap" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * context.root_font_size * 0.7,
+                    )));
                     true
                 }
                 "deg" => {
@@ -1473,22 +1513,22 @@ pub fn resolve_value_with_context(
                         *value as f32 * context.root_font_size,
                         LengthUnit::Px,
                     )),
-                    "vw" => Some(CssValue::Length(
+                    "vw" | "svw" | "lvw" | "dvw" | "vi" => Some(CssValue::Length(
                         *value as f32 * context.viewport_w / 100.0,
                         LengthUnit::Px,
                     )),
-                    "vh" => Some(CssValue::Length(
+                    "vh" | "svh" | "lvh" | "dvh" | "vb" => Some(CssValue::Length(
                         *value as f32 * context.viewport_h / 100.0,
                         LengthUnit::Px,
                     )),
-                    "vmin" => {
+                    "vmin" | "svmin" | "lvmin" | "dvmin" => {
                         let vmin = context.viewport_w.min(context.viewport_h);
                         Some(CssValue::Length(
                             *value as f32 * vmin / 100.0,
                             LengthUnit::Px,
                         ))
                     }
-                    "vmax" => {
+                    "vmax" | "svmax" | "lvmax" | "dvmax" => {
                         let vmax = context.viewport_w.max(context.viewport_h);
                         Some(CssValue::Length(
                             *value as f32 * vmax / 100.0,
@@ -1506,6 +1546,7 @@ pub fn resolve_value_with_context(
                         *value as f32 * 96.0 / 72.0,
                         LengthUnit::Px,
                     )),
+                    "q" => Some(CssValue::Length(*value as f32 * 2.4 / 2.54, LengthUnit::Px)),
                     "em" => {
                         if let Some(fs) = context.current_font_size {
                             Some(CssValue::Length(*value as f32 * fs, LengthUnit::Px))
@@ -1521,6 +1562,14 @@ pub fn resolve_value_with_context(
                         let fs = context.current_font_size.unwrap_or(context.root_font_size);
                         Some(CssValue::Length(*value as f32 * fs * 0.5, LengthUnit::Px))
                     }
+                    "ic" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        Some(CssValue::Length(*value as f32 * fs, LengthUnit::Px))
+                    }
+                    "cap" => {
+                        let fs = context.current_font_size.unwrap_or(context.root_font_size);
+                        Some(CssValue::Length(*value as f32 * fs * 0.7, LengthUnit::Px))
+                    }
                     "lh" => {
                         let lh = context.line_height.unwrap_or_else(|| {
                             context.current_font_size.unwrap_or(context.root_font_size) * 1.2
@@ -1533,6 +1582,22 @@ pub fn resolve_value_with_context(
                             .unwrap_or(context.root_font_size * 1.2);
                         Some(CssValue::Length(*value as f32 * rlh, LengthUnit::Px))
                     }
+                    "rex" => Some(CssValue::Length(
+                        *value as f32 * context.root_font_size * 0.5,
+                        LengthUnit::Px,
+                    )),
+                    "rch" => Some(CssValue::Length(
+                        *value as f32 * context.root_font_size * 0.5,
+                        LengthUnit::Px,
+                    )),
+                    "ric" => Some(CssValue::Length(
+                        *value as f32 * context.root_font_size,
+                        LengthUnit::Px,
+                    )),
+                    "rcap" => Some(CssValue::Length(
+                        *value as f32 * context.root_font_size * 0.7,
+                        LengthUnit::Px,
+                    )),
                     _ => None,
                 }
             }
@@ -1638,6 +1703,128 @@ mod tests {
         assert_eq!(
             resolve_string("6pc", 16.0, 1000.0, 800.0, &vars),
             Some(CssValue::Length(96.0, LengthUnit::Px))
+        );
+    }
+
+    #[test]
+    fn test_resolve_level4_units() {
+        let vars = HashMap::new();
+        // Viewport Level 4 units
+        assert_eq!(
+            resolve_string("50svw", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50lvw", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50dvw", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50vi", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10svh", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10lvh", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10dvh", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10vb", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50svmin", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(400.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50lvmin", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(400.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50dvmin", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(400.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50svmax", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50lvmax", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("50dvmax", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(500.0, LengthUnit::Px))
+        );
+
+        // Absolute Quarter-millimeter
+        // 10q = 2.5mm = 0.25cm
+        assert_eq!(
+            resolve_string("10q", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(10.0 * 2.4 / 2.54, LengthUnit::Px))
+        );
+
+        // Root font-relative Level 4 units
+        // rex, rch, ric, rcap
+        assert_eq!(
+            resolve_string("2rex", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(16.0, LengthUnit::Px)) // 2 * 16.0 * 0.5
+        );
+        assert_eq!(
+            resolve_string("2rch", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(16.0, LengthUnit::Px)) // 2 * 16.0 * 0.5
+        );
+        assert_eq!(
+            resolve_string("2ric", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(32.0, LengthUnit::Px)) // 2 * 16.0
+        );
+        assert_eq!(
+            resolve_string("2rcap", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(2.0 * 16.0 * 0.7, LengthUnit::Px))
+        );
+
+        // Font-relative Level 4 units with current font context
+        // ic, cap
+        let context = ResolveContext {
+            root_font_size: 16.0,
+            current_font_size: Some(20.0),
+            ..ResolveContext::default()
+        };
+
+        let ic_components = crate::css::parser::parse_component_values("2ic");
+        assert_eq!(
+            resolve_value_with_context(&ic_components, &context, &vars),
+            Some(CssValue::Length(40.0, LengthUnit::Px)) // 2 * 20.0
+        );
+
+        let cap_components = crate::css::parser::parse_component_values("2cap");
+        assert_eq!(
+            resolve_value_with_context(&cap_components, &context, &vars),
+            Some(CssValue::Length(28.0, LengthUnit::Px)) // 2 * 20.0 * 0.7
+        );
+
+        // Level 4 units inside calc()
+        assert_eq!(
+            resolve_string("calc(10svw + 10svh)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(180.0, LengthUnit::Px)) // 100px + 80px
+        );
+        assert_eq!(
+            resolve_string("calc(10q + 10q)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(20.0 * 2.4 / 2.54, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("calc(2rex + 2rcap)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(16.0 + 2.0 * 16.0 * 0.7, LengthUnit::Px))
         );
     }
 
