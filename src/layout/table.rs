@@ -440,6 +440,148 @@ pub fn layout_table_container(
         }
     }
 
+    // Let's create a local modified styles map if border-collapse is active
+    let mut local_styles;
+    let styles_ref = if is_collapsed {
+        local_styles = styles.clone();
+
+        struct CellBorderInfo {
+            top: (f32, String),
+            bottom: (f32, String),
+            left: (f32, String),
+            right: (f32, String),
+        }
+
+        let mut cell_borders = HashMap::new();
+        for &cell_node in cell_placements.keys() {
+            if let Some(cell_style) = styles.get(&cell_node) {
+                let bt = get_px(cell_style, "border-top-width", 0.0);
+                let bb = get_px(cell_style, "border-bottom-width", 0.0);
+                let bl = get_px(cell_style, "border-left-width", 0.0);
+                let br = get_px(cell_style, "border-right-width", 0.0);
+
+                let bt_style = cell_style.reset_surround.border_top_style.clone();
+                let bb_style = cell_style.reset_surround.border_bottom_style.clone();
+                let bl_style = cell_style.reset_surround.border_left_style.clone();
+                let br_style = cell_style.reset_surround.border_right_style.clone();
+
+                cell_borders.insert(
+                    cell_node,
+                    CellBorderInfo {
+                        top: (bt, bt_style),
+                        bottom: (bb, bb_style),
+                        left: (bl, bl_style),
+                        right: (br, br_style),
+                    },
+                );
+            }
+        }
+
+        // Table's own borders and styles
+        let table_style = styles.get(&node)?;
+        let t_bt = get_px(table_style, "border-top-width", 0.0);
+        let t_bb = get_px(table_style, "border-bottom-width", 0.0);
+        let t_bl = get_px(table_style, "border-left-width", 0.0);
+        let t_br = get_px(table_style, "border-right-width", 0.0);
+
+        let t_bt_style = table_style.reset_surround.border_top_style.clone();
+        let t_bb_style = table_style.reset_surround.border_bottom_style.clone();
+        let t_bl_style = table_style.reset_surround.border_left_style.clone();
+        let t_br_style = table_style.reset_surround.border_right_style.clone();
+
+        // Resolve borders for each cell
+        for (&cell_node, placement) in &cell_placements {
+            let info = if let Some(i) = cell_borders.get(&cell_node) {
+                i
+            } else {
+                continue;
+            };
+
+            // Top Border Resolution
+            let mut top_conflicts = vec![info.top.clone()];
+            if placement.row_idx == 0 {
+                top_conflicts.push((t_bt, t_bt_style.clone()));
+            } else {
+                for (&other_node, other_p) in &cell_placements {
+                    if other_p.row_idx + other_p.rowspan == placement.row_idx {
+                        let overlap = other_p.col_idx < placement.col_idx + placement.colspan
+                            && placement.col_idx < other_p.col_idx + other_p.colspan;
+                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                            top_conflicts.push(other_info.bottom.clone());
+                        }
+                    }
+                }
+            }
+            let resolved_top = resolve_multiple_collapsed_borders(&top_conflicts);
+
+            // Bottom Border Resolution
+            let mut bottom_conflicts = vec![info.bottom.clone()];
+            if placement.row_idx + placement.rowspan == rows.len() {
+                bottom_conflicts.push((t_bb, t_bb_style.clone()));
+            } else {
+                for (&other_node, other_p) in &cell_placements {
+                    if placement.row_idx + placement.rowspan == other_p.row_idx {
+                        let overlap = other_p.col_idx < placement.col_idx + placement.colspan
+                            && placement.col_idx < other_p.col_idx + other_p.colspan;
+                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                            bottom_conflicts.push(other_info.top.clone());
+                        }
+                    }
+                }
+            }
+            let resolved_bottom = resolve_multiple_collapsed_borders(&bottom_conflicts);
+
+            // Left Border Resolution
+            let mut left_conflicts = vec![info.left.clone()];
+            if placement.col_idx == 0 {
+                left_conflicts.push((t_bl, t_bl_style.clone()));
+            } else {
+                for (&other_node, other_p) in &cell_placements {
+                    if other_p.col_idx + other_p.colspan == placement.col_idx {
+                        let overlap = other_p.row_idx < placement.row_idx + placement.rowspan
+                            && placement.row_idx < other_p.row_idx + other_p.rowspan;
+                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                            left_conflicts.push(other_info.right.clone());
+                        }
+                    }
+                }
+            }
+            let resolved_left = resolve_multiple_collapsed_borders(&left_conflicts);
+
+            // Right Border Resolution
+            let mut right_conflicts = vec![info.right.clone()];
+            if placement.col_idx + placement.colspan == num_cols {
+                right_conflicts.push((t_br, t_br_style.clone()));
+            } else {
+                for (&other_node, other_p) in &cell_placements {
+                    if placement.col_idx + placement.colspan == other_p.col_idx {
+                        let overlap = other_p.row_idx < placement.row_idx + placement.rowspan
+                            && placement.row_idx < other_p.row_idx + other_p.rowspan;
+                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                            right_conflicts.push(other_info.left.clone());
+                        }
+                    }
+                }
+            }
+            let resolved_right = resolve_multiple_collapsed_borders(&right_conflicts);
+
+            // Mutate in local_styles
+            if let Some(cell_style) = local_styles.get_mut(&cell_node) {
+                let surround = std::sync::Arc::make_mut(&mut cell_style.reset_surround);
+                surround.border_top_width = resolved_top.round() as i32;
+                surround.border_bottom_width = resolved_bottom.round() as i32;
+                surround.border_left_width = resolved_left.round() as i32;
+                surround.border_right_width = resolved_right.round() as i32;
+            }
+        }
+
+        &local_styles
+    } else {
+        styles
+    };
+
+    let styles = styles_ref;
+
     let table_layout_fixed = style.reset_table.table_layout == "fixed";
 
     let final_content_width = if table_layout_fixed {
@@ -461,9 +603,21 @@ pub fn layout_table_container(
             if let Some(cell_style) = styles.get(&placement.node) {
                 let w_px = get_resolved_width(cell_style, avail_content_width).unwrap_or(0.0);
                 if w_px > 0.0 {
-                    let share = w_px / placement.colspan as f32;
+                    let mut already_resolved_width = 0.0_f32;
+                    let mut unresolved_cols = Vec::new();
                     for c in placement.col_idx..(placement.col_idx + placement.colspan) {
-                        if c < num_cols && !col_has_width[c] {
+                        if c < num_cols {
+                            if col_has_width[c] {
+                                already_resolved_width += col_widths[c];
+                            } else {
+                                unresolved_cols.push(c);
+                            }
+                        }
+                    }
+                    if !unresolved_cols.is_empty() {
+                        let leftover = (w_px - already_resolved_width).max(0.0);
+                        let share = leftover / unresolved_cols.len() as f32;
+                        for &c in &unresolved_cols {
                             col_widths[c] = share;
                             col_has_width[c] = true;
                         }
@@ -579,9 +733,17 @@ pub fn layout_table_container(
                         }
                     }
                 } else {
-                    let share = deficit / placement.colspan as f32;
-                    for c in spanned_range {
-                        col_widths[c] += share;
+                    let current_individual_sum: f32 =
+                        col_widths[spanned_range.clone()].iter().sum();
+                    if current_individual_sum > 0.0 {
+                        for c in spanned_range {
+                            col_widths[c] += (col_widths[c] / current_individual_sum) * deficit;
+                        }
+                    } else {
+                        let share = deficit / placement.colspan as f32;
+                        for c in spanned_range {
+                            col_widths[c] += share;
+                        }
                     }
                 }
             }
@@ -724,9 +886,17 @@ pub fn layout_table_container(
                         }
                     }
                 } else {
-                    let share = deficit / placement.rowspan as f32;
-                    for r in spanned_range {
-                        row_heights[r] += share;
+                    let current_individual_sum: f32 =
+                        row_heights[spanned_range.clone()].iter().sum();
+                    if current_individual_sum > 0.0 {
+                        for r in spanned_range {
+                            row_heights[r] += (row_heights[r] / current_individual_sum) * deficit;
+                        }
+                    } else {
+                        let share = deficit / placement.rowspan as f32;
+                        for r in spanned_range {
+                            row_heights[r] += share;
+                        }
                     }
                 }
             }
@@ -1292,6 +1462,69 @@ fn cell_has_rendered_content(dom: &Dom, node_id: NodeId) -> bool {
 
 fn is_cell_empty(dom: &Dom, cell_node: NodeId) -> bool {
     !cell_has_rendered_content(dom, cell_node)
+}
+
+fn resolve_collapsed_border(border_1: (f32, &str), border_2: (f32, &str)) -> f32 {
+    if border_1.1 == "hidden" || border_2.1 == "hidden" {
+        return 0.0;
+    }
+    let s1 = if border_1.0 > 0.0 && border_1.1 == "none" {
+        "solid"
+    } else {
+        border_1.1
+    };
+    let s2 = if border_2.0 > 0.0 && border_2.1 == "none" {
+        "solid"
+    } else {
+        border_2.1
+    };
+
+    if s1 == "none" && s2 == "none" {
+        return 0.0;
+    }
+    if s1 == "none" {
+        return border_2.0;
+    }
+    if s2 == "none" {
+        return border_1.0;
+    }
+    border_1.0.max(border_2.0)
+}
+
+fn resolve_multiple_collapsed_borders(borders: &[(f32, String)]) -> f32 {
+    if borders.is_empty() {
+        return 0.0;
+    }
+    let mut resolved_w = borders[0].0;
+    let mut resolved_s = if borders[0].0 > 0.0 && borders[0].1 == "none" {
+        "solid".to_string()
+    } else {
+        borders[0].1.clone()
+    };
+    for b in &borders[1..] {
+        let b_style = if b.0 > 0.0 && b.1 == "none" {
+            "solid".to_string()
+        } else {
+            b.1.clone()
+        };
+        let w = resolve_collapsed_border((resolved_w, &resolved_s), (b.0, &b_style));
+        let s = if resolved_s == "hidden" || b_style == "hidden" {
+            "hidden".to_string()
+        } else if resolved_s == "none" && b_style == "none" {
+            "none".to_string()
+        } else if resolved_s == "none" {
+            b_style.clone()
+        } else if b_style == "none" {
+            resolved_s.clone()
+        } else if b.0 > resolved_w {
+            b_style.clone()
+        } else {
+            resolved_s.clone()
+        };
+        resolved_w = w;
+        resolved_s = s;
+    }
+    resolved_w
 }
 
 #[cfg(test)]
@@ -3711,8 +3944,8 @@ mod tests {
         // Table width should be content width (200px) + border_left (5px) + border_right (2px) = 207.0
         assert_eq!(table_box.rect.size.width, 207.0);
 
-        // Table height should be row_heights sum (35px, which includes cell borders 4px and 1px) + border_top (4px) + border_bottom (2px) = 41.0
-        assert_eq!(table_box.rect.size.height, 41.0);
+        // Table height should be row_heights sum (36px, which includes cell borders 4px and resolved 2px) + border_top (4px) + border_bottom (2px) = 42.0
+        assert_eq!(table_box.rect.size.height, 42.0);
     }
 
     #[test]
