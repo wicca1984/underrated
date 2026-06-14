@@ -1051,6 +1051,26 @@ impl TreeBuilder {
                 "html" | "head" | "body" => {
                     // Parse error. Ignore the token.
                 }
+                "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "th" | "thead"
+                | "tr" => {
+                    // Parse error.
+                    if self.is_in_scope("table") {
+                        self.pop_until("table");
+                        self.reset_insertion_mode_appropriately();
+                        self.process_token(Token::StartTag {
+                            name,
+                            attrs,
+                            self_closing: false,
+                        });
+                    } else {
+                        // Act as described in the "anything else" entry
+                        self.reconstruct_active_formatting_elements();
+                        let node = self.create_and_insert_element(name.clone(), attrs);
+                        if !self.is_void_element(&name) {
+                            self.stack_of_open_elements.push(node);
+                        }
+                    }
+                }
                 "p" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
@@ -1298,13 +1318,49 @@ impl TreeBuilder {
                     self.pop_until("p");
                 } else if self.is_formatting_element(&name) {
                     self.run_adoption_agency_algorithm(&name);
+                } else if matches!(
+                    name.as_str(),
+                    "caption"
+                        | "col"
+                        | "colgroup"
+                        | "tbody"
+                        | "td"
+                        | "tfoot"
+                        | "th"
+                        | "thead"
+                        | "tr"
+                ) {
+                    if self.is_in_table_scope(&name) {
+                        self.generate_implied_end_tags(Some(&name));
+                        self.pop_until(&name);
+                        self.reset_insertion_mode_appropriately();
+                    }
                 } else if self.is_special_element(&name) {
                     if self.is_in_scope(&name) {
                         self.pop_until(&name);
                     }
                 } else {
-                    // TODO(spec): proper end tag handling
-                    self.pop_until(&name);
+                    // spec: §13.2.6.4.7 The "in body" insertion mode (any other end tag)
+                    let mut found_node_idx = None;
+                    for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+                        if let Some(NodeData::Element { name: el_name, .. }) =
+                            self.dom.data(node_id)
+                        {
+                            if el_name == &name {
+                                found_node_idx = Some(idx);
+                                break;
+                            }
+                            if self.is_special_element(el_name) {
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(idx) = found_node_idx {
+                        self.generate_implied_end_tags(Some(&name));
+                        while self.stack_of_open_elements.len() > idx {
+                            self.stack_of_open_elements.pop();
+                        }
+                    }
                 }
             }
             Token::Eof => {
@@ -2088,6 +2144,16 @@ impl TreeBuilder {
                     let node = self.create_and_insert_element(name, attrs);
                     self.stack_of_open_elements.push(node);
                 }
+                "menuitem" => {
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "menuitem")
+                    }) {
+                        self.stack_of_open_elements.pop();
+                    }
+                    self.reconstruct_active_formatting_elements();
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
                 "select" if self.is_in_select_scope("select") => {
                     self.pop_until("select");
                     self.reset_insertion_mode_appropriately();
@@ -2125,6 +2191,13 @@ impl TreeBuilder {
                     }
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "optgroup")
+                    }) {
+                        self.stack_of_open_elements.pop();
+                    }
+                }
+                "menuitem" => {
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "menuitem")
                     }) {
                         self.stack_of_open_elements.pop();
                     }
@@ -2205,6 +2278,7 @@ impl TreeBuilder {
                 | "colgroup"
                 | "dd"
                 | "details"
+                | "dialog"
                 | "dir"
                 | "div"
                 | "dl"
@@ -2238,6 +2312,7 @@ impl TreeBuilder {
                 | "main"
                 | "marquee"
                 | "menu"
+                | "menuitem"
                 | "meta"
                 | "nav"
                 | "noembed"
