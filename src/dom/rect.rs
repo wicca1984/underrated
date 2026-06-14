@@ -1,9 +1,26 @@
 use crate::dom::Dom;
 use crate::infra::NodeId;
 
+/// Coerce a JSON value to f64 following WebIDL-like conversion principles.
+fn coerce_to_f64(value: &serde_json::Value) -> f64 {
+    match value {
+        serde_json::Value::Number(num) => num.as_f64().unwrap_or(0.0),
+        serde_json::Value::String(s) => s.parse::<f64>().unwrap_or(f64::NAN),
+        serde_json::Value::Bool(b) => {
+            if *b {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        serde_json::Value::Null => 0.0,
+        _ => f64::NAN,
+    }
+}
+
 /// `DomRectReadOnly` represents a read-only rectangle, which is a standard base
 /// interface for `DOMRect` per the CSS Geometry Interfaces standard.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DomRectReadOnly {
     x: f64,
     y: f64,
@@ -45,33 +62,61 @@ impl DomRectReadOnly {
     /// Returns the top coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative height,
-    /// this is normalized as: `min(y, y + height)`.
+    /// this is normalized as: `y` if `height >= 0`, and `y + height` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn top(&self) -> f64 {
-        self.y.min(self.y + self.height)
+        if self.height.is_nan() {
+            f64::NAN
+        } else if self.height >= 0.0 {
+            self.y
+        } else {
+            self.y + self.height
+        }
     }
 
     /// Returns the right coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative width,
-    /// this is normalized as: `max(x, x + width)`.
+    /// this is normalized as: `x + width` if `width >= 0`, and `x` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn right(&self) -> f64 {
-        self.x.max(self.x + self.width)
+        if self.width.is_nan() {
+            f64::NAN
+        } else if self.width >= 0.0 {
+            self.x + self.width
+        } else {
+            self.x
+        }
     }
 
     /// Returns the bottom coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative height,
-    /// this is normalized as: `max(y, y + height)`.
+    /// this is normalized as: `y + height` if `height >= 0`, and `y` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn bottom(&self) -> f64 {
-        self.y.max(self.y + self.height)
+        if self.height.is_nan() {
+            f64::NAN
+        } else if self.height >= 0.0 {
+            self.y + self.height
+        } else {
+            self.y
+        }
     }
 
     /// Returns the left coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative width,
-    /// this is normalized as: `min(x, x + width)`.
+    /// this is normalized as: `x` if `width >= 0`, and `x + width` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn left(&self) -> f64 {
-        self.x.min(self.x + self.width)
+        if self.width.is_nan() {
+            f64::NAN
+        } else if self.width >= 0.0 {
+            self.x
+        } else {
+            self.x + self.width
+        }
     }
 
     /// Serializes this `DomRectReadOnly` to a JSON object.
@@ -96,17 +141,17 @@ impl DomRectReadOnly {
         let mut height = 0.0;
 
         if let Some(obj) = other.and_then(|v| v.as_object()) {
-            if let Some(val) = obj.get("x").and_then(|v| v.as_f64()) {
-                x = val;
+            if let Some(val) = obj.get("x") {
+                x = coerce_to_f64(val);
             }
-            if let Some(val) = obj.get("y").and_then(|v| v.as_f64()) {
-                y = val;
+            if let Some(val) = obj.get("y") {
+                y = coerce_to_f64(val);
             }
-            if let Some(val) = obj.get("width").and_then(|v| v.as_f64()) {
-                width = val;
+            if let Some(val) = obj.get("width") {
+                width = coerce_to_f64(val);
             }
-            if let Some(val) = obj.get("height").and_then(|v| v.as_f64()) {
-                height = val;
+            if let Some(val) = obj.get("height") {
+                height = coerce_to_f64(val);
             }
         }
 
@@ -140,7 +185,7 @@ impl DomRectReadOnly {
 /// `Element.getBoundingClientRect()`.
 ///
 /// It provides read-write properties describing the size and position of a rectangle.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DomRect {
     x: f64,
     y: f64,
@@ -202,33 +247,61 @@ impl DomRect {
     /// Returns the top coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative height,
-    /// this is normalized as: `min(y, y + height)`.
+    /// this is normalized as: `y` if `height >= 0`, and `y + height` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn top(&self) -> f64 {
-        self.y.min(self.y + self.height)
+        if self.height.is_nan() {
+            f64::NAN
+        } else if self.height >= 0.0 {
+            self.y
+        } else {
+            self.y + self.height
+        }
     }
 
     /// Returns the right coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative width,
-    /// this is normalized as: `max(x, x + width)`.
+    /// this is normalized as: `x + width` if `width >= 0`, and `x` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn right(&self) -> f64 {
-        self.x.max(self.x + self.width)
+        if self.width.is_nan() {
+            f64::NAN
+        } else if self.width >= 0.0 {
+            self.x + self.width
+        } else {
+            self.x
+        }
     }
 
     /// Returns the bottom coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative height,
-    /// this is normalized as: `max(y, y + height)`.
+    /// this is normalized as: `y + height` if `height >= 0`, and `y` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn bottom(&self) -> f64 {
-        self.y.max(self.y + self.height)
+        if self.height.is_nan() {
+            f64::NAN
+        } else if self.height >= 0.0 {
+            self.y + self.height
+        } else {
+            self.y
+        }
     }
 
     /// Returns the left coordinate value of the rectangle.
     ///
     /// According to the DOMRect spec, for a possibly-negative width,
-    /// this is normalized as: `min(x, x + width)`.
+    /// this is normalized as: `x` if `width >= 0`, and `x + width` otherwise.
+    /// Handles NaN correctly per spec.
     pub fn left(&self) -> f64 {
-        self.x.min(self.x + self.width)
+        if self.width.is_nan() {
+            f64::NAN
+        } else if self.width >= 0.0 {
+            self.x
+        } else {
+            self.x + self.width
+        }
     }
 
     /// Serializes this `DomRect` to a JSON object.
@@ -257,17 +330,17 @@ impl DomRect {
         let mut height = 0.0;
 
         if let Some(obj) = other.and_then(|v| v.as_object()) {
-            if let Some(val) = obj.get("x").and_then(|v| v.as_f64()) {
-                x = val;
+            if let Some(val) = obj.get("x") {
+                x = coerce_to_f64(val);
             }
-            if let Some(val) = obj.get("y").and_then(|v| v.as_f64()) {
-                y = val;
+            if let Some(val) = obj.get("y") {
+                y = coerce_to_f64(val);
             }
-            if let Some(val) = obj.get("width").and_then(|v| v.as_f64()) {
-                width = val;
+            if let Some(val) = obj.get("width") {
+                width = coerce_to_f64(val);
             }
-            if let Some(val) = obj.get("height").and_then(|v| v.as_f64()) {
-                height = val;
+            if let Some(val) = obj.get("height") {
+                height = coerce_to_f64(val);
             }
         }
 
@@ -310,7 +383,7 @@ impl From<DomRectReadOnly> for DomRect {
 }
 
 /// `DomRectList` represents a list of `DomRect` objects, mirroring DOM's DOMRectList.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DomRectList {
     rects: Vec<DomRect>,
 }
@@ -336,6 +409,20 @@ impl DomRectList {
         let serialized_rects: Vec<serde_json::Value> =
             self.rects.iter().map(|r| r.serialize()).collect();
         serde_json::Value::Array(serialized_rects)
+    }
+}
+
+impl std::ops::Index<usize> for DomRectList {
+    type Output = DomRect;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.rects[index]
+    }
+}
+
+impl FromIterator<DomRect> for DomRectList {
+    fn from_iter<T: IntoIterator<Item = DomRect>>(iter: T) -> Self {
+        Self::new(iter.into_iter().collect())
     }
 }
 
@@ -636,5 +723,75 @@ mod tests {
 
         let from_readonly: DomRect = DomRect::from(readonly);
         assert_eq!(from_readonly.x(), 2.0);
+    }
+
+    #[test]
+    fn test_t0889_nan_handling() {
+        // According to CSS Geometry Interfaces spec, NaN width/height propagates to top, bottom, left, right as NaN
+        let rect_nan_w = DomRect::new(10.0, 20.0, f64::NAN, 50.0);
+        assert!(rect_nan_w.left().is_nan());
+        assert!(rect_nan_w.right().is_nan());
+        assert_eq!(rect_nan_w.top(), 20.0);
+        assert_eq!(rect_nan_w.bottom(), 70.0);
+
+        let rect_nan_h = DomRect::new(10.0, 20.0, 100.0, f64::NAN);
+        assert_eq!(rect_nan_h.left(), 10.0);
+        assert_eq!(rect_nan_h.right(), 110.0);
+        assert!(rect_nan_h.top().is_nan());
+        assert!(rect_nan_h.bottom().is_nan());
+
+        let readonly_nan_w = DomRectReadOnly::new(10.0, 20.0, f64::NAN, 50.0);
+        assert!(readonly_nan_w.left().is_nan());
+        assert!(readonly_nan_w.right().is_nan());
+        assert_eq!(readonly_nan_w.top(), 20.0);
+        assert_eq!(readonly_nan_w.bottom(), 70.0);
+    }
+
+    #[test]
+    fn test_t0889_coercion_parsing() {
+        let init = serde_json::json!({
+            "x": "12.5",
+            "y": true,
+            "width": null,
+            "height": false
+        });
+        let rect = DomRect::from_rect(Some(&init));
+        assert_eq!(rect.x(), 12.5);
+        assert_eq!(rect.y(), 1.0);
+        assert_eq!(rect.width(), 0.0);
+        assert_eq!(rect.height(), 0.0);
+
+        let init_invalid = serde_json::json!({
+            "x": "not a number"
+        });
+        let rect_invalid = DomRect::from_rect(Some(&init_invalid));
+        assert!(rect_invalid.x().is_nan());
+        assert_eq!(rect_invalid.y(), 0.0);
+    }
+
+    #[test]
+    fn test_t0889_trait_implementations() {
+        // Default traits
+        let def_rect = DomRect::default();
+        assert_eq!(def_rect.x(), 0.0);
+        assert_eq!(def_rect.y(), 0.0);
+
+        let def_readonly = DomRectReadOnly::default();
+        assert_eq!(def_readonly.x(), 0.0);
+
+        let def_list = DomRectList::default();
+        assert_eq!(def_list.length(), 0);
+
+        // Index trait
+        let r1 = DomRect::new(1.0, 2.0, 3.0, 4.0);
+        let r2 = DomRect::new(5.0, 6.0, 7.0, 8.0);
+        let list = DomRectList::new(vec![r1, r2]);
+        assert_eq!(list[0], r1);
+        assert_eq!(list[1], r2);
+
+        // FromIterator trait
+        let collected_list: DomRectList = vec![r1, r2].into_iter().collect();
+        assert_eq!(collected_list.length(), 2);
+        assert_eq!(collected_list[0], r1);
     }
 }
