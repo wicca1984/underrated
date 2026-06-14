@@ -932,6 +932,172 @@ impl Dom {
             n.input_value_dirty = dirty;
         }
     }
+
+    /// Returns whether the `disabled` content attribute is present on a valid form control element
+    /// (input, button, select, textarea, option, optgroup, fieldset).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_disabled(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("button")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea")
+                || name.eq_ignore_ascii_case("option")
+                || name.eq_ignore_ascii_case("optgroup")
+                || name.eq_ignore_ascii_case("fieldset"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("disabled")),
+            );
+        }
+        None
+    }
+
+    /// Returns whether the `required` content attribute is present on a valid element node
+    /// (input, select, textarea).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_required(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("required")),
+            );
+        }
+        None
+    }
+
+    /// Returns whether the `readonly` content attribute is present on a valid element node
+    /// (input, textarea).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_readonly(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("readonly")),
+            );
+        }
+        None
+    }
+
+    /// Returns whether the `autofocus` content attribute is present on any valid element node.
+    /// Returns `None` if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn get_autofocus(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("autofocus")),
+            );
+        }
+        None
+    }
+
+    /// Returns whether the `multiple` content attribute is present on a valid element node
+    /// (input, select).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_multiple(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("select"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("multiple")),
+            );
+        }
+        None
+    }
+
+    /// Returns whether the `checked` content attribute is present on a valid `<input>` element.
+    /// Returns `None` if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn get_checked(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("checked")));
+        }
+        None
+    }
+
+    /// Returns whether the `selected` content attribute is present on a valid `<option>` element.
+    /// Returns `None` if the node is not an `<option>` element, or if the `NodeId` is invalid.
+    pub fn get_selected(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("option")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("selected")),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `value` content attribute of a valid `<textarea>` element.
+    /// Returns `None` if the node is not a `<textarea>` element, has no `value` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_textarea_value(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("textarea")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `value` content attribute of a valid `<button>` element.
+    /// Returns `None` if the node is not a `<button>` element, has no `value` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_button_value(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("button")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `value` content attribute of a valid `<option>` element.
+    /// Returns `None` if the node is not an `<option>` element, has no `value` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_option_value(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("option")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -2475,5 +2641,240 @@ mod tests {
         assert_eq!(foreign_dom.get_content(foreign_node), None);
         assert_eq!(foreign_dom.get_http_equiv(foreign_node), None);
         assert_eq!(foreign_dom.get_charset(foreign_node), None);
+    }
+
+    #[test]
+    fn test_form_control_boolean_and_value_accessors() {
+        let mut dom = Dom::new();
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("disabled".to_string(), "".to_string()),
+                ("required".to_string(), "".to_string()),
+                ("readonly".to_string(), "".to_string()),
+                ("autofocus".to_string(), "".to_string()),
+                ("multiple".to_string(), "".to_string()),
+                ("checked".to_string(), "".to_string()),
+                ("selected".to_string(), "".to_string()),
+                ("value".to_string(), "div-val".to_string()),
+            ],
+        });
+
+        // 1. Test get_disabled
+        // Guarded tags: input, button, select, textarea, option, optgroup, fieldset
+        for tag in &[
+            "input", "button", "select", "textarea", "option", "optgroup", "fieldset",
+        ] {
+            let node_present = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![("disabled".to_string(), "".to_string())],
+            });
+            let node_caps = dom.create_node(NodeData::Element {
+                name: tag.to_uppercase(),
+                attrs: vec![("DISABLED".to_string(), "true".to_string())],
+            });
+            let node_absent = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![],
+            });
+            assert_eq!(dom.get_disabled(node_present), Some(true));
+            assert_eq!(dom.get_disabled(node_caps), Some(true));
+            assert_eq!(dom.get_disabled(node_absent), Some(false));
+        }
+        // Negative test: div is not a guarded tag for disabled
+        assert_eq!(dom.get_disabled(div_id), None);
+
+        // 2. Test get_required
+        // Guarded tags: input, select, textarea
+        for tag in &["input", "select", "textarea"] {
+            let node_present = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![("required".to_string(), "".to_string())],
+            });
+            let node_caps = dom.create_node(NodeData::Element {
+                name: tag.to_uppercase(),
+                attrs: vec![("REQUIRED".to_string(), "true".to_string())],
+            });
+            let node_absent = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![],
+            });
+            assert_eq!(dom.get_required(node_present), Some(true));
+            assert_eq!(dom.get_required(node_caps), Some(true));
+            assert_eq!(dom.get_required(node_absent), Some(false));
+        }
+        assert_eq!(dom.get_required(div_id), None);
+
+        // 3. Test get_readonly
+        // Guarded tags: input, textarea
+        for tag in &["input", "textarea"] {
+            let node_present = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![("readonly".to_string(), "".to_string())],
+            });
+            let node_caps = dom.create_node(NodeData::Element {
+                name: tag.to_uppercase(),
+                attrs: vec![("READONLY".to_string(), "true".to_string())],
+            });
+            let node_absent = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![],
+            });
+            assert_eq!(dom.get_readonly(node_present), Some(true));
+            assert_eq!(dom.get_readonly(node_caps), Some(true));
+            assert_eq!(dom.get_readonly(node_absent), Some(false));
+        }
+        assert_eq!(dom.get_readonly(div_id), None);
+
+        // 4. Test get_autofocus
+        // Any element node is valid
+        let any_el_present = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("autofocus".to_string(), "".to_string())],
+        });
+        let any_el_caps = dom.create_node(NodeData::Element {
+            name: "SPAN".to_string(),
+            attrs: vec![("AUTOFOCUS".to_string(), "true".to_string())],
+        });
+        let any_el_absent = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_autofocus(any_el_present), Some(true));
+        assert_eq!(dom.get_autofocus(any_el_caps), Some(true));
+        assert_eq!(dom.get_autofocus(any_el_absent), Some(false));
+
+        // 5. Test get_multiple
+        // Guarded tags: input, select
+        for tag in &["input", "select"] {
+            let node_present = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![("multiple".to_string(), "".to_string())],
+            });
+            let node_caps = dom.create_node(NodeData::Element {
+                name: tag.to_uppercase(),
+                attrs: vec![("MULTIPLE".to_string(), "true".to_string())],
+            });
+            let node_absent = dom.create_node(NodeData::Element {
+                name: tag.to_string(),
+                attrs: vec![],
+            });
+            assert_eq!(dom.get_multiple(node_present), Some(true));
+            assert_eq!(dom.get_multiple(node_caps), Some(true));
+            assert_eq!(dom.get_multiple(node_absent), Some(false));
+        }
+        assert_eq!(dom.get_multiple(div_id), None);
+
+        // 6. Test get_checked
+        // Guarded tags: input
+        let checked_present = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("checked".to_string(), "".to_string())],
+        });
+        let checked_caps = dom.create_node(NodeData::Element {
+            name: "INPUT".to_string(),
+            attrs: vec![("CHECKED".to_string(), "true".to_string())],
+        });
+        let checked_absent = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_checked(checked_present), Some(true));
+        assert_eq!(dom.get_checked(checked_caps), Some(true));
+        assert_eq!(dom.get_checked(checked_absent), Some(false));
+        assert_eq!(dom.get_checked(div_id), None);
+
+        // 7. Test get_selected
+        // Guarded tags: option
+        let selected_present = dom.create_node(NodeData::Element {
+            name: "option".to_string(),
+            attrs: vec![("selected".to_string(), "".to_string())],
+        });
+        let selected_caps = dom.create_node(NodeData::Element {
+            name: "OPTION".to_string(),
+            attrs: vec![("SELECTED".to_string(), "true".to_string())],
+        });
+        let selected_absent = dom.create_node(NodeData::Element {
+            name: "option".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_selected(selected_present), Some(true));
+        assert_eq!(dom.get_selected(selected_caps), Some(true));
+        assert_eq!(dom.get_selected(selected_absent), Some(false));
+        assert_eq!(dom.get_selected(div_id), None);
+
+        // 8. Test get_textarea_value
+        let textarea_present = dom.create_node(NodeData::Element {
+            name: "textarea".to_string(),
+            attrs: vec![("value".to_string(), "textarea-val".to_string())],
+        });
+        let textarea_caps = dom.create_node(NodeData::Element {
+            name: "TEXTAREA".to_string(),
+            attrs: vec![("VALUE".to_string(), "textarea-caps-val".to_string())],
+        });
+        let textarea_absent = dom.create_node(NodeData::Element {
+            name: "textarea".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(
+            dom.get_textarea_value(textarea_present),
+            Some("textarea-val")
+        );
+        assert_eq!(
+            dom.get_textarea_value(textarea_caps),
+            Some("textarea-caps-val")
+        );
+        assert_eq!(dom.get_textarea_value(textarea_absent), None);
+        assert_eq!(dom.get_textarea_value(div_id), None);
+
+        // 9. Test get_button_value
+        let button_present = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![("value".to_string(), "button-val".to_string())],
+        });
+        let button_caps = dom.create_node(NodeData::Element {
+            name: "BUTTON".to_string(),
+            attrs: vec![("VALUE".to_string(), "button-caps-val".to_string())],
+        });
+        let button_absent = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_button_value(button_present), Some("button-val"));
+        assert_eq!(dom.get_button_value(button_caps), Some("button-caps-val"));
+        assert_eq!(dom.get_button_value(button_absent), None);
+        assert_eq!(dom.get_button_value(div_id), None);
+
+        // 10. Test get_option_value
+        let option_present = dom.create_node(NodeData::Element {
+            name: "option".to_string(),
+            attrs: vec![("value".to_string(), "option-val".to_string())],
+        });
+        let option_caps = dom.create_node(NodeData::Element {
+            name: "OPTION".to_string(),
+            attrs: vec![("VALUE".to_string(), "option-caps-val".to_string())],
+        });
+        let option_absent = dom.create_node(NodeData::Element {
+            name: "option".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_option_value(option_present), Some("option-val"));
+        assert_eq!(dom.get_option_value(option_caps), Some("option-caps-val"));
+        assert_eq!(dom.get_option_value(option_absent), None);
+        assert_eq!(dom.get_option_value(div_id), None);
+
+        // 11. Invalid NodeId returns None for all new getters
+        let foreign_dom = Dom::new();
+        let foreign_node = dom.create_node(NodeData::Text("hi".to_string()));
+        assert_eq!(foreign_dom.get_disabled(foreign_node), None);
+        assert_eq!(foreign_dom.get_required(foreign_node), None);
+        assert_eq!(foreign_dom.get_readonly(foreign_node), None);
+        assert_eq!(foreign_dom.get_autofocus(foreign_node), None);
+        assert_eq!(foreign_dom.get_multiple(foreign_node), None);
+        assert_eq!(foreign_dom.get_checked(foreign_node), None);
+        assert_eq!(foreign_dom.get_selected(foreign_node), None);
+        assert_eq!(foreign_dom.get_textarea_value(foreign_node), None);
+        assert_eq!(foreign_dom.get_button_value(foreign_node), None);
+        assert_eq!(foreign_dom.get_option_value(foreign_node), None);
     }
 }
