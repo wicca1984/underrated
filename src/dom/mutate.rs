@@ -319,6 +319,48 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `hreflang` content attribute of a valid element node.
+    /// Returns `None` if the node has no `hreflang` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_hreflang(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("hreflang"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `download` content attribute of a valid element node.
+    /// Returns `None` if the node has no `download` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_download(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("download"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `referrerpolicy` content attribute of a valid element node.
+    /// Returns `None` if the node has no `referrerpolicy` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_referrer_policy(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("referrerpolicy"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Returns the value of the `for` content attribute of a valid element node.
     /// Returns `None` if the node has no `for` attribute, is not an element node,
     /// or if the `NodeId` is invalid.
@@ -1056,6 +1098,62 @@ mod tests {
         }
         assert_eq!(dom.get_rel(foreign_node), None);
         assert_eq!(dom.get_for(foreign_node), None);
+    }
+
+    #[test]
+    fn test_anchor_attributes_accessors() {
+        let mut dom = Dom::new();
+
+        // 1. Element with the attributes set -> returns Some(value)
+        let node_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![
+                ("hreflang".to_string(), "en-US".to_string()),
+                ("download".to_string(), "file.pdf".to_string()),
+                ("referrerpolicy".to_string(), "no-referrer".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_hreflang(node_id), Some("en-US"));
+        assert_eq!(dom.get_download(node_id), Some("file.pdf"));
+        assert_eq!(dom.get_referrer_policy(node_id), Some("no-referrer"));
+
+        // 2. Element with case-insensitive attributes (e.g. HREFLANG / DOWNLOAD / REFERRERPOLICY) -> returns Some(value)
+        let upper_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![
+                ("HREFLANG".to_string(), "fr-FR".to_string()),
+                ("DOWNLOAD".to_string(), "doc.txt".to_string()),
+                ("REFERRERPOLICY".to_string(), "origin".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_hreflang(upper_id), Some("fr-FR"));
+        assert_eq!(dom.get_download(upper_id), Some("doc.txt"));
+        assert_eq!(dom.get_referrer_policy(upper_id), Some("origin"));
+
+        // 3. Element without attributes -> returns None
+        let empty_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_hreflang(empty_id), None);
+        assert_eq!(dom.get_download(empty_id), None);
+        assert_eq!(dom.get_referrer_policy(empty_id), None);
+
+        // 4. Non-element node (e.g. Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_hreflang(text_id), None);
+        assert_eq!(dom.get_download(text_id), None);
+        assert_eq!(dom.get_referrer_policy(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "a");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "a");
+        }
+        assert_eq!(dom.get_hreflang(foreign_node), None);
+        assert_eq!(dom.get_download(foreign_node), None);
+        assert_eq!(dom.get_referrer_policy(foreign_node), None);
     }
 
     #[test]
