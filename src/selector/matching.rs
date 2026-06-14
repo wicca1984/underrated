@@ -361,6 +361,8 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                     "read-write" => is_read_write(dom, node),
                     "placeholder-shown" => is_placeholder_shown(dom, node),
                     "indeterminate" => is_indeterminate(dom, node),
+                    "valid" => is_valid(dom, node),
+                    "invalid" => is_invalid(dom, node),
                     n if n.contains('(') => false,
                     _ => true, // Match other pseudo-classes by name for now as per SPEC.
                 }
@@ -1130,6 +1132,200 @@ fn is_indeterminate(dom: &Dom, node: NodeId) -> bool {
 
     // TODO(spec): checkbox indeterminate IDL flag is JS-only; not representable without scripting state
     false
+}
+
+fn get_options(dom: &Dom, root: NodeId, options: &mut Vec<NodeId>) {
+    for &child in dom.children(root) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if ascii::eq_ignore_ascii_case(name, "option") {
+                options.push(child);
+            } else if ascii::eq_ignore_ascii_case(name, "optgroup") {
+                get_options(dom, child, options);
+            }
+        }
+    }
+}
+
+fn is_element_invalid(dom: &Dom, node: NodeId) -> bool {
+    let (name, attrs) = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+
+    let has_required = attrs
+        .iter()
+        .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "required"));
+
+    if ascii::eq_ignore_ascii_case(name, "input") {
+        let input_type = attrs
+            .iter()
+            .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("text");
+
+        if is_out_of_range(dom, node) {
+            return true;
+        }
+
+        let val = dom.get_input_value(node).unwrap_or_default();
+
+        if has_required {
+            let is_candidate_for_required = !matches!(
+                input_type,
+                "submit" | "reset" | "image" | "button" | "hidden"
+            );
+            if is_candidate_for_required {
+                if matches!(input_type, "checkbox" | "radio") {
+                    if !is_checked(dom, node) {
+                        return true;
+                    }
+                } else if val.is_empty() {
+                    return true;
+                }
+            }
+        }
+
+        if !val.is_empty() {
+            if ascii::eq_ignore_ascii_case(input_type, "email") {
+                let at_count = val.chars().filter(|&c| c == '@').count();
+                if at_count != 1 || val.starts_with('@') || val.ends_with('@') {
+                    return true;
+                }
+            } else if ascii::eq_ignore_ascii_case(input_type, "url") {
+                let has_scheme = val
+                    .split_once(':')
+                    .map(|(scheme, _)| {
+                        !scheme.is_empty()
+                            && scheme.chars().all(|c| {
+                                c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.'
+                            })
+                    })
+                    .unwrap_or(false);
+                if !has_scheme {
+                    return true;
+                }
+            }
+        }
+
+        // TODO(spec): Implement pattern constraint validation.
+        // TODO(spec): Implement minlength/maxlength constraint validation.
+    } else if ascii::eq_ignore_ascii_case(name, "textarea") && has_required {
+        let val = dom.text_content(node);
+        if val.is_empty() {
+            return true;
+        }
+        // TODO(spec): Implement minlength/maxlength constraint validation for textarea.
+    } else if ascii::eq_ignore_ascii_case(name, "select") && has_required {
+        let mut options = Vec::new();
+        get_options(dom, node, &mut options);
+
+        let selected_options: Vec<NodeId> = options
+            .iter()
+            .filter(|&&opt| {
+                if let Some(NodeData::Element { attrs, .. }) = dom.data(opt) {
+                    attrs
+                        .iter()
+                        .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "selected"))
+                } else {
+                    false
+                }
+            })
+            .copied()
+            .collect();
+
+        let implicitly_selected = if !attrs
+            .iter()
+            .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "multiple"))
+        {
+            options.first().copied()
+        } else {
+            None
+        };
+
+        let active_selected = if !selected_options.is_empty() {
+            selected_options
+        } else if let Some(first_opt) = implicitly_selected {
+            vec![first_opt]
+        } else {
+            Vec::new()
+        };
+
+        let is_placeholder = |opt: NodeId| {
+            if dom.parent(opt) != Some(node) {
+                return false;
+            }
+            if options.first() != Some(&opt) {
+                return false;
+            }
+            if let Some(NodeData::Element { attrs, .. }) = dom.data(opt) {
+                let val_attr = attrs
+                    .iter()
+                    .find(|(k, _)| ascii::eq_ignore_ascii_case(k, "value"))
+                    .map(|(_, v)| v.as_str());
+                match val_attr {
+                    Some(v) => v.is_empty(),
+                    None => dom.text_content(opt).is_empty(),
+                }
+            } else {
+                false
+            }
+        };
+
+        let violates_required = active_selected.is_empty()
+            || (active_selected.len() == 1 && is_placeholder(active_selected[0]));
+
+        if violates_required {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn has_invalid_descendant(dom: &Dom, root: NodeId) -> bool {
+    for &child in dom.children(root) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if is_form_associated(name) && is_element_invalid(dom, child) {
+                return true;
+            }
+            if has_invalid_descendant(dom, child) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_invalid(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => {
+            let is_form = ascii::eq_ignore_ascii_case(name, "form");
+            let is_fieldset = ascii::eq_ignore_ascii_case(name, "fieldset");
+            if is_form || is_fieldset {
+                has_invalid_descendant(dom, node)
+            } else if is_form_associated(name) {
+                is_element_invalid(dom, node)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+fn is_valid(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => {
+            let is_form = ascii::eq_ignore_ascii_case(name, "form");
+            let is_fieldset = ascii::eq_ignore_ascii_case(name, "fieldset");
+            if is_form || is_fieldset || is_form_associated(name) {
+                !is_invalid(dom, node)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
 }
 
 fn get_previous_element_sibling(dom: &Dom, node: NodeId) -> Option<NodeId> {
@@ -3882,5 +4078,290 @@ mod tests {
         // Both should match :indeterminate since neither is checked
         assert!(matches(&sel_indeterminate, &dom, radio_g2_1));
         assert!(matches(&sel_indeterminate, &dom, radio_g2_2));
+    }
+
+    #[test]
+    fn test_valid_invalid_pseudo_classes() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let sel_valid = parse_selector_list(":valid").unwrap();
+        let sel_invalid = parse_selector_list(":invalid").unwrap();
+
+        // 1. Non-form element (should match neither)
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        assert!(!matches(&sel_valid, &dom, div));
+        assert!(!matches(&sel_invalid, &dom, div));
+
+        // 2. Input without required (valid)
+        let input_no_req = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![("type".into(), "text".into())],
+        });
+        dom.append_child(doc, input_no_req);
+
+        assert!(matches(&sel_valid, &dom, input_no_req));
+        assert!(!matches(&sel_invalid, &dom, input_no_req));
+
+        // 3. Input with required, empty value (invalid)
+        let input_req_empty = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "text".into()),
+                ("required".into(), "".into()),
+            ],
+        });
+        dom.append_child(doc, input_req_empty);
+
+        assert!(!matches(&sel_valid, &dom, input_req_empty));
+        assert!(matches(&sel_invalid, &dom, input_req_empty));
+
+        // 4. Input with required, non-empty value (valid)
+        let input_req_val = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "text".into()),
+                ("required".into(), "".into()),
+                ("value".into(), "hello".into()),
+            ],
+        });
+        dom.append_child(doc, input_req_val);
+
+        assert!(matches(&sel_valid, &dom, input_req_val));
+        assert!(!matches(&sel_invalid, &dom, input_req_val));
+
+        // 5. Checkbox with required, unchecked (invalid)
+        let checkbox_req_unchecked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "checkbox".into()),
+                ("required".into(), "".into()),
+            ],
+        });
+        dom.append_child(doc, checkbox_req_unchecked);
+
+        assert!(!matches(&sel_valid, &dom, checkbox_req_unchecked));
+        assert!(matches(&sel_invalid, &dom, checkbox_req_unchecked));
+
+        // 6. Checkbox with required, checked (valid)
+        let checkbox_req_checked = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "checkbox".into()),
+                ("required".into(), "".into()),
+                ("checked".into(), "".into()),
+            ],
+        });
+        dom.append_child(doc, checkbox_req_checked);
+
+        assert!(matches(&sel_valid, &dom, checkbox_req_checked));
+        assert!(!matches(&sel_invalid, &dom, checkbox_req_checked));
+
+        // 7. Input with out-of-range value (invalid)
+        let input_out_of_range = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "number".into()),
+                ("min".into(), "1".into()),
+                ("max".into(), "10".into()),
+                ("value".into(), "20".into()),
+            ],
+        });
+        dom.append_child(doc, input_out_of_range);
+
+        assert!(!matches(&sel_valid, &dom, input_out_of_range));
+        assert!(matches(&sel_invalid, &dom, input_out_of_range));
+
+        // 8. Textarea with required, empty (invalid)
+        let textarea_req_empty = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        dom.append_child(doc, textarea_req_empty);
+
+        assert!(!matches(&sel_valid, &dom, textarea_req_empty));
+        assert!(matches(&sel_invalid, &dom, textarea_req_empty));
+
+        // 9. Textarea with required, non-empty (valid)
+        let textarea_req_val = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(textarea_req_val, text_node);
+        dom.append_child(doc, textarea_req_val);
+
+        assert!(matches(&sel_valid, &dom, textarea_req_val));
+        assert!(!matches(&sel_invalid, &dom, textarea_req_val));
+
+        // 10. Select with required, no options (invalid)
+        let select_req_empty = dom.create_node(NodeData::Element {
+            name: "select".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        dom.append_child(doc, select_req_empty);
+
+        assert!(!matches(&sel_valid, &dom, select_req_empty));
+        assert!(matches(&sel_invalid, &dom, select_req_empty));
+
+        // 11. Select with required, placeholder option (invalid)
+        let select_req_ph = dom.create_node(NodeData::Element {
+            name: "select".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        let option_ph = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![("value".into(), "".into())],
+        });
+        dom.append_child(select_req_ph, option_ph);
+        dom.append_child(doc, select_req_ph);
+
+        assert!(!matches(&sel_valid, &dom, select_req_ph));
+        assert!(matches(&sel_invalid, &dom, select_req_ph));
+
+        // 12. Select with required, first option has value (valid)
+        let select_req_valid = dom.create_node(NodeData::Element {
+            name: "select".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        let option_valid = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![("value".into(), "1".into())],
+        });
+        dom.append_child(select_req_valid, option_valid);
+        dom.append_child(doc, select_req_valid);
+
+        assert!(matches(&sel_valid, &dom, select_req_valid));
+        assert!(!matches(&sel_invalid, &dom, select_req_valid));
+
+        // 13. Select with required, placeholder option + another selected option (valid)
+        let select_req_two_opt = dom.create_node(NodeData::Element {
+            name: "select".into(),
+            attrs: vec![("required".into(), "".into())],
+        });
+        let option_ph2 = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![("value".into(), "".into())],
+        });
+        let option_sel = dom.create_node(NodeData::Element {
+            name: "option".into(),
+            attrs: vec![("value".into(), "2".into()), ("selected".into(), "".into())],
+        });
+        dom.append_child(select_req_two_opt, option_ph2);
+        dom.append_child(select_req_two_opt, option_sel);
+        dom.append_child(doc, select_req_two_opt);
+
+        assert!(matches(&sel_valid, &dom, select_req_two_opt));
+        assert!(!matches(&sel_invalid, &dom, select_req_two_opt));
+
+        // 14. Form with invalid elements (invalid)
+        let form = dom.create_node(NodeData::Element {
+            name: "form".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, form);
+
+        let input_in_form = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "text".into()),
+                ("required".into(), "".into()),
+            ],
+        });
+        dom.append_child(form, input_in_form);
+
+        // Since input_in_form is invalid, the form should be invalid
+        assert!(!matches(&sel_valid, &dom, form));
+        assert!(matches(&sel_invalid, &dom, form));
+
+        // 15. Form with only valid elements (valid)
+        let form_valid = dom.create_node(NodeData::Element {
+            name: "form".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, form_valid);
+
+        let input_in_form_val = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "text".into()),
+                ("required".into(), "".into()),
+                ("value".into(), "ok".into()),
+            ],
+        });
+        dom.append_child(form_valid, input_in_form_val);
+
+        assert!(matches(&sel_valid, &dom, form_valid));
+        assert!(!matches(&sel_invalid, &dom, form_valid));
+
+        // 16. Fieldset with invalid elements (invalid)
+        let fieldset = dom.create_node(NodeData::Element {
+            name: "fieldset".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, fieldset);
+
+        let input_in_fs = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "text".into()),
+                ("required".into(), "".into()),
+            ],
+        });
+        dom.append_child(fieldset, input_in_fs);
+
+        assert!(!matches(&sel_valid, &dom, fieldset));
+        assert!(matches(&sel_invalid, &dom, fieldset));
+
+        // 17. Simple email validation tests
+        let email_invalid = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "email".into()),
+                ("value".into(), "invalidemail".into()),
+            ],
+        });
+        dom.append_child(doc, email_invalid);
+        assert!(!matches(&sel_valid, &dom, email_invalid));
+        assert!(matches(&sel_invalid, &dom, email_invalid));
+
+        let email_valid = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "email".into()),
+                ("value".into(), "test@example.com".into()),
+            ],
+        });
+        dom.append_child(doc, email_valid);
+        assert!(matches(&sel_valid, &dom, email_valid));
+        assert!(!matches(&sel_invalid, &dom, email_valid));
+
+        // 18. Simple URL validation tests
+        let url_invalid = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "url".into()),
+                ("value".into(), "invalidurl".into()),
+            ],
+        });
+        dom.append_child(doc, url_invalid);
+        assert!(!matches(&sel_valid, &dom, url_invalid));
+        assert!(matches(&sel_invalid, &dom, url_invalid));
+
+        let url_valid = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("type".into(), "url".into()),
+                ("value".into(), "https://google.com".into()),
+            ],
+        });
+        dom.append_child(doc, url_valid);
+        assert!(matches(&sel_valid, &dom, url_valid));
+        assert!(!matches(&sel_invalid, &dom, url_valid));
     }
 }
