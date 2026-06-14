@@ -134,6 +134,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "top",
     },
     PropertyMetadata {
+        name: "color-interpolation",
+        inherited: true,
+        initial: "sRGB",
+    },
+    PropertyMetadata {
         name: "empty-cells",
         inherited: true,
         initial: "show",
@@ -1017,6 +1022,7 @@ mod tests {
         assert!(!is_inherited("margin-top"));
         assert!(!is_inherited("not-a-real-prop"));
         assert!(is_inherited("text-indent"));
+        assert!(is_inherited("color-interpolation"));
         assert!(!is_inherited("max-width"));
     }
 
@@ -1028,6 +1034,7 @@ mod tests {
         assert_eq!(initial_value("not-a-real-prop"), None);
         assert_eq!(initial_value("flex-shrink"), Some("1"));
         assert_eq!(initial_value("border-collapse"), Some("separate"));
+        assert_eq!(initial_value("color-interpolation"), Some("sRGB"));
         assert_eq!(initial_value("background-repeat"), Some("repeat"));
     }
 
