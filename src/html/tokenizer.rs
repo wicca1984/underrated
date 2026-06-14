@@ -121,6 +121,7 @@ enum State {
     // Character reference states
     CharacterReference,
     NamedCharacterReference,
+    AmbiguousAmpersand,
     NumericCharacterReference,
     HexadecimalCharacterReferenceStart,
     DecimalCharacterReferenceStart,
@@ -2680,6 +2681,23 @@ impl Tokenizer {
                         }
                     }
                 }
+                State::AmbiguousAmpersand => {
+                    // // spec: §13.2.5.74 Ambiguous ampersand state
+                    match c {
+                        Some(c_val) if c_val.is_ascii_alphanumeric() => {
+                            return Token::Character(c_val);
+                        }
+                        Some(';') => {
+                            self.emit_error("unknown-named-character-reference");
+                            self.state = self.return_state;
+                            self.input.reconsume();
+                        }
+                        _ => {
+                            self.state = self.return_state;
+                            self.input.reconsume();
+                        }
+                    }
+                }
             }
         }
     }
@@ -2873,6 +2891,7 @@ impl Tokenizer {
             if ignore_match {
                 let buffer = self.temporary_buffer.clone();
                 self.flush_string(&buffer);
+                self.state = self.return_state;
             } else {
                 if !name.ends_with(';') {
                     self.emit_error("missing-semicolon-after-character-reference");
@@ -2882,6 +2901,16 @@ impl Tokenizer {
                     let suffix: String = self.temporary_buffer.chars().skip(name.len()).collect();
                     self.flush_string(&suffix);
                 }
+
+                if !is_in_attribute
+                    && !name.ends_with(';')
+                    && matches!(next_char, Some(nc) if nc.is_ascii_alphanumeric())
+                {
+                    self.emit_error("ambiguous-ampersand");
+                    self.state = State::AmbiguousAmpersand;
+                } else {
+                    self.state = self.return_state;
+                }
             }
         } else {
             if self.temporary_buffer.ends_with(';') {
@@ -2889,8 +2918,8 @@ impl Tokenizer {
             }
             let buffer = self.temporary_buffer.clone();
             self.flush_string(&buffer);
+            self.state = self.return_state;
         }
-        self.state = self.return_state;
     }
 
     fn is_maybe_named_match(&self) -> bool {
@@ -5473,5 +5502,44 @@ mod tests {
             }
         }
         assert_eq!(chars, "</texta");
+    }
+
+    #[test]
+    fn test_ambiguous_ampersand_t0969() {
+        // Test that in HTML mode (not in attribute), an entity like &not followed by alphanumeric character
+        // transitions to the AmbiguousAmpersand state, and emits "ambiguous-ampersand" error.
+        {
+            let stream = InputStream::from_utf8(b"&notit;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{00AC}it;");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"missing-semicolon-after-character-reference".to_string()));
+            assert!(errors.contains(&"ambiguous-ampersand".to_string()));
+            assert!(errors.contains(&"unknown-named-character-reference".to_string()));
+        }
+
+        // Test in attribute: the character reference is IGNORED if next char is alphanum/equals,
+        // and does NOT switch to AmbiguousAmpersand.
+        {
+            let stream = InputStream::from_utf8(b"<div a='&notit;'>");
+            let mut t = Tokenizer::new(stream);
+            let tok = t.next_token();
+            if let Token::StartTag { attrs, .. } = tok {
+                assert_eq!(attrs, vec![("a".to_string(), "&notit;".to_string())]);
+            } else {
+                panic!("Expected StartTag, got {:?}", tok);
+            }
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(!errors.contains(&"missing-semicolon-after-character-reference".to_string()));
+            assert!(!errors.contains(&"ambiguous-ampersand".to_string()));
+        }
     }
 }
