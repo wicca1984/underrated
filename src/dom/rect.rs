@@ -1,5 +1,6 @@
 use crate::dom::Dom;
 use crate::infra::NodeId;
+use serde::{Deserialize, Serialize};
 
 /// Coerce a JSON value to f64 following WebIDL-like conversion principles.
 fn coerce_to_f64(value: &serde_json::Value) -> f64 {
@@ -327,6 +328,35 @@ impl DomRectReadOnly {
     }
 }
 
+impl Serialize for DomRectReadOnly {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("DomRectReadOnly", 8)?;
+        state.serialize_field("x", &self.x)?;
+        state.serialize_field("y", &self.y)?;
+        state.serialize_field("width", &self.width)?;
+        state.serialize_field("height", &self.height)?;
+        state.serialize_field("top", &self.top())?;
+        state.serialize_field("right", &self.right())?;
+        state.serialize_field("bottom", &self.bottom())?;
+        state.serialize_field("left", &self.left())?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DomRectReadOnly {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_rect(Some(&value)))
+    }
+}
+
 /// `DomRect` represents a rectangle, which is the type of object returned by
 /// `Element.getBoundingClientRect()`.
 ///
@@ -598,6 +628,35 @@ impl DomRect {
         self.to_readonly()
             .intersection(&other.to_readonly())
             .to_mutable()
+    }
+}
+
+impl Serialize for DomRect {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("DomRect", 8)?;
+        state.serialize_field("x", &self.x)?;
+        state.serialize_field("y", &self.y)?;
+        state.serialize_field("width", &self.width)?;
+        state.serialize_field("height", &self.height)?;
+        state.serialize_field("top", &self.top())?;
+        state.serialize_field("right", &self.right())?;
+        state.serialize_field("bottom", &self.bottom())?;
+        state.serialize_field("left", &self.left())?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DomRect {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_rect(Some(&value)))
     }
 }
 
@@ -1935,5 +1994,73 @@ mod tests {
 
         let tuple_4: (f64, f64, f64, f64) = pt2.into();
         assert_eq!(tuple_4, (1.0, 2.0, 3.0, 4.0));
+    }
+
+    #[test]
+    fn test_t0985_serde_serialization_roundtrip() {
+        let rect = DomRect::new(10.0, 20.0, -100.0, -50.0);
+        let serialized_value = serde_json::to_value(rect).unwrap();
+        assert_eq!(serialized_value["x"], 10.0);
+        assert_eq!(serialized_value["y"], 20.0);
+        assert_eq!(serialized_value["width"], -100.0);
+        assert_eq!(serialized_value["height"], -50.0);
+        assert_eq!(serialized_value["left"], -90.0);
+        assert_eq!(serialized_value["top"], -30.0);
+        assert_eq!(serialized_value["right"], 10.0);
+        assert_eq!(serialized_value["bottom"], 20.0);
+
+        // Deserialization of DomRect
+        let deserialized_rect: DomRect = serde_json::from_value(serialized_value.clone()).unwrap();
+        assert_eq!(deserialized_rect.x(), 10.0);
+        assert_eq!(deserialized_rect.y(), 20.0);
+        assert_eq!(deserialized_rect.width(), -100.0);
+        assert_eq!(deserialized_rect.height(), -50.0);
+
+        // Serialization of DomRectReadOnly
+        let readonly = DomRectReadOnly::new(5.0, 15.0, 30.0, 40.0);
+        let ro_serialized = serde_json::to_value(readonly).unwrap();
+        assert_eq!(ro_serialized["x"], 5.0);
+        assert_eq!(ro_serialized["y"], 15.0);
+        assert_eq!(ro_serialized["width"], 30.0);
+        assert_eq!(ro_serialized["height"], 40.0);
+        assert_eq!(ro_serialized["left"], 5.0);
+        assert_eq!(ro_serialized["top"], 15.0);
+        assert_eq!(ro_serialized["right"], 35.0);
+        assert_eq!(ro_serialized["bottom"], 55.0);
+
+        // Deserialization of DomRectReadOnly
+        let deserialized_ro: DomRectReadOnly = serde_json::from_value(ro_serialized).unwrap();
+        assert_eq!(deserialized_ro.x(), 5.0);
+        assert_eq!(deserialized_ro.y(), 15.0);
+        assert_eq!(deserialized_ro.width(), 30.0);
+        assert_eq!(deserialized_ro.height(), 40.0);
+    }
+
+    #[test]
+    fn test_t0985_negative_dimensions_correctness() {
+        // Detailed correctness tests of left, top, right, bottom for positive and negative combinations
+        let cases = vec![
+            // (x, y, width, height, expected_left, expected_top, expected_right, expected_bottom)
+            (10.0, 20.0, 100.0, 50.0, 10.0, 20.0, 110.0, 70.0),
+            (10.0, 20.0, -100.0, 50.0, -90.0, 20.0, 10.0, 70.0),
+            (10.0, 20.0, 100.0, -50.0, 10.0, -30.0, 110.0, 20.0),
+            (10.0, 20.0, -100.0, -50.0, -90.0, -30.0, 10.0, 20.0),
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            (-5.0, -15.0, -25.0, -35.0, -30.0, -50.0, -5.0, -15.0),
+        ];
+
+        for (x, y, w, h, el, et, er, eb) in cases {
+            let rect_ro = DomRectReadOnly::new(x, y, w, h);
+            assert_eq!(rect_ro.left(), el);
+            assert_eq!(rect_ro.top(), et);
+            assert_eq!(rect_ro.right(), er);
+            assert_eq!(rect_ro.bottom(), eb);
+
+            let rect_mut = DomRect::new(x, y, w, h);
+            assert_eq!(rect_mut.left(), el);
+            assert_eq!(rect_mut.top(), et);
+            assert_eq!(rect_mut.right(), er);
+            assert_eq!(rect_mut.bottom(), eb);
+        }
     }
 }
