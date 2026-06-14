@@ -392,78 +392,214 @@ pub fn layout_flex_container(
             has_explicit_size(Some(style), "height")
         };
 
+        // Multi-pass flex resolution with min/max constraints
+        struct FlexItemInfo {
+            index: usize,
+            base_size: f32,
+            target_size: f32,
+            frozen: bool,
+            grow: f32,
+            shrink: f32,
+        }
+
+        let mut items: Vec<FlexItemInfo> = line
+            .children
+            .iter()
+            .enumerate()
+            .map(|(idx, child_box)| {
+                let base_size = if flex_direction.is_row() {
+                    child_box.rect.size.width
+                } else {
+                    child_box.rect.size.height
+                };
+                let child_style = child_box.node.and_then(|id| styles.get(&id));
+                let grow = child_style
+                    .map(|s| get_number(s, "flex-grow", 0.0))
+                    .unwrap_or(0.0);
+                let shrink = child_style
+                    .map(|s| get_number(s, "flex-shrink", 1.0))
+                    .unwrap_or(1.0);
+                FlexItemInfo {
+                    index: idx,
+                    base_size,
+                    target_size: base_size,
+                    frozen: false,
+                    grow,
+                    shrink,
+                }
+            })
+            .collect();
+
         if line_free_space > 0.0 && total_line_flex_grow > 0.0 {
-            for child_box in &mut line.children {
-                if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
-                    let grow = get_number(child_style, "flex-grow", 0.0);
-                    let extra = (grow / total_line_flex_grow) * line_free_space;
-                    let container_height = get_px(style, "height", 0.0);
-                    if flex_direction.is_row() {
-                        let mut new_width = child_box.rect.size.width + extra;
-                        new_width = clamp_main_size(
-                            child_style,
-                            new_width,
-                            flex_direction,
-                            content_width,
-                            container_height,
-                        );
-                        child_box.rect.size.width = new_width;
-                    } else {
-                        let mut new_height = child_box.rect.size.height + extra;
-                        new_height = clamp_main_size(
-                            child_style,
-                            new_height,
-                            flex_direction,
-                            content_width,
-                            container_height,
-                        );
-                        child_box.rect.size.height = new_height;
+            let mut remaining_free_space = line_free_space;
+            let mut loop_count = 0;
+            loop {
+                if loop_count > 100 {
+                    break;
+                }
+                loop_count += 1;
+
+                let mut sum_unfrozen_grow = 0.0;
+                let mut unfrozen_count = 0;
+                for item in &items {
+                    if !item.frozen {
+                        sum_unfrozen_grow += item.grow;
+                        unfrozen_count += 1;
                     }
+                }
+
+                if unfrozen_count == 0
+                    || sum_unfrozen_grow <= 0.0
+                    || remaining_free_space.abs() < 0.001
+                {
+                    break;
+                }
+
+                for item in &mut items {
+                    if !item.frozen {
+                        let extra = (item.grow / sum_unfrozen_grow) * remaining_free_space;
+                        item.target_size = item.base_size + extra;
+                    }
+                }
+
+                let mut has_violations = false;
+                let container_height = get_px(style, "height", 0.0);
+                for item in &mut items {
+                    if !item.frozen {
+                        let child_box = &line.children[item.index];
+                        if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
+                            let clamped = clamp_main_size(
+                                child_style,
+                                item.target_size,
+                                flex_direction,
+                                content_width,
+                                container_height,
+                            );
+                            if (clamped - item.target_size).abs() > 0.001 {
+                                item.target_size = clamped;
+                                item.frozen = true;
+                                has_violations = true;
+                            }
+                        }
+                    }
+                }
+
+                if !has_violations {
+                    break;
+                }
+
+                let mut current_total_main_size = 0.0;
+                for item in &items {
+                    let size_to_sum = if item.frozen {
+                        item.target_size
+                    } else {
+                        item.base_size
+                    };
+                    let child_box = &line.children[item.index];
+                    let child_style = child_box.node.and_then(|id| styles.get(&id));
+                    let margins = ChildMargins::resolve(child_style);
+                    current_total_main_size += size_to_sum
+                        + margins.main_start(flex_direction)
+                        + margins.main_end(flex_direction);
+                }
+                remaining_free_space = main_size - current_total_main_size - total_gap_size;
+            }
+
+            for item in items {
+                let child_box = &mut line.children[item.index];
+                if flex_direction.is_row() {
+                    child_box.rect.size.width = item.target_size;
+                } else {
+                    child_box.rect.size.height = item.target_size;
                 }
             }
         } else if line_free_space < 0.0 && has_explicit_main_size {
-            let negative_free_space = -line_free_space;
-            let mut total_scaled_shrink = 0.0;
-
-            for child_box in &line.children {
-                if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
-                    let base_size = if flex_direction.is_row() {
-                        child_box.rect.size.width
-                    } else {
-                        child_box.rect.size.height
-                    };
-                    let shrink = get_number(child_style, "flex-shrink", 1.0);
-                    total_scaled_shrink += shrink * base_size;
+            let mut remaining_negative_free_space = -line_free_space;
+            let mut loop_count = 0;
+            loop {
+                if loop_count > 100 {
+                    break;
                 }
-            }
+                loop_count += 1;
 
-            if total_scaled_shrink > 0.0 {
-                for child_box in &mut line.children {
-                    if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
-                        let base_size = if flex_direction.is_row() {
-                            child_box.rect.size.width
-                        } else {
-                            child_box.rect.size.height
-                        };
-                        let shrink = get_number(child_style, "flex-shrink", 1.0);
-                        let scaled_shrink = shrink * base_size;
-                        let shrink_amount =
-                            (scaled_shrink / total_scaled_shrink) * negative_free_space;
-                        let mut new_size = (base_size - shrink_amount).max(0.0);
-                        let container_height = get_px(style, "height", 0.0);
-                        new_size = clamp_main_size(
-                            child_style,
-                            new_size,
-                            flex_direction,
-                            content_width,
-                            container_height,
-                        );
-                        if flex_direction.is_row() {
-                            child_box.rect.size.width = new_size;
-                        } else {
-                            child_box.rect.size.height = new_size;
+                let mut sum_unfrozen_scaled_shrink = 0.0;
+                let mut unfrozen_count = 0;
+                for item in &items {
+                    if !item.frozen {
+                        sum_unfrozen_scaled_shrink += item.shrink * item.base_size;
+                        unfrozen_count += 1;
+                    }
+                }
+
+                if unfrozen_count == 0
+                    || sum_unfrozen_scaled_shrink <= 0.0
+                    || remaining_negative_free_space.abs() < 0.001
+                {
+                    break;
+                }
+
+                for item in &mut items {
+                    if !item.frozen {
+                        let scaled_shrink = item.shrink * item.base_size;
+                        let shrink_amount = (scaled_shrink / sum_unfrozen_scaled_shrink)
+                            * remaining_negative_free_space;
+                        item.target_size = (item.base_size - shrink_amount).max(0.0);
+                    }
+                }
+
+                let mut has_violations = false;
+                let container_height = get_px(style, "height", 0.0);
+                for item in &mut items {
+                    if !item.frozen {
+                        let child_box = &line.children[item.index];
+                        if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
+                            let clamped = clamp_main_size(
+                                child_style,
+                                item.target_size,
+                                flex_direction,
+                                content_width,
+                                container_height,
+                            );
+                            if (clamped - item.target_size).abs() > 0.001 {
+                                item.target_size = clamped;
+                                item.frozen = true;
+                                has_violations = true;
+                            }
                         }
                     }
+                }
+
+                if !has_violations {
+                    break;
+                }
+
+                let mut current_total_main_size = 0.0;
+                for item in &items {
+                    let size_to_sum = if item.frozen {
+                        item.target_size
+                    } else {
+                        item.base_size
+                    };
+                    let child_box = &line.children[item.index];
+                    let child_style = child_box.node.and_then(|id| styles.get(&id));
+                    let margins = ChildMargins::resolve(child_style);
+                    current_total_main_size += size_to_sum
+                        + margins.main_start(flex_direction)
+                        + margins.main_end(flex_direction);
+                }
+                let current_free_space = main_size - current_total_main_size - total_gap_size;
+                if current_free_space >= 0.0 {
+                    break;
+                }
+                remaining_negative_free_space = -current_free_space;
+            }
+
+            for item in items {
+                let child_box = &mut line.children[item.index];
+                if flex_direction.is_row() {
+                    child_box.rect.size.width = item.target_size;
+                } else {
+                    child_box.rect.size.height = item.target_size;
                 }
             }
         }
@@ -3604,5 +3740,141 @@ mod tests {
         // Both top and bottom margins are auto, so they absorb remaining space on the cross axis (200 - 50 = 150) equally.
         // Each resolves to 75.0, so the child is perfectly centered on the cross axis (y = 75.0).
         assert!(approx_eq(container_box.children[0].rect.origin.y, 75.0));
+    }
+
+    #[test]
+    fn test_flex_grow_with_max_width_constraint() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+        dom.append_child(container, child3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+            }
+            #child1 {
+                width: 50px;
+                flex-grow: 1;
+                max-width: 80px;
+            }
+            #child2 {
+                width: 50px;
+                flex-grow: 1;
+            }
+            #child3 {
+                width: 50px;
+                flex-grow: 1;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 3);
+
+        // Expected final widths:
+        // Remaining free space: 300 - 150 = 150.
+        // Equal share: +50 for each -> target widths: 100, 100, 100.
+        // Child 1 is clamped to max-width: 80px, and frozen.
+        // Remaining space to distribute is: 300 - (80 + 50 + 50) = 120.
+        // Equal share of remaining space for Child 2 and Child 3: +60 each.
+        // Child 2 width: 50 + 60 = 110.
+        // Child 3 width: 50 + 60 = 110.
+        assert!(approx_eq(container_box.children[0].rect.size.width, 80.0));
+        assert!(approx_eq(container_box.children[1].rect.size.width, 110.0));
+        assert!(approx_eq(container_box.children[2].rect.size.width, 110.0));
+    }
+
+    #[test]
+    fn test_flex_shrink_with_min_width_constraint() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        let child3 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child3".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+        dom.append_child(container, child3);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 200px;
+            }
+            #child1 {
+                width: 100px;
+                flex-shrink: 1;
+                min-width: 80px;
+            }
+            #child2 {
+                width: 100px;
+                flex-shrink: 1;
+            }
+            #child3 {
+                width: 100px;
+                flex-shrink: 1;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 3);
+
+        // Expected final widths:
+        // Total base width: 300. Container width: 200. Shrink amount needed: 100.
+        // Equal shrink share: -33.33 each -> target widths: 66.67, 66.67, 66.67.
+        // Child 1 is clamped to min-width: 80px, and frozen.
+        // Remaining shrink needed: total base width (200 unfrozen) - target container width (200 - 80 frozen = 120) = 80 shrink.
+        // Equal shrink of remaining negative space for Child 2 and Child 3: -40 each.
+        // Child 2 width: 100 - 40 = 60.
+        // Child 3 width: 100 - 40 = 60.
+        assert!(approx_eq(container_box.children[0].rect.size.width, 80.0));
+        assert!(approx_eq(container_box.children[1].rect.size.width, 60.0));
+        assert!(approx_eq(container_box.children[2].rect.size.width, 60.0));
     }
 }
