@@ -3805,13 +3805,7 @@ fn is_timing_function_value(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     matches!(
         lower.as_str(),
-        "linear"
-            | "ease"
-            | "ease-in"
-            | "ease-out"
-            | "ease-in-out"
-            | "step-start"
-            | "step-end"
+        "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out" | "step-start" | "step-end"
     ) || lower.starts_with("cubic-bezier(")
         || lower.starts_with("steps(")
         || lower.starts_with("linear(")
@@ -7261,6 +7255,116 @@ mod tests {
         assert_eq!(fs2[0].value, "auto");
         assert_eq!(fs2[1].value, "none");
         assert_eq!(fs2[2].value, "auto");
+
+        // 11. overflow
+        let ov1 = expand_shorthand_values("overflow", &["auto"]).unwrap();
+        assert_eq!(ov1.len(), 2);
+        assert_eq!(ov1[0].name, "overflow-x");
+        assert_eq!(ov1[0].value, "auto");
+        assert_eq!(ov1[1].name, "overflow-y");
+        assert_eq!(ov1[1].value, "auto");
+
+        let ov2 = expand_shorthand_values("overflow", &["scroll", "hidden"]).unwrap();
+        assert_eq!(ov2[0].value, "scroll");
+        assert_eq!(ov2[1].value, "hidden");
+
+        // 12. flex-flow
+        let ff1 = expand_shorthand_values("flex-flow", &["column-reverse"]).unwrap();
+        assert_eq!(ff1.len(), 2);
+        assert_eq!(ff1[0].name, "flex-direction");
+        assert_eq!(ff1[0].value, "column-reverse");
+        assert_eq!(ff1[1].name, "flex-wrap");
+        assert_eq!(ff1[1].value, "nowrap");
+
+        let ff2 = expand_shorthand_values("flex-flow", &["wrap", "row-reverse"]).unwrap();
+        assert_eq!(ff2[0].value, "row-reverse");
+        assert_eq!(ff2[1].value, "wrap");
+
+        // 13. flex
+        let fl1 = expand_shorthand_values("flex", &["none"]).unwrap();
+        assert_eq!(fl1.len(), 3);
+        assert_eq!(fl1[0].name, "flex-grow");
+        assert_eq!(fl1[0].value, "0");
+        assert_eq!(fl1[1].name, "flex-shrink");
+        assert_eq!(fl1[1].value, "0");
+        assert_eq!(fl1[2].name, "flex-basis");
+        assert_eq!(fl1[2].value, "auto");
+
+        let fl2 = expand_shorthand_values("flex", &["2"]).unwrap();
+        assert_eq!(fl2[0].value, "2");
+        assert_eq!(fl2[1].value, "1");
+        assert_eq!(fl2[2].value, "0%");
+
+        let fl3 = expand_shorthand_values("flex", &["10%"]).unwrap();
+        assert_eq!(fl3[0].value, "1");
+        assert_eq!(fl3[1].value, "1");
+        assert_eq!(fl3[2].value, "10%");
+
+        let fl4 = expand_shorthand_values("flex", &["2", "3"]).unwrap();
+        assert_eq!(fl4[0].value, "2");
+        assert_eq!(fl4[1].value, "3");
+        assert_eq!(fl4[2].value, "0%");
+
+        let fl5 = expand_shorthand_values("flex", &["2", "auto"]).unwrap();
+        assert_eq!(fl5[0].value, "2");
+        assert_eq!(fl5[1].value, "1");
+        assert_eq!(fl5[2].value, "auto");
+
+        let fl6 = expand_shorthand_values("flex", &["2", "3", "10px"]).unwrap();
+        assert_eq!(fl6[0].value, "2");
+        assert_eq!(fl6[1].value, "3");
+        assert_eq!(fl6[2].value, "10px");
+
+        // 14. grid-column
+        let gc1 = expand_shorthand_values("grid-column", &["span 2"]).unwrap();
+        assert_eq!(gc1.len(), 2);
+        assert_eq!(gc1[0].name, "grid-column-start");
+        assert_eq!(gc1[0].value, "span 2");
+        assert_eq!(gc1[1].name, "grid-column-end");
+        assert_eq!(gc1[1].value, "auto");
+
+        let gc2 = expand_shorthand_values("grid-column", &["3", "/", "4"]).unwrap();
+        assert_eq!(gc2[0].value, "3");
+        assert_eq!(gc2[1].value, "4");
+
+        // 15. list-style
+        let ls1 = expand_shorthand_values("list-style", &["none"]).unwrap();
+        assert_eq!(ls1.len(), 3);
+        assert_eq!(ls1[0].name, "list-style-type");
+        assert_eq!(ls1[0].value, "none");
+        assert_eq!(ls1[1].name, "list-style-position");
+        assert_eq!(ls1[1].value, "outside");
+        assert_eq!(ls1[2].name, "list-style-image");
+        assert_eq!(ls1[2].value, "none");
+
+        let ls2 = expand_shorthand_values("list-style", &["inside", "square"]).unwrap();
+        assert_eq!(ls2[0].value, "square");
+        assert_eq!(ls2[1].value, "inside");
+        assert_eq!(ls2[2].value, "none");
+
+        let ls3 = expand_shorthand_values("list-style", &["url(bullet.png)", "inside"]).unwrap();
+        assert_eq!(ls3[0].value, "disc");
+        assert_eq!(ls3[1].value, "inside");
+        assert_eq!(ls3[2].value, "url(bullet.png)");
+
+        // 16. transition
+        let tr1 = expand_shorthand_values("transition", &["opacity", "2s"]).unwrap();
+        assert_eq!(tr1.len(), 4);
+        assert_eq!(tr1[0].name, "transition-property");
+        assert_eq!(tr1[0].value, "opacity");
+        assert_eq!(tr1[1].name, "transition-duration");
+        assert_eq!(tr1[1].value, "2s");
+        assert_eq!(tr1[2].name, "transition-timing-function");
+        assert_eq!(tr1[2].value, "ease");
+        assert_eq!(tr1[3].name, "transition-delay");
+        assert_eq!(tr1[3].value, "0s");
+
+        let tr2 =
+            expand_shorthand_values("transition", &["width", "0.5s", "linear", "1s"]).unwrap();
+        assert_eq!(tr2[0].value, "width");
+        assert_eq!(tr2[1].value, "0.5s");
+        assert_eq!(tr2[2].value, "linear");
+        assert_eq!(tr2[3].value, "1s");
     }
 
     #[test]
