@@ -954,7 +954,114 @@ fn matches_component_with_scope(
                 false
             }
         }
-        selector::Component::PseudoClass(s) if s.eq_ignore_ascii_case("scope") => node == scope,
+        selector::Component::PseudoClass(s) => {
+            let s_lower = s.to_ascii_lowercase();
+            match s_lower.as_str() {
+                "scope" => node == scope,
+                "first-of-type" => is_first_of_type(dom, node),
+                "last-of-type" => is_last_of_type(dom, node),
+                "only-child" => is_only_child(dom, node),
+                "only-of-type" => is_only_of_type(dom, node),
+                "empty" => is_empty(dom, node),
+                "root" => is_root_query(dom, node),
+                "link" | "any-link" => is_link_query(dom, node),
+                "checked" => is_checked_query(dom, node),
+                "open" => is_open_query(dom, node),
+                "default" => is_default_query(dom, node),
+                "disabled" => is_disabled_query(dom, node),
+                "enabled" => is_enabled_query(dom, node),
+                "required" => is_required_query(dom, node),
+                "optional" => is_optional_query(dom, node),
+                "read-only" => is_read_only_query(dom, node),
+                "read-write" => is_read_write_query(dom, node),
+                "placeholder-shown" => is_placeholder_shown_query(dom, node),
+                "indeterminate" => is_indeterminate_query(dom, node),
+                "valid" => is_valid_query(dom, node),
+                "invalid" => is_invalid_query(dom, node),
+                "hover" => selector::get_node_state(node).hover,
+                "focus" | "focus-visible" => selector::get_node_state(node).focus,
+                "active" => selector::get_node_state(node).active,
+                "focus-within" => matches_focus_within_query(dom, node),
+                _ if s_lower.starts_with("lang(") && s_lower.ends_with(')') => {
+                    let content = &s_lower["lang(".len()..s_lower.len() - 1];
+                    let lang_ranges: Vec<&str> = content.split(',').map(|x| x.trim()).collect();
+                    let mut curr = Some(node);
+                    let mut element_lang = None;
+                    while let Some(curr_node) = curr {
+                        if let Some(NodeData::Element { attrs, .. }) = dom.data(curr_node) {
+                            let lang_attr = attrs
+                                .iter()
+                                .find(|(k, _)| k.eq_ignore_ascii_case("lang"))
+                                .map(|(_, v)| v);
+                            if let Some(val) = lang_attr {
+                                element_lang = Some(val.as_str());
+                                break;
+                            }
+                        }
+                        curr = dom.parent(curr_node);
+                    }
+                    if let Some(el_lang) = element_lang {
+                        lang_ranges.iter().any(|range| {
+                            let r = range.trim();
+                            if el_lang.eq_ignore_ascii_case(r) {
+                                true
+                            } else if el_lang.len() > r.len() {
+                                el_lang[..r.len()].eq_ignore_ascii_case(r)
+                                    && el_lang.as_bytes().get(r.len()) == Some(&b'-')
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        false
+                    }
+                }
+                _ if s_lower.starts_with("dir(") && s_lower.ends_with(')') => {
+                    let content = &s_lower["dir(".len()..s_lower.len() - 1];
+                    let content_trimmed = content.trim();
+                    let mut curr = Some(node);
+                    let mut direction = "ltr";
+                    while let Some(curr_node) = curr {
+                        if let Some(NodeData::Element { attrs, .. }) = dom.data(curr_node) {
+                            let dir_attr = attrs
+                                .iter()
+                                .find(|(k, _)| k.eq_ignore_ascii_case("dir"))
+                                .map(|(_, v)| v);
+                            if let Some(val) = dir_attr {
+                                let val_trimmed = val.trim();
+                                if val_trimmed.eq_ignore_ascii_case("rtl") {
+                                    direction = "rtl";
+                                    break;
+                                } else if val_trimmed.eq_ignore_ascii_case("ltr")
+                                    || val_trimmed.eq_ignore_ascii_case("auto")
+                                {
+                                    direction = "ltr";
+                                    break;
+                                }
+                            }
+                        }
+                        curr = dom.parent(curr_node);
+                    }
+                    if content_trimmed.eq_ignore_ascii_case("ltr") {
+                        direction == "ltr"
+                    } else if content_trimmed.eq_ignore_ascii_case("rtl") {
+                        direction == "rtl"
+                    } else {
+                        false
+                    }
+                }
+                _ => {
+                    // Fallback to standard matches_complex for unhandled pseudo-classes
+                    let temp_compound = selector::CompoundSelector {
+                        components: vec![comp.clone()],
+                    };
+                    let temp_sel = selector::ComplexSelector {
+                        parts: vec![(selector::Combinator::Descendant, temp_compound)],
+                    };
+                    selector::matches_complex(&temp_sel, dom, node)
+                }
+            }
+        }
         selector::Component::Not(sub) => !matches_compound_with_scope(sub, dom, node, scope),
         selector::Component::Is(list) => list
             .0
@@ -1038,16 +1145,6 @@ fn matches_component_with_scope(
                 }
                 _ => false,
             }
-        }
-        _ => {
-            // For all other components, match using standard selector::matches_complex
-            let temp_compound = selector::CompoundSelector {
-                components: vec![comp.clone()],
-            };
-            let temp_sel = selector::ComplexSelector {
-                parts: vec![(selector::Combinator::Descendant, temp_compound)],
-            };
-            selector::matches_complex(&temp_sel, dom, node)
         }
     }
 }
@@ -1273,6 +1370,658 @@ fn any_descendant_matches_with_scope(
             return true;
         }
         if any_descendant_matches_with_scope(sel, dom, child, scope) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_first_of_type(dom: &Dom, node: NodeId) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if child == node {
+                return true;
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if name.eq_ignore_ascii_case(current_tag_name) =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn is_last_of_type(dom: &Dom, node: NodeId) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children.iter().rev() {
+            if child == node {
+                return true;
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if name.eq_ignore_ascii_case(current_tag_name) =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn is_only_child(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if child != node && matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                return false;
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn is_only_of_type(dom: &Dom, node: NodeId) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if child != node {
+                match dom.data(child) {
+                    Some(NodeData::Element { name, .. })
+                        if name.eq_ignore_ascii_case(current_tag_name) =>
+                    {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn is_empty(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    let children = dom.children(node);
+    for &child in children {
+        match dom.data(child) {
+            Some(NodeData::Element { .. }) => {
+                return false;
+            }
+            Some(NodeData::Text(s)) if !s.chars().all(crate::ascii::is_html_whitespace) => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+fn is_root_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    let doc = dom.document();
+    let children = dom.children(doc);
+    for &child in children {
+        if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+            return child == node;
+        }
+    }
+    false
+}
+
+fn is_link_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_target_tag = name.eq_ignore_ascii_case("a")
+                || name.eq_ignore_ascii_case("area")
+                || name.eq_ignore_ascii_case("link");
+            is_target_tag && attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("href"))
+        }
+        _ => false,
+    }
+}
+
+fn is_checked_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable =
+                name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("option");
+            is_applicable && attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("checked"))
+        }
+        _ => false,
+    }
+}
+
+fn is_open_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable =
+                name.eq_ignore_ascii_case("details") || name.eq_ignore_ascii_case("dialog");
+            is_applicable && attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("open"))
+        }
+        _ => false,
+    }
+}
+
+fn is_default_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let has_checked = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("checked"));
+            let is_option = name.eq_ignore_ascii_case("option");
+            let has_selected = attrs
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("selected"));
+            has_checked || (is_option && has_selected)
+        }
+        _ => false,
+    }
+}
+
+fn is_form_associated(name: &str) -> bool {
+    name.eq_ignore_ascii_case("button")
+        || name.eq_ignore_ascii_case("input")
+        || name.eq_ignore_ascii_case("select")
+        || name.eq_ignore_ascii_case("textarea")
+        || name.eq_ignore_ascii_case("optgroup")
+        || name.eq_ignore_ascii_case("option")
+        || name.eq_ignore_ascii_case("fieldset")
+}
+
+fn is_disabled_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            is_form_associated(name)
+                && attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("disabled"))
+        }
+        _ => false,
+    }
+}
+
+fn is_enabled_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            is_form_associated(name)
+                && !attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("disabled"))
+        }
+        _ => false,
+    }
+}
+
+fn is_required_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea");
+            is_applicable
+                && attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("required"))
+        }
+        _ => false,
+    }
+}
+
+fn is_optional_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea");
+            is_applicable
+                && !attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("required"))
+        }
+        _ => false,
+    }
+}
+
+fn is_out_of_range_query(dom: &Dom, node: NodeId) -> bool {
+    let (name, attrs) = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+    if !name.eq_ignore_ascii_case("input") {
+        return false;
+    }
+    let input_type = attrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("text");
+    let is_numeric =
+        input_type.eq_ignore_ascii_case("number") || input_type.eq_ignore_ascii_case("range");
+    let is_date_family = input_type.eq_ignore_ascii_case("date")
+        || input_type.eq_ignore_ascii_case("month")
+        || input_type.eq_ignore_ascii_case("week")
+        || input_type.eq_ignore_ascii_case("time")
+        || input_type.eq_ignore_ascii_case("datetime-local");
+    if !is_numeric && !is_date_family {
+        return false;
+    }
+    let has_min = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("min"));
+    let has_max = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("max"));
+    if !has_min && !has_max {
+        return false;
+    }
+    if is_date_family {
+        return false;
+    }
+    if is_numeric {
+        let val = match attrs
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+        {
+            Some(v) => v,
+            None => return false,
+        };
+        if attrs
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("min"))
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .is_some_and(|min_val| val < min_val)
+        {
+            return true;
+        }
+        if attrs
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("max"))
+            .and_then(|(_, v)| v.parse::<f64>().ok())
+            .is_some_and(|max_val| val > max_val)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_in_range_query(dom: &Dom, node: NodeId) -> bool {
+    let (name, attrs) = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+    if !name.eq_ignore_ascii_case("input") {
+        return false;
+    }
+    let input_type = attrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("text");
+    let is_numeric =
+        input_type.eq_ignore_ascii_case("number") || input_type.eq_ignore_ascii_case("range");
+    let is_date_family = input_type.eq_ignore_ascii_case("date")
+        || input_type.eq_ignore_ascii_case("month")
+        || input_type.eq_ignore_ascii_case("week")
+        || input_type.eq_ignore_ascii_case("time")
+        || input_type.eq_ignore_ascii_case("datetime-local");
+    if !is_numeric && !is_date_family {
+        return false;
+    }
+    let has_min = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("min"));
+    let has_max = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("max"));
+    if !has_min && !has_max {
+        return false;
+    }
+    !is_out_of_range_query(dom, node)
+}
+
+fn is_read_write_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable =
+                name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea");
+            is_applicable
+                && !attrs.iter().any(|(k, _)| {
+                    k.eq_ignore_ascii_case("readonly") || k.eq_ignore_ascii_case("disabled")
+                })
+        }
+        _ => false,
+    }
+}
+
+fn is_read_only_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable =
+                name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea");
+            is_applicable
+                && attrs.iter().any(|(k, _)| {
+                    k.eq_ignore_ascii_case("readonly") || k.eq_ignore_ascii_case("disabled")
+                })
+        }
+        _ => false,
+    }
+}
+
+fn is_placeholder_shown_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_input = name.eq_ignore_ascii_case("input");
+            let is_textarea = name.eq_ignore_ascii_case("textarea");
+            if !is_input && !is_textarea {
+                return false;
+            }
+            let placeholder = attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("placeholder"))
+                .map(|(_, v)| v);
+            let has_non_empty_placeholder = match placeholder {
+                Some(p) => !p.is_empty(),
+                None => false,
+            };
+            if !has_non_empty_placeholder {
+                return false;
+            }
+            if is_input {
+                let value = attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+                    .map(|(_, v)| v);
+                match value {
+                    Some(v) => v.is_empty(),
+                    None => true,
+                }
+            } else {
+                let text = dom.text_content(node);
+                text.trim().is_empty()
+            }
+        }
+        _ => false,
+    }
+}
+
+fn is_indeterminate_query(dom: &Dom, node: NodeId) -> bool {
+    let data = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+    let (tag_name, attrs) = data;
+    if tag_name.eq_ignore_ascii_case("progress") {
+        let has_value = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("value"));
+        return !has_value;
+    }
+    if tag_name.eq_ignore_ascii_case("input") {
+        let input_type = attrs
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("text");
+        if input_type.eq_ignore_ascii_case("radio") {
+            let radio_name = attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("name"))
+                .map(|(_, v)| v.as_str());
+            match radio_name {
+                Some(name_val) if !name_val.is_empty() => {
+                    let mut root = node;
+                    while let Some(parent) = dom.parent(root) {
+                        root = parent;
+                    }
+                    let mut tree_nodes = vec![root];
+                    tree_nodes.extend(dom.descendants(root));
+                    let mut group_has_checked = false;
+                    for candidate_id in tree_nodes {
+                        let cand_data = match dom.data(candidate_id) {
+                            Some(NodeData::Element { name, attrs }) => (name, attrs),
+                            _ => continue,
+                        };
+                        let (cand_name, cand_attrs) = cand_data;
+                        if !cand_name.eq_ignore_ascii_case("input") {
+                            continue;
+                        }
+                        let cand_type = cand_attrs
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+                            .map(|(_, v)| v.as_str())
+                            .unwrap_or("text");
+                        if !cand_type.eq_ignore_ascii_case("radio") {
+                            continue;
+                        }
+                        let cand_radio_name = cand_attrs
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("name"))
+                            .map(|(_, v)| v.as_str());
+                        if cand_radio_name == Some(name_val) && is_checked_query(dom, candidate_id)
+                        {
+                            group_has_checked = true;
+                            break;
+                        }
+                    }
+                    return !group_has_checked;
+                }
+                _ => {
+                    return !is_checked_query(dom, node);
+                }
+            }
+        }
+    }
+    false
+}
+
+fn get_options(dom: &Dom, root: NodeId, options: &mut Vec<NodeId>) {
+    for &child in dom.children(root) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if name.eq_ignore_ascii_case("option") {
+                options.push(child);
+            } else if name.eq_ignore_ascii_case("optgroup") {
+                get_options(dom, child, options);
+            }
+        }
+    }
+}
+
+fn is_element_invalid(dom: &Dom, node: NodeId) -> bool {
+    let (name, attrs) = match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => (name, attrs),
+        _ => return false,
+    };
+    let has_required = attrs
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("required"));
+    if name.eq_ignore_ascii_case("input") {
+        let input_type = attrs
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("text");
+        if is_out_of_range_query(dom, node) {
+            return true;
+        }
+        let val = dom.get_input_value(node).unwrap_or_default();
+        if has_required {
+            let is_candidate_for_required = !matches!(
+                input_type,
+                "submit" | "reset" | "image" | "button" | "hidden"
+            );
+            if is_candidate_for_required {
+                if matches!(input_type, "checkbox" | "radio") {
+                    if !is_checked_query(dom, node) {
+                        return true;
+                    }
+                } else if val.is_empty() {
+                    return true;
+                }
+            }
+        }
+        if !val.is_empty() {
+            if input_type.eq_ignore_ascii_case("email") {
+                let at_count = val.chars().filter(|&c| c == '@').count();
+                if at_count != 1 || val.starts_with('@') || val.ends_with('@') {
+                    return true;
+                }
+            } else if input_type.eq_ignore_ascii_case("url") {
+                let has_scheme = val
+                    .split_once(':')
+                    .map(|(scheme, _)| {
+                        !scheme.is_empty()
+                            && scheme.chars().all(|c| {
+                                c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.'
+                            })
+                    })
+                    .unwrap_or(false);
+                if !has_scheme {
+                    return true;
+                }
+            }
+        }
+    } else if name.eq_ignore_ascii_case("textarea") && has_required {
+        let val = dom.text_content(node);
+        if val.is_empty() {
+            return true;
+        }
+    } else if name.eq_ignore_ascii_case("select") && has_required {
+        let mut options = Vec::new();
+        get_options(dom, node, &mut options);
+        let selected_options: Vec<NodeId> = options
+            .iter()
+            .filter(|&&opt| {
+                if let Some(NodeData::Element { attrs, .. }) = dom.data(opt) {
+                    attrs
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("selected"))
+                } else {
+                    false
+                }
+            })
+            .copied()
+            .collect();
+        let implicitly_selected = if !attrs
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("multiple"))
+        {
+            options.first().copied()
+        } else {
+            None
+        };
+        let active_selected = if !selected_options.is_empty() {
+            selected_options
+        } else if let Some(first_opt) = implicitly_selected {
+            vec![first_opt]
+        } else {
+            Vec::new()
+        };
+        let is_placeholder = |opt: NodeId| {
+            if dom.parent(opt) != Some(node) {
+                return false;
+            }
+            if options.first() != Some(&opt) {
+                return false;
+            }
+            if let Some(NodeData::Element { attrs, .. }) = dom.data(opt) {
+                let val_attr = attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+                    .map(|(_, v)| v.as_str());
+                match val_attr {
+                    Some(v) => v.is_empty(),
+                    None => dom.text_content(opt).is_empty(),
+                }
+            } else {
+                false
+            }
+        };
+        let violates_required = active_selected.is_empty()
+            || (active_selected.len() == 1 && is_placeholder(active_selected[0]));
+        if violates_required {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_invalid_descendant(dom: &Dom, root: NodeId) -> bool {
+    for &child in dom.children(root) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if is_form_associated(name) && is_element_invalid(dom, child) {
+                return true;
+            }
+            if has_invalid_descendant(dom, child) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_invalid_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => {
+            let is_form = name.eq_ignore_ascii_case("form");
+            let is_fieldset = name.eq_ignore_ascii_case("fieldset");
+            if is_form || is_fieldset {
+                has_invalid_descendant(dom, node)
+            } else if is_form_associated(name) {
+                is_element_invalid(dom, node)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+fn is_valid_query(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => {
+            let is_form = name.eq_ignore_ascii_case("form");
+            let is_fieldset = name.eq_ignore_ascii_case("fieldset");
+            if is_form || is_fieldset || is_form_associated(name) {
+                !is_invalid_query(dom, node)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+fn matches_focus_within_query(dom: &Dom, node: NodeId) -> bool {
+    if selector::get_node_state(node).focus {
+        return true;
+    }
+    let children = dom.children(node);
+    for &child in children {
+        if matches_focus_within_query(dom, child) {
             return true;
         }
     }
@@ -2743,5 +3492,80 @@ mod tests {
             dom.query_selector("DIV:nOt(:hAs(P))"),
             Some(empty_id_element)
         );
+    }
+
+    #[test]
+    fn test_t1083_expanded_selectors_conformance() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![
+                ("id".into(), "parent".into()),
+                ("lang".into(), "en-US".into()),
+                ("dir".into(), "ltr".into()),
+            ],
+        });
+        dom.append_child(doc, parent);
+
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(parent, p1);
+
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(parent, p2);
+
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("id".into(), "only_span".into())],
+        });
+        dom.append_child(parent, span1);
+
+        // 1. :first-of-type and :last-of-type
+        assert_eq!(dom.query_selector_from(parent, "p:first-of-type"), Some(p1));
+        assert_eq!(dom.query_selector_from(parent, "p:last-of-type"), Some(p2));
+        assert_eq!(
+            dom.query_selector_from(parent, "span:first-of-type"),
+            Some(span1)
+        );
+        assert_eq!(
+            dom.query_selector_from(parent, "span:last-of-type"),
+            Some(span1)
+        );
+
+        // 2. :only-child and :only-of-type
+        assert!(!dom.matches(p1, "p:only-child"));
+        assert!(dom.matches(span1, "span:only-of-type"));
+        assert!(!dom.matches(p1, "p:only-of-type"));
+
+        // 3. :placeholder-shown
+        let input_ph = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![
+                ("id".into(), "input_ph".into()),
+                ("placeholder".into(), "Type here...".into()),
+            ],
+        });
+        dom.append_child(parent, input_ph);
+        assert!(dom.matches(input_ph, "input:placeholder-shown"));
+
+        // 4. :lang() functional pseudo-class
+        assert!(dom.matches(p1, ":lang(en)"));
+        assert!(dom.matches(p1, ":lang(en-us)"));
+        assert!(!dom.matches(p1, ":lang(fr)"));
+
+        // 5. :dir() functional pseudo-class
+        assert!(dom.matches(p1, ":dir(ltr)"));
+        assert!(!dom.matches(p1, ":dir(rtl)"));
+
+        // 6. closest() and matches() integration
+        assert_eq!(dom.closest(p1, "div#parent"), Some(parent));
+        assert_eq!(dom.closest(p1, ":lang(en)"), Some(p1)); // self matches
     }
 }
