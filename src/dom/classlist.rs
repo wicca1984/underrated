@@ -8,6 +8,15 @@
 use super::{Dom, NodeData};
 use crate::infra::NodeId;
 
+/// Error type for DOMTokenList class token validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassTokenError {
+    /// Token is empty.
+    Empty,
+    /// Token contains ASCII whitespace.
+    ContainsWhitespace,
+}
+
 impl Dom {
     /// Returns the tokens of the element's `class` attribute split on ASCII whitespace.
     ///
@@ -32,11 +41,26 @@ impl Dom {
         }
     }
 
+    /// Validates a class token according to the DOM Standard.
+    ///
+    /// Returns `Ok(())` if the token is valid.
+    /// Returns `Err(ClassTokenError::Empty)` if the token is empty.
+    /// Returns `Err(ClassTokenError::ContainsWhitespace)` if the token contains ASCII whitespace.
+    pub fn validate_class_token(&self, token: &str) -> Result<(), ClassTokenError> {
+        if token.is_empty() {
+            return Err(ClassTokenError::Empty);
+        }
+        if token.chars().any(crate::ascii::is_html_whitespace) {
+            return Err(ClassTokenError::ContainsWhitespace);
+        }
+        Ok(())
+    }
+
     /// Checks if a class token is valid according to the DOM Standard.
     ///
     /// A token is valid if it is not empty and does not contain any ASCII whitespace.
     pub fn is_valid_class_token(&self, token: &str) -> bool {
-        !token.is_empty() && !token.chars().any(crate::ascii::is_html_whitespace)
+        self.validate_class_token(token).is_ok()
     }
 
     /// Returns `true` if the element has the given class `name`.
@@ -61,12 +85,15 @@ impl Dom {
             return;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
+            let has_class_attr = self.get_attribute(node, "class").is_some();
             let mut classes = self.class_list(node);
             if !classes.contains(&name.to_string()) {
                 classes.push(name.to_string());
             }
-            let new_value = classes.join(" ");
-            self.set_attribute(node, "class", &new_value);
+            if !classes.is_empty() || has_class_attr {
+                let new_value = classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+            }
         }
     }
 
@@ -77,15 +104,14 @@ impl Dom {
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-add
     pub fn add_classes(&mut self, node: NodeId, tokens: &[&str]) {
         if let Some(NodeData::Element { .. }) = self.data(node) {
+            let has_class_attr = self.get_attribute(node, "class").is_some();
             let mut classes = self.class_list(node);
-            let mut changed = false;
             for token in tokens {
                 if self.is_valid_class_token(token) && !classes.contains(&token.to_string()) {
                     classes.push(token.to_string());
-                    changed = true;
                 }
             }
-            if changed {
+            if !classes.is_empty() || has_class_attr {
                 let new_value = classes.join(" ");
                 self.set_attribute(node, "class", &new_value);
             }
@@ -103,10 +129,13 @@ impl Dom {
             return;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
+            let has_class_attr = self.get_attribute(node, "class").is_some();
             let classes = self.class_list(node);
             let new_classes: Vec<String> = classes.into_iter().filter(|c| c != name).collect();
-            let new_value = new_classes.join(" ");
-            self.set_attribute(node, "class", &new_value);
+            if !new_classes.is_empty() || has_class_attr {
+                let new_value = new_classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+            }
         }
     }
 
@@ -117,14 +146,14 @@ impl Dom {
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-remove
     pub fn remove_classes(&mut self, node: NodeId, tokens: &[&str]) {
         if let Some(NodeData::Element { .. }) = self.data(node) {
+            let has_class_attr = self.get_attribute(node, "class").is_some();
             let mut classes = self.class_list(node);
-            let len_before = classes.len();
             for token in tokens {
                 if self.is_valid_class_token(token) {
                     classes.retain(|c| c != token);
                 }
             }
-            if classes.len() != len_before {
+            if !classes.is_empty() || has_class_attr {
                 let new_value = classes.join(" ");
                 self.set_attribute(node, "class", &new_value);
             }
@@ -156,6 +185,7 @@ impl Dom {
             return false;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
+            let has_class_attr = self.get_attribute(node, "class").is_some();
             let classes = self.class_list(node);
             let is_present = classes.contains(&name.to_string());
 
@@ -169,13 +199,17 @@ impl Dom {
                 if !is_present {
                     new_classes.push(name.to_string());
                 }
-                let new_value = new_classes.join(" ");
-                self.set_attribute(node, "class", &new_value);
+                if !new_classes.is_empty() || has_class_attr {
+                    let new_value = new_classes.join(" ");
+                    self.set_attribute(node, "class", &new_value);
+                }
                 true
             } else {
                 let new_classes: Vec<String> = classes.into_iter().filter(|c| c != name).collect();
-                let new_value = new_classes.join(" ");
-                self.set_attribute(node, "class", &new_value);
+                if !new_classes.is_empty() || has_class_attr {
+                    let new_value = new_classes.join(" ");
+                    self.set_attribute(node, "class", &new_value);
+                }
                 false
             }
         } else {
@@ -195,13 +229,18 @@ impl Dom {
         if !self.is_valid_class_token(old) || !self.is_valid_class_token(new) {
             return false;
         }
-        if old == new {
-            return self.has_class(node, old);
-        }
         if let Some(NodeData::Element { .. }) = self.data(node) {
             let classes = self.class_list(node);
             if !classes.contains(&old.to_string()) {
                 return false;
+            }
+            let has_class_attr = self.get_attribute(node, "class").is_some();
+            if old == new {
+                if !classes.is_empty() || has_class_attr {
+                    let new_value = classes.join(" ");
+                    self.set_attribute(node, "class", &new_value);
+                }
+                return true;
             }
             let has_new = classes.contains(&new.to_string());
             let new_classes: Vec<String> = if has_new {
@@ -212,12 +251,49 @@ impl Dom {
                     .map(|c| if c == old { new.to_string() } else { c })
                     .collect()
             };
-            let new_value = new_classes.join(" ");
-            self.set_attribute(node, "class", &new_value);
+            if !new_classes.is_empty() || has_class_attr {
+                let new_value = new_classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+            }
             true
         } else {
             false
         }
+    }
+
+    /// Standard alias of `add_class`.
+    pub fn class_list_add(&mut self, node: NodeId, token: &str) {
+        self.add_class(node, token);
+    }
+
+    /// Standard alias of `add_classes`.
+    pub fn class_list_add_multiple(&mut self, node: NodeId, tokens: &[&str]) {
+        self.add_classes(node, tokens);
+    }
+
+    /// Standard alias of `remove_class`.
+    pub fn class_list_remove(&mut self, node: NodeId, token: &str) {
+        self.remove_class(node, token);
+    }
+
+    /// Standard alias of `remove_classes`.
+    pub fn class_list_remove_multiple(&mut self, node: NodeId, tokens: &[&str]) {
+        self.remove_classes(node, tokens);
+    }
+
+    /// Standard alias of `toggle_class_force`.
+    pub fn class_list_toggle(&mut self, node: NodeId, token: &str, force: Option<bool>) -> bool {
+        self.toggle_class_force(node, token, force)
+    }
+
+    /// Standard alias of `replace_class`.
+    pub fn class_list_replace(&mut self, node: NodeId, old: &str, new: &str) -> bool {
+        self.replace_class(node, old, new)
+    }
+
+    /// Standard alias of `contains_class`.
+    pub fn class_list_contains(&self, node: NodeId, name: &str) -> bool {
+        self.contains_class(node, name)
     }
 
     /// Executes a callback for each class token in the element's class list.
@@ -316,6 +392,7 @@ impl Dom {
 
 #[cfg(test)]
 mod tests {
+    use super::ClassTokenError;
     use crate::dom::{Dom, NodeData};
     use crate::infra::NodeId;
 
@@ -674,11 +751,12 @@ mod tests {
         assert!(!dom.toggle_class_force(el, "c", Some(false))); // "c" already absent, returns false and normalizes spacing
         assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
 
-        // 4. Verification of replace_class old == new (no-op that returns true/false without normalizing)
+        // 4. Verification of replace_class old == new (now normalizes when present per spec update steps)
         dom.set_attribute(el, "class", "  a   b  ");
-        assert!(dom.replace_class(el, "a", "a")); // "a" is present, returns true without altering attribute
-        assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
+        assert!(dom.replace_class(el, "a", "a")); // "a" is present, returns true and normalizes spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
 
+        dom.set_attribute(el, "class", "  a   b  ");
         assert!(!dom.replace_class(el, "c", "c")); // "c" is absent, returns false without altering attribute
         assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
 
@@ -686,5 +764,45 @@ mod tests {
         dom.set_attribute(el, "class", "a b");
         assert!(dom.replace_class(el, "a", "b")); // "b" is already present, so "a" is dropped and returns true
         assert_eq!(dom.get_attribute(el, "class"), Some("b"));
+    }
+
+    #[test]
+    fn test_domtokenlist_new_features_and_aliases() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. ClassTokenError validation
+        assert_eq!(dom.validate_class_token(""), Err(ClassTokenError::Empty));
+        assert_eq!(
+            dom.validate_class_token("foo bar"),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+        assert_eq!(dom.validate_class_token("foo"), Ok(()));
+
+        // 2. class_list_add and class_list_add_multiple aliases
+        dom.class_list_add(el, "x");
+        assert_eq!(dom.get_attribute(el, "class"), Some("x"));
+        dom.class_list_add_multiple(el, &["y", "z"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("x y z"));
+
+        // 3. class_list_contains alias
+        assert!(dom.class_list_contains(el, "y"));
+        assert!(!dom.class_list_contains(el, "w"));
+
+        // 4. class_list_toggle alias
+        assert!(!dom.class_list_toggle(el, "y", None)); // removes "y"
+        assert_eq!(dom.get_attribute(el, "class"), Some("x z"));
+        assert!(dom.class_list_toggle(el, "y", Some(true))); // adds "y"
+        assert_eq!(dom.get_attribute(el, "class"), Some("x z y"));
+
+        // 5. class_list_replace alias
+        assert!(dom.class_list_replace(el, "z", "w"));
+        assert_eq!(dom.get_attribute(el, "class"), Some("x w y"));
+
+        // 6. class_list_remove and class_list_remove_multiple aliases
+        dom.class_list_remove(el, "x");
+        assert_eq!(dom.get_attribute(el, "class"), Some("w y"));
+        dom.class_list_remove_multiple(el, &["w", "y"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some(""));
     }
 }
