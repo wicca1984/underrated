@@ -5,6 +5,31 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
     let code = r#"
         (function() {
             const BaseClass = typeof EventTarget !== "undefined" ? EventTarget : class {};
+            const EventClass = typeof Event !== "undefined" ? Event : class {};
+
+            class ProgressEvent extends EventClass {
+                constructor(type, eventInitDict = {}) {
+                    super(type, eventInitDict);
+                    this.type = type;
+                    this._lengthComputable = !!eventInitDict.lengthComputable;
+                    this._loaded = Number(eventInitDict.loaded) || 0;
+                    this._total = Number(eventInitDict.total) || 0;
+                }
+
+                get lengthComputable() {
+                    return this._lengthComputable;
+                }
+
+                get loaded() {
+                    return this._loaded;
+                }
+
+                get total() {
+                    return this._total;
+                }
+            }
+
+            globalThis.ProgressEvent = ProgressEvent;
 
             class XMLHttpRequestUpload extends BaseClass {
                 constructor() {
@@ -215,7 +240,23 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                 }
 
                 open(method, url, async, user, password) {
-                    this._method = String(method);
+                    const methodStr = String(method);
+                    // Validate method as a valid HTTP token
+                    if (!/^[!#$%&'*+\-.^_`|~a-zA-Z0-9]+$/.test(methodStr)) {
+                        const err = new Error("SyntaxError: Invalid method");
+                        err.name = "SyntaxError";
+                        throw err;
+                    }
+
+                    // Check for forbidden methods
+                    const upperMethod = methodStr.toUpperCase();
+                    if (upperMethod === "CONNECT" || upperMethod === "TRACE" || upperMethod === "TRACK") {
+                        const err = new Error("SecurityError: Method is forbidden");
+                        err.name = "SecurityError";
+                        throw err;
+                    }
+
+                    this._method = methodStr;
                     this._url = String(url);
                     this._sendFlag = false;
                     this._status = 0;
@@ -241,11 +282,21 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                     this._sendFlag = true;
 
+                    const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
+
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
-                            this.dispatchEvent(new Event("loadstart"));
+                            this.dispatchEvent(new ProgressEventClass("loadstart", {
+                                lengthComputable: false,
+                                loaded: 0,
+                                total: 0
+                            }));
                             if (body !== undefined && body !== null && this._upload) {
-                                this._upload.dispatchEvent(new Event("loadstart"));
+                                this._upload.dispatchEvent(new ProgressEventClass("loadstart", {
+                                    lengthComputable: true,
+                                    loaded: 0,
+                                    total: String(body).length
+                                }));
                             }
                         } catch (e) {}
                     }
@@ -263,9 +314,19 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
-                            this.dispatchEvent(new Event("progress"));
+                            const responseLen = this._responseText ? this._responseText.length : 0;
+                            this.dispatchEvent(new ProgressEventClass("progress", {
+                                lengthComputable: true,
+                                loaded: responseLen,
+                                total: responseLen
+                            }));
                             if (body !== undefined && body !== null && this._upload) {
-                                this._upload.dispatchEvent(new Event("progress"));
+                                const bodyLen = String(body).length;
+                                this._upload.dispatchEvent(new ProgressEventClass("progress", {
+                                    lengthComputable: true,
+                                    loaded: bodyLen,
+                                    total: bodyLen
+                                }));
                             }
                         } catch (e) {}
                     }
@@ -274,12 +335,31 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
+                            const responseLen = this._responseText ? this._responseText.length : 0;
+                            const bodyLen = body !== undefined && body !== null ? String(body).length : 0;
+
                             if (body !== undefined && body !== null && this._upload) {
-                                this._upload.dispatchEvent(new Event("load"));
-                                this._upload.dispatchEvent(new Event("loadend"));
+                                this._upload.dispatchEvent(new ProgressEventClass("load", {
+                                    lengthComputable: true,
+                                    loaded: bodyLen,
+                                    total: bodyLen
+                                }));
+                                this._upload.dispatchEvent(new ProgressEventClass("loadend", {
+                                    lengthComputable: true,
+                                    loaded: bodyLen,
+                                    total: bodyLen
+                                }));
                             }
-                            this.dispatchEvent(new Event("load"));
-                            this.dispatchEvent(new Event("loadend"));
+                            this.dispatchEvent(new ProgressEventClass("load", {
+                                lengthComputable: true,
+                                loaded: responseLen,
+                                total: responseLen
+                            }));
+                            this.dispatchEvent(new ProgressEventClass("loadend", {
+                                lengthComputable: true,
+                                loaded: responseLen,
+                                total: responseLen
+                            }));
                         } catch (e) {}
                     }
                 }
@@ -361,17 +441,39 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._changeReadyState(0); // UNSENT
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
+                            const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
                             if (wasSending && this._upload) {
-                                this._upload.dispatchEvent(new Event("abort"));
-                                this._upload.dispatchEvent(new Event("loadend"));
+                                this._upload.dispatchEvent(new ProgressEventClass("abort", {
+                                    lengthComputable: false,
+                                    loaded: 0,
+                                    total: 0
+                                }));
+                                this._upload.dispatchEvent(new ProgressEventClass("loadend", {
+                                    lengthComputable: false,
+                                    loaded: 0,
+                                    total: 0
+                                }));
                             }
-                            this.dispatchEvent(new Event("abort"));
-                            this.dispatchEvent(new Event("loadend"));
+                            this.dispatchEvent(new ProgressEventClass("abort", {
+                                lengthComputable: false,
+                                loaded: 0,
+                                total: 0
+                            }));
+                            this.dispatchEvent(new ProgressEventClass("loadend", {
+                                lengthComputable: false,
+                                loaded: 0,
+                                total: 0
+                            }));
                         } catch (e) {}
                     }
                 }
 
                 overrideMimeType(mime) {
+                    if (this._readyState === 3 || this._readyState === 4) {
+                        const err = new Error("InvalidStateError");
+                        err.name = "InvalidStateError";
+                        throw err;
+                    }
                     this._overrideMime = String(mime);
                 }
 
@@ -871,6 +973,150 @@ mod tests {
         if !error_val.is_null() {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!("test_xhr_completeness JS assert failed: {}", error_str);
+        }
+    }
+
+    #[test]
+    fn test_xhr_additive_improvements() {
+        let mut context = Context::default();
+        register_xhr(&mut context).expect("Failed to register XMLHttpRequest");
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // Mock Event if it doesn't exist
+                if (typeof Event === "undefined") {
+                    globalThis.Event = class Event {
+                        constructor(type) {
+                            this.type = type;
+                        }
+                    };
+                }
+
+                // 1. Verify ProgressEvent global constructor and features
+                if (typeof ProgressEvent === "undefined") {
+                    throw new Error("ProgressEvent should be defined globally");
+                }
+
+                const pe = new ProgressEvent("progress", {
+                    lengthComputable: true,
+                    loaded: 42,
+                    total: 100
+                });
+
+                if (pe.type !== "progress") throw new Error("ProgressEvent type should be progress");
+                if (pe.lengthComputable !== true) throw new Error("ProgressEvent lengthComputable should be true");
+                if (pe.loaded !== 42) throw new Error("ProgressEvent loaded should be 42");
+                if (pe.total !== 100) throw new Error("ProgressEvent total should be 100");
+
+                const pe2 = new ProgressEvent("load");
+                if (pe2.type !== "load") throw new Error("ProgressEvent type should be load");
+                if (pe2.lengthComputable !== false) throw new Error("ProgressEvent default lengthComputable should be false");
+                if (pe2.loaded !== 0) throw new Error("ProgressEvent default loaded should be 0");
+                if (pe2.total !== 0) throw new Error("ProgressEvent default total should be 0");
+
+                // 2. Verify open() HTTP method token validation
+                const xhr = new XMLHttpRequest();
+                try {
+                    xhr.open("GET / HTTP/1.1", "https://example.com");
+                    throw new Error("open() with spaces in method should throw SyntaxError");
+                } catch (e) {
+                    if (e.name !== "SyntaxError") throw e;
+                }
+
+                try {
+                    xhr.open("M@THOD", "https://example.com");
+                    throw new Error("open() with invalid characters in method should throw SyntaxError");
+                } catch (e) {
+                    if (e.name !== "SyntaxError") throw e;
+                }
+
+                // 3. Verify open() forbidden methods check (case-insensitive)
+                try {
+                    xhr.open("CONNECT", "https://example.com");
+                    throw new Error("open() with CONNECT should throw SecurityError");
+                } catch (e) {
+                    if (e.name !== "SecurityError") throw e;
+                }
+
+                try {
+                    xhr.open("trace", "https://example.com");
+                    throw new Error("open() with TRACE (lowercase) should throw SecurityError");
+                } catch (e) {
+                    if (e.name !== "SecurityError") throw e;
+                }
+
+                try {
+                    xhr.open("TRACK", "https://example.com");
+                    throw new Error("open() with TRACK should throw SecurityError");
+                } catch (e) {
+                    if (e.name !== "SecurityError") throw e;
+                }
+
+                // 4. Verify overrideMimeType() readyState validation
+                const xhr2 = new XMLHttpRequest();
+                xhr2.open("POST", "https://example.com");
+                // Calling in state 1 (OPENED) should succeed
+                xhr2.overrideMimeType("text/html");
+
+                // Send to transition to state 4 (DONE)
+                xhr2.send("payload");
+
+                try {
+                    xhr2.overrideMimeType("application/json");
+                    throw new Error("overrideMimeType() in DONE state should throw InvalidStateError");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") throw e;
+                }
+
+                // 5. Verify actual events dispatched are ProgressEvents
+                let lastProgressEvent = null;
+                const xhr3 = new XMLHttpRequest();
+                xhr3.onprogress = (e) => {
+                    lastProgressEvent = e;
+                };
+
+                xhr3.open("POST", "https://example.com");
+                xhr3.send("my body");
+
+                if (!lastProgressEvent) {
+                    throw new Error("onprogress handler was not invoked");
+                }
+
+                if (!(lastProgressEvent instanceof ProgressEvent)) {
+                    throw new Error("dispatched progress event should be an instance of ProgressEvent");
+                }
+
+                if (lastProgressEvent.lengthComputable !== true) {
+                    throw new Error("progress event lengthComputable should be true");
+                }
+
+                if (lastProgressEvent.loaded !== 7) { // "my body".length is 7
+                    throw new Error("progress event loaded should be 7, got: " + lastProgressEvent.loaded);
+                }
+
+                if (lastProgressEvent.total !== 7) {
+                    throw new Error("progress event total should be 7, got: " + lastProgressEvent.total);
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        let res = context.eval(Source::from_bytes(script.as_bytes()));
+        assert!(res.is_ok(), "Evaluation itself failed: {:?}", res);
+
+        let error_val = context
+            .eval(Source::from_bytes("globalThis.test_error".as_bytes()))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!(
+                "test_xhr_additive_improvements JS assert failed: {}",
+                error_str
+            );
         }
     }
 }
