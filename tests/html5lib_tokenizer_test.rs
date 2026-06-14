@@ -124,10 +124,13 @@ fn unescape(s: &str) -> String {
                     hex.push(hc);
                 }
             }
-            if let Some(rc) = u32::from_str_radix(&hex, 16)
-                .ok()
-                .and_then(std::char::from_u32)
-            {
+            if let Some(rc) = u32::from_str_radix(&hex, 16).ok().and_then(|val| {
+                if (0xD800..=0xDFFF).contains(&val) {
+                    Some('\u{FFFD}')
+                } else {
+                    std::char::from_u32(val)
+                }
+            }) {
                 result.push(rc);
             }
         } else {
@@ -163,6 +166,15 @@ fn test_html5lib_tokenizer_conformance() {
     let files = [
         "tests/html5lib-tests/tokenizer/test1.test",
         "tests/html5lib-tests/tokenizer/test2.test",
+        "tests/html5lib-tests/tokenizer/test3.test",
+        "tests/html5lib-tests/tokenizer/test4.test",
+        "tests/html5lib-tests/tokenizer/contentModelFlags.test",
+        "tests/html5lib-tests/tokenizer/escapeFlag.test",
+        "tests/html5lib-tests/tokenizer/domjs.test",
+        "tests/html5lib-tests/tokenizer/entities.test",
+        "tests/html5lib-tests/tokenizer/numericEntities.test",
+        "tests/html5lib-tests/tokenizer/unicodeChars.test",
+        "tests/html5lib-tests/tokenizer/unicodeCharsProblematic.test",
     ];
 
     for file_path in &files {
@@ -324,6 +336,7 @@ fn test_html5lib_tokenizer_conformance() {
     // Future regressions (more failures) will turn the test red. If the tokenizer
     // improves and failure count drops, this constant should be lowered accordingly,
     // never raised.
+    // Loaded files: test1, test2, test3, test4, contentModelFlags, escapeFlag, domjs, entities, numericEntities, unicodeChars, unicodeCharsProblematic. Observed: PASS=2821, FAIL=0, SKIP=0.
     const BASELINE_MAX_FAILURES: usize = 0;
 
     // Print summary to stderr as required
