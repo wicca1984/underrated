@@ -298,6 +298,11 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :paused always returns false.
                         false
                     }
+                    "current" => {
+                        // TODO(spec): This engine has no time-dimensional / timed-media context (e.g. WebVTT cues),
+                        // so no element is ever the currently-presented one and the :current pseudo-class always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3229,7 +3234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_paused_never_matches() {
+    fn test_current_never_matches() {
         let mut dom = Dom::new();
         let doc = dom.document();
 
@@ -3254,11 +3259,11 @@ mod tests {
         });
         dom.append_child(doc, audio_elem);
 
-        // Matches :paused (should never match since we have no media audio/playback state)
-        let sel_paused = parse_selector_list(":paused").unwrap();
-        assert!(!matches(&sel_paused, &dom, div_elem));
-        assert!(!matches(&sel_paused, &dom, video_elem));
-        assert!(!matches(&sel_paused, &dom, audio_elem));
+        // Matches :current (should never match since we have no time-dimensional / timed-media context)
+        let sel_current = parse_selector_list(":current").unwrap();
+        assert!(!matches(&sel_current, &dom, div_elem));
+        assert!(!matches(&sel_current, &dom, video_elem));
+        assert!(!matches(&sel_current, &dom, audio_elem));
     }
 
     #[test]
