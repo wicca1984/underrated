@@ -588,6 +588,130 @@ fn split_by_comma(tokens: &[CssToken]) -> Vec<Vec<CssToken>> {
     result
 }
 
+fn find_top_level_operators(tokens: &[CssToken]) -> (bool, bool, Vec<usize>) {
+    let mut has_and = false;
+    let mut has_or = false;
+    let mut op_indices = Vec::new();
+    let mut depth = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            CssToken::LeftParen | CssToken::LeftBrace | CssToken::LeftBracket => {
+                depth += 1;
+            }
+            CssToken::RightParen | CssToken::RightBrace | CssToken::RightBracket => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            _ => {
+                if depth == 0 {
+                    if is_ident(token, "and") {
+                        has_and = true;
+                        op_indices.push(i);
+                    } else if is_ident(token, "or") {
+                        has_or = true;
+                        op_indices.push(i);
+                    }
+                }
+            }
+        }
+    }
+    (has_and, has_or, op_indices)
+}
+
+fn evaluate_media_condition(tokens: &[CssToken], viewport_w: f32) -> Option<bool> {
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let (has_and, has_or, op_indices) = find_top_level_operators(tokens);
+
+    if has_and && has_or {
+        // Mixing 'and' and 'or' without parentheses is invalid
+        return Some(false);
+    }
+
+    if has_and {
+        let mut last_idx = 0;
+        let mut parts = Vec::new();
+        for &op_idx in &op_indices {
+            parts.push(&tokens[last_idx..op_idx]);
+            last_idx = op_idx + 1;
+        }
+        parts.push(&tokens[last_idx..]);
+
+        let mut all_match = true;
+        for part in parts {
+            if part.is_empty() {
+                return Some(false);
+            }
+            if let Some(res) = evaluate_media_condition(part, viewport_w) {
+                if !res {
+                    all_match = false;
+                }
+            } else {
+                return Some(false);
+            }
+        }
+        return Some(all_match);
+    }
+
+    if has_or {
+        let mut last_idx = 0;
+        let mut parts = Vec::new();
+        for &op_idx in &op_indices {
+            parts.push(&tokens[last_idx..op_idx]);
+            last_idx = op_idx + 1;
+        }
+        parts.push(&tokens[last_idx..]);
+
+        let mut any_match = false;
+        for part in parts {
+            if part.is_empty() {
+                return Some(false);
+            }
+            if let Some(res) = evaluate_media_condition(part, viewport_w) {
+                if res {
+                    any_match = true;
+                }
+            } else {
+                return Some(false);
+            }
+        }
+        return Some(any_match);
+    }
+
+    if tokens.len() >= 2 && is_ident(&tokens[0], "not") {
+        if let Some(res) = evaluate_media_condition(&tokens[1..], viewport_w) {
+            return Some(!res);
+        } else {
+            return Some(false);
+        }
+    }
+
+    if tokens.len() >= 2
+        && matches!(tokens[0], CssToken::LeftParen)
+        && matches!(tokens[tokens.len() - 1], CssToken::RightParen)
+    {
+        let inner = &tokens[1..tokens.len() - 1];
+        let (has_and_inner, has_or_inner, _) = find_top_level_operators(inner);
+        let is_cond = has_and_inner
+            || has_or_inner
+            || (inner.len() >= 2 && is_ident(&inner[0], "not"))
+            || (inner.len() >= 2
+                && matches!(inner[0], CssToken::LeftParen)
+                && matches!(inner[inner.len() - 1], CssToken::RightParen));
+
+        if is_cond && let Some(res) = evaluate_media_condition(inner, viewport_w) {
+            return Some(res);
+        }
+
+        return Some(evaluate_feature(inner, viewport_w));
+    }
+
+    Some(evaluate_feature(tokens, viewport_w))
+}
+
 /// Evaluates a single media query (a list of non-whitespace tokens) against the viewport width.
 fn evaluate_single_query(tokens: &[CssToken], viewport_w: f32) -> bool {
     let mut idx = 0;
@@ -603,13 +727,11 @@ fn evaluate_single_query(tokens: &[CssToken], viewport_w: f32) -> bool {
     }
 
     let mut matches = true;
-    let mut expect_and = false;
 
-    // Check if the current token is a media type or an expression
     if idx < tokens.len() {
         if let CssToken::LeftParen = &tokens[idx] {
-            // No media type specified, defaults to "all" (which is true)
-            expect_and = false;
+            let cond_res = evaluate_media_condition(&tokens[idx..], viewport_w).unwrap_or(false);
+            matches = cond_res;
         } else if let CssToken::Ident(name) = &tokens[idx] {
             let media_type = name.to_ascii_lowercase();
             if media_type == "screen" || media_type == "all" {
@@ -621,58 +743,21 @@ fn evaluate_single_query(tokens: &[CssToken], viewport_w: f32) -> bool {
                 matches = false;
             }
             idx += 1;
-            expect_and = true;
-        } else {
-            // Invalid starting token
-            matches = false;
-        }
-    }
 
-    // Now loop through expressions
-    while idx < tokens.len() {
-        if expect_and {
-            if is_ident(&tokens[idx], "and") {
-                idx += 1;
-            } else {
-                // Expected "and" but got something else (invalid query)
-                matches = false;
-                break;
-            }
-        } else {
-            // The first feature expression doesn't need "and"
-            expect_and = true;
-        }
-
-        if idx < tokens.len() && matches!(tokens[idx], CssToken::LeftParen) {
-            // Find matching RightParen
-            let start_expr = idx + 1;
-            let mut end_expr = start_expr;
-            let mut depth = 1;
-            while end_expr < tokens.len() && depth > 0 {
-                match &tokens[end_expr] {
-                    CssToken::LeftParen => depth += 1,
-                    CssToken::RightParen => depth -= 1,
-                    _ => {}
-                }
-                if depth > 0 {
-                    end_expr += 1;
-                }
-            }
-
-            if end_expr < tokens.len() && depth == 0 {
-                let expr_tokens = &tokens[start_expr..end_expr];
-                if !evaluate_feature(expr_tokens, viewport_w) {
+            if idx < tokens.len() {
+                if is_ident(&tokens[idx], "and") {
+                    idx += 1;
+                    let cond_res =
+                        evaluate_media_condition(&tokens[idx..], viewport_w).unwrap_or(false);
+                    if !cond_res {
+                        matches = false;
+                    }
+                } else {
                     matches = false;
                 }
-                idx = end_expr + 1;
-            } else {
-                // Mismatched parentheses
-                matches = false;
-                break;
             }
         } else {
             matches = false;
-            break;
         }
     }
 
@@ -2999,5 +3084,46 @@ mod tests {
         assert!(media_matches("(1x <= resolution <= 3x)", 600.0));
         assert!(!media_matches("(2.5x <= resolution <= 3x)", 600.0));
         set_device_pixel_ratio(1.0);
+    }
+
+    #[test]
+    fn test_media_query_or_logical_combinator() {
+        // Simple 'or'
+        assert!(media_matches("(width >= 1000px) or (hover: hover)", 600.0));
+        assert!(media_matches("(width >= 500px) or (hover: none)", 600.0));
+        assert!(!media_matches("(width >= 1000px) or (hover: none)", 600.0));
+
+        // Multiple 'or'
+        assert!(media_matches(
+            "(width >= 1000px) or (hover: none) or (pointer: fine)",
+            600.0
+        ));
+
+        // Nested condition inside parens with 'or' and 'and'
+        assert!(media_matches(
+            "((hover: hover) or (pointer: coarse)) and (width >= 500px)",
+            600.0
+        ));
+        assert!(!media_matches(
+            "((hover: hover) or (pointer: coarse)) and (width >= 1000px)",
+            600.0
+        ));
+    }
+
+    #[test]
+    fn test_media_query_nested_not_logical_combinator() {
+        // 'not' prefixing parenthesized feature
+        assert!(media_matches("(not (hover: none))", 600.0));
+        assert!(!media_matches("(not (hover: hover))", 600.0));
+
+        // Nested 'not' combined with 'and' / 'or'
+        assert!(media_matches(
+            "(not (hover: none)) and (width >= 500px)",
+            600.0
+        ));
+        assert!(!media_matches(
+            "(not (hover: hover)) or (width >= 1000px)",
+            600.0
+        ));
     }
 }
