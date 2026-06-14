@@ -808,6 +808,7 @@ pub fn layout_inline_run(
                     let break_word = if let Some(style) = styles.get(&node) {
                         style.inherited_text.overflow_wrap == "break-word"
                             || style.inherited_text.overflow_wrap == "anywhere"
+                            || style.inherited_text.word_break == "break-word"
                     } else {
                         false
                     };
@@ -965,6 +966,10 @@ pub fn layout_inline_run(
                                         } else if c == '\u{200B}'
                                             || c == '-'
                                             || c == '\u{2010}'
+                                            || c == '\u{2013}'
+                                            || c == '\u{2014}'
+                                            || c == '\u{2015}'
+                                            || c == '/'
                                             || (is_cjk(c) && style_wb != "keep-all")
                                         {
                                             let end_idx = current_byte_idx + c.len_utf8();
@@ -1292,11 +1297,23 @@ pub fn layout_inline(
 }
 
 fn is_cjk(c: char) -> bool {
-    let u = c as u32;
-    (0x4E00..=0x9FFF).contains(&u) || // CJK Unified Ideographs
-    (0x3040..=0x309F).contains(&u) || // Hiragana
-    (0x30A0..=0x30FF).contains(&u) || // Katakana
-    (0xAC00..=0xD7AF).contains(&u) // Hangul Syllables
+    match c as u32 {
+        0x4E00..=0x9FFF |    // CJK Unified Ideographs
+        0x3400..=0x4DBF |    // CJK Unified Ideographs Extension A
+        0x20000..=0x2A6DF |  // CJK Unified Ideographs Extension B
+        0x2A700..=0x2B73F |  // CJK Unified Ideographs Extension C
+        0x2B740..=0x2B81F |  // CJK Unified Ideographs Extension D
+        0x2B820..=0x2CEAF |  // CJK Unified Ideographs Extension E
+        0xF900..=0xFAFF |    // CJK Compatibility Ideographs
+        0x2F800..=0x2FA1F |  // CJK Compatibility Ideographs Supplement
+        0x3040..=0x309F |    // Hiragana
+        0x30A0..=0x30FF |    // Katakana
+        0xAC00..=0xD7AF |    // Hangul Syllables
+        0x1100..=0x11FF |    // Hangul Jamo
+        0x3130..=0x318F      // Hangul Compatibility Jamo
+        => true,
+        _ => false,
+    }
 }
 
 fn strip_soft_hyphens(s: &str) -> String {
@@ -3986,5 +4003,210 @@ mod tests {
 
         // So it starts at 100 - 40 = 60.
         assert_eq!(child_box.rect.origin.x, 60.0);
+    }
+
+    #[test]
+    fn test_line_break_on_dash_and_slash_opportunities() {
+        // Test slash break opportunity
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let div = dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![],
+            });
+            dom.append_child(doc, div);
+
+            let t = dom.create_node(NodeData::Text("apple/banana".into()));
+            dom.append_child(div, t);
+
+            let stylesheet = parse_stylesheet("div { word-break: normal; }");
+            let styles = compute_styles(&dom, &stylesheet);
+
+            let children = dom.children(div);
+            // Width 50px fits "apple/" (48px) but not "apple/banana" (96px).
+            // It should break after the slash!
+            let (line_boxes, _) =
+                layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+            assert_eq!(line_boxes.len(), 2);
+            assert_eq!(line_boxes[0].children.len(), 1);
+            assert_eq!(line_boxes[0].children[0].text, Some("apple/".to_string()));
+            assert_eq!(line_boxes[1].children.len(), 1);
+            assert_eq!(line_boxes[1].children[0].text, Some("banana".to_string()));
+        }
+
+        // Test en-dash break opportunity
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let div = dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![],
+            });
+            dom.append_child(doc, div);
+
+            let t = dom.create_node(NodeData::Text("apple\u{2013}banana".into()));
+            dom.append_child(div, t);
+
+            let stylesheet = parse_stylesheet("div { word-break: normal; }");
+            let styles = compute_styles(&dom, &stylesheet);
+
+            let children = dom.children(div);
+            // Width 50px fits "apple–" (48px) but not "apple–banana" (96px).
+            // It should break after the en-dash!
+            let (line_boxes, _) =
+                layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+            assert_eq!(line_boxes.len(), 2);
+            assert_eq!(line_boxes[0].children.len(), 1);
+            assert_eq!(
+                line_boxes[0].children[0].text,
+                Some("apple\u{2013}".to_string())
+            );
+            assert_eq!(line_boxes[1].children.len(), 1);
+            assert_eq!(line_boxes[1].children[0].text, Some("banana".to_string()));
+        }
+
+        // Test em-dash break opportunity
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let div = dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![],
+            });
+            dom.append_child(doc, div);
+
+            let t = dom.create_node(NodeData::Text("apple\u{2014}banana".into()));
+            dom.append_child(div, t);
+
+            let stylesheet = parse_stylesheet("div { word-break: normal; }");
+            let styles = compute_styles(&dom, &stylesheet);
+
+            let children = dom.children(div);
+            // Width 50px fits "apple—" (48px) but not "apple—banana" (96px).
+            // It should break after the em-dash!
+            let (line_boxes, _) =
+                layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+            assert_eq!(line_boxes.len(), 2);
+            assert_eq!(line_boxes[0].children.len(), 1);
+            assert_eq!(
+                line_boxes[0].children[0].text,
+                Some("apple\u{2014}".to_string())
+            );
+            assert_eq!(line_boxes[1].children.len(), 1);
+            assert_eq!(line_boxes[1].children[0].text, Some("banana".to_string()));
+        }
+
+        // Test horizontal-bar break opportunity
+        {
+            let mut dom = Dom::new();
+            let doc = dom.document();
+            let div = dom.create_node(NodeData::Element {
+                name: "div".into(),
+                attrs: vec![],
+            });
+            dom.append_child(doc, div);
+
+            let t = dom.create_node(NodeData::Text("apple\u{2015}banana".into()));
+            dom.append_child(div, t);
+
+            let stylesheet = parse_stylesheet("div { word-break: normal; }");
+            let styles = compute_styles(&dom, &stylesheet);
+
+            let children = dom.children(div);
+            // Width 50px fits "apple―" (48px) but not "apple―banana" (96px).
+            // It should break after the horizontal bar!
+            let (line_boxes, _) =
+                layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+            assert_eq!(line_boxes.len(), 2);
+            assert_eq!(line_boxes[0].children.len(), 1);
+            assert_eq!(
+                line_boxes[0].children[0].text,
+                Some("apple\u{2015}".to_string())
+            );
+            assert_eq!(line_boxes[1].children.len(), 1);
+            assert_eq!(line_boxes[1].children[0].text, Some("banana".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_extended_cjk_ranges_breaking_and_keep_all() {
+        // CJK Extension A characters: 㐀 (U+3400), 㐁 (U+3401), 㐂 (U+3402)
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("㐀㐁㐂".into()));
+        dom.append_child(div, t);
+
+        // Under normal word-break, CJK Extension A should break anywhere.
+        // Container width 10px forces it to break character-by-character.
+        let stylesheet_normal = parse_stylesheet("div { word-break: normal; }");
+        let styles_normal = compute_styles(&dom, &stylesheet_normal);
+        let children_normal = dom.children(div);
+        let (line_boxes_normal, _) = layout_inline_run(
+            &dom,
+            &styles_normal,
+            children_normal,
+            10.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        assert_eq!(line_boxes_normal.len(), 3);
+
+        // Under keep-all word-break, CJK Extension A should NOT break.
+        let stylesheet_keep = parse_stylesheet("div { word-break: keep-all; }");
+        let styles_keep = compute_styles(&dom, &stylesheet_keep);
+        let children_keep = dom.children(div);
+        let (line_boxes_keep, _) = layout_inline_run(
+            &dom,
+            &styles_keep,
+            children_keep,
+            10.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        assert_eq!(line_boxes_keep.len(), 1);
+    }
+
+    #[test]
+    fn test_word_break_break_word_compatibility() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("superlongunbreakableword".into()));
+        dom.append_child(div, t);
+
+        // Legacy compatibility: word-break: break-word behaves like overflow-wrap: break-word
+        let stylesheet = parse_stylesheet("div { word-break: break-word; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Container width 50px forces breaking.
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+        assert!(line_boxes.len() > 1);
     }
 }
