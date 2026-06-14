@@ -1527,16 +1527,31 @@ pub fn parse_color(s: &str) -> Option<Color> {
                         let space_tokens: Vec<&str> = stripped.split_whitespace().collect();
                         if !space_tokens.is_empty() {
                             let colorspace = space_tokens[0];
-                            let hue_method = if space_tokens.len() >= 2 {
-                                Some(space_tokens[1])
-                            } else {
-                                None
-                            };
-
                             let is_polar = colorspace.eq_ignore_ascii_case("hsl")
                                 || colorspace.eq_ignore_ascii_case("hwb")
                                 || colorspace.eq_ignore_ascii_case("lch")
                                 || colorspace.eq_ignore_ascii_case("oklch");
+
+                            let hue_method = if space_tokens.len() == 1 {
+                                None
+                            } else if space_tokens.len() == 3 {
+                                let method = space_tokens[1].to_ascii_lowercase();
+                                let hue_word = space_tokens[2].to_ascii_lowercase();
+                                if hue_word != "hue" {
+                                    return None;
+                                }
+                                if method != "shorter"
+                                    && method != "longer"
+                                    && method != "increasing"
+                                    && method != "decreasing"
+                                {
+                                    return None;
+                                }
+                                Some(space_tokens[1])
+                            } else {
+                                return None;
+                            };
+
                             if hue_method.is_some() && !is_polar {
                                 return None;
                             }
@@ -1767,32 +1782,67 @@ fn split_top_level_commas(s: &str) -> Vec<String> {
 
 fn extract_calc_and_color(decl: &str) -> Option<(String, String, bool)> {
     let decl_trimmed = decl.trim();
-    let decl_lower = decl_trimmed.to_ascii_lowercase();
-    if let Some(calc_idx) = decl_lower.find("calc(") {
-        // Find matching closing paren
-        let mut depth = 0;
-        let mut closing_idx = None;
-        for (i, c) in decl_trimmed[calc_idx..].char_indices() {
-            if c == '(' {
-                depth += 1;
-            } else if c == ')' {
+
+    // We want to find "calc(" at parenthesis depth 0
+    let mut depth = 0;
+    let mut calc_idx = None;
+
+    let chars: Vec<char> = decl_trimmed.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '(' {
+            depth += 1;
+            i += 1;
+        } else if chars[i] == ')' {
+            if depth > 0 {
                 depth -= 1;
-                if depth == 0 {
-                    closing_idx = Some(calc_idx + i);
+            }
+            i += 1;
+        } else if depth == 0 && i + 5 <= chars.len() {
+            // Check if it matches "calc("
+            let mut matches = true;
+            let target = ['c', 'a', 'l', 'c', '('];
+            for j in 0..5 {
+                if !chars[i + j].to_ascii_lowercase().eq(&target[j]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                calc_idx = Some(i);
+                break;
+            }
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    if let Some(calc_idx) = calc_idx {
+        // Find matching closing paren for this calc at depth 1 (relative to start, which is depth 0 in the string)
+        let mut calc_depth = 0;
+        let mut closing_idx = None;
+        for (j, &c) in chars.iter().enumerate().skip(calc_idx) {
+            if c == '(' {
+                calc_depth += 1;
+            } else if c == ')' {
+                calc_depth -= 1;
+                if calc_depth == 0 {
+                    closing_idx = Some(j);
                     break;
                 }
             }
         }
         if let Some(c_idx) = closing_idx {
-            let calc_part = decl_trimmed[calc_idx..=c_idx].to_string();
+            let calc_part: String = chars[calc_idx..=c_idx].iter().collect();
             if calc_idx == 0 {
-                // Calc is first
-                let rest = decl_trimmed[c_idx + 1..].trim().to_string();
-                Some((calc_part, rest, true))
+                // Calc is first, rest is color
+                let rest: String = chars[c_idx + 1..].iter().collect();
+                Some((calc_part, rest.trim().to_string(), true))
             } else {
-                // Calc is second
-                let rest = decl_trimmed[..calc_idx].trim().to_string();
-                Some((calc_part, rest, false))
+                // Calc is second, first is color
+                let rest: String = chars[..calc_idx].iter().collect();
+                Some((calc_part, rest.trim().to_string(), false))
             }
         } else {
             None
@@ -3176,6 +3226,60 @@ mod tests {
         assert_eq!(
             parse_color("color-mix(in oklab shorter hue, red, blue)"),
             None
+        );
+
+        // Strict hue-interpolation-method checks
+        // Missing "hue" keyword
+        assert_eq!(parse_color("color-mix(in oklch shorter, red, blue)"), None);
+        // Invalid hue method name
+        assert_eq!(
+            parse_color("color-mix(in oklch unknown hue, red, blue)"),
+            None
+        );
+        // Extra tokens
+        assert_eq!(
+            parse_color("color-mix(in oklch shorter hue extra, red, blue)"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_relative_color_with_calc_for_lab_lch_oklab_oklch() {
+        // Test relative color syntax with calculations in lab()
+        // White in Lab is roughly L=100, a=0, b=0
+        assert_eq!(
+            parse_color("lab(from white calc(l - 50) a b)"),
+            Some(Color::Rgba(119, 119, 119, 255)) // medium grey (lab L=50)
+        );
+
+        // Test relative color syntax with calculations in oklab()
+        // White in OKLab is L=1.0, a=0, b=0
+        assert_eq!(
+            parse_color("oklab(from white calc(l * 0.5) a b)"),
+            Some(Color::Rgba(99, 99, 99, 255)) // medium grey (oklab L=0.5)
+        );
+
+        // Test relative color syntax with calculations in lch()
+        // White in LCH is roughly L=100, c=0, h=0
+        assert_eq!(
+            parse_color("lch(from white calc(l - 50) calc(c + 10) calc(h + 90))"),
+            Some(Color::Rgba(124, 119, 102, 255))
+        );
+
+        // Test relative color syntax with calculations in oklch()
+        // White in OKLCH is L=1.0, c=0, h=0
+        assert_eq!(
+            parse_color("oklch(from white calc(l - 0.5) calc(c + 0.1) calc(h + 90))"),
+            Some(Color::Rgba(0, 117, 101, 255))
+        );
+    }
+
+    #[test]
+    fn test_relative_color_inputs_to_color_mix() {
+        // Using relative colors inside color-mix()
+        assert_eq!(
+            parse_color("color-mix(in srgb, rgb(from red calc(r - 55) g b), blue)"),
+            Some(Color::Rgba(100, 0, 128, 255)) // 50% of (200,0,0) and (0,0,255)
         );
     }
 
