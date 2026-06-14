@@ -843,6 +843,9 @@ impl TreeBuilder {
         };
 
         if use_foreign_content {
+            if let Token::StartTag { .. } = &token {
+                self.tokenizer.set_initial_state("Data state");
+            }
             self.handle_foreign_content(token);
         } else {
             self.process_token_in_current_mode(token);
@@ -1435,6 +1438,7 @@ impl TreeBuilder {
                     }) {
                         self.pop_until("option");
                     }
+                    self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
                 }
@@ -1450,6 +1454,7 @@ impl TreeBuilder {
                     }) {
                         self.pop_until("optgroup");
                     }
+                    self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
                 }
@@ -1581,11 +1586,12 @@ impl TreeBuilder {
                         self_closing,
                     });
                 }
-                "template" => {
+                "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script"
+                | "style" | "template" | "title" => {
                     self.handle_in_head(Token::StartTag {
                         name,
                         attrs,
-                        self_closing: false,
+                        self_closing,
                     });
                 }
                 _ => {
@@ -2606,7 +2612,12 @@ impl TreeBuilder {
                     });
                 }
                 _ => {
-                    // Parse error. Ignore.
+                    // Parse error. Process in body.
+                    self.handle_in_body(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
                 }
             },
             Token::EndTag { name, attrs, self_closing } => match name.as_str() {
@@ -3521,7 +3532,7 @@ impl TreeBuilder {
                 if name == target_name {
                     return true;
                 }
-                if name != "optgroup" && name != "option" {
+                if name == "html" || name == "table" || name == "template" {
                     return false;
                 }
             }
