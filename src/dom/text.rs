@@ -44,24 +44,35 @@ impl Dom {
 
     /// Sets the text content of the given node and its descendants.
     ///
-    /// For a Text node, this replaces its data.
+    /// For a Text or Comment node, this replaces its data.
+    /// For Document or Doctype nodes, it is a no-op per DOM specifications.
     /// For other nodes, it detaches all descendants and inserts a single new Text node with the given value.
     // spec: https://dom.spec.whatwg.org/#dom-node-textcontent
     pub fn set_text_content(&mut self, node: NodeId, text: &str) {
-        let is_text = if let Some(n) = self.arena.get(node) {
-            matches!(n.data, NodeData::Text(_))
+        let node_type_match = if let Some(n) = self.arena.get(node) {
+            match n.data {
+                NodeData::Text(_) | NodeData::Comment(_) => 1, // CharacterData
+                NodeData::Doctype { .. } | NodeData::Document => 2, // No-op ignored types
+                _ => 0,                                        // Element / other
+            }
         } else {
             return;
         };
 
-        if is_text {
+        if node_type_match == 2 {
+            return; // no-op per spec
+        }
+
+        if node_type_match == 1 {
             let mut changed = false;
-            if let Some(n) = self.arena.get_mut(node)
-                && let NodeData::Text(ref mut s) = n.data
-                && s != text
-            {
-                *s = text.to_string();
-                changed = true;
+            if let Some(n) = self.arena.get_mut(node) {
+                match &mut n.data {
+                    NodeData::Text(s) | NodeData::Comment(s) if s != text => {
+                        *s = text.to_string();
+                        changed = true;
+                    }
+                    _ => {}
+                }
             }
             if changed {
                 self.mark_dirty(node);
@@ -1593,5 +1604,48 @@ mod tests {
         // 6. delete_data with count larger than length
         assert_eq!(dom.delete_data(text_node, 3, 1000), Ok(()));
         assert_eq!(dom.character_data(text_node), Some("abc".into()));
+    }
+
+    #[test]
+    fn test_t1072_text_content_compliance_improvements() {
+        let mut dom = Dom::new();
+
+        // 1. Comment node text content setter
+        let comment_node = dom.create_node(NodeData::Comment("initial comment".into()));
+        assert_eq!(
+            dom.character_data(comment_node),
+            Some("initial comment".into())
+        );
+        dom.clear_dirty();
+        dom.set_text_content(comment_node, "updated comment");
+        assert_eq!(
+            dom.character_data(comment_node),
+            Some("updated comment".into())
+        );
+        assert!(dom.is_dirty(comment_node));
+
+        // 2. Doctype node text content setter - should be a no-op
+        let doctype_node = dom.create_node(NodeData::Doctype {
+            name: "html".into(),
+            public_id: "".into(),
+            system_id: "".into(),
+        });
+        dom.clear_dirty();
+        dom.set_text_content(doctype_node, "some text");
+        assert_eq!(dom.children(doctype_node).len(), 0);
+        assert!(!dom.is_dirty(doctype_node));
+
+        // 3. Document node text content setter - should be a no-op
+        let doc_node = dom.document();
+        let el = dom.create_node(NodeData::Element {
+            name: "html".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc_node, el);
+        assert_eq!(dom.children(doc_node).len(), 1);
+        dom.clear_dirty();
+        dom.set_text_content(doc_node, "some text");
+        assert_eq!(dom.children(doc_node).len(), 1);
+        assert!(!dom.is_dirty(doc_node));
     }
 }
