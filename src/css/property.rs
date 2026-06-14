@@ -368,6 +368,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "none",
     },
+    PropertyMetadata {
+        name: "interpolate-size",
+        inherited: true,
+        initial: "numeric-only",
+    },
+    PropertyMetadata {
+        name: "speak",
+        inherited: true,
+        initial: "auto",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1459,6 +1469,21 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "0",
     },
+    PropertyMetadata {
+        name: "speak-as",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "text-spacing",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "line-fit-edge",
+        inherited: false,
+        initial: "leading",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1703,6 +1728,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "text-emphasis",
         longhands: &["text-emphasis-style", "text-emphasis-color"],
+    },
+    ShorthandExpansion {
+        name: "text-spacing",
+        longhands: &["text-autospace", "text-spacing-trim"],
     },
     ShorthandExpansion {
         name: "transition",
@@ -3139,5 +3168,42 @@ mod tests {
             last_name = sh.name;
         }
         assert_eq!(names.len(), SHORTHAND_EXPANSIONS.len());
+    }
+
+    #[test]
+    fn test_additive_properties_t0806() {
+        // interpolate-size (CSS Values 5; inherited; initial "numeric-only")
+        let interp = lookup("interpolate-size").expect("interpolate-size must be registered");
+        assert_eq!(interp.name, "interpolate-size");
+        assert!(interp.inherited);
+        assert_eq!(interp.initial, "numeric-only");
+
+        // speak (CSS Speech; inherited; initial "auto")
+        let sp = lookup("speak").expect("speak must be registered");
+        assert_eq!(sp.name, "speak");
+        assert!(sp.inherited);
+        assert_eq!(sp.initial, "auto");
+
+        // speak-as (CSS Speech; not inherited; initial "normal")
+        let sp_as = lookup("speak-as").expect("speak-as must be registered");
+        assert_eq!(sp_as.name, "speak-as");
+        assert!(!sp_as.inherited);
+        assert_eq!(sp_as.initial, "normal");
+
+        // text-spacing (CSS Text 4 shorthand; not inherited; initial "normal")
+        let txt_sp = lookup("text-spacing").expect("text-spacing must be registered");
+        assert_eq!(txt_sp.name, "text-spacing");
+        assert!(!txt_sp.inherited);
+        assert_eq!(txt_sp.initial, "normal");
+
+        let txt_sp_longhands = shorthand_longhands("text-spacing")
+            .expect("text-spacing shorthand expansion must be registered");
+        assert_eq!(txt_sp_longhands, &["text-autospace", "text-spacing-trim"]);
+
+        // line-fit-edge (CSS Inline 3; not inherited; initial "leading")
+        let line_fit = lookup("line-fit-edge").expect("line-fit-edge must be registered");
+        assert_eq!(line_fit.name, "line-fit-edge");
+        assert!(!line_fit.inherited);
+        assert_eq!(line_fit.initial, "leading");
     }
 }
