@@ -322,6 +322,18 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :volume-locked always returns false.
                         false
                     }
+                    "user-valid" => {
+                        // TODO(spec): Real :user-valid matching requires form-validation plus user-interaction state
+                        // which this engine does not track.
+                        // Thus, :user-valid always returns false.
+                        false
+                    }
+                    "user-invalid" => {
+                        // TODO(spec): Real :user-invalid matching requires form-validation plus user-interaction state
+                        // which this engine does not track.
+                        // Thus, :user-invalid always returns false.
+                        false
+                    }
                     "current" => {
                         // TODO(spec): This engine has no time-dimensional / timed-media context (e.g. WebVTT cues),
                         // so no element is ever the currently-presented one and the :current pseudo-class always returns false.
@@ -3420,6 +3432,36 @@ mod tests {
         assert!(!matches(&sel_volume_locked, &dom, div_elem));
         assert!(!matches(&sel_volume_locked, &dom, video_elem));
         assert!(!matches(&sel_volume_locked, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_user_valid_and_invalid_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <input>
+        let input_elem = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_elem);
+
+        // Matches :user-valid (should never match)
+        let sel_user_valid = parse_selector_list(":user-valid").unwrap();
+        assert!(!matches(&sel_user_valid, &dom, div_elem));
+        assert!(!matches(&sel_user_valid, &dom, input_elem));
+
+        // Matches :user-invalid (should never match)
+        let sel_user_invalid = parse_selector_list(":user-invalid").unwrap();
+        assert!(!matches(&sel_user_invalid, &dom, div_elem));
+        assert!(!matches(&sel_user_invalid, &dom, input_elem));
     }
 
     #[test]
