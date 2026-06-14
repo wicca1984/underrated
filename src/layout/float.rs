@@ -56,52 +56,55 @@ fn is_isolated_by_bfc(
     let rf_idx = get_node_index(rf_node);
     let cl_idx = get_node_index(clearing_node);
 
-    let parent_node = if !children.is_empty() {
-        let mut min_sibling_idx = u32::MAX;
-        for sibling in children {
-            if let Some(node_id) = sibling.node {
-                let idx = get_node_index(node_id);
-                if idx < min_sibling_idx {
-                    min_sibling_idx = idx;
-                }
+    if rf_node == clearing_node {
+        return false;
+    }
+
+    // Find the minimum index of any sibling in children to define the upper bound of ancestors.
+    let mut min_sibling_idx = cl_idx;
+    for sibling in children {
+        if let Some(node_id) = sibling.node {
+            let idx = get_node_index(node_id);
+            if idx < min_sibling_idx {
+                min_sibling_idx = idx;
             }
         }
+    }
 
-        let mut nearest_bfc = None;
-        let mut nearest_bfc_idx = 0;
-        for (&node_id, style) in styles {
-            if establishes_bfc(style) {
-                let idx = get_node_index(node_id);
-                if idx < min_sibling_idx && idx > nearest_bfc_idx {
+    // Search for the BFC container with the largest index that is less than min_sibling_idx.
+    let mut nearest_bfc_idx = 0;
+    for (&node_id, style) in styles {
+        if establishes_bfc(style) {
+            let idx = get_node_index(node_id);
+            if idx < min_sibling_idx {
+                // If it is a float, check if it's already in SESSION.
+                // If it is already in SESSION, then it's a completed float, not an ancestor of clearing_node!
+                let is_completed_float = if get_float_value(style).is_some() {
+                    let mut in_session = false;
+                    SESSION.with(|session| {
+                        for rf in &session.borrow().floats {
+                            if rf.node_id == node_id {
+                                in_session = true;
+                                break;
+                            }
+                        }
+                    });
+                    in_session
+                } else {
+                    false
+                };
+
+                if !is_completed_float && idx > nearest_bfc_idx {
                     nearest_bfc_idx = idx;
-                    nearest_bfc = Some((node_id, style));
                 }
             }
         }
-        nearest_bfc
-    } else {
-        if cl_idx == 0 {
-            None
-        } else {
-            let parent_idx = cl_idx - 1;
-            let mut found_parent = None;
-            for (&node_id, style) in styles {
-                if get_node_index(node_id) == parent_idx {
-                    found_parent = Some((node_id, style));
-                    break;
-                }
-            }
-            found_parent
-        }
-    };
+    }
 
-    if let Some((b_node, b_style)) = parent_node
-        && establishes_bfc(b_style)
-    {
-        let b_idx = get_node_index(b_node);
-        if rf_idx < b_idx {
-            return true;
-        }
+    // If we found a BFC ancestor, and the registered float was laid out before that BFC ancestor,
+    // then the registered float is isolated.
+    if nearest_bfc_idx > 0 && rf_idx < nearest_bfc_idx {
+        return true;
     }
 
     false
@@ -130,22 +133,26 @@ struct RegisteredFloat {
 
 struct FloatSession {
     styles_ptr: usize,
+    styles_len: usize,
     floats: Vec<RegisteredFloat>,
 }
 
 thread_local! {
     static SESSION: RefCell<FloatSession> = const { RefCell::new(FloatSession {
         styles_ptr: 0,
+        styles_len: 0,
         floats: Vec::new(),
     }) };
 }
 
 fn sync_session(styles: &HashMap<NodeId, CategorizedComputedStyle>) {
     let current_ptr = styles as *const _ as usize;
+    let current_len = styles.len();
     SESSION.with(|session| {
         let mut s = session.borrow_mut();
-        if s.styles_ptr != current_ptr {
+        if s.styles_ptr != current_ptr || s.styles_len != current_len {
             s.styles_ptr = current_ptr;
+            s.styles_len = current_len;
             s.floats.clear();
         }
     });
@@ -455,7 +462,12 @@ pub(crate) fn layout_and_position_float(
     sync_session(styles);
     SESSION.with(|session| {
         let mut s = session.borrow_mut();
-        if let Some(idx) = s.floats.iter().position(|f| f.node_id == node_id) {
+        let current_idx = get_node_index(node_id);
+        if let Some(idx) = s
+            .floats
+            .iter()
+            .position(|f| f.node_id == node_id || get_node_index(f.node_id) >= current_idx)
+        {
             s.floats.truncate(idx);
         }
     });
@@ -2114,5 +2126,92 @@ mod tests {
         // Should not be affected by the isolated inner float, so left bound should remain 10.0!
         assert!(approx_eq(left, 10.0));
         assert!(approx_eq(right, 410.0));
+    }
+
+    #[test]
+    fn test_bfc_isolation_nested_not_immediate() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        // Outer float in body context
+        let outer_float = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "outer-float".into())],
+        });
+        dom.append_child(body, outer_float);
+
+        // bfc container
+        let bfc_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(body, bfc_container);
+
+        // sub-container (not BFC)
+        let sub_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "sub".into())],
+        });
+        dom.append_child(bfc_container, sub_container);
+
+        // Clearing block inside sub-container
+        let clearing_p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(sub_container, clearing_p);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(clearing_p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .outer-float {
+                float: left;
+                width: 50px;
+                height: 50px;
+            }
+            .bfc {
+                display: inline-block;
+                width: 100px;
+                height: 40px;
+            }
+            .sub {
+                display: block;
+            }
+            p {
+                display: block;
+                clear: left;
+                margin-top: 10px;
+                height: 20px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+        let anon_box = &body_box.children[1];
+        let line_box = &anon_box.children[0];
+        let bfc_layout = &line_box.children[0];
+        let sub_layout = &bfc_layout.children[0];
+        let p_layout = &sub_layout.children[0];
+
+        // The outer float has y=0, height=50.
+        // bfc_layout is inline-block, placed next to outer-float at x=50, y=8.0 (default line box offset).
+        // Since bfc_layout is a BFC, its internal clearing p must not clear the outer-float,
+        // even though p is nested inside a block-level .sub wrapper!
+        // If BFC isolation works, p's relative y inside bfc_layout should be 10.0 (absolute y = 18.0).
+        // If BFC isolation is broken, p's top border edge clears outer-float (50.0).
+        assert!(approx_eq(
+            p_layout.rect.origin.y - bfc_layout.rect.origin.y,
+            10.0
+        ));
     }
 }
