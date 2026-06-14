@@ -1828,6 +1828,18 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'htmlFor', {
+                        // htmlFor DOM binding (getter and setter) reflecting the 'for' content attribute (t0690)
+                        get() {
+                            return this.getAttribute('for') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('for', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'slot', {
                         get() {
                             return this.getAttribute('slot') || '';
@@ -13008,6 +13020,40 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|foo bar|x y|test-class,test-class".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_htmlfor() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. A freshly created element has htmlFor === '' by default when 'for' is absent.
+            let label = document.createElement('label');
+            let res1 = label.htmlFor;
+
+            // 2. Setting el.htmlFor = 'my-input' via setter returns 'my-input' via getter
+            label.htmlFor = 'my-input';
+            let res2 = label.htmlFor;
+
+            // 3. Setter also writes the value to the underlying 'for' content attribute verbatim
+            let res3 = label.getAttribute('for');
+
+            // 4. Updating the 'for' content attribute via setAttribute is reflected by the getter
+            label.setAttribute('for', 'new-input');
+            let res4 = label.htmlFor;
+
+            // 5. Test coercion to string (e.g. numeric value is coerced to string)
+            label.htmlFor = 12345;
+            let res5 = label.htmlFor;
+            let res6 = label.getAttribute('for');
+
+            [res1, res2, res3, res4, res5, res6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|my-input|my-input|new-input|12345|12345".to_string())
         );
     }
 
