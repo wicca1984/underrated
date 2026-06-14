@@ -245,6 +245,29 @@ impl Affine {
         }
         result
     }
+
+    /// Composes a sequence of `Affine` matrices from left to right.
+    pub fn compose(list: &[Affine]) -> Self {
+        let mut result = Self::identity();
+        for m in list {
+            result = result.multiply(m);
+        }
+        result
+    }
+
+    /// Parses a CSS transform list string into an Affine matrix.
+    /// Returns None if parsing fails, or if any 3D function is present.
+    pub fn parse(s: &str) -> Option<Self> {
+        Matrix3d::parse(s)?.to_2d()
+    }
+}
+
+impl std::str::FromStr for Affine {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
 }
 
 fn resolve_length(lp: &crate::css::values::LengthOrPercent) -> f32 {
@@ -256,6 +279,54 @@ fn resolve_length(lp: &crate::css::values::LengthOrPercent) -> f32 {
         LengthUnit::Pt => lp.value * 96.0 / 72.0,
         LengthUnit::Percent => 0.0, // TODO(spec): percentage translation requires layout box reference size
         _ => lp.value,
+    }
+}
+
+fn parse_number_arg(s: &str) -> Option<f32> {
+    s.trim().parse::<f32>().ok()
+}
+
+fn parse_angle_arg(s: &str) -> Option<f32> {
+    let s = s.trim().to_ascii_lowercase();
+    if s == "0" {
+        return Some(0.0);
+    }
+    if let Some(stripped) = s.strip_suffix("deg") {
+        stripped.trim().parse::<f32>().ok()
+    } else if let Some(stripped) = s.strip_suffix("grad") {
+        let grad = stripped.trim().parse::<f32>().ok()?;
+        Some(grad * 0.9)
+    } else if let Some(stripped) = s.strip_suffix("rad") {
+        let rad = stripped.trim().parse::<f32>().ok()?;
+        Some(rad.to_degrees())
+    } else if let Some(stripped) = s.strip_suffix("turn") {
+        let turn = stripped.trim().parse::<f32>().ok()?;
+        Some(turn * 360.0)
+    } else {
+        s.parse::<f32>().ok()
+    }
+}
+
+fn parse_length_arg(s: &str) -> Option<f32> {
+    let s = s.trim().to_ascii_lowercase();
+    if s == "0" {
+        return Some(0.0);
+    }
+    if let Some(stripped) = s.strip_suffix("px") {
+        stripped.trim().parse::<f32>().ok()
+    } else if let Some(stripped) = s.strip_suffix("rem") {
+        let val = stripped.trim().parse::<f32>().ok()?;
+        Some(val * 16.0)
+    } else if let Some(stripped) = s.strip_suffix("em") {
+        let val = stripped.trim().parse::<f32>().ok()?;
+        Some(val * 16.0)
+    } else if let Some(stripped) = s.strip_suffix("pt") {
+        let val = stripped.trim().parse::<f32>().ok()?;
+        Some(val * 96.0 / 72.0)
+    } else if s.ends_with('%') {
+        Some(0.0)
+    } else {
+        s.parse::<f32>().ok()
     }
 }
 
@@ -687,6 +758,287 @@ impl Matrix3d {
             result = result.multiply(&next);
         }
         result
+    }
+
+    /// Composes a sequence of `Matrix3d` matrices from left to right.
+    pub fn compose(list: &[Matrix3d]) -> Self {
+        let mut result = Self::identity();
+        for m in list {
+            result = result.multiply(m);
+        }
+        result
+    }
+
+    /// Parses a CSS transform list string into a Matrix3d matrix.
+    /// Returns None if parsing fails.
+    pub fn parse(s: &str) -> Option<Self> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+            return Some(Matrix3d::identity());
+        }
+
+        let mut result = Matrix3d::identity();
+        let mut chars = trimmed.char_indices().peekable();
+
+        while let Some(&(i, c)) = chars.peek() {
+            if c.is_whitespace() || c == ',' {
+                chars.next();
+                continue;
+            }
+
+            // Parse identifier (function name)
+            let start = i;
+            let mut end = start;
+            while let Some(&(idx, ch)) = chars.peek() {
+                if ch.is_alphanumeric() || ch == '_' || ch == '-' {
+                    chars.next();
+                    end = idx + ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+
+            if start == end {
+                return None; // Expected function name
+            }
+
+            let func_name = &trimmed[start..end];
+
+            // Skip whitespace
+            while let Some((_, ch)) = chars.peek() {
+                if ch.is_whitespace() {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            // Expect '('
+            if let Some((_, '(')) = chars.next() {
+                // Read arguments inside matching parentheses
+                let arg_start = match chars.peek() {
+                    Some(&(idx, _)) => idx,
+                    None => return None,
+                };
+
+                let mut paren_count = 1;
+                let mut arg_end = arg_start;
+
+                for (idx, ch) in chars.by_ref() {
+                    if ch == '(' {
+                        paren_count += 1;
+                    } else if ch == ')' {
+                        paren_count -= 1;
+                        if paren_count == 0 {
+                            arg_end = idx;
+                            break;
+                        }
+                    }
+                }
+
+                if paren_count != 0 {
+                    return None; // Unmatched parentheses
+                }
+
+                let args_str = &trimmed[arg_start..arg_end];
+                // Split arguments by comma and/or whitespace
+                let args: Vec<&str> = args_str
+                    .split(',')
+                    .map(|a| a.trim())
+                    .filter(|a| !a.is_empty())
+                    .collect();
+
+                let next_matrix = match func_name.to_ascii_lowercase().as_str() {
+                    "matrix" => {
+                        if args.len() != 6 {
+                            return None;
+                        }
+                        let a = parse_number_arg(args[0])?;
+                        let b = parse_number_arg(args[1])?;
+                        let c = parse_number_arg(args[2])?;
+                        let d = parse_number_arg(args[3])?;
+                        let e = parse_number_arg(args[4])?;
+                        let f = parse_number_arg(args[5])?;
+                        Matrix3d::from(Affine {
+                            m: [a, b, c, d, e, f],
+                        })
+                    }
+                    "matrix3d" => {
+                        if args.len() != 16 {
+                            return None;
+                        }
+                        let mut m = [0.0; 16];
+                        for (idx, arg) in args.iter().enumerate() {
+                            m[idx] = parse_number_arg(arg)?;
+                        }
+                        Matrix3d::from_col_major(m)
+                    }
+                    "translate" => {
+                        if args.len() == 1 {
+                            let tx = parse_length_arg(args[0])?;
+                            Matrix3d::translate(tx, 0.0, 0.0)
+                        } else if args.len() == 2 {
+                            let tx = parse_length_arg(args[0])?;
+                            let ty = parse_length_arg(args[1])?;
+                            Matrix3d::translate(tx, ty, 0.0)
+                        } else {
+                            return None;
+                        }
+                    }
+                    "translate3d" => {
+                        if args.len() != 3 {
+                            return None;
+                        }
+                        let tx = parse_length_arg(args[0])?;
+                        let ty = parse_length_arg(args[1])?;
+                        let tz = parse_length_arg(args[2])?;
+                        Matrix3d::translate(tx, ty, tz)
+                    }
+                    "translatex" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let tx = parse_length_arg(args[0])?;
+                        Matrix3d::translate_x(tx)
+                    }
+                    "translatey" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let ty = parse_length_arg(args[0])?;
+                        Matrix3d::translate_y(ty)
+                    }
+                    "translatez" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let tz = parse_length_arg(args[0])?;
+                        Matrix3d::translate_z(tz)
+                    }
+                    "scale" => {
+                        if args.len() == 1 {
+                            let s = parse_number_arg(args[0])?;
+                            Matrix3d::scale(s, s, 1.0)
+                        } else if args.len() == 2 {
+                            let sx = parse_number_arg(args[0])?;
+                            let sy = parse_number_arg(args[1])?;
+                            Matrix3d::scale(sx, sy, 1.0)
+                        } else {
+                            return None;
+                        }
+                    }
+                    "scale3d" => {
+                        if args.len() != 3 {
+                            return None;
+                        }
+                        let sx = parse_number_arg(args[0])?;
+                        let sy = parse_number_arg(args[1])?;
+                        let sz = parse_number_arg(args[2])?;
+                        Matrix3d::scale(sx, sy, sz)
+                    }
+                    "scalex" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let sx = parse_number_arg(args[0])?;
+                        Matrix3d::scale_x(sx)
+                    }
+                    "scaley" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let sy = parse_number_arg(args[0])?;
+                        Matrix3d::scale_y(sy)
+                    }
+                    "scalez" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let sz = parse_number_arg(args[0])?;
+                        Matrix3d::scale_z(sz)
+                    }
+                    "rotate" | "rotatez" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let deg = parse_angle_arg(args[0])?;
+                        Matrix3d::rotate_z(deg)
+                    }
+                    "rotatex" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let deg = parse_angle_arg(args[0])?;
+                        Matrix3d::rotate_x(deg)
+                    }
+                    "rotatey" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let deg = parse_angle_arg(args[0])?;
+                        Matrix3d::rotate_y(deg)
+                    }
+                    "rotate3d" => {
+                        if args.len() != 4 {
+                            return None;
+                        }
+                        let rx = parse_number_arg(args[0])?;
+                        let ry = parse_number_arg(args[1])?;
+                        let rz = parse_number_arg(args[2])?;
+                        let deg = parse_angle_arg(args[3])?;
+                        Matrix3d::rotate_3d(rx, ry, rz, deg)
+                    }
+                    "skew" => {
+                        if args.len() == 1 {
+                            let deg_x = parse_angle_arg(args[0])?;
+                            Matrix3d::skew_x(deg_x)
+                        } else if args.len() == 2 {
+                            let deg_x = parse_angle_arg(args[0])?;
+                            let deg_y = parse_angle_arg(args[1])?;
+                            Matrix3d::skew(deg_x, deg_y)
+                        } else {
+                            return None;
+                        }
+                    }
+                    "skewx" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let deg_x = parse_angle_arg(args[0])?;
+                        Matrix3d::skew_x(deg_x)
+                    }
+                    "skewy" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let deg_y = parse_angle_arg(args[0])?;
+                        Matrix3d::skew_y(deg_y)
+                    }
+                    "perspective" => {
+                        if args.len() != 1 {
+                            return None;
+                        }
+                        let d = parse_length_arg(args[0])?;
+                        Matrix3d::perspective(d)
+                    }
+                    _ => return None,
+                };
+
+                result = result.multiply(&next_matrix);
+            } else {
+                return None;
+            }
+        }
+
+        Some(result)
+    }
+}
+
+impl std::str::FromStr for Matrix3d {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
     }
 }
 
@@ -1289,6 +1641,61 @@ impl Decomposed3d {
             skew,
             perspective,
             quaternion,
+        }
+    }
+
+    /// Converts this 3D decomposition to a 2D decomposition, if possible.
+    /// Returns `None` if any 3D-specific transform features are non-identity.
+    pub fn to_2d(&self) -> Option<Decomposed2d> {
+        let eps = 1e-5;
+        if self.perspective.0.abs() > eps
+            || self.perspective.1.abs() > eps
+            || self.perspective.2.abs() > eps
+            || (self.perspective.3 - 1.0).abs() > eps
+        {
+            return None;
+        }
+
+        if self.translate.2.abs() > eps {
+            return None;
+        }
+
+        if (self.scale.2 - 1.0).abs() > eps {
+            return None;
+        }
+
+        if self.skew.1.abs() > eps || self.skew.2.abs() > eps {
+            return None;
+        }
+
+        if self.quaternion.0.abs() > eps || self.quaternion.1.abs() > eps {
+            return None;
+        }
+
+        let half_rad = self.quaternion.2.atan2(self.quaternion.3);
+        let angle = (half_rad * 2.0).to_degrees();
+
+        Some(Decomposed2d {
+            translate: (self.translate.0, self.translate.1),
+            scale: (self.scale.0, self.scale.1),
+            angle,
+            skew: self.skew.0,
+        })
+    }
+}
+
+impl From<Decomposed2d> for Decomposed3d {
+    fn from(d: Decomposed2d) -> Self {
+        let half_rad = (d.angle / 2.0).to_radians();
+        let qz = half_rad.sin();
+        let qw = half_rad.cos();
+
+        Decomposed3d {
+            translate: (d.translate.0, d.translate.1, 0.0),
+            scale: (d.scale.0, d.scale.1, 1.0),
+            skew: (d.skew, 0.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, qz, qw),
         }
     }
 }
@@ -1906,5 +2313,214 @@ mod tests {
         for i in 0..16 {
             assert!((recomposed.m[i] - expected_identity.m[i]).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn test_matrix_parsing_and_composition_t1063() {
+        // 1. String parsing checks
+        let m_none = Matrix3d::parse("none").unwrap();
+        assert!(m_none.is_identity());
+
+        let m_empty = Matrix3d::parse("   ").unwrap();
+        assert!(m_empty.is_identity());
+
+        let m_translate = Matrix3d::parse("translate(10px, 20px)").unwrap();
+        assert_eq!(m_translate.apply_point(0.0, 0.0), (10.0, 20.0));
+
+        // single arg translate
+        let m_translate_single = Matrix3d::parse("translate(15px)").unwrap();
+        assert_eq!(m_translate_single.apply_point(0.0, 0.0), (15.0, 0.0));
+
+        let m_translate_em_rem = Matrix3d::parse("translate(2em, 3rem)").unwrap();
+        assert_eq!(m_translate_em_rem.apply_point(0.0, 0.0), (32.0, 48.0));
+
+        let m_translate_pt = Matrix3d::parse("translate(72pt, 0)").unwrap();
+        assert_eq!(m_translate_pt.apply_point(0.0, 0.0), (96.0, 0.0));
+
+        // translate3d
+        let m_translate3d = Matrix3d::parse("translate3d(5px, 10px, 15px)").unwrap();
+        assert_eq!(
+            m_translate3d.apply_point_3d(0.0, 0.0, 0.0),
+            (5.0, 10.0, 15.0)
+        );
+
+        // translateX / translateY / translateZ
+        let m_sub_translates =
+            Matrix3d::parse("translateX(1px) translateY(2px) translateZ(3px)").unwrap();
+        assert_eq!(
+            m_sub_translates.apply_point_3d(0.0, 0.0, 0.0),
+            (1.0, 2.0, 3.0)
+        );
+
+        // scale / scale3d / scaleX / scaleY / scaleZ
+        let m_scale = Matrix3d::parse("scale(2)").unwrap();
+        assert_eq!(m_scale.apply_point(1.0, 1.0), (2.0, 2.0));
+
+        let m_scale_double = Matrix3d::parse("scale(2, 3)").unwrap();
+        assert_eq!(m_scale_double.apply_point(1.0, 1.0), (2.0, 3.0));
+
+        let m_scale3d = Matrix3d::parse("scale3d(2, 3, 4)").unwrap();
+        assert_eq!(m_scale3d.apply_point_3d(1.0, 1.0, 1.0), (2.0, 3.0, 4.0));
+
+        let m_sub_scales = Matrix3d::parse("scaleX(1.5) scaleY(2.5) scaleZ(3.5)").unwrap();
+        assert_eq!(m_sub_scales.apply_point_3d(1.0, 1.0, 1.0), (1.5, 2.5, 3.5));
+
+        // rotate / rotateZ / rotateX / rotateY / rotate3d
+        let m_rotate_deg = Matrix3d::parse("rotate(90deg)").unwrap();
+        let p_deg = m_rotate_deg.apply_point(1.0, 0.0);
+        assert!(p_deg.0.abs() < 1e-4);
+        assert!((p_deg.1 - 1.0).abs() < 1e-4);
+
+        let m_rotate_rad = Matrix3d::parse("rotate(1.5707963rad)").unwrap(); // approx 90deg
+        let p_rad = m_rotate_rad.apply_point(1.0, 0.0);
+        assert!(p_rad.0.abs() < 1e-3);
+        assert!((p_rad.1 - 1.0).abs() < 1e-3);
+
+        let m_rotate_grad = Matrix3d::parse("rotate(100grad)").unwrap(); // 90deg
+        let p_grad = m_rotate_grad.apply_point(1.0, 0.0);
+        assert!(p_grad.0.abs() < 1e-4);
+        assert!((p_grad.1 - 1.0).abs() < 1e-4);
+
+        let m_rotate_turn = Matrix3d::parse("rotate(0.25turn)").unwrap(); // 90deg
+        let p_turn = m_rotate_turn.apply_point(1.0, 0.0);
+        assert!(p_turn.0.abs() < 1e-4);
+        assert!((p_turn.1 - 1.0).abs() < 1e-4);
+
+        let m_rotate_3d = Matrix3d::parse("rotate3d(0, 0, 1, 90deg)").unwrap();
+        let p_r3d = m_rotate_3d.apply_point(1.0, 0.0);
+        assert!(p_r3d.0.abs() < 1e-4);
+        assert!((p_r3d.1 - 1.0).abs() < 1e-4);
+
+        // skew / skewX / skewY
+        let m_skew_x = Matrix3d::parse("skewX(45deg)").unwrap();
+        let p_skx = m_skew_x.apply_point(1.0, 2.0);
+        assert!((p_skx.0 - 3.0).abs() < 1e-4);
+        assert!((p_skx.1 - 2.0).abs() < 1e-4);
+
+        let m_skew_y = Matrix3d::parse("skewY(45deg)").unwrap();
+        let p_sky = m_skew_y.apply_point(2.0, 1.0);
+        assert!((p_sky.0 - 2.0).abs() < 1e-4);
+        assert!((p_sky.1 - 3.0).abs() < 1e-4);
+
+        let m_skew = Matrix3d::parse("skew(45deg, 45deg)").unwrap();
+        let p_sk = m_skew.apply_point(2.0, 3.0);
+        assert!((p_sk.0 - 5.0).abs() < 1e-4);
+        assert!((p_sk.1 - 5.0).abs() < 1e-4);
+
+        // matrix / matrix3d
+        let m_matrix = Matrix3d::parse("matrix(2.0, 1.0, -1.0, 3.0, 5.0, 7.0)").unwrap();
+        assert_eq!(m_matrix.apply_point(1.0, 1.0), (6.0, 11.0));
+
+        let m_matrix3d = Matrix3d::parse("matrix3d(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 20.0, 30.0, 1.0)").unwrap();
+        assert_eq!(m_matrix3d.apply_point_3d(1.0, 2.0, 3.0), (11.0, 22.0, 33.0));
+
+        // perspective
+        let m_perspective = Matrix3d::parse("perspective(100px)").unwrap();
+        assert!((m_perspective.m[14] - -1.0 / 100.0).abs() < 1e-5);
+
+        // multi-function list composition Order
+        let m_list = Matrix3d::parse("translate(10px, 20px) scale(2)").unwrap();
+        assert_eq!(m_list.apply_point(0.0, 0.0), (10.0, 20.0));
+        assert_eq!(m_list.apply_point(1.0, 1.0), (12.0, 22.0));
+
+        // malformed parsing inputs should return None
+        assert!(Matrix3d::parse("translate(10px").is_none()); // unclosed paren
+        assert!(Matrix3d::parse("unknown_func(10px)").is_none()); // invalid name
+        assert!(Matrix3d::parse("translate(10px, 20px, 30px, 40px)").is_none()); // wrong args count
+        assert!(Matrix3d::parse("scale(abc)").is_none()); // non-numeric arg
+
+        // 2. FromStr parsing checks
+        let parsed_aff: Affine = "translate(10px, 20px)".parse().unwrap();
+        assert_eq!(parsed_aff.apply_point(0.0, 0.0), (10.0, 20.0));
+
+        // Affine parse fails on 3D functions
+        assert!("translate3d(10px, 20px, 30px)".parse::<Affine>().is_err());
+
+        let parsed_m3d: Matrix3d = "translate3d(10px, 20px, 30px)".parse().unwrap();
+        assert_eq!(parsed_m3d.apply_point_3d(0.0, 0.0, 0.0), (10.0, 20.0, 30.0));
+
+        // 3. Compose sequence of matrices checks
+        let aff_seq = vec![Affine::translate(10.0, 20.0), Affine::scale(2.0, 2.0)];
+        let aff_composed = Affine::compose(&aff_seq);
+        assert_eq!(aff_composed.apply_point(0.0, 0.0), (10.0, 20.0));
+        assert_eq!(aff_composed.apply_point(1.0, 1.0), (12.0, 22.0));
+
+        let m3d_seq = vec![
+            Matrix3d::translate(10.0, 20.0, 30.0),
+            Matrix3d::scale(2.0, 2.0, 2.0),
+        ];
+        let m3d_composed = Matrix3d::compose(&m3d_seq);
+        assert_eq!(
+            m3d_composed.apply_point_3d(0.0, 0.0, 0.0),
+            (10.0, 20.0, 30.0)
+        );
+        assert_eq!(
+            m3d_composed.apply_point_3d(1.0, 1.0, 1.0),
+            (12.0, 22.0, 32.0)
+        );
+
+        // 4. Conversions between Decomposed2d and Decomposed3d checks
+        let d2 = Decomposed2d {
+            translate: (10.0, 20.0),
+            scale: (2.0, 3.0),
+            angle: 45.0,
+            skew: 0.5,
+        };
+        let d3 = Decomposed3d::from(d2);
+        assert_eq!(d3.translate, (10.0, 20.0, 0.0));
+        assert_eq!(d3.scale, (2.0, 3.0, 1.0));
+        assert_eq!(d3.skew, (0.5, 0.0, 0.0));
+
+        let d2_back = d3.to_2d().unwrap();
+        assert_eq!(d2_back.translate, d2.translate);
+        assert_eq!(d2_back.scale, d2.scale);
+        assert!((d2_back.angle - d2.angle).abs() < 1e-4);
+        assert!((d2_back.skew - d2.skew).abs() < 1e-4);
+
+        // A non-2D 3D decomposition should return None on to_2d()
+        let d3_non2d_trans = Decomposed3d {
+            translate: (0.0, 0.0, 5.0),
+            scale: (1.0, 1.0, 1.0),
+            skew: (0.0, 0.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 1.0),
+        };
+        assert!(d3_non2d_trans.to_2d().is_none());
+
+        let d3_non2d_scale = Decomposed3d {
+            translate: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 2.0),
+            skew: (0.0, 0.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 1.0),
+        };
+        assert!(d3_non2d_scale.to_2d().is_none());
+
+        let d3_non2d_skew = Decomposed3d {
+            translate: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 1.0),
+            skew: (0.0, 1.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 1.0),
+        };
+        assert!(d3_non2d_skew.to_2d().is_none());
+
+        let d3_non2d_perspective = Decomposed3d {
+            translate: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 1.0),
+            skew: (0.0, 0.0, 0.0),
+            perspective: (0.1, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 1.0),
+        };
+        assert!(d3_non2d_perspective.to_2d().is_none());
+
+        let d3_non2d_quaternion = Decomposed3d {
+            translate: (0.0, 0.0, 0.0),
+            scale: (1.0, 1.0, 1.0),
+            skew: (0.0, 0.0, 0.0),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (1.0, 0.0, 0.0, 0.0), // rotates around X
+        };
+        assert!(d3_non2d_quaternion.to_2d().is_none());
     }
 }
