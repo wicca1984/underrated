@@ -28,6 +28,23 @@ fn shift_x(layout_box: &mut LayoutBox, delta: f32) {
     }
 }
 
+fn get_inherited_letter_spacing(
+    node: NodeId,
+    dom: &Dom,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> f32 {
+    let mut current = Some(node);
+    while let Some(curr_node) = current {
+        if let Some(style) = styles.get(&curr_node)
+            && style.inherited_text.letter_spacing != -1
+        {
+            return style.inherited_text.letter_spacing as f32;
+        }
+        current = dom.parent(curr_node);
+    }
+    0.0
+}
+
 fn get_font_size(style: &CategorizedComputedStyle) -> f32 {
     style.inherited_text.font_size as f32
 }
@@ -230,7 +247,18 @@ pub fn layout_inline_run(
                             node_line_height = style.inherited_text.line_height as f32;
                         }
                     }
+                    let letter_spacing = get_inherited_letter_spacing(node, dom, styles);
                     current_line_height = current_line_height.max(node_line_height);
+
+                    let measure_text = |s: &str| -> f32 {
+                        let char_count = s.chars().count();
+                        let base_width = font.measure(s) as f32;
+                        if char_count > 1 {
+                            base_width + (char_count - 1) as f32 * letter_spacing
+                        } else {
+                            base_width
+                        }
+                    };
 
                     let style_ws = if let Some(style) = styles.get(&node) {
                         style.inherited_text.white_space.as_str()
@@ -308,7 +336,7 @@ pub fn layout_inline_run(
 
                             // Measure the word with the font's measure helper.
                             // spec: S-45, S-57
-                            let word_width = font.measure(word) as f32;
+                            let word_width = measure_text(word);
 
                             let should_break =
                                 break_all || (break_word && word_width > containing_width);
@@ -319,7 +347,7 @@ pub fn layout_inline_run(
                             {
                                 let mut rem_word = word;
                                 while !rem_word.is_empty() {
-                                    let rem_width = font.measure(rem_word) as f32;
+                                    let rem_width = measure_text(rem_word);
                                     if cursor_x + rem_width <= containing_width {
                                         // The remaining word fits completely on the current line!
                                         // Push it as a LayoutBox
@@ -360,7 +388,7 @@ pub fn layout_inline_run(
                                     };
                                     let first_char_end = first_idx + first_c.len_utf8();
                                     let first_char_width =
-                                        font.measure(&rem_word[..first_char_end]) as f32;
+                                        measure_text(&rem_word[..first_char_end]);
 
                                     if cursor_x > 0.0
                                         && cursor_x + first_char_width > containing_width
@@ -397,7 +425,7 @@ pub fn layout_inline_run(
                                     for (idx, c) in chars_iter {
                                         let candidate_end = idx + c.len_utf8();
                                         let candidate_width =
-                                            font.measure(&rem_word[..candidate_end]) as f32;
+                                            measure_text(&rem_word[..candidate_end]);
                                         if cursor_x + candidate_width <= containing_width {
                                             split_index = candidate_end;
                                             last_valid_width = candidate_width;
@@ -2324,5 +2352,65 @@ mod tests {
         // - 'b' (col 4): col becomes 5
         // Preprocessed: "a   b"
         assert_eq!(leaf_texts, vec!["a ", " ", " ", "b"]);
+    }
+
+    #[test]
+    fn test_letter_spacing_layout_completeness() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(div, t);
+
+        // 1. Without letter-spacing
+        let stylesheet_0 = parse_stylesheet("div { letter-spacing: normal; }");
+        let styles_0 = compute_styles(&dom, &stylesheet_0);
+        let children_0 = dom.children(div);
+        let (line_boxes_0, _) = layout_inline_run(
+            &dom, &styles_0, children_0, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+        assert_eq!(line_boxes_0.len(), 1);
+        let width_0 = line_boxes_0[0].children[0].rect.size.width;
+
+        // 2. With letter-spacing: 5px
+        let stylesheet_5 = parse_stylesheet("div { letter-spacing: 5px; }");
+        let styles_5 = compute_styles(&dom, &stylesheet_5);
+        let children_5 = dom.children(div);
+        let (line_boxes_5, _) = layout_inline_run(
+            &dom, &styles_5, children_5, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+        assert_eq!(line_boxes_5.len(), 1);
+        let width_5 = line_boxes_5[0].children[0].rect.size.width;
+
+        // "hello" has 5 characters, so 4 inter-character spacing intervals of 5px = 20px extra.
+        assert_eq!(width_5, width_0 + 20.0);
+
+        // 3. Test that letter-spacing affects line wrapping
+        let stylesheet_wrap =
+            parse_stylesheet("div { letter-spacing: 10px; word-break: break-all; }");
+        let styles_wrap = compute_styles(&dom, &stylesheet_wrap);
+        let children_wrap = dom.children(div);
+
+        // Let's set containing width so that the whole "hello" + letter-spacing (width_0 + 40px) doesn't fit on one line.
+        // Let's use width_0 + 10px as container width. "hello" should wrap!
+        let (line_boxes_wrap, _) = layout_inline_run(
+            &dom,
+            &styles_wrap,
+            children_wrap,
+            width_0 + 10.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        // It must have wrapped into multiple lines because width_0 + 40px > width_0 + 10px.
+        assert!(line_boxes_wrap.len() > 1);
     }
 }
