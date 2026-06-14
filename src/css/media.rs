@@ -192,6 +192,28 @@ thread_local! {
     static NAV_CONTROLS: Cell<NavControls> = const { Cell::new(NavControls::None) };
     static VIDEO_COLOR_GAMUT: Cell<ColorGamut> = const { Cell::new(ColorGamut::Srgb) };
     static DISPLAY_SHAPE: Cell<DisplayShape> = const { Cell::new(DisplayShape::Rect) };
+    static HORIZONTAL_VIEWPORT_SEGMENTS: Cell<i32> = const { Cell::new(1) };
+    static VERTICAL_VIEWPORT_SEGMENTS: Cell<i32> = const { Cell::new(1) };
+}
+
+/// Sets the horizontal viewport segments for the current thread.
+pub fn set_horizontal_viewport_segments(val: i32) {
+    HORIZONTAL_VIEWPORT_SEGMENTS.with(|c| c.set(val));
+}
+
+/// Gets the horizontal viewport segments for the current thread.
+pub fn horizontal_viewport_segments() -> i32 {
+    HORIZONTAL_VIEWPORT_SEGMENTS.with(|c| c.get())
+}
+
+/// Sets the vertical viewport segments for the current thread.
+pub fn set_vertical_viewport_segments(val: i32) {
+    VERTICAL_VIEWPORT_SEGMENTS.with(|c| c.set(val));
+}
+
+/// Gets the vertical viewport segments for the current thread.
+pub fn vertical_viewport_segments() -> i32 {
+    VERTICAL_VIEWPORT_SEGMENTS.with(|c| c.get())
 }
 
 /// Sets the viewport height for the current thread (default 1024.0 matching standard height).
@@ -707,6 +729,9 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "nav-controls" => return nav_controls() != NavControls::None,
             "video-color-gamut" => return true,
             "shape" => return true,
+            "display-shape" => return true,
+            "horizontal-viewport-segments" => return horizontal_viewport_segments() != 0,
+            "vertical-viewport-segments" => return vertical_viewport_segments() != 0,
             "orientation" => return true,
             "monochrome" => return false,
             "grid" => return false,
@@ -1066,13 +1091,47 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         return false;
     }
 
-    if feature_name == "shape" {
+    if feature_name == "shape" || feature_name == "display-shape" {
         if let CssToken::Ident(val) = &tokens[2] {
             let val_lower = val.to_ascii_lowercase();
             let current = display_shape();
             match (current, val_lower.as_str()) {
                 (DisplayShape::Rect, "rect") => return true,
                 (DisplayShape::Round, "round") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "horizontal-viewport-segments"
+        || feature_name == "min-horizontal-viewport-segments"
+        || feature_name == "max-horizontal-viewport-segments"
+    {
+        if let CssToken::Number(val) = &tokens[2] {
+            let limit = *val as i32;
+            let current = horizontal_viewport_segments();
+            match feature_name.as_str() {
+                "horizontal-viewport-segments" => return current == limit,
+                "min-horizontal-viewport-segments" => return current >= limit,
+                "max-horizontal-viewport-segments" => return current <= limit,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "vertical-viewport-segments"
+        || feature_name == "min-vertical-viewport-segments"
+        || feature_name == "max-vertical-viewport-segments"
+    {
+        if let CssToken::Number(val) = &tokens[2] {
+            let limit = *val as i32;
+            let current = vertical_viewport_segments();
+            match feature_name.as_str() {
+                "vertical-viewport-segments" => return current == limit,
+                "min-vertical-viewport-segments" => return current >= limit,
+                "max-vertical-viewport-segments" => return current <= limit,
                 _ => return false,
             }
         }
@@ -2443,12 +2502,67 @@ mod tests {
         assert!(!media_matches("(shape: round)", 1000.0));
         assert!(media_matches("(shape)", 1000.0));
 
+        assert!(media_matches("(display-shape: rect)", 1000.0));
+        assert!(!media_matches("(display-shape: round)", 1000.0));
+        assert!(media_matches("(display-shape)", 1000.0));
+
         // Configure: Round
         set_display_shape(DisplayShape::Round);
         assert!(media_matches("(shape: round)", 1000.0));
         assert!(!media_matches("(shape: rect)", 1000.0));
+        assert!(media_matches("(display-shape: round)", 1000.0));
+        assert!(!media_matches("(display-shape: rect)", 1000.0));
 
         // Reset
         set_display_shape(DisplayShape::Rect);
+    }
+
+    #[test]
+    fn test_viewport_segments_features() {
+        // Default horizontal-viewport-segments: 1
+        assert!(media_matches("(horizontal-viewport-segments: 1)", 1000.0));
+        assert!(!media_matches("(horizontal-viewport-segments: 2)", 1000.0));
+        assert!(media_matches(
+            "(min-horizontal-viewport-segments: 1)",
+            1000.0
+        ));
+        assert!(media_matches(
+            "(max-horizontal-viewport-segments: 1)",
+            1000.0
+        ));
+        assert!(media_matches("(horizontal-viewport-segments)", 1000.0));
+
+        // Default vertical-viewport-segments: 1
+        assert!(media_matches("(vertical-viewport-segments: 1)", 1000.0));
+        assert!(!media_matches("(vertical-viewport-segments: 2)", 1000.0));
+        assert!(media_matches("(min-vertical-viewport-segments: 1)", 1000.0));
+        assert!(media_matches("(max-vertical-viewport-segments: 1)", 1000.0));
+        assert!(media_matches("(vertical-viewport-segments)", 1000.0));
+
+        // Configure horizontal to 2
+        set_horizontal_viewport_segments(2);
+        assert!(media_matches("(horizontal-viewport-segments: 2)", 1000.0));
+        assert!(!media_matches("(horizontal-viewport-segments: 1)", 1000.0));
+        assert!(media_matches(
+            "(min-horizontal-viewport-segments: 2)",
+            1000.0
+        ));
+        assert!(media_matches(
+            "(max-horizontal-viewport-segments: 2)",
+            1000.0
+        ));
+        assert!(media_matches("(horizontal-viewport-segments)", 1000.0));
+
+        // Configure vertical to 3
+        set_vertical_viewport_segments(3);
+        assert!(media_matches("(vertical-viewport-segments: 3)", 1000.0));
+        assert!(!media_matches("(vertical-viewport-segments: 1)", 1000.0));
+        assert!(media_matches("(min-vertical-viewport-segments: 2)", 1000.0));
+        assert!(media_matches("(max-vertical-viewport-segments: 4)", 1000.0));
+        assert!(media_matches("(vertical-viewport-segments)", 1000.0));
+
+        // Reset to default
+        set_horizontal_viewport_segments(1);
+        set_vertical_viewport_segments(1);
     }
 }
