@@ -98,7 +98,7 @@ pub fn parse_declaration(input: &str) -> Option<Declaration> {
 pub fn parse_list_of_declarations(input: &str) -> Vec<Declaration> {
     let mut tokenizer = CssTokenizer::new(input);
     let mut parser = Parser::new(&mut tokenizer);
-    parser.consume_list_of_declarations()
+    parser.consume_list_of_declarations(&[])
 }
 
 // spec: https://www.w3.org/TR/css-syntax-3/#parse-comma-separated-list-of-component-values
@@ -111,6 +111,7 @@ pub fn parse_comma_separated_list_of_component_values(input: &str) -> Vec<Vec<Co
 struct Parser<'a> {
     tokenizer: &'a mut CssTokenizer,
     next_token: Option<CssToken>,
+    nested_rules: Vec<Rule>,
 }
 
 impl<'a> Parser<'a> {
@@ -118,6 +119,7 @@ impl<'a> Parser<'a> {
         Self {
             tokenizer,
             next_token: None,
+            nested_rules: Vec::new(),
         }
     }
 
@@ -248,6 +250,8 @@ impl<'a> Parser<'a> {
                 CssToken::AtKeyword(_) => {
                     self.reconsume_token(token);
                     rules.push(Rule::At(self.consume_at_rule()));
+                    let nested = self.nested_rules.drain(..).collect::<Vec<_>>();
+                    rules.extend(nested);
                 }
                 // anything else: Reconsume the current input token.
                 // Consume a qualified rule. If anything is returned, append it to the list of rules.
@@ -255,6 +259,8 @@ impl<'a> Parser<'a> {
                     self.reconsume_token(token);
                     if let Some(rule) = self.consume_qualified_rule() {
                         rules.push(Rule::Qualified(rule));
+                        let nested = self.nested_rules.drain(..).collect::<Vec<_>>();
+                        rules.extend(nested);
                     }
                 }
             }
@@ -332,7 +338,7 @@ impl<'a> Parser<'a> {
                 // <left-curly-bracket-token>: Consume a list of declarations.
                 // Assign the returned list to the qualified rule’s declarations. Return the qualified rule.
                 CssToken::LeftBrace => {
-                    let declarations = self.consume_list_of_declarations();
+                    let declarations = self.consume_list_of_declarations(&prelude);
                     return Some(QualifiedRule {
                         prelude,
                         declarations,
@@ -349,64 +355,187 @@ impl<'a> Parser<'a> {
     }
 
     // spec: https://www.w3.org/TR/css-syntax-3/#consume-list-of-declarations
-    fn consume_list_of_declarations(&mut self) -> Vec<Declaration> {
+    fn consume_list_of_declarations(
+        &mut self,
+        parent_prelude: &[ComponentValue],
+    ) -> Vec<Declaration> {
         let mut declarations = Vec::new();
+        let mut collected: Vec<ComponentValue> = Vec::new();
+
         loop {
             let val = self.consume_component_value();
             match val {
-                ComponentValue::Token(CssToken::Whitespace)
-                | ComponentValue::Token(CssToken::Semicolon) => {}
-                ComponentValue::Token(CssToken::Eof) => {
-                    return declarations;
+                ComponentValue::Token(CssToken::Whitespace) => {
+                    collected.push(val);
                 }
-                ComponentValue::Token(CssToken::RightBrace) => {
+                ComponentValue::Token(CssToken::Semicolon) => {
+                    if !collected.is_empty() {
+                        let mut decl_vals = collected;
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            decl_vals.first()
+                        {
+                            decl_vals.remove(0);
+                        }
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            decl_vals.last()
+                        {
+                            decl_vals.pop();
+                        }
+                        if let Some(decl) =
+                            self.consume_declaration_from_component_values(decl_vals)
+                        {
+                            declarations.push(decl);
+                        }
+                        collected = Vec::new();
+                    }
+                }
+                ComponentValue::Token(CssToken::Eof)
+                | ComponentValue::Token(CssToken::RightBrace) => {
+                    if !collected.is_empty() {
+                        let mut decl_vals = collected;
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            decl_vals.first()
+                        {
+                            decl_vals.remove(0);
+                        }
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            decl_vals.last()
+                        {
+                            decl_vals.pop();
+                        }
+                        if let Some(decl) =
+                            self.consume_declaration_from_component_values(decl_vals)
+                        {
+                            declarations.push(decl);
+                        }
+                    }
                     return declarations;
                 }
                 ComponentValue::Token(CssToken::AtKeyword(_)) => {
+                    if !collected.is_empty() {
+                        let mut decl_vals = collected;
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            decl_vals.first()
+                        {
+                            decl_vals.remove(0);
+                        }
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            decl_vals.last()
+                        {
+                            decl_vals.pop();
+                        }
+                        if let Some(decl) =
+                            self.consume_declaration_from_component_values(decl_vals)
+                        {
+                            declarations.push(decl);
+                        }
+                        collected = Vec::new();
+                    }
                     if let ComponentValue::Token(token) = val {
                         self.reconsume_token(token);
                     }
-                    self.consume_at_rule();
-                }
-                ComponentValue::Token(CssToken::Ident(_)) => {
-                    let mut decl_values = vec![val];
-                    loop {
-                        let next = self.consume_component_value();
-                        match next {
-                            ComponentValue::Token(CssToken::Semicolon) => {
-                                break;
-                            }
-                            ComponentValue::Token(CssToken::Eof)
-                            | ComponentValue::Token(CssToken::RightBrace) => {
-                                if let ComponentValue::Token(token) = next {
-                                    self.reconsume_token(token);
+                    let at_rule = self.consume_at_rule();
+                    if !parent_prelude.is_empty() {
+                        if let Some(block_vals) = at_rule.block {
+                            let block_css = serialize_component_values(&block_vals);
+                            let mut sub_tokenizer = CssTokenizer::new(&block_css);
+                            let mut sub_parser = Parser::new(&mut sub_tokenizer);
+                            let sub_decls = sub_parser.consume_list_of_declarations(parent_prelude);
+                            self.nested_rules.extend(sub_parser.nested_rules);
+
+                            let nested_qual = QualifiedRule {
+                                prelude: parent_prelude.to_vec(),
+                                declarations: sub_decls,
+                            };
+                            let nested_css = serialize_rule(&Rule::Qualified(nested_qual));
+                            let mut token_stream = CssTokenizer::new(&nested_css);
+                            let mut parser = Parser::new(&mut token_stream);
+                            let mut block_cvs = Vec::new();
+                            loop {
+                                let cv = parser.consume_component_value();
+                                if let ComponentValue::Token(CssToken::Eof) = cv {
+                                    break;
                                 }
-                                break;
+                                block_cvs.push(cv);
                             }
-                            _ => {
-                                decl_values.push(next);
-                            }
+                            let nested_at = AtRule {
+                                name: at_rule.name,
+                                prelude: at_rule.prelude,
+                                block: Some(block_cvs),
+                            };
+                            self.nested_rules.push(Rule::At(nested_at));
                         }
-                    }
-                    if let Some(decl) = self.consume_declaration_from_component_values(decl_values)
-                    {
-                        declarations.push(decl);
+                    } else {
+                        self.nested_rules.push(Rule::At(at_rule));
                     }
                 }
-                _ => loop {
-                    let next = self.consume_component_value();
-                    match next {
-                        ComponentValue::Token(CssToken::Semicolon) => break,
-                        ComponentValue::Token(CssToken::Eof)
-                        | ComponentValue::Token(CssToken::RightBrace) => {
-                            if let ComponentValue::Token(token) = next {
-                                self.reconsume_token(token);
-                            }
-                            break;
+                ComponentValue::SimpleBlock {
+                    associated: '{',
+                    value: block_values,
+                } => {
+                    let is_decl_block = collected
+                        .iter()
+                        .rev()
+                        .find(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+                        .is_some_and(|c| matches!(c, ComponentValue::Token(CssToken::Colon)));
+
+                    if is_decl_block {
+                        collected.push(ComponentValue::SimpleBlock {
+                            associated: '{',
+                            value: block_values,
+                        });
+                    } else {
+                        let mut child_prelude = collected.clone();
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            child_prelude.first()
+                        {
+                            child_prelude.remove(0);
                         }
-                        _ => {}
+                        while let Some(ComponentValue::Token(CssToken::Whitespace)) =
+                            child_prelude.last()
+                        {
+                            child_prelude.pop();
+                        }
+
+                        if !child_prelude.is_empty() {
+                            let parent_sel = serialize_component_values(parent_prelude);
+                            let child_sel = serialize_component_values(&child_prelude);
+
+                            let combined_sel = combine_selectors(&parent_sel, &child_sel);
+
+                            let mut combined_tokenizer = CssTokenizer::new(&combined_sel);
+                            let mut combined_parser = Parser::new(&mut combined_tokenizer);
+                            let mut combined_prelude = Vec::new();
+                            loop {
+                                let cv = combined_parser.consume_component_value();
+                                if let ComponentValue::Token(CssToken::Eof) = cv {
+                                    break;
+                                }
+                                combined_prelude.push(cv);
+                            }
+
+                            let block_css = serialize_component_values(&block_values);
+                            let mut sub_tokenizer = CssTokenizer::new(&block_css);
+                            let mut sub_parser = Parser::new(&mut sub_tokenizer);
+                            let nested_decls =
+                                sub_parser.consume_list_of_declarations(&combined_prelude);
+
+                            self.nested_rules.extend(sub_parser.nested_rules);
+
+                            let nested_rule = Rule::Qualified(QualifiedRule {
+                                prelude: combined_prelude,
+                                declarations: nested_decls,
+                            });
+
+                            self.nested_rules.push(nested_rule);
+                        }
+
+                        collected = Vec::new();
                     }
-                },
+                }
+                _ => {
+                    collected.push(val);
+                }
             }
         }
     }
@@ -582,6 +711,157 @@ fn has_var_or_calc(components: &[ComponentValue]) -> bool {
         }
     }
     false
+}
+
+fn serialize_component_values(values: &[ComponentValue]) -> String {
+    let mut s = String::new();
+    for val in values {
+        match val {
+            ComponentValue::Token(t) => match t {
+                CssToken::Ident(v) => s.push_str(v),
+                CssToken::Function(v) => {
+                    s.push_str(v);
+                    s.push('(');
+                }
+                CssToken::AtKeyword(v) => {
+                    s.push('@');
+                    s.push_str(v);
+                }
+                CssToken::Hash(v) => {
+                    s.push('#');
+                    s.push_str(v);
+                }
+                CssToken::String(v) => {
+                    s.push('"');
+                    s.push_str(v);
+                    s.push('"');
+                }
+                CssToken::Number(v) => s.push_str(&v.to_string()),
+                CssToken::Percentage(v) => {
+                    s.push_str(&v.to_string());
+                    s.push('%');
+                }
+                CssToken::Dimension { value, unit } => {
+                    s.push_str(&value.to_string());
+                    s.push_str(unit);
+                }
+                CssToken::Delim(c) => s.push(*c),
+                CssToken::Whitespace => s.push(' '),
+                CssToken::Colon => s.push(':'),
+                CssToken::Semicolon => s.push(';'),
+                CssToken::Comma => s.push(','),
+                CssToken::LeftBrace => s.push('{'),
+                CssToken::RightBrace => s.push('}'),
+                CssToken::LeftParen => s.push('('),
+                CssToken::RightParen => s.push(')'),
+                CssToken::LeftBracket => s.push('['),
+                CssToken::RightBracket => s.push(']'),
+                CssToken::Cdo => s.push_str("<!--"),
+                CssToken::Cdc => s.push_str("-->"),
+                CssToken::Url(v) => {
+                    s.push_str("url(");
+                    s.push_str(v);
+                    s.push(')');
+                }
+                _ => {}
+            },
+            ComponentValue::Function { name, value } => {
+                s.push_str(name);
+                s.push('(');
+                s.push_str(&serialize_component_values(value));
+                s.push(')');
+            }
+            ComponentValue::SimpleBlock { associated, value } => {
+                s.push(*associated);
+                s.push_str(&serialize_component_values(value));
+                match associated {
+                    '{' => s.push('}'),
+                    '[' => s.push(']'),
+                    '(' => s.push(')'),
+                    _ => {}
+                }
+            }
+        }
+    }
+    s
+}
+
+fn serialize_declaration(decl: &Declaration) -> String {
+    let mut s = String::new();
+    s.push_str(&decl.name);
+    s.push(':');
+    s.push_str(&serialize_component_values(&decl.value));
+    if decl.important {
+        s.push_str(" !important");
+    }
+    s.push(';');
+    s
+}
+
+fn serialize_rule(rule: &Rule) -> String {
+    let mut s = String::new();
+    match rule {
+        Rule::Qualified(q) => {
+            s.push_str(&serialize_component_values(&q.prelude));
+            s.push('{');
+            for decl in &q.declarations {
+                s.push_str(&serialize_declaration(decl));
+            }
+            s.push('}');
+        }
+        Rule::At(at) => {
+            s.push('@');
+            s.push_str(&at.name);
+            if !at.prelude.is_empty() {
+                s.push(' ');
+                s.push_str(&serialize_component_values(&at.prelude));
+            }
+            if let Some(block) = &at.block {
+                s.push('{');
+                s.push_str(&serialize_component_values(block));
+                s.push('}');
+            } else {
+                s.push(';');
+            }
+        }
+    }
+    s
+}
+
+fn combine_selectors(parent: &str, child: &str) -> String {
+    let parent = parent.trim();
+    let child = child.trim();
+
+    if parent.is_empty() {
+        return child.to_string();
+    }
+    if child.is_empty() {
+        return parent.to_string();
+    }
+
+    let parents: Vec<&str> = parent
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let children: Vec<&str> = child
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut combined = Vec::new();
+    for p in &parents {
+        for c in &children {
+            if c.contains('&') {
+                combined.push(c.replace('&', p));
+            } else {
+                combined.push(format!("{} {}", p, c));
+            }
+        }
+    }
+
+    combined.join(", ")
 }
 
 #[cfg(test)]
@@ -968,5 +1248,63 @@ mod tests {
         let empty_lists = parse_comma_separated_list_of_component_values(empty_comma);
         assert_eq!(empty_lists.len(), 1);
         assert_eq!(empty_lists[0].len(), 0);
+    }
+
+    #[test]
+    fn test_parse_css_nesting_and_at_rule_nesting() {
+        let input = "
+            div {
+                color: red;
+                span {
+                    color: blue;
+                }
+                &:hover {
+                    color: green;
+                }
+                @media (min-width: 100px) {
+                    color: yellow;
+                }
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 4);
+
+        if let Rule::Qualified(r) = &stylesheet.rules[0] {
+            assert_eq!(serialize_component_values(&r.prelude).trim(), "div");
+            assert_eq!(r.declarations.len(), 1);
+            assert_eq!(r.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule 1");
+        }
+
+        if let Rule::Qualified(r) = &stylesheet.rules[1] {
+            assert_eq!(serialize_component_values(&r.prelude).trim(), "div span");
+            assert_eq!(r.declarations.len(), 1);
+            assert_eq!(r.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule 2");
+        }
+
+        if let Rule::Qualified(r) = &stylesheet.rules[2] {
+            assert_eq!(serialize_component_values(&r.prelude).trim(), "div:hover");
+            assert_eq!(r.declarations.len(), 1);
+            assert_eq!(r.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule 3");
+        }
+
+        if let Rule::At(r) = &stylesheet.rules[3] {
+            assert_eq!(r.name, "media");
+            assert_eq!(
+                serialize_component_values(&r.prelude).trim(),
+                "(min-width: 100px)"
+            );
+            assert!(r.block.is_some());
+            let block_str = serialize_component_values(r.block.as_ref().unwrap());
+            assert!(block_str.contains("div"));
+            assert!(block_str.contains("color: yellow"));
+        } else {
+            panic!("Expected at-rule 4");
+        }
     }
 }
