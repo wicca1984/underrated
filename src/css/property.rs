@@ -512,6 +512,12 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "font-variant-emoji",
+        inherited: true,
+        initial: "normal",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "font-synthesis-weight",
         inherited: true,
         initial: "auto",
@@ -997,6 +1003,36 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "0",
         animatable: true,
+    },
+    PropertyMetadata {
+        name: "border-image-source",
+        inherited: false,
+        initial: "none",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "border-image-slice",
+        inherited: false,
+        initial: "100%",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "border-image-width",
+        inherited: false,
+        initial: "1",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "border-image-outset",
+        inherited: false,
+        initial: "0",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "border-image-repeat",
+        inherited: false,
+        initial: "stretch",
+        animatable: false,
     },
     PropertyMetadata {
         name: "outline-width",
@@ -2252,6 +2288,16 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "border-image",
+        longhands: &[
+            "border-image-source",
+            "border-image-slice",
+            "border-image-width",
+            "border-image-outset",
+            "border-image-repeat",
+        ],
+    },
+    ShorthandExpansion {
         name: "border-inline",
         longhands: &[
             "border-inline-start-width",
@@ -2369,6 +2415,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "font-synthesis",
+        longhands: &[
+            "font-synthesis-weight",
+            "font-synthesis-style",
+            "font-synthesis-small-caps",
+        ],
+    },
+    ShorthandExpansion {
         name: "font-variant",
         longhands: &[
             "font-variant-ligatures",
@@ -2377,6 +2431,7 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "font-variant-east-asian",
             "font-variant-alternates",
             "font-variant-position",
+            "font-variant-emoji",
         ],
     },
     ShorthandExpansion {
@@ -4522,6 +4577,7 @@ mod tests {
                 "font-variant-east-asian",
                 "font-variant-alternates",
                 "font-variant-position",
+                "font-variant-emoji",
             ][..]
         );
 
@@ -4535,5 +4591,72 @@ mod tests {
             inset_inline,
             &["inset-inline-start", "inset-inline-end"][..]
         );
+    }
+
+    #[test]
+    fn test_additive_properties_t0970() {
+        // 1. Verify font-variant-emoji is registered correctly
+        let fve = lookup("font-variant-emoji").expect("font-variant-emoji must be registered");
+        assert_eq!(fve.name, "font-variant-emoji");
+        assert!(fve.inherited, "font-variant-emoji should be inherited");
+        assert_eq!(fve.initial, "normal");
+        assert!(!fve.animatable);
+
+        // 2. Verify font-synthesis shorthand and its longhands
+        let fs_sh = shorthand_longhands("font-synthesis")
+            .expect("font-synthesis shorthand must be registered");
+        assert_eq!(
+            fs_sh,
+            &[
+                "font-synthesis-weight",
+                "font-synthesis-style",
+                "font-synthesis-small-caps",
+            ][..]
+        );
+
+        // 3. Verify border-image shorthand and its longhands
+        let bi_sh =
+            shorthand_longhands("border-image").expect("border-image shorthand must be registered");
+        assert_eq!(
+            bi_sh,
+            &[
+                "border-image-source",
+                "border-image-slice",
+                "border-image-width",
+                "border-image-outset",
+                "border-image-repeat",
+            ][..]
+        );
+
+        // 4. Verify border-image-* longhand properties in PROPERTY_METADATA
+        let bis = lookup("border-image-source").expect("border-image-source must be registered");
+        assert_eq!(bis.name, "border-image-source");
+        assert!(!bis.inherited);
+        assert_eq!(bis.initial, "none");
+        assert!(!bis.animatable);
+
+        let bisl = lookup("border-image-slice").expect("border-image-slice must be registered");
+        assert_eq!(bisl.name, "border-image-slice");
+        assert!(!bisl.inherited);
+        assert_eq!(bisl.initial, "100%");
+        assert!(bisl.animatable);
+
+        let biw = lookup("border-image-width").expect("border-image-width must be registered");
+        assert_eq!(biw.name, "border-image-width");
+        assert!(!biw.inherited);
+        assert_eq!(biw.initial, "1");
+        assert!(biw.animatable);
+
+        let bio = lookup("border-image-outset").expect("border-image-outset must be registered");
+        assert_eq!(bio.name, "border-image-outset");
+        assert!(!bio.inherited);
+        assert_eq!(bio.initial, "0");
+        assert!(bio.animatable);
+
+        let bir = lookup("border-image-repeat").expect("border-image-repeat must be registered");
+        assert_eq!(bir.name, "border-image-repeat");
+        assert!(!bir.inherited);
+        assert_eq!(bir.initial, "stretch");
+        assert!(!bir.animatable);
     }
 }
