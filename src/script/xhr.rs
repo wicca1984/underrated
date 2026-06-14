@@ -117,8 +117,13 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         err.name = "InvalidStateError";
                         throw err;
                     }
-                    const allowedTypes = ["", "arraybuffer", "blob", "document", "json", "text"];
                     const valStr = String(value);
+                    if (this._async === false && valStr !== "" && valStr !== "text") {
+                        const err = new Error("InvalidStateError: Synchronous requests do not support responseType other than '' or 'text'");
+                        err.name = "InvalidStateError";
+                        throw err;
+                    }
+                    const allowedTypes = ["", "arraybuffer", "blob", "document", "json", "text"];
                     if (allowedTypes.includes(valStr)) {
                         this._responseType = valStr;
                     }
@@ -411,7 +416,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     }
 
                     const nameStr = String(name);
-                    const valStr = String(value);
+                    let valStr = String(value).trim();
 
                     // Validate header name as a valid HTTP token
                     if (!/^[!#$%&'*+\-.^_`|~a-zA-Z0-9]+$/.test(nameStr)) {
@@ -1337,6 +1342,55 @@ mod tests {
         if !error_val.is_null() {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!("test_xhr_new_gaps JS assert failed: {}", error_str);
+        }
+    }
+
+    #[test]
+    fn test_xhr_surgical_gaps() {
+        let mut context = Context::default();
+        register_xhr(&mut context).expect("Failed to register XMLHttpRequest");
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Verify trimming in setRequestHeader
+                const xhr = new XMLHttpRequest();
+                xhr.open("GET", "https://example.com");
+                xhr.setRequestHeader("X-Trimmed", "  my trimmed value  \r\n ");
+                if (xhr._headers["x-trimmed"] !== "my trimmed value") {
+                    throw new Error("expected header value to be trimmed, got: " + JSON.stringify(xhr._headers["x-trimmed"]));
+                }
+
+                // 2. Verify synchronous responseType restriction
+                const syncXhr = new XMLHttpRequest();
+                syncXhr.open("GET", "https://example.com", false);
+                
+                // setting responseType to "" or "text" should succeed
+                syncXhr.responseType = "text";
+                syncXhr.responseType = "";
+                
+                // setting responseType to other values on sync XHR should throw InvalidStateError
+                try {
+                    syncXhr.responseType = "json";
+                    throw new Error("setting responseType to json on sync XHR did not throw");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") throw e;
+                }
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        let res = context.eval(Source::from_bytes(script.as_bytes()));
+        assert!(res.is_ok(), "Evaluation itself failed: {:?}", res);
+
+        let error_val = context
+            .eval(Source::from_bytes("globalThis.test_error".as_bytes()))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!("test_xhr_surgical_gaps JS assert failed: {}", error_str);
         }
     }
 }
