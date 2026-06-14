@@ -221,6 +221,20 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `class` content attribute of a valid element node.
+    /// Returns `None` if the node has no `class` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_class_name(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("class"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Returns the value of the `alt` content attribute of a valid element node.
     /// Returns `None` if the node has no `alt` attribute, is not an element node,
     /// or if the `NodeId` is invalid.
@@ -761,6 +775,44 @@ mod tests {
             foreign_node = elem(&mut foreign_dom, "div");
         }
         assert_eq!(dom.get_id(foreign_node), None);
+    }
+
+    #[test]
+    fn test_class_name_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element with class attribute -> returns Some(value)
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("class".to_string(), "foo bar".to_string())],
+        });
+        assert_eq!(dom.get_class_name(div_id), Some("foo bar"));
+
+        // 2. Element with case-insensitive class attribute (e.g., CLASS) -> returns Some(value)
+        let span_id = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![("CLASS".to_string(), "another-class".to_string())],
+        });
+        assert_eq!(dom.get_class_name(span_id), Some("another-class"));
+
+        // 3. Element without class attribute -> returns None
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_class_name(p_id), None);
+
+        // 4. Non-element node (e.g., Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_class_name(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "div");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "div");
+        }
+        assert_eq!(dom.get_class_name(foreign_node), None);
     }
 
     #[test]
