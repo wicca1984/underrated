@@ -3,6 +3,7 @@ use crate::dom::{Dom, NodeData};
 use crate::encoding::InputStream;
 use crate::html::{Token, Tokenizer};
 use crate::infra::NodeId;
+use std::collections::HashMap;
 
 /// Parses an HTML document from the given input stream.
 // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-loop
@@ -274,6 +275,7 @@ pub struct TreeBuilder {
     insertion_mode: InsertionMode,
     stack_of_open_elements: Vec<NodeId>,
     namespace_stack: Vec<Namespace>,
+    node_namespaces: HashMap<NodeId, Namespace>,
     list_of_active_formatting_elements: Vec<FormattingElement>,
     head_element_pointer: Option<NodeId>,
     form_element_pointer: Option<NodeId>,
@@ -503,6 +505,7 @@ impl TreeBuilder {
             insertion_mode: InsertionMode::Initial,
             stack_of_open_elements: Vec::new(),
             namespace_stack: Vec::new(),
+            node_namespaces: HashMap::new(),
             list_of_active_formatting_elements: Vec::new(),
             head_element_pointer: None,
             form_element_pointer: None,
@@ -534,19 +537,8 @@ impl TreeBuilder {
     }
 
     fn get_node_namespace(&self, node_id: NodeId) -> Namespace {
-        if self.stack_of_open_elements.last().copied() == Some(node_id) {
-            return self
-                .namespace_stack
-                .last()
-                .copied()
-                .unwrap_or(Namespace::Html);
-        }
-        if let Some(pos) = self
-            .stack_of_open_elements
-            .iter()
-            .position(|&x| x == node_id)
-        {
-            self.namespace_stack[pos]
+        if let Some(&ns) = self.node_namespaces.get(&node_id) {
+            ns
         } else {
             Namespace::Html
         }
@@ -638,6 +630,7 @@ impl TreeBuilder {
         let ns = self.compute_namespace_at_index(idx, node);
         self.stack_of_open_elements.push(node);
         self.namespace_stack.push(ns);
+        self.node_namespaces.insert(node, ns);
     }
 
     fn open_elements_pop(&mut self) -> Option<NodeId> {
@@ -669,12 +662,14 @@ impl TreeBuilder {
         self.stack_of_open_elements[idx] = node;
         let ns = self.compute_namespace_at_index(idx, node);
         self.namespace_stack[idx] = ns;
+        self.node_namespaces.insert(node, ns);
     }
 
     fn open_elements_insert(&mut self, idx: usize, node: NodeId) {
         self.stack_of_open_elements.insert(idx, node);
         let ns = self.compute_namespace_at_index(idx, node);
         self.namespace_stack.insert(idx, ns);
+        self.node_namespaces.insert(node, ns);
     }
 
     fn handle_foreign_content(&mut self, token: Token) {
@@ -3206,6 +3201,7 @@ impl TreeBuilder {
         }
 
         let node = self.dom.create_node(NodeData::Element { name, attrs });
+        self.node_namespaces.insert(node, target_ns);
         let insertion_point = self.get_appropriate_place_for_inserting_node();
         self.dom
             .insert_before(insertion_point.parent, node, insertion_point.reference);
