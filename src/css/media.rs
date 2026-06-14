@@ -194,6 +194,17 @@ thread_local! {
     static DISPLAY_SHAPE: Cell<DisplayShape> = const { Cell::new(DisplayShape::Rect) };
     static HORIZONTAL_VIEWPORT_SEGMENTS: Cell<i32> = const { Cell::new(1) };
     static VERTICAL_VIEWPORT_SEGMENTS: Cell<i32> = const { Cell::new(1) };
+    static DEVICE_PIXEL_RATIO: Cell<f32> = const { Cell::new(1.0) };
+}
+
+/// Sets the device pixel ratio (DPR) for the current thread (default 1.0).
+pub fn set_device_pixel_ratio(dpr: f32) {
+    DEVICE_PIXEL_RATIO.with(|c| c.set(dpr));
+}
+
+/// Gets the device pixel ratio (DPR) for the current thread.
+pub fn device_pixel_ratio() -> f32 {
+    DEVICE_PIXEL_RATIO.with(|c| c.get())
 }
 
 /// Sets the horizontal viewport segments for the current thread.
@@ -690,12 +701,272 @@ fn parse_ratio(tokens: &[CssToken]) -> Option<f32> {
     }
 }
 
+/// Parses a CSS `<resolution>` from a slice of tokens.
+fn parse_resolution(tokens: &[CssToken]) -> Option<f32> {
+    if tokens.len() != 1 {
+        return None;
+    }
+    match &tokens[0] {
+        CssToken::Dimension { value, unit } => {
+            let unit_lower = unit.to_ascii_lowercase();
+            match unit_lower.as_str() {
+                "dppx" | "x" => Some(*value as f32),
+                "dpi" => Some(*value as f32 / 96.0),
+                "dpcm" => Some(*value as f32 / (96.0 / 2.54)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Lt,  // <
+    Lte, // <=
+    Gt,  // >
+    Gte, // >=
+    Eq,  // =
+}
+
+fn parse_op(tokens: &[CssToken], start: usize) -> Option<(Op, usize)> {
+    if start >= tokens.len() {
+        return None;
+    }
+    match &tokens[start] {
+        CssToken::Delim('<') => {
+            if start + 1 < tokens.len() && matches!(&tokens[start + 1], CssToken::Delim('=')) {
+                return Some((Op::Lte, 2));
+            }
+            Some((Op::Lt, 1))
+        }
+        CssToken::Delim('>') => {
+            if start + 1 < tokens.len() && matches!(&tokens[start + 1], CssToken::Delim('=')) {
+                return Some((Op::Gte, 2));
+            }
+            Some((Op::Gt, 1))
+        }
+        CssToken::Delim('=') => Some((Op::Eq, 1)),
+        _ => None,
+    }
+}
+
+fn find_operators(tokens: &[CssToken]) -> Vec<(Op, usize, usize)> {
+    let mut ops = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Some((op, len)) = parse_op(tokens, i) {
+            ops.push((op, i, len));
+            i += len;
+        } else {
+            i += 1;
+        }
+    }
+    ops
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum FeatureValue {
+    Length(f32),
+    Ratio(f32),
+    Number(f32),
+    Resolution(f32),
+}
+
+fn parse_length_val(tokens: &[CssToken]) -> Option<f32> {
+    if tokens.len() != 1 {
+        return None;
+    }
+    match &tokens[0] {
+        CssToken::Dimension { value, unit } => {
+            if unit.eq_ignore_ascii_case("px") {
+                Some(*value as f32)
+            } else if unit.eq_ignore_ascii_case("em") || unit.eq_ignore_ascii_case("rem") {
+                Some((*value * 16.0) as f32)
+            } else {
+                None
+            }
+        }
+        CssToken::Number(value) => Some(*value as f32),
+        _ => None,
+    }
+}
+
+fn parse_number_val(tokens: &[CssToken]) -> Option<f32> {
+    if tokens.len() != 1 {
+        return None;
+    }
+    if let CssToken::Number(value) = &tokens[0] {
+        Some(*value as f32)
+    } else {
+        None
+    }
+}
+
+fn parse_resolution_val(tokens: &[CssToken]) -> Option<f32> {
+    if tokens.is_empty() {
+        return None;
+    }
+    if let Some(res) = parse_resolution(tokens) {
+        return Some(res);
+    }
+    if let [CssToken::Number(val)] = tokens {
+        return Some(*val as f32);
+    }
+    None
+}
+
+fn parse_feature_value(kind: &FeatureValue, tokens: &[CssToken]) -> Option<FeatureValue> {
+    match kind {
+        FeatureValue::Length(_) => parse_length_val(tokens).map(FeatureValue::Length),
+        FeatureValue::Ratio(_) => parse_ratio(tokens).map(FeatureValue::Ratio),
+        FeatureValue::Number(_) => parse_number_val(tokens).map(FeatureValue::Number),
+        FeatureValue::Resolution(_) => parse_resolution_val(tokens).map(FeatureValue::Resolution),
+    }
+}
+
+fn get_range_feature_value(name: &str, viewport_w: f32) -> Option<FeatureValue> {
+    let clean_name = if let Some(stripped) = name.strip_prefix("min-") {
+        stripped
+    } else if let Some(stripped) = name.strip_prefix("max-") {
+        stripped
+    } else if name.starts_with("-webkit-min-") || name.starts_with("-webkit-max-") {
+        "-webkit-device-pixel-ratio"
+    } else {
+        name
+    };
+
+    match clean_name {
+        "width" => Some(FeatureValue::Length(viewport_w)),
+        "height" => Some(FeatureValue::Length(viewport_h())),
+        "aspect-ratio" => {
+            let ratio = if viewport_h() > 0.0 {
+                viewport_w / viewport_h()
+            } else {
+                0.0
+            };
+            Some(FeatureValue::Ratio(ratio))
+        }
+        "color" => Some(FeatureValue::Number(8.0)),
+        "color-index" => Some(FeatureValue::Number(0.0)),
+        "monochrome" => Some(FeatureValue::Number(0.0)),
+        "grid" => Some(FeatureValue::Number(0.0)),
+        "resolution" | "-webkit-device-pixel-ratio" | "device-pixel-ratio" => {
+            Some(FeatureValue::Resolution(device_pixel_ratio()))
+        }
+        "horizontal-viewport-segments" => {
+            Some(FeatureValue::Number(horizontal_viewport_segments() as f32))
+        }
+        "vertical-viewport-segments" => {
+            Some(FeatureValue::Number(vertical_viewport_segments() as f32))
+        }
+        _ => None,
+    }
+}
+
+fn compare_values(curr: FeatureValue, op: Op, target: FeatureValue) -> bool {
+    match (curr, target) {
+        (FeatureValue::Length(c), FeatureValue::Length(t)) => match op {
+            Op::Lt => c < t,
+            Op::Lte => c <= t,
+            Op::Gt => c > t,
+            Op::Gte => c >= t,
+            Op::Eq => (c - t).abs() < 1e-5,
+        },
+        (FeatureValue::Ratio(c), FeatureValue::Ratio(t)) => match op {
+            Op::Lt => c < t - 1e-5,
+            Op::Lte => c <= t + 1e-5,
+            Op::Gt => c > t + 1e-5,
+            Op::Gte => c >= t - 1e-5,
+            Op::Eq => (c - t).abs() < 1e-5,
+        },
+        (FeatureValue::Number(c), FeatureValue::Number(t)) => match op {
+            Op::Lt => c < t,
+            Op::Lte => c <= t,
+            Op::Gt => c > t,
+            Op::Gte => c >= t,
+            Op::Eq => (c - t).abs() < 1e-5,
+        },
+        (FeatureValue::Resolution(c), FeatureValue::Resolution(t)) => match op {
+            Op::Lt => c < t,
+            Op::Lte => c <= t,
+            Op::Gt => c > t,
+            Op::Gte => c >= t,
+            Op::Eq => (c - t).abs() < 1e-5,
+        },
+        _ => false,
+    }
+}
+
+fn evaluate_range_query(ops: &[(Op, usize, usize)], tokens: &[CssToken], viewport_w: f32) -> bool {
+    if ops.len() == 1 {
+        let (op, op_idx, op_len) = ops[0];
+        // Form 1: <mf-name> <op> <value>
+        if let (1, CssToken::Ident(name)) = (op_idx, &tokens[0]) {
+            let feature_name = name.to_ascii_lowercase();
+            let value_tokens = &tokens[op_idx + op_len..];
+            if let Some(kind) = get_range_feature_value(&feature_name, viewport_w)
+                && let Some(target_val) = parse_feature_value(&kind, value_tokens)
+            {
+                return compare_values(kind, op, target_val);
+            }
+        }
+        // Form 2: <value> <op> <mf-name>
+        if let (true, CssToken::Ident(name)) = (
+            op_idx + op_len + 1 == tokens.len(),
+            &tokens[op_idx + op_len],
+        ) {
+            let feature_name = name.to_ascii_lowercase();
+            let value_tokens = &tokens[0..op_idx];
+            if let Some(kind) = get_range_feature_value(&feature_name, viewport_w)
+                && let Some(target_val) = parse_feature_value(&kind, value_tokens)
+            {
+                return compare_values(target_val, op, kind);
+            }
+        }
+    } else if ops.len() == 2 {
+        let (op1, op1_idx, op1_len) = ops[0];
+        let (op2, op2_idx, op2_len) = ops[1];
+        // Form 3: <value> <op1> <mf-name> <op2> <value>
+        if let (true, CssToken::Ident(name)) =
+            (op2_idx == op1_idx + op1_len + 1, &tokens[op1_idx + op1_len])
+        {
+            let feature_name = name.to_ascii_lowercase();
+            let value1_tokens = &tokens[0..op1_idx];
+            let value2_tokens = &tokens[op2_idx + op2_len..];
+            // Check direction
+            let is_lt = (op1 == Op::Lt || op1 == Op::Lte) && (op2 == Op::Lt || op2 == Op::Lte);
+            let is_gt = (op1 == Op::Gt || op1 == Op::Gte) && (op2 == Op::Gt || op2 == Op::Gte);
+            let kind_opt = if is_lt || is_gt {
+                get_range_feature_value(&feature_name, viewport_w)
+            } else {
+                None
+            };
+            if let Some(kind) = kind_opt {
+                let val1 = parse_feature_value(&kind, value1_tokens);
+                let val2 = parse_feature_value(&kind, value2_tokens);
+                if let (Some(v1), Some(v2)) = (val1, val2) {
+                    return compare_values(v1, op1, kind.clone()) && compare_values(kind, op2, v2);
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Evaluates a single media feature, e.g., max-width: 600px.
 fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
     if tokens.is_empty() {
         return false;
     }
 
+    // 1. Check for range query operators first, since range queries don't necessarily start with an Ident.
+    let ops = find_operators(tokens);
+    if !ops.is_empty() {
+        return evaluate_range_query(&ops, tokens, viewport_w);
+    }
+
+    // 2. Otherwise, fall back to the existing colon-based or boolean queries.
     let feature_name = if let CssToken::Ident(name) = &tokens[0] {
         name.to_ascii_lowercase()
     } else {
@@ -751,6 +1022,15 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "color-index" => return false,
             "min-color-index" => return true,
             "max-color-index" => return true,
+            "resolution" => return true,
+            "min-resolution" => return true,
+            "max-resolution" => return true,
+            "device-pixel-ratio" => return true,
+            "min-device-pixel-ratio" => return true,
+            "max-device-pixel-ratio" => return true,
+            "-webkit-device-pixel-ratio" => return true,
+            "-webkit-min-device-pixel-ratio" => return true,
+            "-webkit-max-device-pixel-ratio" => return true,
             _ => return false,
         }
     }
@@ -1239,6 +1519,47 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
                 "color-index" => return current == limit,
                 "min-color-index" => return current >= limit,
                 "max-color-index" => return current <= limit,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "resolution"
+        || feature_name == "min-resolution"
+        || feature_name == "max-resolution"
+    {
+        if let Some(target_res) = parse_resolution(&tokens[2..]) {
+            let current_res = device_pixel_ratio();
+            match feature_name.as_str() {
+                "resolution" => return (current_res - target_res).abs() < 1e-5,
+                "min-resolution" => return current_res >= target_res - 1e-5,
+                "max-resolution" => return current_res <= target_res + 1e-5,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "device-pixel-ratio"
+        || feature_name == "min-device-pixel-ratio"
+        || feature_name == "max-device-pixel-ratio"
+        || feature_name == "-webkit-device-pixel-ratio"
+        || feature_name == "-webkit-min-device-pixel-ratio"
+        || feature_name == "-webkit-max-device-pixel-ratio"
+    {
+        if let Some(target_dpr) = parse_ratio(&tokens[2..]) {
+            let current_dpr = device_pixel_ratio();
+            match feature_name.as_str() {
+                "device-pixel-ratio" | "-webkit-device-pixel-ratio" => {
+                    return (current_dpr - target_dpr).abs() < 1e-5;
+                }
+                "min-device-pixel-ratio" | "-webkit-min-device-pixel-ratio" => {
+                    return current_dpr >= target_dpr - 1e-5;
+                }
+                "max-device-pixel-ratio" | "-webkit-max-device-pixel-ratio" => {
+                    return current_dpr <= target_dpr + 1e-5;
+                }
                 _ => return false,
             }
         }
@@ -2564,5 +2885,119 @@ mod tests {
         // Reset to default
         set_horizontal_viewport_segments(1);
         set_vertical_viewport_segments(1);
+    }
+
+    #[test]
+    fn test_resolution_and_device_pixel_ratio_features() {
+        // Default dpr is 1.0
+        assert_eq!(device_pixel_ratio(), 1.0);
+        assert!(media_matches("(resolution: 1dppx)", 1000.0));
+        assert!(media_matches("(resolution: 1x)", 1000.0));
+        assert!(media_matches("(resolution: 96dpi)", 1000.0));
+        assert!(media_matches("(resolution: 37.795275dpcm)", 1000.0)); // 96 / 2.54 = 37.795275
+        assert!(media_matches("(resolution)", 1000.0));
+
+        assert!(media_matches("(device-pixel-ratio: 1)", 1000.0));
+        assert!(media_matches("(device-pixel-ratio: 1/1)", 1000.0));
+        assert!(media_matches("(-webkit-device-pixel-ratio: 1)", 1000.0));
+        assert!(media_matches("(device-pixel-ratio)", 1000.0));
+
+        // Let's set device pixel ratio to 2.0
+        set_device_pixel_ratio(2.0);
+        assert_eq!(device_pixel_ratio(), 2.0);
+
+        // Test resolution with dpr=2.0
+        assert!(media_matches("(resolution: 2dppx)", 1000.0));
+        assert!(media_matches("(resolution: 2x)", 1000.0));
+        assert!(media_matches("(resolution: 192dpi)", 1000.0));
+        assert!(media_matches("(min-resolution: 1.5dppx)", 1000.0));
+        assert!(media_matches("(min-resolution: 144dpi)", 1000.0));
+        assert!(media_matches("(max-resolution: 3dppx)", 1000.0));
+        assert!(media_matches("(max-resolution: 288dpi)", 1000.0));
+
+        // Test device-pixel-ratio with dpr=2.0
+        assert!(media_matches("(device-pixel-ratio: 2)", 1000.0));
+        assert!(media_matches("(device-pixel-ratio: 2/1)", 1000.0));
+        assert!(media_matches("(min-device-pixel-ratio: 1.5)", 1000.0));
+        assert!(media_matches("(max-device-pixel-ratio: 2.5)", 1000.0));
+        assert!(media_matches("(-webkit-device-pixel-ratio: 2)", 1000.0));
+        assert!(media_matches(
+            "(-webkit-min-device-pixel-ratio: 1.5)",
+            1000.0
+        ));
+        assert!(media_matches(
+            "(-webkit-max-device-pixel-ratio: 2.5)",
+            1000.0
+        ));
+
+        // Clean up: Reset to 1.0
+        set_device_pixel_ratio(1.0);
+    }
+
+    #[test]
+    fn test_range_media_queries() {
+        // --- Form 1: <mf-name> <op> <value> ---
+        // width comparisons (viewport_w = 600.0)
+        assert!(media_matches("(width >= 400px)", 600.0));
+        assert!(media_matches("(width >= 600px)", 600.0));
+        assert!(!media_matches("(width >= 800px)", 600.0));
+        assert!(media_matches("(width > 400px)", 600.0));
+        assert!(!media_matches("(width > 600px)", 600.0));
+
+        assert!(media_matches("(width <= 800px)", 600.0));
+        assert!(media_matches("(width <= 600px)", 600.0));
+        assert!(!media_matches("(width <= 400px)", 600.0));
+        assert!(media_matches("(width < 800px)", 600.0));
+        assert!(!media_matches("(width < 600px)", 600.0));
+
+        assert!(media_matches("(width = 600px)", 600.0));
+        assert!(!media_matches("(width = 500px)", 600.0));
+
+        // height comparisons (viewport_h = 1024.0)
+        set_viewport_h(1024.0);
+        assert!(media_matches("(height >= 500px)", 600.0));
+        assert!(media_matches("(height < 2000px)", 600.0));
+        assert!(media_matches("(height = 1024px)", 600.0));
+
+        // resolution comparisons
+        set_device_pixel_ratio(2.0);
+        assert!(media_matches("(resolution >= 1.5dppx)", 600.0));
+        assert!(media_matches("(resolution >= 2x)", 600.0));
+        assert!(!media_matches("(resolution > 2x)", 600.0));
+        assert!(media_matches("(resolution <= 3x)", 600.0));
+        assert!(media_matches("(resolution = 2dppx)", 600.0));
+        set_device_pixel_ratio(1.0);
+
+        // --- Form 2: <value> <op> <mf-name> ---
+        assert!(media_matches("(400px <= width)", 600.0));
+        assert!(media_matches("(600px <= width)", 600.0));
+        assert!(!media_matches("(800px <= width)", 600.0));
+        assert!(media_matches("(400px < width)", 600.0));
+        assert!(!media_matches("(600px < width)", 600.0));
+
+        assert!(media_matches("(800px >= width)", 600.0));
+        assert!(media_matches("(600px >= width)", 600.0));
+        assert!(!media_matches("(400px >= width)", 600.0));
+        assert!(media_matches("(800px > width)", 600.0));
+        assert!(!media_matches("(600px > width)", 600.0));
+
+        assert!(media_matches("(600px = width)", 600.0));
+        assert!(!media_matches("(500px = width)", 600.0));
+
+        // --- Form 3: <value> <op1> <mf-name> <op2> <value> ---
+        assert!(media_matches("(400px <= width <= 800px)", 600.0));
+        assert!(media_matches("(400px < width < 800px)", 600.0));
+        assert!(media_matches("(400px <= width < 600px)", 500.0));
+        assert!(!media_matches("(400px <= width <= 500px)", 600.0));
+        assert!(!media_matches("(700px <= width <= 900px)", 600.0));
+
+        // Mixed/Unsupported or invalid directions
+        assert!(!media_matches("(400px <= width >= 800px)", 600.0)); // conflicting ops
+
+        // resolution double range
+        set_device_pixel_ratio(2.0);
+        assert!(media_matches("(1x <= resolution <= 3x)", 600.0));
+        assert!(!media_matches("(2.5x <= resolution <= 3x)", 600.0));
+        set_device_pixel_ratio(1.0);
     }
 }
