@@ -374,7 +374,10 @@ pub fn layout_table_container(
 
     // Update table's border widths under border-collapse: collapse by collapsing with outermost cells
     if is_collapsed {
-        for placement in cell_placements.values() {
+        let mut sorted_collapse_placements: Vec<&CellPlacement> =
+            cell_placements.values().collect();
+        sorted_collapse_placements.sort_by_key(|p| (p.row_idx, p.col_idx));
+        for placement in sorted_collapse_placements {
             if let Some(cell_style) = styles.get(&placement.node) {
                 if placement.row_idx == 0 {
                     let cell_border_top = get_px(cell_style, "border-top-width", 0.0);
@@ -408,10 +411,13 @@ pub fn layout_table_container(
             }
         }
         // 2. Gather first row cell widths (only if column doesn't already have width from col elements)
-        for placement in cell_placements.values() {
-            if placement.row_idx == 0
-                && let Some(cell_style) = styles.get(&placement.node)
-            {
+        let mut sorted_first_row_placements: Vec<&CellPlacement> = cell_placements
+            .values()
+            .filter(|p| p.row_idx == 0)
+            .collect();
+        sorted_first_row_placements.sort_by_key(|p| p.col_idx);
+        for placement in sorted_first_row_placements {
+            if let Some(cell_style) = styles.get(&placement.node) {
                 let w_px = get_resolved_width(cell_style, avail_content_width).unwrap_or(0.0);
                 if w_px > 0.0 {
                     let share = w_px / placement.colspan as f32;
@@ -453,25 +459,33 @@ pub fn layout_table_container(
         }
 
         // First, handle all cells with colspan == 1 to establish baseline column widths
-        for placement in cell_placements.values() {
-            if placement.colspan == 1 {
-                let cell_pref_w = get_cell_preferred_width(
-                    dom,
-                    styles,
-                    placement.node,
-                    avail_content_width,
-                    depth + 1,
-                );
-                if cell_pref_w > col_widths[placement.col_idx] {
-                    col_widths[placement.col_idx] = cell_pref_w;
-                }
+        let mut sorted_colspan_1_placements: Vec<&CellPlacement> = cell_placements
+            .values()
+            .filter(|p| p.colspan == 1)
+            .collect();
+        sorted_colspan_1_placements.sort_by_key(|p| (p.row_idx, p.col_idx));
+        for placement in sorted_colspan_1_placements {
+            let cell_pref_w = get_cell_preferred_width(
+                dom,
+                styles,
+                placement.node,
+                avail_content_width,
+                depth + 1,
+            );
+            if cell_pref_w > col_widths[placement.col_idx] {
+                col_widths[placement.col_idx] = cell_pref_w;
             }
         }
 
-        // Next, handle all cells with colspan > 1 (sorted by colspan ascending)
+        // Next, handle all cells with colspan > 1 (sorted by colspan ascending, then row_idx, then col_idx)
         let mut colspanning_cells: Vec<&CellPlacement> =
             cell_placements.values().filter(|p| p.colspan > 1).collect();
-        colspanning_cells.sort_by_key(|p| p.colspan);
+        colspanning_cells.sort_by(|a, b| {
+            a.colspan
+                .cmp(&b.colspan)
+                .then_with(|| a.row_idx.cmp(&b.row_idx))
+                .then_with(|| a.col_idx.cmp(&b.col_idx))
+        });
 
         for placement in colspanning_cells {
             let cell_pref_w = get_cell_preferred_width(
@@ -523,11 +537,22 @@ pub fn layout_table_container(
 
         if sum_col_widths > 0.0 {
             if avail_col_width > sum_col_widths {
-                // Distribute remaining space equally to match table's final width
+                // Distribute remaining space first to flexible (non-explicit) columns to preserve explicit widths
                 let remaining = avail_col_width - sum_col_widths;
-                let share = remaining / num_cols as f32;
-                for w in &mut col_widths {
-                    *w += share;
+                let auto_cols_count = col_is_explicit.iter().filter(|&&exp| !exp).count();
+                if auto_cols_count > 0 {
+                    let share = remaining / auto_cols_count as f32;
+                    for c in 0..num_cols {
+                        if !col_is_explicit[c] {
+                            col_widths[c] += share;
+                        }
+                    }
+                } else {
+                    // All columns are explicit, distribute remaining space equally
+                    let share = remaining / num_cols as f32;
+                    for w in &mut col_widths {
+                        *w += share;
+                    }
                 }
             } else if avail_col_width < sum_col_widths {
                 // Scale down columns proportionally
@@ -578,9 +603,14 @@ pub fn layout_table_container(
         }
     }
 
-    for placement in cell_placements.values() {
-        if placement.rowspan == 1
-            && let Some(cell_style) = styles.get(&placement.node)
+    let mut sorted_rowspan_1_placements: Vec<&CellPlacement> = cell_placements
+        .values()
+        .filter(|p| p.rowspan == 1)
+        .collect();
+    sorted_rowspan_1_placements.sort_by_key(|p| (p.row_idx, p.col_idx));
+
+    for placement in &sorted_rowspan_1_placements {
+        if let Some(cell_style) = styles.get(&placement.node)
             && cell_style.reset_box.height != -1
         {
             row_is_explicit[placement.row_idx] = true;
@@ -588,10 +618,8 @@ pub fn layout_table_container(
     }
 
     // First, establish baseline row heights using rowspan == 1 cells
-    for placement in cell_placements.values() {
-        if placement.rowspan == 1
-            && let Some(cell_box) = cell_boxes.get(&placement.node)
-        {
+    for placement in &sorted_rowspan_1_placements {
+        if let Some(cell_box) = cell_boxes.get(&placement.node) {
             let h = cell_box.rect.size.height;
             if h > row_heights[placement.row_idx] {
                 row_heights[placement.row_idx] = h;
@@ -599,10 +627,15 @@ pub fn layout_table_container(
         }
     }
 
-    // Next, resolve cells with rowspan > 1 (sorted by rowspan ascending)
+    // Next, resolve cells with rowspan > 1 (sorted by rowspan ascending, then row_idx, then col_idx)
     let mut rowspanning_cells: Vec<&CellPlacement> =
         cell_placements.values().filter(|p| p.rowspan > 1).collect();
-    rowspanning_cells.sort_by_key(|p| p.rowspan);
+    rowspanning_cells.sort_by(|a, b| {
+        a.rowspan
+            .cmp(&b.rowspan)
+            .then_with(|| a.row_idx.cmp(&b.row_idx))
+            .then_with(|| a.col_idx.cmp(&b.col_idx))
+    });
 
     for placement in rowspanning_cells {
         if let Some(cell_box) = cell_boxes.get(&placement.node) {
@@ -641,6 +674,49 @@ pub fn layout_table_container(
     for r in 0..rows.len() {
         if row_is_hidden[r] {
             row_heights[r] = 0.0;
+        }
+    }
+
+    // Distribute remaining height to rows if table has a definite height
+    let has_definite_height = style.reset_box.height != -1;
+    if has_definite_height {
+        let table_height = get_px(style, "height", 0.0);
+        let visible_rows: Vec<usize> = (0..rows.len()).filter(|&ri| !row_is_hidden[ri]).collect();
+        let total_spacing_v = (visible_rows.len() + 1) as f32 * spacing_v;
+        let sum_row_heights: f32 = row_heights.iter().sum();
+        let current_table_content_height = sum_row_heights
+            + total_spacing_v
+            + padding_top
+            + padding_bottom
+            + border_top
+            + border_bottom;
+
+        if table_height > current_table_content_height {
+            let extra_height = table_height - current_table_content_height;
+            let auto_rows_count = row_is_explicit
+                .iter()
+                .enumerate()
+                .filter(|&(r, &exp)| !exp && !row_is_hidden[r])
+                .count();
+
+            if auto_rows_count > 0 {
+                let share = extra_height / auto_rows_count as f32;
+                for r in 0..rows.len() {
+                    if !row_is_hidden[r] && !row_is_explicit[r] {
+                        row_heights[r] += share;
+                    }
+                }
+            } else {
+                let visible_count = visible_rows.len();
+                if visible_count > 0 {
+                    let share = extra_height / visible_count as f32;
+                    for r in 0..rows.len() {
+                        if !row_is_hidden[r] {
+                            row_heights[r] += share;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -3783,5 +3859,159 @@ mod tests {
         let r3 = &table_box.children[2];
         assert_eq!(r3.rect.origin.y, 70.0); // 30.0 (Row 1 top) + 30.0 (Row 1 height) + 10.0 (spacing between r1 and r3)
         assert_eq!(r3.rect.size.height, 25.0);
+    }
+
+    #[test]
+    fn test_auto_layout_flexible_column_distribution() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        let cell1_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell1_node);
+
+        let cell2_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell2_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 300px
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(300.0, LengthUnit::Px));
+        styles.insert(table_node, table_style);
+
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Cell 1: explicit width: 100px
+        let mut cell1_style = style_with_display("table-cell");
+        cell1_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        styles.insert(cell1_node, cell1_style);
+
+        // Cell 2: auto width, explicit min-width: 50px
+        let mut cell2_style = style_with_display("table-cell");
+        cell2_style.insert(
+            "min-width".to_string(),
+            CssValue::Length(50.0, LengthUnit::Px),
+        );
+        styles.insert(cell2_node, cell2_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 400.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Table width should be 300.0
+        assert_eq!(table_box.rect.size.width, 300.0);
+
+        let r = &table_box.children[0];
+        assert_eq!(r.children.len(), 2);
+
+        let c1 = &r.children[0];
+        let c2 = &r.children[1];
+
+        // Column 1 is explicit (100px), Column 2 is auto (50px preferred).
+        // Total sum_col_widths = 150px. Remaining table content width = 300px.
+        // Extra space (150px) should be distributed ONLY to the flexible column (Column 2).
+        // So Column 1 should remain exactly 100px, and Column 2 should stretch to 50px + 150px = 200px.
+        assert_eq!(c1.rect.size.width, 100.0);
+        assert_eq!(c2.rect.size.width, 200.0);
+    }
+
+    #[test]
+    fn test_table_explicit_height_distribution() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Row 1
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row1_node);
+
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        // Row 2
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row2_node);
+
+        let cell21_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row2_node, cell21_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 200px, height 150px
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        table_style.insert(
+            "height".to_string(),
+            CssValue::Length(150.0, LengthUnit::Px),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+
+        // Cell 1.1: explicit height: 40px
+        let mut cell11_style = style_with_display("table-cell");
+        cell11_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell11_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        styles.insert(cell11_node, cell11_style);
+
+        // Cell 2.1: auto height (natural height 30px)
+        let mut cell21_style = style_with_display("table-cell");
+        cell21_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell21_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        std::sync::Arc::make_mut(&mut cell21_style.reset_box).height = -1; // make it auto height
+        styles.insert(cell21_node, cell21_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 400.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Table border box height should match configured height (150px)
+        assert_eq!(table_box.rect.size.height, 150.0);
+
+        // Row 1 should have its original explicit height (40px)
+        // Row 2 is auto, so it should receive all extra height.
+        // sum_row_heights (40 + 30) = 70px. Table height = 150px.
+        // Remaining height to distribute = 80px.
+        // Flexible Row 2 should get 30 + 80 = 110px.
+        assert_eq!(table_box.children.len(), 2);
+        let r1 = &table_box.children[0];
+        let r2 = &table_box.children[1];
+
+        assert_eq!(r1.rect.size.height, 40.0);
+        assert_eq!(r2.rect.size.height, 110.0);
     }
 }
