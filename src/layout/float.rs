@@ -6,8 +6,7 @@ use std::collections::HashMap;
 /// Helper to get the computed float value of a style.
 /// Returns Some("left"), Some("right"), or None.
 ///
-/// // TODO(spec): DO NOT implement text/line-box shortening or wrapping content around the float.
-/// // TODO(spec): DO NOT implement float stacking of multiple floats side-by-side beyond the basic left/right edge placement.
+/// Supports line-box shortening and float stacking of multiple floats side-by-side per CSS2.1 §9.5.
 pub(crate) fn get_float_value(style: &CategorizedComputedStyle) -> Option<&str> {
     let fl = style.reset_box.float.as_str();
     if fl == "left" || fl == "right" {
@@ -563,8 +562,109 @@ pub(crate) fn layout_and_position_float(
     });
 }
 
+/// Computes the adjusted horizontal bounds (left_bound, right_bound) for a line-box
+/// at a given Y coordinate and line height, taking into account any active floats in the same BFC.
+#[allow(dead_code)]
+pub(crate) fn get_line_box_bounds_at_y(
+    children: &[LayoutBox],
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    y: f32,
+    height: f32,
+    containing_left: f32,
+    containing_width: f32,
+) -> (f32, f32) {
+    let mut floats = Vec::new();
+    let mut collected_nodes = std::collections::HashSet::new();
+
+    // 1. Collect floats from siblings recursively
+    let mut stack = Vec::new();
+    for child in children.iter().rev() {
+        stack.push(child);
+    }
+
+    while let Some(current) = stack.pop() {
+        let mut is_bfc = false;
+        if let Some(node_id) = current.node
+            && let Some(style) = styles.get(&node_id)
+        {
+            is_bfc = establishes_bfc(style);
+            if let Some(fv) = get_float_value(style) {
+                let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
+                let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
+                let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
+                let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+
+                let fx = current.rect.origin.x - margin_left;
+                let fy = current.rect.origin.y - margin_top;
+                let w = current.rect.size.width + margin_left + margin_right;
+                let h = current.rect.size.height + margin_top + margin_bottom;
+
+                floats.push(PrecedingFloat {
+                    float_type: fv.to_string(),
+                    x: fx,
+                    y: fy,
+                    width: w,
+                    height: h,
+                });
+                collected_nodes.insert(node_id);
+            }
+        }
+
+        if !is_bfc {
+            for child in current.children.iter().rev() {
+                stack.push(child);
+            }
+        }
+    }
+
+    // 2. Add floats from the session registry
+    sync_session(styles);
+    SESSION.with(|session| {
+        let s = session.borrow();
+        for rf in &s.floats {
+            if collected_nodes.contains(&rf.node_id) {
+                continue;
+            }
+
+            // Check BFC isolation
+            let mut inside_nested_bfc = false;
+            for sibling in children {
+                if is_descendant_of_any_bfc(sibling, rf.node_id, styles) {
+                    inside_nested_bfc = true;
+                    break;
+                }
+            }
+
+            if !inside_nested_bfc {
+                let is_isolated = if !children.is_empty() {
+                    if let Some(first_node) = children[0].node {
+                        is_isolated_by_bfc(rf.node_id, first_node, children, styles)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !is_isolated {
+                    floats.push(PrecedingFloat {
+                        float_type: rf.float_type.clone(),
+                        x: rf.x,
+                        y: rf.y,
+                        width: rf.width,
+                        height: rf.height,
+                    });
+                }
+            }
+        }
+    });
+
+    get_bounds_at_y(&floats, y, height, containing_left, containing_width)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::LayoutBox;
     use crate::css::parser::parse_stylesheet;
     use crate::dom::{Dom, NodeData};
     use crate::layout::layout_document;
@@ -1832,5 +1932,187 @@ mod tests {
             p_layout.rect.origin.y - bfc_layout.rect.origin.y,
             10.0
         ));
+    }
+
+    #[test]
+    fn test_line_box_shortening_no_floats() {
+        let dom = Dom::new();
+        let stylesheet = parse_stylesheet("");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children: Vec<LayoutBox> = Vec::new();
+        // Containing block starting at left 10, width 400
+        let (left, right) =
+            super::get_line_box_bounds_at_y(&children, &styles, 0.0, 20.0, 10.0, 400.0);
+
+        assert!(approx_eq(left, 10.0));
+        assert!(approx_eq(right, 410.0));
+    }
+
+    #[test]
+    fn test_line_box_shortening_left_float() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let f_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(doc, f_node);
+
+        let stylesheet = parse_stylesheet(".float { float: left; width: 100px; height: 50px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Manually build LayoutBox for float
+        let float_box = LayoutBox {
+            node: Some(f_node),
+            rect: crate::geom::Rect::new(10.0, 0.0, 100.0, 50.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let children = vec![float_box];
+
+        // Query overlapping with float (y=10, h=20)
+        let (left, right) =
+            super::get_line_box_bounds_at_y(&children, &styles, 10.0, 20.0, 10.0, 400.0);
+        // left bound should be pushed to float_right_edge = 10 (containing_left) + 100 (float_width) = 110.0
+        assert!(approx_eq(left, 110.0));
+        assert!(approx_eq(right, 410.0));
+
+        // Query below the float (y=60, h=20)
+        let (left_below, right_below) =
+            super::get_line_box_bounds_at_y(&children, &styles, 60.0, 20.0, 10.0, 400.0);
+        assert!(approx_eq(left_below, 10.0));
+        assert!(approx_eq(right_below, 410.0));
+    }
+
+    #[test]
+    fn test_line_box_shortening_right_float() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let f_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(doc, f_node);
+
+        let stylesheet = parse_stylesheet(".float { float: right; width: 80px; height: 60px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Right float: placed at right edge, x = containing_right - width = 410 - 80 = 330
+        let float_box = LayoutBox {
+            node: Some(f_node),
+            rect: crate::geom::Rect::new(330.0, 0.0, 80.0, 60.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let children = vec![float_box];
+
+        // Query overlapping with float (y=20, h=20)
+        let (left, right) =
+            super::get_line_box_bounds_at_y(&children, &styles, 20.0, 20.0, 10.0, 400.0);
+        assert!(approx_eq(left, 10.0));
+        // right bound should be shortened to float_left_edge = 330.0
+        assert!(approx_eq(right, 330.0));
+    }
+
+    #[test]
+    fn test_line_box_shortening_stacked_left_floats() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let f1_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(doc, f1_node);
+        let f2_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(doc, f2_node);
+
+        let stylesheet = parse_stylesheet(".float { float: left; width: 100px; height: 50px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Float 1: x = 10, y = 0, w = 100, h = 50
+        let f1_box = LayoutBox {
+            node: Some(f1_node),
+            rect: crate::geom::Rect::new(10.0, 0.0, 100.0, 50.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        // Float 2: stacked next to it, x = 110, y = 0, w = 100, h = 40 (different height)
+        let f2_box = LayoutBox {
+            node: Some(f2_node),
+            rect: crate::geom::Rect::new(110.0, 0.0, 100.0, 40.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let children = vec![f1_box, f2_box];
+
+        // Query overlapping both floats (y = 10, h = 20)
+        let (left, right) =
+            super::get_line_box_bounds_at_y(&children, &styles, 10.0, 20.0, 10.0, 400.0);
+        // left bound should be max of both right edges: max(10 + 100, 110 + 100) = 210.0
+        assert!(approx_eq(left, 210.0));
+        assert!(approx_eq(right, 410.0));
+
+        // Query overlapping only Float 1 (y = 45, h = 10) - Float 2 ends at 40
+        let (left_only1, right_only1) =
+            super::get_line_box_bounds_at_y(&children, &styles, 45.0, 10.0, 10.0, 400.0);
+        assert!(approx_eq(left_only1, 110.0));
+        assert!(approx_eq(right_only1, 410.0));
+    }
+
+    #[test]
+    fn test_line_box_shortening_bfc_isolated_float() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let bfc_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(doc, bfc_node);
+
+        let f_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(bfc_node, f_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .bfc { display: inline-block; }
+            .float { float: left; width: 100px; height: 50px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Outer layout children has bfc_box. Since it is a BFC, its internal float should be isolated from outer queries.
+        let float_box = LayoutBox {
+            node: Some(f_node),
+            rect: crate::geom::Rect::new(10.0, 0.0, 100.0, 50.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let bfc_box = LayoutBox {
+            node: Some(bfc_node),
+            rect: crate::geom::Rect::new(10.0, 0.0, 100.0, 50.0),
+            children: vec![float_box],
+            text: None,
+        };
+
+        let children = vec![bfc_box];
+
+        // Query outer line-box bounds (which is outside the BFC)
+        let (left, right) =
+            super::get_line_box_bounds_at_y(&children, &styles, 10.0, 20.0, 10.0, 400.0);
+        // Should not be affected by the isolated inner float, so left bound should remain 10.0!
+        assert!(approx_eq(left, 10.0));
+        assert!(approx_eq(right, 410.0));
     }
 }
