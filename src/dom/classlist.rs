@@ -189,6 +189,9 @@ impl Dom {
         if !self.is_valid_class_token(old) || !self.is_valid_class_token(new) {
             return false;
         }
+        if old == new {
+            return self.has_class(node, old);
+        }
         if let Some(NodeData::Element { .. }) = self.data(node) {
             let classes = self.class_list(node);
             if !classes.contains(&old.to_string()) {
@@ -631,5 +634,51 @@ mod tests {
             visited_text.push((idx, token.to_string()));
         });
         assert!(visited_text.is_empty());
+    }
+
+    #[test]
+    fn test_domtokenlist_standard_compliance_and_edge_cases() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. Verification of normalization on add_class
+        dom.set_attribute(el, "class", "  a   b  ");
+        dom.add_class(el, "a"); // "a" is already present, but normalizes attribute spacing per engine design
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
+
+        dom.set_attribute(el, "class", "  a   b  ");
+        dom.add_class(el, "c"); // "c" is not present, adds "c" and normalizes spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b c"));
+
+        // 2. Verification of normalization on remove_class
+        dom.set_attribute(el, "class", "  a   b  ");
+        dom.remove_class(el, "c"); // "c" is not present, but normalizes attribute spacing per engine design
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
+
+        dom.set_attribute(el, "class", "  a   b  ");
+        dom.remove_class(el, "a"); // "a" is present, removes "a" and normalizes spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("b"));
+
+        // 3. Verification of normalization on toggle_class_force
+        dom.set_attribute(el, "class", "  a   b  ");
+        assert!(dom.toggle_class_force(el, "a", Some(true))); // "a" already present, returns true and normalizes spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
+
+        dom.set_attribute(el, "class", "  a   b  ");
+        assert!(!dom.toggle_class_force(el, "c", Some(false))); // "c" already absent, returns false and normalizes spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
+
+        // 4. Verification of replace_class old == new (no-op that returns true/false without normalizing)
+        dom.set_attribute(el, "class", "  a   b  ");
+        assert!(dom.replace_class(el, "a", "a")); // "a" is present, returns true without altering attribute
+        assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
+
+        assert!(!dom.replace_class(el, "c", "c")); // "c" is absent, returns false without altering attribute
+        assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
+
+        // 5. Verification of replace_class old != new where new is already present (old is dropped)
+        dom.set_attribute(el, "class", "a b");
+        assert!(dom.replace_class(el, "a", "b")); // "b" is already present, so "a" is dropped and returns true
+        assert_eq!(dom.get_attribute(el, "class"), Some("b"));
     }
 }
