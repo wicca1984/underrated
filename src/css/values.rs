@@ -2146,6 +2146,27 @@ pub struct LengthOrPercent {
     pub unit: LengthUnit,
 }
 
+impl LengthOrPercent {
+    pub fn resolve(
+        &self,
+        percent_basis: f32,
+        font_size: f32,
+        root_font_size: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> f32 {
+        match self.unit {
+            LengthUnit::Px => self.value,
+            LengthUnit::Em => self.value * font_size,
+            LengthUnit::Rem => self.value * root_font_size,
+            LengthUnit::Pt => self.value * 96.0 / 72.0,
+            LengthUnit::Percent => self.value / 100.0 * percent_basis,
+            LengthUnit::Vw => self.value * viewport_w / 100.0,
+            LengthUnit::Vh => self.value * viewport_h / 100.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AngleDeg(pub f32);
 
@@ -2284,6 +2305,35 @@ pub enum CssValue {
     PrintColorAdjust(PrintColorAdjustValue),
     ForcedColorAdjust(ForcedColorAdjustValue),
     ColorScheme(ColorSchemeValue),
+}
+
+impl CssValue {
+    pub fn resolve_to_px(
+        &self,
+        percent_basis: f32,
+        font_size: f32,
+        root_font_size: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> Option<f32> {
+        match self {
+            CssValue::Length(v, u) => {
+                let lp = LengthOrPercent {
+                    value: *v,
+                    unit: u.clone(),
+                };
+                Some(lp.resolve(
+                    percent_basis,
+                    font_size,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                ))
+            }
+            CssValue::Number(v) => Some(*v),
+            _ => None,
+        }
+    }
 }
 
 /// Parses a list of component values into a typed CSS value.
@@ -3021,13 +3071,35 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
             }
             _ => false,
         },
-        "transition-delay" => match value {
+        "transition-delay" | "animation-delay" => match value {
             CssValue::Keyword(kw) => {
                 let kw_lower = kw.to_ascii_lowercase();
                 if kw_lower.ends_with("ms") {
                     kw_lower[..kw_lower.len() - 2].parse::<f32>().is_ok()
                 } else if kw_lower.ends_with('s') {
                     kw_lower[..kw_lower.len() - 1].parse::<f32>().is_ok()
+                } else {
+                    false
+                }
+            }
+            CssValue::Number(v) => *v == 0.0,
+            _ => false,
+        },
+        "transition-duration" | "animation-duration" => match value {
+            CssValue::Keyword(kw) => {
+                let kw_lower = kw.to_ascii_lowercase();
+                if kw_lower.ends_with("ms") {
+                    if let Ok(v) = kw_lower[..kw_lower.len() - 2].parse::<f32>() {
+                        v >= 0.0
+                    } else {
+                        false
+                    }
+                } else if kw_lower.ends_with('s') {
+                    if let Ok(v) = kw_lower[..kw_lower.len() - 1].parse::<f32>() {
+                        v >= 0.0
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -4599,7 +4671,7 @@ pub fn parse_property_value(
                 None
             }
         }
-        "transition-delay" => match &val {
+        "transition-delay" | "animation-delay" => match &val {
             CssValue::Keyword(kw) => {
                 let kw_lower = kw.to_ascii_lowercase();
                 if kw_lower.ends_with("ms") {
@@ -4611,6 +4683,34 @@ pub fn parse_property_value(
                 } else if kw_lower.ends_with('s') {
                     if kw_lower[..kw_lower.len() - 1].parse::<f32>().is_ok() {
                         Some(val)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            CssValue::Number(v) => {
+                if *v == 0.0 {
+                    Some(val)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+        "transition-duration" | "animation-duration" => match &val {
+            CssValue::Keyword(kw) => {
+                let kw_lower = kw.to_ascii_lowercase();
+                if kw_lower.ends_with("ms") {
+                    if let Ok(v) = kw_lower[..kw_lower.len() - 2].parse::<f32>() {
+                        if v >= 0.0 { Some(val) } else { None }
+                    } else {
+                        None
+                    }
+                } else if kw_lower.ends_with('s') {
+                    if let Ok(v) = kw_lower[..kw_lower.len() - 1].parse::<f32>() {
+                        if v >= 0.0 { Some(val) } else { None }
                     } else {
                         None
                     }
@@ -5058,6 +5158,165 @@ fn parse_math_expr(components: &[ComponentValue]) -> Option<MathExpr> {
     }
 }
 
+fn flatten_sum(expr: &MathExpr, multiplier: f32, flat_terms: &mut Vec<(MathExpr, f32)>) {
+    match expr {
+        MathExpr::Op(lhs, MathOp::Add, rhs) => {
+            flatten_sum(lhs, multiplier, flat_terms);
+            flatten_sum(rhs, multiplier, flat_terms);
+        }
+        MathExpr::Op(lhs, MathOp::Sub, rhs) => {
+            flatten_sum(lhs, multiplier, flat_terms);
+            flatten_sum(rhs, -multiplier, flat_terms);
+        }
+        _ => {
+            let simp = expr.simplify();
+            match simp {
+                MathExpr::Op(lhs, MathOp::Add, rhs) => {
+                    flatten_sum(&lhs, multiplier, flat_terms);
+                    flatten_sum(&rhs, multiplier, flat_terms);
+                }
+                MathExpr::Op(lhs, MathOp::Sub, rhs) => {
+                    flatten_sum(&lhs, multiplier, flat_terms);
+                    flatten_sum(&rhs, -multiplier, flat_terms);
+                }
+                other => {
+                    flat_terms.push((other, multiplier));
+                }
+            }
+        }
+    }
+}
+
+fn simplify_sum_expr(lhs: &MathExpr, op: MathOp, rhs: &MathExpr) -> MathExpr {
+    let mut flat_terms = Vec::new();
+    flatten_sum(lhs, 1.0, &mut flat_terms);
+    let right_mult = match op {
+        MathOp::Add => 1.0,
+        MathOp::Sub => -1.0,
+        _ => unreachable!(),
+    };
+    flatten_sum(rhs, right_mult, &mut flat_terms);
+
+    let mut lengths: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    let mut unit_order: Vec<String> = Vec::new();
+    let mut number_sum: f32 = 0.0;
+    let mut unresolvable: Vec<(MathExpr, f32)> = Vec::new();
+    let mut has_length = false;
+
+    for (term, mult) in flat_terms {
+        match term {
+            MathExpr::Length(v, u) => {
+                has_length = true;
+                let unit_name = match u {
+                    LengthUnit::Px => "px",
+                    LengthUnit::Em => "em",
+                    LengthUnit::Rem => "rem",
+                    LengthUnit::Pt => "pt",
+                    LengthUnit::Percent => "%",
+                    LengthUnit::Vw => "vw",
+                    LengthUnit::Vh => "vh",
+                }
+                .to_string();
+                if !lengths.contains_key(&unit_name) {
+                    unit_order.push(unit_name.clone());
+                }
+                *lengths.entry(unit_name).or_insert(0.0) += v * mult;
+            }
+            MathExpr::Number(n) => {
+                number_sum += n * mult;
+            }
+            other => {
+                unresolvable.push((other, mult));
+            }
+        }
+    }
+
+    let mut recon_terms: Vec<(MathExpr, f32)> = Vec::new();
+
+    for unit_str in unit_order {
+        if let Some(&sum) = lengths.get(&unit_str).filter(|&&sum| sum != 0.0) {
+            let u = match unit_str.as_str() {
+                "px" => LengthUnit::Px,
+                "em" => LengthUnit::Em,
+                "rem" => LengthUnit::Rem,
+                "pt" => LengthUnit::Pt,
+                "%" => LengthUnit::Percent,
+                "vw" => LengthUnit::Vw,
+                "vh" => LengthUnit::Vh,
+                _ => continue,
+            };
+            if sum < 0.0 {
+                recon_terms.push((MathExpr::Length(-sum, u), -1.0));
+            } else {
+                recon_terms.push((MathExpr::Length(sum, u), 1.0));
+            }
+        }
+    }
+
+    if number_sum != 0.0 {
+        if number_sum < 0.0 {
+            recon_terms.push((MathExpr::Number(-number_sum), -1.0));
+        } else {
+            recon_terms.push((MathExpr::Number(number_sum), 1.0));
+        }
+    }
+
+    for (expr, mult) in unresolvable {
+        if mult < 0.0 {
+            recon_terms.push((expr, -1.0));
+        } else {
+            recon_terms.push((expr, 1.0));
+        }
+    }
+
+    if recon_terms.is_empty() {
+        if has_length {
+            return MathExpr::Length(0.0, LengthUnit::Px);
+        } else {
+            return MathExpr::Number(0.0);
+        }
+    }
+
+    // Sort to put a positive term first if possible
+    if let Some(pos_idx) = recon_terms
+        .iter()
+        .position(|(_, mult)| *mult > 0.0)
+        .filter(|&idx| idx > 0)
+    {
+        let item = recon_terms.remove(pos_idx);
+        recon_terms.insert(0, item);
+    }
+
+    let (mut current_expr, first_mult) = recon_terms.remove(0);
+    if first_mult < 0.0 {
+        match current_expr {
+            MathExpr::Length(v, u) => {
+                current_expr = MathExpr::Length(-v, u);
+            }
+            MathExpr::Number(v) => {
+                current_expr = MathExpr::Number(-v);
+            }
+            _ => {
+                current_expr = MathExpr::Op(
+                    Box::new(MathExpr::Number(0.0)),
+                    MathOp::Sub,
+                    Box::new(current_expr),
+                );
+            }
+        }
+    }
+
+    for (expr, mult) in recon_terms {
+        if mult < 0.0 {
+            current_expr = MathExpr::Op(Box::new(current_expr), MathOp::Sub, Box::new(expr));
+        } else {
+            current_expr = MathExpr::Op(Box::new(current_expr), MathOp::Add, Box::new(expr));
+        }
+    }
+
+    current_expr
+}
+
 impl MathExpr {
     fn simplify(&self) -> MathExpr {
         match self {
@@ -5068,20 +5327,7 @@ impl MathExpr {
                 let s_lhs = lhs.simplify();
                 let s_rhs = rhs.simplify();
                 match op {
-                    MathOp::Add => match (&s_lhs, &s_rhs) {
-                        (MathExpr::Length(v1, u1), MathExpr::Length(v2, u2)) if u1 == u2 => {
-                            MathExpr::Length(v1 + v2, u1.clone())
-                        }
-                        (MathExpr::Number(n1), MathExpr::Number(n2)) => MathExpr::Number(n1 + n2),
-                        _ => MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs)),
-                    },
-                    MathOp::Sub => match (&s_lhs, &s_rhs) {
-                        (MathExpr::Length(v1, u1), MathExpr::Length(v2, u2)) if u1 == u2 => {
-                            MathExpr::Length(v1 - v2, u1.clone())
-                        }
-                        (MathExpr::Number(n1), MathExpr::Number(n2)) => MathExpr::Number(n1 - n2),
-                        _ => MathExpr::Op(Box::new(s_lhs), *op, Box::new(s_rhs)),
-                    },
+                    MathOp::Add | MathOp::Sub => simplify_sum_expr(&s_lhs, *op, &s_rhs),
                     MathOp::Mul => match (&s_lhs, &s_rhs) {
                         (MathExpr::Length(v, u), MathExpr::Number(n))
                         | (MathExpr::Number(n), MathExpr::Length(v, u)) => {
@@ -5236,7 +5482,7 @@ impl MathExpr {
                                     MathExpr::Number(val),
                                     MathExpr::Number(max),
                                 ) => {
-                                    let clamped = val.max(*min).min(*max);
+                                    let clamped = min.max(val.min(*max));
                                     MathExpr::Number(clamped)
                                 }
                                 (
@@ -5244,7 +5490,7 @@ impl MathExpr {
                                     MathExpr::Length(val, u2),
                                     MathExpr::Length(max, u3),
                                 ) if u1 == u2 && u2 == u3 => {
-                                    let clamped = val.max(*min).min(*max);
+                                    let clamped = min.max(val.min(*max));
                                     MathExpr::Length(clamped, u1.clone())
                                 }
                                 _ => MathExpr::Func(*func, s_args),
@@ -17285,5 +17531,140 @@ mod tests {
             parse_value(&[mixed_calc]),
             Some(CssValue::Keyword("calc(10px + 50%)".to_string()))
         );
+    }
+
+    #[test]
+    fn test_t1019_css_values_correctness() {
+        // 1. calc() nesting and unit mixing with insertion-order preservation
+        let mixed_nesting_comp = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 20.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('+')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Percentage(10.0)),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[mixed_nesting_comp]),
+            Some(CssValue::Keyword("calc(30px + 10%)".to_string()))
+        );
+
+        // 2. clamp() resolution with min > max (max(min, min(val, max)) behavior)
+        let clamp_min_gt_max = ComponentValue::Function {
+            name: "clamp".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 15.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[clamp_min_gt_max]),
+            Some(CssValue::Length(20.0, LengthUnit::Px))
+        );
+
+        // 3. LengthOrPercent resolution contexts
+        let lp_pct = LengthOrPercent {
+            value: 50.0,
+            unit: LengthUnit::Percent,
+        };
+        assert_eq!(lp_pct.resolve(500.0, 16.0, 16.0, 1024.0, 768.0), 250.0);
+
+        let lp_em = LengthOrPercent {
+            value: 2.0,
+            unit: LengthUnit::Em,
+        };
+        assert_eq!(lp_em.resolve(500.0, 18.0, 16.0, 1024.0, 768.0), 36.0);
+
+        let val_len = CssValue::Length(1.5, LengthUnit::Rem);
+        assert_eq!(
+            val_len.resolve_to_px(500.0, 16.0, 16.0, 1024.0, 768.0),
+            Some(24.0)
+        );
+
+        // 4. var() fallback chains with multiple levels of nesting
+        let var_chain = ComponentValue::Function {
+            name: "var".to_string(),
+            value: vec![
+                token(CssToken::Ident("--x".to_string())),
+                token(CssToken::Comma),
+                ComponentValue::Function {
+                    name: "var".to_string(),
+                    value: vec![
+                        token(CssToken::Ident("--y".to_string())),
+                        token(CssToken::Comma),
+                        ComponentValue::Function {
+                            name: "var".to_string(),
+                            value: vec![
+                                token(CssToken::Ident("--z".to_string())),
+                                token(CssToken::Comma),
+                                token(CssToken::Ident("red".to_string())),
+                                token(CssToken::Comma),
+                                token(CssToken::Ident("green".to_string())),
+                            ],
+                        },
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[var_chain]),
+            Some(CssValue::Keyword(
+                "var(--x,var(--y,var(--z,red,green)))".to_string()
+            ))
+        );
+
+        // 5. Non-negative transition-duration and animation-duration validation
+        let valid_duration = CssValue::Keyword("200ms".to_string());
+        assert!(is_valid_property_value(
+            "transition-duration",
+            &valid_duration
+        ));
+        assert!(is_valid_property_value(
+            "animation-duration",
+            &valid_duration
+        ));
+
+        let invalid_duration = CssValue::Keyword("-50ms".to_string());
+        assert!(!is_valid_property_value(
+            "transition-duration",
+            &invalid_duration
+        ));
+        assert!(!is_valid_property_value(
+            "animation-duration",
+            &invalid_duration
+        ));
+
+        let valid_delay = CssValue::Keyword("-50ms".to_string());
+        assert!(is_valid_property_value("transition-delay", &valid_delay));
+        assert!(is_valid_property_value("animation-delay", &valid_delay));
     }
 }
