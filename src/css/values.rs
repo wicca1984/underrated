@@ -4902,6 +4902,16 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 || name.eq_ignore_ascii_case("path")
                 || name.eq_ignore_ascii_case("rect")
                 || name.eq_ignore_ascii_case("xywh")
+                || name.eq_ignore_ascii_case("calc-size")
+                || name.eq_ignore_ascii_case("container-progress")
+                || name.eq_ignore_ascii_case("scroll-progress")
+                || name.eq_ignore_ascii_case("view-progress")
+                || name.eq_ignore_ascii_case("image")
+                || name.eq_ignore_ascii_case("element")
+                || name.eq_ignore_ascii_case("paint")
+                || name.eq_ignore_ascii_case("src")
+                || name.eq_ignore_ascii_case("shape")
+                || name.eq_ignore_ascii_case("ray")
                 || name.eq_ignore_ascii_case("env")
             {
                 return Some(CssValue::Keyword(serialize_component_value(components[0])));
@@ -6624,6 +6634,24 @@ fn linear_srgb_to_srgb(c: f64) -> u8 {
     (s * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
+fn rec2020_to_linear(v: f64) -> f64 {
+    let v = v.clamp(0.0, 1.0);
+    if v < 0.081243736875153 {
+        v / 4.5
+    } else {
+        ((v + 0.099360459341054) / 1.099360459341054).powf(1.0 / 0.45)
+    }
+}
+
+fn a98_to_linear(v: f64) -> f64 {
+    v.clamp(0.0, 1.0).powf(2.19921875)
+}
+
+fn prophoto_to_linear(v: f64) -> f64 {
+    let v = v.clamp(0.0, 1.0);
+    if v < 0.03125 { v / 16.0 } else { v.powf(1.8) }
+}
+
 fn parse_lab_function(components: &[ComponentValue]) -> Option<Color> {
     // Filter out whitespace
     let non_ws: Vec<&ComponentValue> = components
@@ -7015,8 +7043,61 @@ fn parse_color_function(components: &[ComponentValue]) -> Option<Color> {
             let b = linear_srgb_to_srgb(b_lin);
             (r, g, b)
         }
+        "rec2020" => {
+            let r_lin_rec = rec2020_to_linear(c1);
+            let g_lin_rec = rec2020_to_linear(c2);
+            let b_lin_rec = rec2020_to_linear(c3);
+
+            let x = 0.6369580 * r_lin_rec + 0.1446169 * g_lin_rec + 0.1688810 * b_lin_rec;
+            let y = 0.2627002 * r_lin_rec + 0.6779981 * g_lin_rec + 0.0593017 * b_lin_rec;
+            let z = 0.0000000 * r_lin_rec + 0.0280727 * g_lin_rec + 1.0609851 * b_lin_rec;
+
+            let r_lin = 3.24096994 * x - 1.53738318 * y - 0.49861076 * z;
+            let g_lin = -0.96924364 * x + 1.87596750 * y + 0.04155506 * z;
+            let b_lin = 0.05563008 * x - 0.20397696 * y + 1.05697151 * z;
+
+            let r = linear_srgb_to_srgb(r_lin);
+            let g = linear_srgb_to_srgb(g_lin);
+            let b = linear_srgb_to_srgb(b_lin);
+            (r, g, b)
+        }
+        "a98-rgb" => {
+            let r_lin_a98 = a98_to_linear(c1);
+            let g_lin_a98 = a98_to_linear(c2);
+            let b_lin_a98 = a98_to_linear(c3);
+
+            let x = 0.5767309 * r_lin_a98 + 0.1855540 * g_lin_a98 + 0.1881852 * b_lin_a98;
+            let y = 0.2973769 * r_lin_a98 + 0.6273491 * g_lin_a98 + 0.0752741 * b_lin_a98;
+            let z = 0.0270343 * r_lin_a98 + 0.0706872 * g_lin_a98 + 0.9911085 * b_lin_a98;
+
+            let r_lin = 3.24096994 * x - 1.53738318 * y - 0.49861076 * z;
+            let g_lin = -0.96924364 * x + 1.87596750 * y + 0.04155506 * z;
+            let b_lin = 0.05563008 * x - 0.20397696 * y + 1.05697151 * z;
+
+            let r = linear_srgb_to_srgb(r_lin);
+            let g = linear_srgb_to_srgb(g_lin);
+            let b = linear_srgb_to_srgb(b_lin);
+            (r, g, b)
+        }
+        "prophoto-rgb" => {
+            let r_lin_pro = prophoto_to_linear(c1);
+            let g_lin_pro = prophoto_to_linear(c2);
+            let b_lin_pro = prophoto_to_linear(c3);
+
+            let x_d50 = 0.7976749 * r_lin_pro + 0.1351917 * g_lin_pro + 0.0313534 * b_lin_pro;
+            let y_d50 = 0.2880402 * r_lin_pro + 0.7118741 * g_lin_pro + 0.0000857 * b_lin_pro;
+            let z_d50 = 0.0000000 * r_lin_pro + 0.0000000 * g_lin_pro + 0.8252100 * b_lin_pro;
+
+            let r_lin = 3.1338561 * x_d50 - 1.6168667 * y_d50 - 0.4906146 * z_d50;
+            let g_lin = -0.9787684 * x_d50 + 1.9161415 * y_d50 + 0.0334540 * z_d50;
+            let b_lin = 0.0719453 * x_d50 - 0.2289914 * y_d50 + 1.4052427 * z_d50;
+
+            let r = linear_srgb_to_srgb(r_lin);
+            let g = linear_srgb_to_srgb(g_lin);
+            let b = linear_srgb_to_srgb(b_lin);
+            (r, g, b)
+        }
         _ => {
-            // TODO(spec): Support other predefined RGB/XYZ color spaces (e.g. rec2020, a98-rgb, prophoto-rgb)
             return None;
         }
     };
@@ -9378,8 +9459,26 @@ mod tests {
             Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
         );
 
-        // Unsupported color space: color(rec2020 1 0 0) -> None
-        assert_eq!(parse("color(rec2020 1 0 0)"), None);
+        // rec2020: color(rec2020 1 0 0) -> pure red (clipped/clamped)
+        assert_eq!(
+            parse("color(rec2020 1 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // a98-rgb: color(a98-rgb 1 1 1) -> white
+        assert_eq!(
+            parse("color(a98-rgb 1 1 1)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // prophoto-rgb: color(prophoto-rgb 1 1 1) -> white
+        assert_eq!(
+            parse("color(prophoto-rgb 1 1 1)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // Unknown/Unsupported colorspace: color(unsupported-space 1 0 0) -> None
+        assert_eq!(parse("color(unsupported-space 1 0 0)"), None);
     }
 
     #[test]
@@ -15354,6 +15453,152 @@ mod tests {
         assert_eq!(
             parse_value(&[env_comp]),
             Some(CssValue::Keyword("env(safe-area-inset-top)".to_string()))
+        );
+
+        // Test calc-size(auto, 100% - 20px)
+        let calc_size_comp = ComponentValue::Function {
+            name: "calc-size".to_string(),
+            value: vec![
+                token(CssToken::Ident("auto".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(100.0)),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('-')),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[calc_size_comp]),
+            Some(CssValue::Keyword("calc-size(auto,100% - 20px)".to_string()))
+        );
+
+        // Test container-progress(...)
+        let cp_comp = ComponentValue::Function {
+            name: "container-progress".to_string(),
+            value: vec![
+                token(CssToken::Ident("width".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 100.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 500.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[cp_comp]),
+            Some(CssValue::Keyword(
+                "container-progress(width,100px,500px)".to_string()
+            ))
+        );
+
+        // Test scroll-progress(...)
+        let sp_comp = ComponentValue::Function {
+            name: "scroll-progress".to_string(),
+            value: vec![
+                token(CssToken::Ident("block".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("nearest".to_string())),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[sp_comp]),
+            Some(CssValue::Keyword(
+                "scroll-progress(block nearest)".to_string()
+            ))
+        );
+
+        // Test view-progress(...)
+        let vp_comp = ComponentValue::Function {
+            name: "view-progress".to_string(),
+            value: vec![token(CssToken::Ident("inline".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[vp_comp]),
+            Some(CssValue::Keyword("view-progress(inline)".to_string()))
+        );
+
+        // Test image(...)
+        let img_comp = ComponentValue::Function {
+            name: "image".to_string(),
+            value: vec![
+                token(CssToken::String("fallback.png".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Ident("blue".to_string())),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[img_comp]),
+            Some(CssValue::Keyword(
+                "image(\"fallback.png\",blue)".to_string()
+            ))
+        );
+
+        // Test element(...)
+        let elem_comp = ComponentValue::Function {
+            name: "element".to_string(),
+            value: vec![token(CssToken::Hash("my-canvas".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[elem_comp]),
+            Some(CssValue::Keyword("element(#my-canvas)".to_string()))
+        );
+
+        // Test paint(...)
+        let paint_comp = ComponentValue::Function {
+            name: "paint".to_string(),
+            value: vec![token(CssToken::Ident("custom-painter".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[paint_comp]),
+            Some(CssValue::Keyword("paint(custom-painter)".to_string()))
+        );
+
+        // Test src(...)
+        let src_comp = ComponentValue::Function {
+            name: "src".to_string(),
+            value: vec![token(CssToken::String("font.woff2".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[src_comp]),
+            Some(CssValue::Keyword("src(\"font.woff2\")".to_string()))
+        );
+
+        // Test shape(...)
+        let shape_comp = ComponentValue::Function {
+            name: "shape".to_string(),
+            value: vec![
+                token(CssToken::Ident("from".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Percentage(0.0)),
+                token(CssToken::Whitespace),
+                token(CssToken::Percentage(0.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[shape_comp]),
+            Some(CssValue::Keyword("shape(from 0% 0%)".to_string()))
+        );
+
+        // Test ray(...)
+        let ray_comp = ComponentValue::Function {
+            name: "ray".to_string(),
+            value: vec![token(CssToken::Dimension {
+                value: 45.0,
+                unit: "deg".to_string(),
+            })],
+        };
+        assert_eq!(
+            parse_value(&[ray_comp]),
+            Some(CssValue::Keyword("ray(45deg)".to_string()))
         );
     }
 
