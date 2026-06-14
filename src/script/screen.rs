@@ -16,6 +16,10 @@ use boa_engine::{Context, JsObject, JsString};
 /// - `availHeight` (returns 720)
 /// - `colorDepth` (returns 24)
 /// - `pixelDepth` (returns 24)
+/// - `availLeft` (returns 0)
+/// - `availTop` (returns 0)
+/// - `left` (returns 0)
+/// - `top` (returns 0)
 pub fn create_screen(context: &mut Context) -> JsObject {
     ObjectInitializer::new(context)
         .property(JsString::from("width"), 1280, Attribute::all())
@@ -24,6 +28,10 @@ pub fn create_screen(context: &mut Context) -> JsObject {
         .property(JsString::from("availHeight"), 720, Attribute::all())
         .property(JsString::from("colorDepth"), 24, Attribute::all())
         .property(JsString::from("pixelDepth"), 24, Attribute::all())
+        .property(JsString::from("availLeft"), 0, Attribute::all())
+        .property(JsString::from("availTop"), 0, Attribute::all())
+        .property(JsString::from("left"), 0, Attribute::all())
+        .property(JsString::from("top"), 0, Attribute::all())
         .build()
 }
 
@@ -46,7 +54,11 @@ mod tests {
             screen.availWidth === 1280 &&
             screen.availHeight === 720 &&
             screen.colorDepth === 24 &&
-            screen.pixelDepth === 24
+            screen.pixelDepth === 24 &&
+            screen.availLeft === 0 &&
+            screen.availTop === 0 &&
+            screen.left === 0 &&
+            screen.top === 0
             "#,
         );
         let res = context.eval(source).unwrap();
