@@ -126,6 +126,86 @@ impl Affine {
     }
 
     #[inline]
+    pub fn pre_multiply(&self, lhs: &Affine) -> Affine {
+        lhs.multiply(self)
+    }
+
+    #[inline]
+    pub fn determinant(&self) -> f32 {
+        let a = self.m[0];
+        let b = self.m[1];
+        let c = self.m[2];
+        let d = self.m[3];
+        a * d - b * c
+    }
+
+    #[inline]
+    pub fn is_invertible(&self) -> bool {
+        self.determinant().abs() >= 1e-12
+    }
+
+    #[inline]
+    pub fn invert(&self) -> Option<Affine> {
+        let det = self.determinant();
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let inv_det = 1.0 / det;
+        let a = self.m[0];
+        let b = self.m[1];
+        let c = self.m[2];
+        let d = self.m[3];
+        let e = self.m[4];
+        let f = self.m[5];
+
+        Some(Affine {
+            m: [
+                d * inv_det,
+                -b * inv_det,
+                -c * inv_det,
+                a * inv_det,
+                (c * f - d * e) * inv_det,
+                (b * e - a * f) * inv_det,
+            ],
+        })
+    }
+
+    #[inline]
+    pub fn multiply_3d(&self, rhs: &Matrix3d) -> Matrix3d {
+        Matrix3d::from(*self).multiply(rhs)
+    }
+
+    #[inline]
+    pub fn translated(&self, tx: f32, ty: f32) -> Affine {
+        self.multiply(&Affine::translate(tx, ty))
+    }
+
+    #[inline]
+    pub fn scaled(&self, sx: f32, sy: f32) -> Affine {
+        self.multiply(&Affine::scale(sx, sy))
+    }
+
+    #[inline]
+    pub fn rotated(&self, deg: f32) -> Affine {
+        self.multiply(&Affine::rotate(deg))
+    }
+
+    #[inline]
+    pub fn skewed_x(&self, deg_x: f32) -> Affine {
+        self.multiply(&Affine::skew_x(deg_x))
+    }
+
+    #[inline]
+    pub fn skewed_y(&self, deg_y: f32) -> Affine {
+        self.multiply(&Affine::skew_y(deg_y))
+    }
+
+    #[inline]
+    pub fn skewed(&self, deg_x: f32, deg_y: f32) -> Affine {
+        self.multiply(&Affine::skew(deg_x, deg_y))
+    }
+
+    #[inline]
     pub fn apply_point(&self, x: f32, y: f32) -> (f32, f32) {
         let a = self.m[0];
         let b = self.m[1];
@@ -450,6 +530,61 @@ impl Matrix3d {
     }
 
     #[inline]
+    pub fn pre_multiply(&self, lhs: &Matrix3d) -> Self {
+        lhs.multiply(self)
+    }
+
+    #[inline]
+    pub fn translated(&self, tx: f32, ty: f32, tz: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::translate(tx, ty, tz))
+    }
+
+    #[inline]
+    pub fn scaled(&self, sx: f32, sy: f32, sz: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::scale(sx, sy, sz))
+    }
+
+    #[inline]
+    pub fn rotated_x(&self, deg: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::rotate_x(deg))
+    }
+
+    #[inline]
+    pub fn rotated_y(&self, deg: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::rotate_y(deg))
+    }
+
+    #[inline]
+    pub fn rotated_z(&self, deg: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::rotate_z(deg))
+    }
+
+    #[inline]
+    pub fn rotated_3d(&self, rx: f32, ry: f32, rz: f32, deg: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::rotate_3d(rx, ry, rz, deg))
+    }
+
+    #[inline]
+    pub fn skewed_x(&self, deg_x: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::skew_x(deg_x))
+    }
+
+    #[inline]
+    pub fn skewed_y(&self, deg_y: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::skew_y(deg_y))
+    }
+
+    #[inline]
+    pub fn skewed(&self, deg_x: f32, deg_y: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::skew(deg_x, deg_y))
+    }
+
+    #[inline]
+    pub fn perspectived(&self, d: f32) -> Matrix3d {
+        self.multiply(&Matrix3d::perspective(d))
+    }
+
+    #[inline]
     pub fn apply_point_3d(&self, x: f32, y: f32, z: f32) -> (f32, f32, f32) {
         let px = self.m[0] * x + self.m[1] * y + self.m[2] * z + self.m[3];
         let py = self.m[4] * x + self.m[5] * y + self.m[6] * z + self.m[7];
@@ -478,6 +613,31 @@ impl Matrix3d {
             .iter()
             .zip(identity.iter())
             .all(|(&val, &id)| (val - id).abs() < 1e-6)
+    }
+
+    #[inline]
+    pub fn determinant(&self) -> f32 {
+        det4x4(&self.m)
+    }
+
+    #[inline]
+    pub fn is_invertible(&self) -> bool {
+        self.determinant().abs() >= 1e-12
+    }
+
+    #[inline]
+    pub fn invert(&self) -> Option<Matrix3d> {
+        inverse4x4(&self.m).map(|m| Matrix3d { m })
+    }
+
+    #[inline]
+    pub fn is_2d(&self) -> bool {
+        self.to_2d().is_some()
+    }
+
+    #[inline]
+    pub fn multiply_affine(&self, rhs: &Affine) -> Matrix3d {
+        self.multiply(&Matrix3d::from(*rhs))
     }
 
     pub fn to_2d(&self) -> Option<Affine> {
@@ -1285,5 +1445,137 @@ mod tests {
         let m3d = Matrix3d::from_transform_fns(&fns);
         let aff_back = m3d.to_2d().unwrap();
         assert_eq!(aff, aff_back);
+    }
+
+    #[test]
+    fn test_affine_invert_and_determinant_t0955() {
+        // Identity matrix
+        let identity = Affine::identity();
+        assert_eq!(identity.determinant(), 1.0);
+        assert!(identity.is_invertible());
+        let inv_identity = identity.invert().unwrap();
+        assert!(inv_identity.is_identity());
+
+        // Standard scaling/translation
+        let scale_trans = Affine::scale(2.0, 3.0).multiply(&Affine::translate(4.0, 5.0));
+        assert_eq!(scale_trans.determinant(), 6.0);
+        assert!(scale_trans.is_invertible());
+        let inv = scale_trans.invert().unwrap();
+        let back = scale_trans.multiply(&inv);
+        assert!(back.is_identity());
+
+        // Singular matrix
+        let singular = Affine::matrix(1.0, 2.0, 2.0, 4.0, 5.0, 6.0);
+        assert_eq!(singular.determinant(), 0.0);
+        assert!(!singular.is_invertible());
+        assert!(singular.invert().is_none());
+    }
+
+    #[test]
+    fn test_matrix3d_invert_and_determinant_t0955() {
+        // Identity matrix
+        let identity = Matrix3d::identity();
+        assert_eq!(identity.determinant(), 1.0);
+        assert!(identity.is_invertible());
+        let inv_identity = identity.invert().unwrap();
+        assert!(inv_identity.is_identity());
+
+        // Standard 3D translation & scale
+        let t = Matrix3d::translate(2.0, 3.0, 4.0);
+        let s = Matrix3d::scale(2.0, 0.5, 5.0);
+        let orig = t.multiply(&s);
+        assert_eq!(orig.determinant(), 5.0);
+        assert!(orig.is_invertible());
+        let inv = orig.invert().unwrap();
+        let back = orig.multiply(&inv);
+        assert!(back.is_identity());
+
+        // Singular 3D matrix (row-major of scale with 0)
+        let singular = Matrix3d::scale(1.0, 0.0, 1.0);
+        assert_eq!(singular.determinant(), 0.0);
+        assert!(!singular.is_invertible());
+        assert!(singular.invert().is_none());
+    }
+
+    #[test]
+    fn test_is_2d_t0955() {
+        let m2d = Matrix3d::from(Affine::scale(2.0, 3.0));
+        assert!(m2d.is_2d());
+
+        let m3d = Matrix3d::translate(0.0, 0.0, 5.0);
+        assert!(!m3d.is_2d());
+    }
+
+    #[test]
+    fn test_multiply_helpers_t0955() {
+        let aff = Affine::scale(2.0, 3.0);
+        let m3d = Matrix3d::translate(0.0, 0.0, 5.0);
+
+        let res1 = aff.multiply_3d(&m3d);
+        let expected1 = Matrix3d::from(aff).multiply(&m3d);
+        assert_eq!(res1, expected1);
+
+        let res2 = m3d.multiply_affine(&aff);
+        let expected2 = m3d.multiply(&Matrix3d::from(aff));
+        assert_eq!(res2, expected2);
+    }
+
+    #[test]
+    fn test_instance_composition_and_pre_multiply_t0955() {
+        // Test Affine pre_multiply
+        let a = Affine::scale(2.0, 3.0);
+        let b = Affine::translate(10.0, 20.0);
+        let pm = a.pre_multiply(&b); // translate, then scale (b.multiply(a))
+        let expected_pm = b.multiply(&a);
+        assert_eq!(pm, expected_pm);
+
+        // Test Affine instance composition
+        let aff_comp = Affine::identity()
+            .translated(10.0, 20.0)
+            .scaled(2.0, 3.0)
+            .rotated(90.0)
+            .skewed_x(45.0)
+            .skewed_y(45.0)
+            .skewed(30.0, 30.0);
+        let expected_aff_comp = Affine::identity()
+            .multiply(&Affine::translate(10.0, 20.0))
+            .multiply(&Affine::scale(2.0, 3.0))
+            .multiply(&Affine::rotate(90.0))
+            .multiply(&Affine::skew_x(45.0))
+            .multiply(&Affine::skew_y(45.0))
+            .multiply(&Affine::skew(30.0, 30.0));
+        assert_eq!(aff_comp, expected_aff_comp);
+
+        // Test Matrix3d pre_multiply
+        let m1 = Matrix3d::scale(2.0, 3.0, 4.0);
+        let m2 = Matrix3d::translate(10.0, 20.0, 30.0);
+        let m3d_pm = m1.pre_multiply(&m2);
+        let expected_m3d_pm = m2.multiply(&m1);
+        assert_eq!(m3d_pm, expected_m3d_pm);
+
+        // Test Matrix3d instance composition
+        let m3d_comp = Matrix3d::identity()
+            .translated(10.0, 20.0, 30.0)
+            .scaled(2.0, 3.0, 4.0)
+            .rotated_x(90.0)
+            .rotated_y(90.0)
+            .rotated_z(90.0)
+            .rotated_3d(1.0, 1.0, 1.0, 120.0)
+            .skewed_x(45.0)
+            .skewed_y(45.0)
+            .skewed(30.0, 30.0)
+            .perspectived(10.0);
+        let expected_m3d_comp = Matrix3d::identity()
+            .multiply(&Matrix3d::translate(10.0, 20.0, 30.0))
+            .multiply(&Matrix3d::scale(2.0, 3.0, 4.0))
+            .multiply(&Matrix3d::rotate_x(90.0))
+            .multiply(&Matrix3d::rotate_y(90.0))
+            .multiply(&Matrix3d::rotate_z(90.0))
+            .multiply(&Matrix3d::rotate_3d(1.0, 1.0, 1.0, 120.0))
+            .multiply(&Matrix3d::skew_x(45.0))
+            .multiply(&Matrix3d::skew_y(45.0))
+            .multiply(&Matrix3d::skew(30.0, 30.0))
+            .multiply(&Matrix3d::perspective(10.0));
+        assert_eq!(m3d_comp, expected_m3d_comp);
     }
 }
