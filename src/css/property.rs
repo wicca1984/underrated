@@ -681,6 +681,18 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "overflow-x",
+        inherited: false,
+        initial: "visible",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "overflow-y",
+        inherited: false,
+        initial: "visible",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "line-clamp",
         inherited: false,
         initial: "none",
@@ -867,6 +879,18 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "background-origin",
+        inherited: false,
+        initial: "padding-box",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "background-clip",
+        inherited: false,
+        initial: "border-box",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "background-blend-mode",
         inherited: false,
         initial: "normal",
@@ -1006,6 +1030,12 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
     },
     PropertyMetadata {
         name: "align-self",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "justify-self",
         inherited: false,
         initial: "auto",
         animatable: false,
@@ -1689,6 +1719,30 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "grid-row-start",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "grid-row-end",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "grid-column-start",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "grid-column-end",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "box-shadow",
         inherited: false,
         initial: "none",
@@ -2327,6 +2381,26 @@ pub fn is_animatable(name: &str) -> bool {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn test_find_missing_longhands() {
+        let mut missing = Vec::new();
+        for sh in SHORTHAND_EXPANSIONS {
+            for lh in sh.longhands {
+                // If it is a shorthand itself, ignore it
+                let is_shorthand = SHORTHAND_EXPANSIONS.iter().any(|s| s.name == *lh);
+                if !is_shorthand && lookup(lh).is_none() && !missing.contains(lh) {
+                    missing.push(*lh);
+                }
+            }
+        }
+        if !missing.is_empty() {
+            panic!(
+                "Missing longhand properties in PROPERTY_METADATA: {:?}",
+                missing
+            );
+        }
+    }
 
     #[test]
     fn test_is_inherited() {
@@ -3991,6 +4065,34 @@ mod tests {
             ("column-span", false, "none", false),
             ("column-fill", false, "balance", false),
             ("background-blend-mode", false, "normal", false),
+        ];
+
+        for (name, inherited, initial, animatable) in props {
+            let meta =
+                lookup(name).unwrap_or_else(|| panic!("property {} must be registered", name));
+            assert_eq!(meta.name, name);
+            assert_eq!(meta.inherited, inherited, "inherited mismatch for {}", name);
+            assert_eq!(meta.initial, initial, "initial mismatch for {}", name);
+            assert_eq!(
+                meta.animatable, animatable,
+                "animatable mismatch for {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_additive_properties_t0884() {
+        let props = [
+            ("background-origin", false, "padding-box", false),
+            ("background-clip", false, "border-box", false),
+            ("grid-row-start", false, "auto", false),
+            ("grid-row-end", false, "auto", false),
+            ("grid-column-start", false, "auto", false),
+            ("grid-column-end", false, "auto", false),
+            ("overflow-x", false, "visible", false),
+            ("overflow-y", false, "visible", false),
+            ("justify-self", false, "auto", false),
         ];
 
         for (name, inherited, initial, animatable) in props {
