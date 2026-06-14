@@ -84,32 +84,35 @@ pub fn layout_table_container(
     let border_box_x = offset_x + resolved_margin_left;
     let border_box_y = offset_y + margin_top;
 
-    // Find first caption among layoutable children
+    // Find all captions among layoutable children
     let layoutable_children = get_layoutable_children(dom, styles, node);
-    let mut first_caption = None;
-    let mut found_first = false;
+    let mut captions = Vec::new();
     for &child in &layoutable_children {
         if let Some(NodeData::Element { name, .. }) = dom.data(child)
             && name == "caption"
         {
-            if !found_first {
-                first_caption = Some(child);
-                found_first = true;
-            } else {
-                // TODO(spec): Multiple captions are not supported. Ignore any later captions.
-            }
+            captions.push(child);
         }
     }
 
     // Gather table rows
     let rows = gather_table_rows(dom, styles, node);
     if rows.is_empty() {
-        // Empty table, but might have a caption
+        // Empty table, but might have captions
         let table_width = content_width + padding_left + padding_right + border_left + border_right;
         let mut table_children = Vec::new();
-        let mut caption_height = 0.0_f32;
-        if let Some(caption_node) = first_caption
-            && let Some(mut cap_box) = layout_node(
+        let mut top_caption_boxes = Vec::new();
+        let mut bottom_caption_boxes = Vec::new();
+
+        // Collect and layout captions
+        for &caption_node in &captions {
+            let is_bottom = if let Some(style) = styles.get(&caption_node) {
+                style.inherited_table.caption_side == "bottom" || caption_side_bottom
+            } else {
+                caption_side_bottom
+            };
+
+            if let Some(cap_box) = layout_node(
                 dom,
                 styles,
                 caption_node,
@@ -117,20 +120,43 @@ pub fn layout_table_container(
                 border_box_x,
                 border_box_y,
                 depth + 1,
-            )
-        {
-            caption_height = cap_box.rect.size.height;
-            if caption_side_bottom {
-                let dy = padding_top + padding_bottom + border_top + border_bottom;
-                translate_y(&mut cap_box, dy);
+            ) {
+                if is_bottom {
+                    bottom_caption_boxes.push(cap_box);
+                } else {
+                    top_caption_boxes.push(cap_box);
+                }
             }
+        }
+
+        // Position top captions (stacking top to bottom)
+        let mut curr_y = border_box_y;
+        for mut cap_box in top_caption_boxes {
+            let dy = curr_y - cap_box.rect.origin.y;
+            translate_y(&mut cap_box, dy);
+            curr_y += cap_box.rect.size.height;
             table_children.push(cap_box);
         }
-        let border_box_height =
-            padding_top + padding_bottom + border_top + border_bottom + caption_height;
+
+        // Space for table border box
+        curr_y += padding_top + padding_bottom + border_top + border_bottom;
+
+        // Position bottom captions (stacking top to bottom)
+        for mut cap_box in bottom_caption_boxes {
+            let dy = curr_y - cap_box.rect.origin.y;
+            translate_y(&mut cap_box, dy);
+            curr_y += cap_box.rect.size.height;
+            table_children.push(cap_box);
+        }
+
         return Some(LayoutBox {
             node: Some(node),
-            rect: Rect::new(border_box_x, border_box_y, table_width, border_box_height),
+            rect: Rect::new(
+                border_box_x,
+                border_box_y,
+                table_width,
+                curr_y - border_box_y,
+            ),
             children: table_children,
             text: None,
         });
@@ -179,12 +205,21 @@ pub fn layout_table_container(
         .unwrap_or(0);
 
     if num_cols == 0 {
-        // Empty table, but might have a caption
+        // Empty table, but might have captions
         let table_width = content_width + padding_left + padding_right + border_left + border_right;
         let mut table_children = Vec::new();
-        let mut caption_height = 0.0_f32;
-        if let Some(caption_node) = first_caption
-            && let Some(mut cap_box) = layout_node(
+        let mut top_caption_boxes = Vec::new();
+        let mut bottom_caption_boxes = Vec::new();
+
+        // Collect and layout captions
+        for &caption_node in &captions {
+            let is_bottom = if let Some(style) = styles.get(&caption_node) {
+                style.inherited_table.caption_side == "bottom" || caption_side_bottom
+            } else {
+                caption_side_bottom
+            };
+
+            if let Some(cap_box) = layout_node(
                 dom,
                 styles,
                 caption_node,
@@ -192,20 +227,43 @@ pub fn layout_table_container(
                 border_box_x,
                 border_box_y,
                 depth + 1,
-            )
-        {
-            caption_height = cap_box.rect.size.height;
-            if caption_side_bottom {
-                let dy = padding_top + padding_bottom + border_top + border_bottom;
-                translate_y(&mut cap_box, dy);
+            ) {
+                if is_bottom {
+                    bottom_caption_boxes.push(cap_box);
+                } else {
+                    top_caption_boxes.push(cap_box);
+                }
             }
+        }
+
+        // Position top captions (stacking top to bottom)
+        let mut curr_y = border_box_y;
+        for mut cap_box in top_caption_boxes {
+            let dy = curr_y - cap_box.rect.origin.y;
+            translate_y(&mut cap_box, dy);
+            curr_y += cap_box.rect.size.height;
             table_children.push(cap_box);
         }
-        let border_box_height =
-            padding_top + padding_bottom + border_top + border_bottom + caption_height;
+
+        // Space for table border box
+        curr_y += padding_top + padding_bottom + border_top + border_bottom;
+
+        // Position bottom captions (stacking top to bottom)
+        for mut cap_box in bottom_caption_boxes {
+            let dy = curr_y - cap_box.rect.origin.y;
+            translate_y(&mut cap_box, dy);
+            curr_y += cap_box.rect.size.height;
+            table_children.push(cap_box);
+        }
+
         return Some(LayoutBox {
             node: Some(node),
-            rect: Rect::new(border_box_x, border_box_y, table_width, border_box_height),
+            rect: Rect::new(
+                border_box_x,
+                border_box_y,
+                table_width,
+                curr_y - border_box_y,
+            ),
             children: table_children,
             text: None,
         });
@@ -484,10 +542,17 @@ pub fn layout_table_container(
     let table_width =
         final_content_width + padding_left + padding_right + border_left + border_right;
 
-    let mut caption_box = None;
-    let mut caption_height = 0.0_f32;
-    if let Some(caption_node) = first_caption
-        && let Some(cap_box) = layout_node(
+    let mut top_caption_boxes = Vec::new();
+    let mut bottom_caption_boxes = Vec::new();
+
+    for &caption_node in &captions {
+        let is_bottom = if let Some(style) = styles.get(&caption_node) {
+            style.inherited_table.caption_side == "bottom" || caption_side_bottom
+        } else {
+            caption_side_bottom
+        };
+
+        if let Some(cap_box) = layout_node(
             dom,
             styles,
             caption_node,
@@ -495,18 +560,31 @@ pub fn layout_table_container(
             border_box_x,
             border_box_y,
             depth + 1,
-        )
-    {
-        caption_height = cap_box.rect.size.height;
-        caption_box = Some(cap_box);
+        ) {
+            if is_bottom {
+                bottom_caption_boxes.push(cap_box);
+            } else {
+                top_caption_boxes.push(cap_box);
+            }
+        }
     }
 
-    let mut row_y_offsets = vec![0.0_f32; rows.len()];
-    let mut curr_y = border_box_y + border_top + padding_top;
-    if !caption_side_bottom {
-        curr_y += caption_height;
+    let mut table_children = Vec::new();
+
+    // 1. Position top captions (stacking top to bottom)
+    let mut curr_y = border_box_y;
+    for mut cap_box in top_caption_boxes {
+        let dy = curr_y - cap_box.rect.origin.y;
+        translate_y(&mut cap_box, dy);
+        curr_y += cap_box.rect.size.height;
+        table_children.push(cap_box);
     }
-    let row_start_y = curr_y;
+
+    // 2. Table row content begins here
+    let mut row_y_offsets = vec![0.0_f32; rows.len()];
+    let row_start_y = curr_y + border_top + padding_top;
+    curr_y = row_start_y;
+
     for r in 0..rows.len() {
         curr_y += spacing_v;
         row_y_offsets[r] = curr_y;
@@ -514,18 +592,19 @@ pub fn layout_table_container(
     }
     curr_y += spacing_v;
 
-    let mut table_children = Vec::new();
-    let mut bottom_caption_box = None;
-    if let Some(mut cap_box) = caption_box {
-        if caption_side_bottom {
-            let target_y = curr_y + padding_bottom + border_bottom;
-            let dy = target_y - cap_box.rect.origin.y;
-            translate_y(&mut cap_box, dy);
-            bottom_caption_box = Some(cap_box);
-        } else {
-            table_children.push(cap_box);
-        }
+    // 3. Table border box bottom edge is here
+    let table_bottom_y = curr_y + padding_bottom + border_bottom;
+
+    // 4. Position bottom captions (stacking top to bottom), but don't push them to table_children yet
+    let mut positioned_bottom_captions = Vec::new();
+    let mut bottom_y = table_bottom_y;
+    for mut cap_box in bottom_caption_boxes {
+        let dy = bottom_y - cap_box.rect.origin.y;
+        translate_y(&mut cap_box, dy);
+        bottom_y += cap_box.rect.size.height;
+        positioned_bottom_captions.push(cap_box);
     }
+    curr_y = bottom_y;
 
     // Lay out rows and place cells
     for (r, row_info) in rows.into_iter().enumerate() {
@@ -603,21 +682,17 @@ pub fn layout_table_container(
         table_children.push(row_box);
     }
 
-    if let Some(cap_box) = bottom_caption_box {
-        table_children.push(cap_box);
-    }
-
-    let final_content_height = curr_y - row_start_y;
-    let border_box_height = final_content_height
-        + padding_top
-        + padding_bottom
-        + border_top
-        + border_bottom
-        + caption_height;
+    // Append bottom captions at the very end to match paint order
+    table_children.extend(positioned_bottom_captions);
 
     Some(LayoutBox {
         node: Some(node),
-        rect: Rect::new(border_box_x, border_box_y, table_width, border_box_height),
+        rect: Rect::new(
+            border_box_x,
+            border_box_y,
+            table_width,
+            curr_y - border_box_y,
+        ),
         children: table_children,
         text: None,
     })
@@ -1499,6 +1574,122 @@ mod tests {
 
         // Assert that caption top y (50.0) is greater than row top y (20.0)
         assert!(cap_box.rect.origin.y > row_box.rect.origin.y);
+    }
+
+    #[test]
+    fn test_table_multiple_captions() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Create table element
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Create top caption 1
+        let caption_top1 = dom.create_node(NodeData::Element {
+            name: "caption".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, caption_top1);
+
+        // Create top caption 2
+        let caption_top2 = dom.create_node(NodeData::Element {
+            name: "caption".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, caption_top2);
+
+        // Create bottom caption 1
+        let caption_bottom1 = dom.create_node(NodeData::Element {
+            name: "caption".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, caption_bottom1);
+
+        // Create row
+        let row_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row_node);
+
+        // Create cell
+        let cell_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row_node, cell_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 200px
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        styles.insert(table_node, table_style);
+
+        // Top caption 1 style: height 20px
+        let mut cap_top1_style = style_with_display("block");
+        cap_top1_style.insert("height".to_string(), CssValue::Length(20.0, LengthUnit::Px));
+        styles.insert(caption_top1, cap_top1_style);
+
+        // Top caption 2 style: height 15px
+        let mut cap_top2_style = style_with_display("block");
+        cap_top2_style.insert("height".to_string(), CssValue::Length(15.0, LengthUnit::Px));
+        styles.insert(caption_top2, cap_top2_style);
+
+        // Bottom caption 1 style: height 25px, caption-side: bottom
+        let mut cap_bottom1_style = style_with_display("block");
+        cap_bottom1_style.insert("height".to_string(), CssValue::Length(25.0, LengthUnit::Px));
+        cap_bottom1_style.insert(
+            "caption-side".to_string(),
+            CssValue::Keyword("bottom".to_string()),
+        );
+        styles.insert(caption_bottom1, cap_bottom1_style);
+
+        // Row style
+        styles.insert(row_node, style_with_display("table-row"));
+
+        // Cell style: width 200px, height 30px
+        let mut cell_style = style_with_display("table-cell");
+        cell_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        cell_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        styles.insert(cell_node, cell_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 10.0, 20.0, 0)
+            .expect("should layout table");
+
+        // Checks:
+        // 1. Table width is 200px
+        assert_eq!(table_box.rect.size.width, 200.0);
+        // 2. Table total height should include:
+        //    top captions (20px + 15px) + row (30px) + bottom caption (25px) = 90px
+        assert_eq!(table_box.rect.size.height, 90.0);
+
+        // 3. Children of table should be: top captions, then the row, then bottom caption
+        assert_eq!(table_box.children.len(), 4);
+
+        let cap1_box = &table_box.children[0];
+        assert_eq!(cap1_box.node, Some(caption_top1));
+        assert_eq!(cap1_box.rect.origin.y, 20.0);
+        assert_eq!(cap1_box.rect.size.height, 20.0);
+
+        let cap2_box = &table_box.children[1];
+        assert_eq!(cap2_box.node, Some(caption_top2));
+        assert_eq!(cap2_box.rect.origin.y, 20.0 + 20.0);
+        assert_eq!(cap2_box.rect.size.height, 15.0);
+
+        let row_box = &table_box.children[2];
+        assert_eq!(row_box.node, Some(row_node));
+        assert_eq!(row_box.rect.origin.y, 40.0 + 15.0);
+        assert_eq!(row_box.rect.size.height, 30.0);
+
+        let cap3_box = &table_box.children[3];
+        assert_eq!(cap3_box.node, Some(caption_bottom1));
+        assert_eq!(cap3_box.rect.origin.y, 55.0 + 30.0);
+        assert_eq!(cap3_box.rect.size.height, 25.0);
     }
 
     #[test]
