@@ -2841,7 +2841,8 @@ pub fn expand_shorthand_values(
     }
 
     match lower_shorthand.as_str() {
-        "margin" | "padding" | "border-width" | "border-style" | "border-color" => {
+        "margin" | "padding" | "border-width" | "border-style" | "border-color" | "inset"
+        | "scroll-margin" | "scroll-padding" => {
             let longhands =
                 shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
             if values.len() > 4 {
@@ -2892,7 +2893,14 @@ pub fn expand_shorthand_values(
                 },
             ])
         }
-        "border-top" | "border-right" | "border-bottom" | "border-left" => {
+        "border-top"
+        | "border-right"
+        | "border-bottom"
+        | "border-left"
+        | "border-block-start"
+        | "border-block-end"
+        | "border-inline-start"
+        | "border-inline-end" => {
             let longhands =
                 shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
             if values.len() > 3 {
@@ -3070,6 +3078,375 @@ pub fn expand_shorthand_values(
                 ExpandedProperty {
                     name: longhands[3],
                     value: build_val(3),
+                },
+            ])
+        }
+        "margin-block"
+        | "margin-inline"
+        | "padding-block"
+        | "padding-inline"
+        | "inset-block"
+        | "inset-inline"
+        | "scroll-margin-block"
+        | "scroll-margin-inline"
+        | "scroll-padding-block"
+        | "scroll-padding-inline"
+        | "contain-intrinsic-size"
+        | "background-position"
+        | "background-repeat"
+        | "overscroll-behavior"
+        | "gap"
+        | "grid-gap"
+        | "place-content"
+        | "place-items"
+        | "place-self"
+        | "border-block-color"
+        | "border-block-style"
+        | "border-block-width"
+        | "border-inline-color"
+        | "border-inline-style"
+        | "border-inline-width"
+        | "text-spacing" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 2 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let v0 = (*values[0]).to_string();
+            let v1 = if values.len() > 1 {
+                (*values[1]).to_string()
+            } else {
+                (*values[0]).to_string()
+            };
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: v0,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: v1,
+                },
+            ])
+        }
+        "scroll-timeline" | "view-timeline" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 2 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let v0 = (*values[0]).to_string();
+            let v1 = if values.len() > 1 {
+                (*values[1]).to_string()
+            } else {
+                "block".to_string()
+            };
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: v0,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: v1,
+                },
+            ])
+        }
+        "border-block" | "border-inline" => {
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut width = None;
+            let mut style = None;
+            let mut color = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_border_style_keyword(&lower) {
+                    if style.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    style = Some(val.to_string());
+                } else if is_border_width_keyword(&lower) || is_length_value(&lower) {
+                    if width.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    width = Some(val.to_string());
+                } else {
+                    if color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    color = Some(val.to_string());
+                }
+            }
+
+            let w = width.unwrap_or_else(|| "medium".to_string());
+            let s = style.unwrap_or_else(|| "none".to_string());
+            let c = color.unwrap_or_else(|| "currentcolor".to_string());
+
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: w.clone(),
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: s.clone(),
+                },
+                ExpandedProperty {
+                    name: longhands[2],
+                    value: c.clone(),
+                },
+                ExpandedProperty {
+                    name: longhands[3],
+                    value: w,
+                },
+                ExpandedProperty {
+                    name: longhands[4],
+                    value: s,
+                },
+                ExpandedProperty {
+                    name: longhands[5],
+                    value: c,
+                },
+            ])
+        }
+        "outline" => {
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut width = None;
+            let mut style = None;
+            let mut color = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_border_style_keyword(&lower) || lower == "auto" {
+                    if style.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    style = Some(val.to_string());
+                } else if is_border_width_keyword(&lower) || is_length_value(&lower) {
+                    if width.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    width = Some(val.to_string());
+                } else {
+                    if color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    color = Some(val.to_string());
+                }
+            }
+
+            let w = width.unwrap_or_else(|| "medium".to_string());
+            let s = style.unwrap_or_else(|| "none".to_string());
+            let c = color.unwrap_or_else(|| "currentcolor".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "outline-width",
+                    value: w,
+                },
+                ExpandedProperty {
+                    name: "outline-style",
+                    value: s,
+                },
+                ExpandedProperty {
+                    name: "outline-color",
+                    value: c,
+                },
+            ])
+        }
+        "text-emphasis" => {
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut style_parts = Vec::new();
+            let mut color = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_color_token(&lower) {
+                    if color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    color = Some(val.to_string());
+                } else {
+                    style_parts.push(val.to_string());
+                }
+            }
+
+            let s = if style_parts.is_empty() {
+                "none".to_string()
+            } else {
+                style_parts.join(" ")
+            };
+            let c = color.unwrap_or_else(|| "currentcolor".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "text-emphasis-style",
+                    value: s,
+                },
+                ExpandedProperty {
+                    name: "text-emphasis-color",
+                    value: c,
+                },
+            ])
+        }
+        "caret" => {
+            if values.len() > 2 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut color = None;
+            let mut shape = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if lower == "auto" {
+                    // auto can be both. handled as None -> auto below.
+                } else if matches!(lower.as_str(), "bar" | "block" | "underscore") {
+                    if shape.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    shape = Some(val.to_string());
+                } else if is_color_token(&lower) {
+                    if color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    color = Some(val.to_string());
+                } else {
+                    return Err(ShorthandError::InvalidValue);
+                }
+            }
+
+            let c = color.unwrap_or_else(|| "auto".to_string());
+            let s = shape.unwrap_or_else(|| "auto".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "caret-color",
+                    value: c,
+                },
+                ExpandedProperty {
+                    name: "caret-shape",
+                    value: s,
+                },
+            ])
+        }
+        "columns" => {
+            if values.len() > 2 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut width = None;
+            let mut count = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if lower == "auto" {
+                    // handled as None -> auto below.
+                } else {
+                    let is_int = {
+                        let mut chars = lower.chars();
+                        if let Some(first) = chars.next() {
+                            let rest = if first == '+' || first == '-' {
+                                chars.as_str()
+                            } else {
+                                &lower
+                            };
+                            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+                        } else {
+                            false
+                        }
+                    };
+
+                    if is_int {
+                        if count.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        count = Some(val.to_string());
+                    } else if is_length_value(&lower) {
+                        if width.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        width = Some(val.to_string());
+                    } else {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                }
+            }
+
+            let w = width.unwrap_or_else(|| "auto".to_string());
+            let c = count.unwrap_or_else(|| "auto".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "column-width",
+                    value: w,
+                },
+                ExpandedProperty {
+                    name: "column-count",
+                    value: c,
+                },
+            ])
+        }
+        "font-synthesis" => {
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            if values
+                .iter()
+                .any(|&v| v.trim().eq_ignore_ascii_case("none"))
+            {
+                if values.len() == 1 {
+                    return Ok(vec![
+                        ExpandedProperty {
+                            name: "font-synthesis-weight",
+                            value: "none".to_string(),
+                        },
+                        ExpandedProperty {
+                            name: "font-synthesis-style",
+                            value: "none".to_string(),
+                        },
+                        ExpandedProperty {
+                            name: "font-synthesis-small-caps",
+                            value: "none".to_string(),
+                        },
+                    ]);
+                } else {
+                    return Err(ShorthandError::InvalidValue);
+                }
+            }
+
+            let mut weight = "none".to_string();
+            let mut style = "none".to_string();
+            let mut small_caps = "none".to_string();
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                match lower.as_str() {
+                    "weight" => weight = "auto".to_string(),
+                    "style" => style = "auto".to_string(),
+                    "small-caps" => small_caps = "auto".to_string(),
+                    _ => return Err(ShorthandError::InvalidValue),
+                }
+            }
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "font-synthesis-weight",
+                    value: weight,
+                },
+                ExpandedProperty {
+                    name: "font-synthesis-style",
+                    value: style,
+                },
+                ExpandedProperty {
+                    name: "font-synthesis-small-caps",
+                    value: small_caps,
                 },
             ])
         }
@@ -6406,6 +6783,187 @@ mod tests {
             expand_shorthand_values("border-radius", &["5px", "/", "/", "10px"]),
             Err(ShorthandError::InvalidValue)
         );
+    }
+
+    #[test]
+    fn test_shorthand_expansion_extended_t1033() {
+        // 1. inset, scroll-margin, scroll-padding (1-4 values positional)
+        let ins1 = expand_shorthand_values("inset", &["10px"]).unwrap();
+        assert_eq!(ins1.len(), 4);
+        assert_eq!(ins1[0].name, "top");
+        assert_eq!(ins1[0].value, "10px");
+        assert_eq!(ins1[1].name, "right");
+        assert_eq!(ins1[1].value, "10px");
+        assert_eq!(ins1[2].name, "bottom");
+        assert_eq!(ins1[2].value, "10px");
+        assert_eq!(ins1[3].name, "left");
+        assert_eq!(ins1[3].value, "10px");
+
+        let ins2 = expand_shorthand_values("inset", &["10px", "20px"]).unwrap();
+        assert_eq!(ins2[0].value, "10px"); // top
+        assert_eq!(ins2[1].value, "20px"); // right
+        assert_eq!(ins2[2].value, "10px"); // bottom
+        assert_eq!(ins2[3].value, "20px"); // left
+
+        let ins3 = expand_shorthand_values("inset", &["10px", "20px", "30px"]).unwrap();
+        assert_eq!(ins3[0].value, "10px"); // top
+        assert_eq!(ins3[1].value, "20px"); // right
+        assert_eq!(ins3[2].value, "30px"); // bottom
+        assert_eq!(ins3[3].value, "20px"); // left
+
+        let ins4 = expand_shorthand_values("inset", &["10px", "20px", "30px", "40px"]).unwrap();
+        assert_eq!(ins4[0].value, "10px"); // top
+        assert_eq!(ins4[1].value, "20px"); // right
+        assert_eq!(ins4[2].value, "30px"); // bottom
+        assert_eq!(ins4[3].value, "40px"); // left
+
+        assert_eq!(
+            expand_shorthand_values("inset", &["10px", "20px", "30px", "40px", "50px"]),
+            Err(ShorthandError::TooManyValues)
+        );
+
+        // scroll-margin and scroll-padding
+        let sm = expand_shorthand_values("scroll-margin", &["5px", "15px"]).unwrap();
+        assert_eq!(sm.len(), 4);
+        assert_eq!(sm[0].name, "scroll-margin-top");
+        assert_eq!(sm[0].value, "5px");
+        assert_eq!(sm[1].name, "scroll-margin-right");
+        assert_eq!(sm[1].value, "15px");
+
+        let sp = expand_shorthand_values("scroll-padding", &["2px"]).unwrap();
+        assert_eq!(sp.len(), 4);
+        assert_eq!(sp[0].name, "scroll-padding-top");
+        assert_eq!(sp[0].value, "2px");
+
+        // 2. 1-to-2 positional (simple directional / logical)
+        let mb1 = expand_shorthand_values("margin-block", &["10px"]).unwrap();
+        assert_eq!(mb1.len(), 2);
+        assert_eq!(mb1[0].name, "margin-block-start");
+        assert_eq!(mb1[0].value, "10px");
+        assert_eq!(mb1[1].name, "margin-block-end");
+        assert_eq!(mb1[1].value, "10px");
+
+        let mb2 = expand_shorthand_values("margin-block", &["10px", "20px"]).unwrap();
+        assert_eq!(mb2[0].value, "10px");
+        assert_eq!(mb2[1].value, "20px");
+
+        assert_eq!(
+            expand_shorthand_values("margin-block", &["10px", "20px", "30px"]),
+            Err(ShorthandError::TooManyValues)
+        );
+
+        let gp = expand_shorthand_values("gap", &["20px", "30px"]).unwrap();
+        assert_eq!(gp.len(), 2);
+        assert_eq!(gp[0].name, "row-gap");
+        assert_eq!(gp[0].value, "20px");
+        assert_eq!(gp[1].name, "column-gap");
+        assert_eq!(gp[1].value, "30px");
+
+        let ob = expand_shorthand_values("overscroll-behavior", &["contain"]).unwrap();
+        assert_eq!(ob.len(), 2);
+        assert_eq!(ob[0].name, "overscroll-behavior-x");
+        assert_eq!(ob[0].value, "contain");
+        assert_eq!(ob[1].name, "overscroll-behavior-y");
+        assert_eq!(ob[1].value, "contain");
+
+        // 3. scroll-timeline and view-timeline (1-to-2 with "block" default)
+        let st1 = expand_shorthand_values("scroll-timeline", &["my-timeline"]).unwrap();
+        assert_eq!(st1.len(), 2);
+        assert_eq!(st1[0].name, "scroll-timeline-name");
+        assert_eq!(st1[0].value, "my-timeline");
+        assert_eq!(st1[1].name, "scroll-timeline-axis");
+        assert_eq!(st1[1].value, "block");
+
+        let st2 = expand_shorthand_values("scroll-timeline", &["my-timeline", "inline"]).unwrap();
+        assert_eq!(st2[0].value, "my-timeline");
+        assert_eq!(st2[1].value, "inline");
+
+        // 4. border-block-start etc.
+        let bbs1 = expand_shorthand_values("border-block-start", &["solid", "red"]).unwrap();
+        assert_eq!(bbs1.len(), 3);
+        assert_eq!(bbs1[0].name, "border-block-start-width");
+        assert_eq!(bbs1[0].value, "medium");
+        assert_eq!(bbs1[1].name, "border-block-start-style");
+        assert_eq!(bbs1[1].value, "solid");
+        assert_eq!(bbs1[2].name, "border-block-start-color");
+        assert_eq!(bbs1[2].value, "red");
+
+        // 5. border-block / border-inline (sets 6 longhands)
+        let bb1 = expand_shorthand_values("border-block", &["5px", "dashed"]).unwrap();
+        assert_eq!(bb1.len(), 6);
+        assert_eq!(bb1[0].name, "border-block-start-width");
+        assert_eq!(bb1[0].value, "5px");
+        assert_eq!(bb1[1].name, "border-block-start-style");
+        assert_eq!(bb1[1].value, "dashed");
+        assert_eq!(bb1[2].name, "border-block-start-color");
+        assert_eq!(bb1[2].value, "currentcolor");
+        assert_eq!(bb1[3].name, "border-block-end-width");
+        assert_eq!(bb1[3].value, "5px");
+        assert_eq!(bb1[4].name, "border-block-end-style");
+        assert_eq!(bb1[4].value, "dashed");
+        assert_eq!(bb1[5].name, "border-block-end-color");
+        assert_eq!(bb1[5].value, "currentcolor");
+
+        // 6. outline (sets width, style, color; style supports auto)
+        let out1 = expand_shorthand_values("outline", &["2px", "auto", "blue"]).unwrap();
+        assert_eq!(out1.len(), 3);
+        assert_eq!(out1[0].name, "outline-width");
+        assert_eq!(out1[0].value, "2px");
+        assert_eq!(out1[1].name, "outline-style");
+        assert_eq!(out1[1].value, "auto");
+        assert_eq!(out1[2].name, "outline-color");
+        assert_eq!(out1[2].value, "blue");
+
+        // 7. text-emphasis (up to 3 values positional/order-independent, combining non-color)
+        let te1 = expand_shorthand_values("text-emphasis", &["filled", "circle", "red"]).unwrap();
+        assert_eq!(te1.len(), 2);
+        assert_eq!(te1[0].name, "text-emphasis-style");
+        assert_eq!(te1[0].value, "filled circle");
+        assert_eq!(te1[1].name, "text-emphasis-color");
+        assert_eq!(te1[1].value, "red");
+
+        let te2 = expand_shorthand_values("text-emphasis", &["red", "open"]).unwrap();
+        assert_eq!(te2[0].value, "open");
+        assert_eq!(te2[1].value, "red");
+
+        // 8. caret
+        let car1 = expand_shorthand_values("caret", &["red", "block"]).unwrap();
+        assert_eq!(car1.len(), 2);
+        assert_eq!(car1[0].name, "caret-color");
+        assert_eq!(car1[0].value, "red");
+        assert_eq!(car1[1].name, "caret-shape");
+        assert_eq!(car1[1].value, "block");
+
+        let car2 = expand_shorthand_values("caret", &["auto"]).unwrap();
+        assert_eq!(car2[0].value, "auto");
+        assert_eq!(car2[1].value, "auto");
+
+        // 9. columns
+        let col1 = expand_shorthand_values("columns", &["12em", "3"]).unwrap();
+        assert_eq!(col1.len(), 2);
+        assert_eq!(col1[0].name, "column-width");
+        assert_eq!(col1[0].value, "12em");
+        assert_eq!(col1[1].name, "column-count");
+        assert_eq!(col1[1].value, "3");
+
+        let col2 = expand_shorthand_values("columns", &["auto"]).unwrap();
+        assert_eq!(col2[0].value, "auto");
+        assert_eq!(col2[1].value, "auto");
+
+        // 10. font-synthesis
+        let fs1 = expand_shorthand_values("font-synthesis", &["none"]).unwrap();
+        assert_eq!(fs1.len(), 3);
+        assert_eq!(fs1[0].name, "font-synthesis-weight");
+        assert_eq!(fs1[0].value, "none");
+        assert_eq!(fs1[1].name, "font-synthesis-style");
+        assert_eq!(fs1[1].value, "none");
+        assert_eq!(fs1[2].name, "font-synthesis-small-caps");
+        assert_eq!(fs1[2].value, "none");
+
+        let fs2 = expand_shorthand_values("font-synthesis", &["weight", "small-caps"]).unwrap();
+        assert_eq!(fs2[0].value, "auto");
+        assert_eq!(fs2[1].value, "none");
+        assert_eq!(fs2[2].value, "auto");
     }
 
     #[test]
