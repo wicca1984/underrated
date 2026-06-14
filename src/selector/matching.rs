@@ -273,6 +273,11 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // which this engine does not track, thus it always returns false.
                         false
                     }
+                    "past" => {
+                        // TODO(spec): Real :past matching requires tracking elements in the past relative to a time-dimensional context
+                        // which this engine does not track, thus it always returns false.
+                        false
+                    }
                     "fullscreen" => {
                         // TODO(spec): Real :fullscreen matching requires a Fullscreen API and tracking of
                         // the fullscreen element(s), which is intentionally out of scope and not implemented
@@ -3339,6 +3344,39 @@ mod tests {
         assert!(!matches(&sel_current, &dom, div_elem));
         assert!(!matches(&sel_current, &dom, video_elem));
         assert!(!matches(&sel_current, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_past_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <audio>
+        let audio_elem = dom.create_node(NodeData::Element {
+            name: "audio".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, audio_elem);
+
+        // Matches :past (should never match since we have no time-dimensional / timed-media context)
+        let sel_past = parse_selector_list(":past").unwrap();
+        assert!(!matches(&sel_past, &dom, div_elem));
+        assert!(!matches(&sel_past, &dom, video_elem));
+        assert!(!matches(&sel_past, &dom, audio_elem));
     }
 
     #[test]
