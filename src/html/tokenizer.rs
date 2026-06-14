@@ -2440,6 +2440,7 @@ impl Tokenizer {
                             self.state = State::CdataSectionBracket;
                         }
                         None => {
+                            self.emit_error("eof-in-cdata");
                             self.input.reconsume();
                             self.state = State::Data;
                         }
@@ -2453,6 +2454,12 @@ impl Tokenizer {
                     match c {
                         Some(']') => {
                             self.state = State::CdataSectionEnd;
+                        }
+                        None => {
+                            self.emit_error("eof-in-cdata");
+                            self.token_buffer.push_back(Token::Character(']'));
+                            self.input.reconsume();
+                            self.state = State::Data;
                         }
                         _ => {
                             self.token_buffer.push_back(Token::Character(']'));
@@ -2469,6 +2476,13 @@ impl Tokenizer {
                         }
                         Some(']') => {
                             self.token_buffer.push_back(Token::Character(']'));
+                        }
+                        None => {
+                            self.emit_error("eof-in-cdata");
+                            self.token_buffer.push_back(Token::Character(']'));
+                            self.token_buffer.push_back(Token::Character(']'));
+                            self.input.reconsume();
+                            self.state = State::Data;
                         }
                         _ => {
                             self.token_buffer.push_back(Token::Character(']'));
@@ -2705,6 +2719,7 @@ impl Tokenizer {
 
     fn anything_else_in_rcdata_end_tag_name(&mut self) {
         self.state = State::Rcdata;
+        self.current_token = None;
         self.token_buffer.push_back(Token::Character('<'));
         self.token_buffer.push_back(Token::Character('/'));
         let buffer = self.temporary_buffer.clone();
@@ -2716,6 +2731,7 @@ impl Tokenizer {
 
     fn anything_else_in_rawtext_end_tag_name(&mut self) {
         self.state = State::Rawtext;
+        self.current_token = None;
         self.token_buffer.push_back(Token::Character('<'));
         self.token_buffer.push_back(Token::Character('/'));
         let buffer = self.temporary_buffer.clone();
@@ -2727,6 +2743,7 @@ impl Tokenizer {
 
     fn anything_else_in_script_data_end_tag_name(&mut self) {
         self.state = State::ScriptData;
+        self.current_token = None;
         self.token_buffer.push_back(Token::Character('<'));
         self.token_buffer.push_back(Token::Character('/'));
         let buffer = self.temporary_buffer.clone();
@@ -2738,6 +2755,7 @@ impl Tokenizer {
 
     fn anything_else_in_script_data_escaped_end_tag_name(&mut self) {
         self.state = State::ScriptDataEscaped;
+        self.current_token = None;
         self.token_buffer.push_back(Token::Character('<'));
         self.token_buffer.push_back(Token::Character('/'));
         let buffer = self.temporary_buffer.clone();
@@ -5353,5 +5371,107 @@ mod tests {
                 "Expected mismatched-markup-declaration-open parse error"
             );
         }
+    }
+
+    #[test]
+    fn test_cdata_eof_errors() {
+        // EOF in CDATA section state
+        {
+            let stream = InputStream::from_utf8(b"<![CDATA[abc");
+            let mut t = Tokenizer::new(stream);
+            t.set_xml_mode(true);
+            let mut tokens = Vec::new();
+            loop {
+                let tok = t.next_token();
+                if tok == Token::Eof {
+                    break;
+                }
+                tokens.push(tok);
+            }
+            assert_eq!(
+                tokens,
+                vec![
+                    Token::Character('a'),
+                    Token::Character('b'),
+                    Token::Character('c'),
+                ]
+            );
+            assert!(t.take_errors().iter().any(|e| e.code == "eof-in-cdata"));
+        }
+
+        // EOF in CDATA section bracket state
+        {
+            let stream = InputStream::from_utf8(b"<![CDATA[abc]");
+            let mut t = Tokenizer::new(stream);
+            t.set_xml_mode(true);
+            let mut tokens = Vec::new();
+            loop {
+                let tok = t.next_token();
+                if tok == Token::Eof {
+                    break;
+                }
+                tokens.push(tok);
+            }
+            assert_eq!(
+                tokens,
+                vec![
+                    Token::Character('a'),
+                    Token::Character('b'),
+                    Token::Character('c'),
+                    Token::Character(']'),
+                ]
+            );
+            assert!(t.take_errors().iter().any(|e| e.code == "eof-in-cdata"));
+        }
+
+        // EOF in CDATA section end state
+        {
+            let stream = InputStream::from_utf8(b"<![CDATA[abc]]");
+            let mut t = Tokenizer::new(stream);
+            t.set_xml_mode(true);
+            let mut tokens = Vec::new();
+            loop {
+                let tok = t.next_token();
+                if tok == Token::Eof {
+                    break;
+                }
+                tokens.push(tok);
+            }
+            assert_eq!(
+                tokens,
+                vec![
+                    Token::Character('a'),
+                    Token::Character('b'),
+                    Token::Character('c'),
+                    Token::Character(']'),
+                    Token::Character(']'),
+                ]
+            );
+            assert!(t.take_errors().iter().any(|e| e.code == "eof-in-cdata"));
+        }
+    }
+
+    #[test]
+    fn test_anything_else_in_rcdata_and_rawtext_clears_current_token() {
+        // Test that temporary/fake end tags in RCDATA (like </textarea but without matching, e.g. </texta)
+        // do not leave a stale current_token that can leak.
+        let stream = InputStream::from_utf8(b"<textarea></texta");
+        let mut t = Tokenizer::new(stream);
+
+        // 1. First token: <textarea> start tag
+        let tok1 = t.next_token();
+        assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "textarea"));
+
+        // At this point, the tokenizer is in State::Rcdata.
+        // 2. Consume the remaining characters of "</texta" (which are emitted as separate characters)
+        let mut chars = String::new();
+        loop {
+            match t.next_token() {
+                Token::Character(c) => chars.push(c),
+                Token::Eof => break,
+                other => panic!("Unexpected token: {:?}", other),
+            }
+        }
+        assert_eq!(chars, "</texta");
     }
 }
