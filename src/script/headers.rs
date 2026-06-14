@@ -16,6 +16,39 @@ fn normalize_value(val: &str) -> String {
     val.trim_matches(is_http_whitespace).to_string()
 }
 
+fn is_header_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    name.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '!' | '#'
+                    | '$'
+                    | '%'
+                    | '&'
+                    | '\''
+                    | '*'
+                    | '+'
+                    | '-'
+                    | '.'
+                    | '^'
+                    | '_'
+                    | '`'
+                    | '|'
+                    | '~'
+            )
+    })
+}
+
+fn is_header_value(val: &str) -> bool {
+    val.chars().all(|c| {
+        let code = c as u32;
+        code <= 0xFF && code != 0x00 && code != 0x0A && code != 0x0D
+    })
+}
+
 impl Headers {
     fn get_iteration_entries(&self) -> Vec<(String, String)> {
         let pairs = self.pairs.borrow();
@@ -110,6 +143,15 @@ impl Class for Headers {
                         for i in 0..length {
                             let item = arr_obj.get(i, context)?;
                             if let Some(item_obj) = item.as_object() {
+                                let length_val = item_obj.get(JsString::from("length"), context)?;
+                                let inner_len = length_val.as_number().unwrap_or(0.0) as usize;
+                                if inner_len != 2 {
+                                    return Err(JsError::from(
+                                        JsNativeError::typ()
+                                            .with_message("Header pair must have a length of 2"),
+                                    ));
+                                }
+
                                 let name_val = item_obj.get(0, context)?;
                                 let value_val = item_obj.get(1, context)?;
 
@@ -122,8 +164,20 @@ impl Class for Headers {
                                     .to_std_string()
                                     .unwrap_or_default();
 
+                                if !is_header_name(&name) {
+                                    return Err(JsError::from(JsNativeError::typ().with_message(
+                                        format!("Invalid header name: '{}'", name),
+                                    )));
+                                }
+
                                 let normalized_name = name.to_ascii_lowercase();
                                 let normalized_value = normalize_value(&value);
+
+                                if !is_header_value(&normalized_value) {
+                                    return Err(JsError::from(JsNativeError::typ().with_message(
+                                        format!("Invalid header value: '{}'", value),
+                                    )));
+                                }
 
                                 pairs.push((normalized_name, normalized_value));
                             } else {
@@ -162,6 +216,16 @@ impl Class for Headers {
                                 .to_string(context)?
                                 .to_std_string()
                                 .unwrap_or_default();
+
+                            if !is_header_name(&key_str) {
+                                return Err(JsError::from(
+                                    JsNativeError::typ().with_message(format!(
+                                        "Invalid header name: '{}'",
+                                        key_str
+                                    )),
+                                ));
+                            }
+
                             let val_val = obj.get(JsString::from(key_str.as_str()), context)?;
                             let val_str = val_val
                                 .to_string(context)?
@@ -170,6 +234,12 @@ impl Class for Headers {
 
                             let normalized_name = key_str.to_ascii_lowercase();
                             let normalized_value = normalize_value(&val_str);
+
+                            if !is_header_value(&normalized_value) {
+                                return Err(JsError::from(JsNativeError::typ().with_message(
+                                    format!("Invalid header value: '{}'", val_str),
+                                )));
+                            }
 
                             pairs.push((normalized_name, normalized_value));
                         }
@@ -266,8 +336,20 @@ pub fn headers_append(
         .map(|s| s.to_std_string().unwrap_or_default())
         .unwrap_or_default();
 
+    if !is_header_name(&name) {
+        return Err(JsError::from(
+            JsNativeError::typ().with_message(format!("Invalid header name: '{}'", name)),
+        ));
+    }
+
     let normalized_name = name.to_ascii_lowercase();
     let normalized_value = normalize_value(&val);
+
+    if !is_header_value(&normalized_value) {
+        return Err(JsError::from(
+            JsNativeError::typ().with_message(format!("Invalid header value: '{}'", val)),
+        ));
+    }
 
     headers
         .pairs
@@ -299,8 +381,20 @@ pub fn headers_set(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
         .map(|s| s.to_std_string().unwrap_or_default())
         .unwrap_or_default();
 
+    if !is_header_name(&name) {
+        return Err(JsError::from(
+            JsNativeError::typ().with_message(format!("Invalid header name: '{}'", name)),
+        ));
+    }
+
     let normalized_name = name.to_ascii_lowercase();
     let normalized_value = normalize_value(&val);
+
+    if !is_header_value(&normalized_value) {
+        return Err(JsError::from(
+            JsNativeError::typ().with_message(format!("Invalid header value: '{}'", val)),
+        ));
+    }
 
     let mut pairs = headers.pairs.borrow_mut();
     let mut found = false;
@@ -339,6 +433,12 @@ pub fn headers_get(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
         .transpose()?
         .map(|s| s.to_std_string().unwrap_or_default())
         .unwrap_or_default();
+
+    if !is_header_name(&name) {
+        return Err(JsError::from(
+            JsNativeError::typ().with_message(format!("Invalid header name: '{}'", name)),
+        ));
+    }
 
     let normalized_name = name.to_ascii_lowercase();
 
@@ -395,6 +495,12 @@ pub fn headers_has(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
         .map(|s| s.to_std_string().unwrap_or_default())
         .unwrap_or_default();
 
+    if !is_header_name(&name) {
+        return Err(JsError::from(
+            JsNativeError::typ().with_message(format!("Invalid header name: '{}'", name)),
+        ));
+    }
+
     let normalized_name = name.to_ascii_lowercase();
 
     let pairs = headers.pairs.borrow();
@@ -420,6 +526,12 @@ pub fn headers_delete(
         .transpose()?
         .map(|s| s.to_std_string().unwrap_or_default())
         .unwrap_or_default();
+
+    if !is_header_name(&name) {
+        return Err(JsError::from(
+            JsNativeError::typ().with_message(format!("Invalid header name: '{}'", name)),
+        ));
+    }
 
     let normalized_name = name.to_ascii_lowercase();
 
@@ -703,6 +815,82 @@ mod tests {
                 h.delete("set-cookie");
                 if (h.has("set-cookie")) throw "has('set-cookie') should be false after delete";
                 if (h.getSetCookie().length !== 0) throw "getSetCookie should be empty after delete";
+            }"#
+        ).unwrap();
+
+        // 9. Validation of header names and values
+        host.eval(
+            r#"{
+                // Invalid names
+                try {
+                    new Headers({ "Invalid:": "val" });
+                    throw "Should throw on invalid header name in object key";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for invalid key, got: " + e;
+                }
+
+                try {
+                    new Headers([["Invalid:", "val"]]);
+                    throw "Should throw on invalid header name in sequence key";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for invalid sequence key, got: " + e;
+                }
+
+                try {
+                    const h = new Headers();
+                    h.append("Invalid:", "val");
+                    throw "Should throw on append with invalid header name";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for append invalid name, got: " + e;
+                }
+
+                try {
+                    const h = new Headers();
+                    h.get("Invalid:");
+                    throw "Should throw on get with invalid header name";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for get invalid name, got: " + e;
+                }
+
+                // Invalid values (non-ByteString or containing CR/LF/NUL inside)
+                try {
+                    const h = new Headers();
+                    h.append("ok", "val\x00withNull");
+                    throw "Should throw on append with NUL in value";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for NUL, got: " + e;
+                }
+
+                try {
+                    const h = new Headers();
+                    h.append("ok", "val\nwithLF");
+                    throw "Should throw on append with LF in value";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for LF, got: " + e;
+                }
+
+                try {
+                    const h = new Headers();
+                    h.append("ok", "unicode\u0100");
+                    throw "Should throw on append with code point > 255";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for >255, got: " + e;
+                }
+
+                // Sequence length validation
+                try {
+                    new Headers([["a"]]);
+                    throw "Should throw on 1-element sequence";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for 1-element sequence, got: " + e;
+                }
+
+                try {
+                    new Headers([["a", "b", "c"]]);
+                    throw "Should throw on 3-element sequence";
+                } catch (e) {
+                    if (!(e instanceof TypeError)) throw "Expected TypeError for 3-element sequence, got: " + e;
+                }
             }"#
         ).unwrap();
     }
