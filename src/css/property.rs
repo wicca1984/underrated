@@ -1019,6 +1019,21 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "fixed",
     },
+    PropertyMetadata {
+        name: "shape-outside",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "shape-margin",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "shape-image-threshold",
+        inherited: false,
+        initial: "0",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1911,6 +1926,30 @@ mod tests {
         assert_eq!(mask_type.name, "mask-type");
         assert!(!mask_type.inherited);
         assert_eq!(mask_type.initial, "luminance");
+    }
+
+    #[test]
+    fn test_additive_properties_t0745() {
+        let shape_outside = lookup("shape-outside");
+        assert!(shape_outside.is_some());
+        let shape_outside = shape_outside.unwrap();
+        assert_eq!(shape_outside.name, "shape-outside");
+        assert!(!shape_outside.inherited);
+        assert_eq!(shape_outside.initial, "none");
+
+        let shape_margin = lookup("shape-margin");
+        assert!(shape_margin.is_some());
+        let shape_margin = shape_margin.unwrap();
+        assert_eq!(shape_margin.name, "shape-margin");
+        assert!(!shape_margin.inherited);
+        assert_eq!(shape_margin.initial, "0");
+
+        let shape_image_threshold = lookup("shape-image-threshold");
+        assert!(shape_image_threshold.is_some());
+        let shape_image_threshold = shape_image_threshold.unwrap();
+        assert_eq!(shape_image_threshold.name, "shape-image-threshold");
+        assert!(!shape_image_threshold.inherited);
+        assert_eq!(shape_image_threshold.initial, "0");
     }
 
     #[test]
