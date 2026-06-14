@@ -13,24 +13,29 @@ use boa_gc::{Finalize, GcRefCell, Trace};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-static TIME_ORIGIN: OnceLock<Instant> = OnceLock::new();
-static TIME_ORIGIN_MS: OnceLock<f64> = OnceLock::new();
+static TIME_ORIGINS: OnceLock<(Instant, f64)> = OnceLock::new();
+
+/// Returns the time origins initialized together.
+fn get_origins() -> &'static (Instant, f64) {
+    TIME_ORIGINS.get_or_init(|| {
+        let instant = Instant::now();
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+        (instant, ms)
+    })
+}
 
 /// Returns the time origin `Instant`. Initialized on first call.
 fn get_time_origin() -> &'static Instant {
-    TIME_ORIGIN.get_or_init(Instant::now)
+    &get_origins().0
 }
 
 /// Returns the time origin Unix epoch high-res timestamp in milliseconds.
 fn get_time_origin_ms() -> f64 {
-    *TIME_ORIGIN_MS.get_or_init(|| {
-        let _ = get_time_origin();
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-            * 1000.0
-    })
+    get_origins().1
 }
 
 /// Representation of a stored performance mark.
@@ -38,6 +43,7 @@ fn get_time_origin_ms() -> f64 {
 pub struct PerformanceMarkEntry {
     pub name: String,
     pub start_time: f64,
+    pub detail: JsValue,
 }
 
 /// Representation of a stored performance measure.
@@ -46,6 +52,7 @@ pub struct PerformanceMeasureEntry {
     pub name: String,
     pub start_time: f64,
     pub duration: f64,
+    pub detail: JsValue,
 }
 
 /// Performance JS Class host struct.
@@ -80,10 +87,34 @@ impl Class for Performance {
         .name("get timeOrigin")
         .build();
 
+        let get_timing_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(performance_get_timing))
+                .name("get timing")
+                .build();
+
+        let get_navigation_fn = FunctionObjectBuilder::new(
+            &realm,
+            NativeFunction::from_fn_ptr(performance_get_navigation),
+        )
+        .name("get navigation")
+        .build();
+
         class
             .accessor(
                 JsString::from("timeOrigin"),
                 Some(get_time_origin_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("timing"),
+                Some(get_timing_fn),
+                None,
+                Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
+            )
+            .accessor(
+                JsString::from("navigation"),
+                Some(get_navigation_fn),
                 None,
                 Attribute::ENUMERABLE | Attribute::CONFIGURABLE,
             )
@@ -126,6 +157,11 @@ impl Class for Performance {
                 JsString::from("getEntriesByName"),
                 1,
                 NativeFunction::from_fn_ptr(performance_get_entries_by_name),
+            )
+            .method(
+                JsString::from("toJSON"),
+                0,
+                NativeFunction::from_fn_ptr(performance_to_json),
             );
 
         Ok(())
@@ -151,6 +187,224 @@ fn performance_now(
     Ok(JsValue::from(elapsed_ms))
 }
 
+fn performance_to_json(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let obj = ObjectInitializer::new(context)
+        .property(
+            JsString::from("timeOrigin"),
+            JsValue::from(get_time_origin_ms()),
+            ro,
+        )
+        .build();
+    Ok(JsValue::from(obj))
+}
+
+fn performance_timing_to_json(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("toJSON called on non-object"))
+    })?;
+
+    let keys = [
+        "navigationStart",
+        "unloadEventStart",
+        "unloadEventEnd",
+        "redirectStart",
+        "redirectEnd",
+        "fetchStart",
+        "domainLookupStart",
+        "domainLookupEnd",
+        "connectStart",
+        "connectEnd",
+        "secureConnectionStart",
+        "requestStart",
+        "responseStart",
+        "responseEnd",
+        "domLoading",
+        "domInteractive",
+        "domContentLoadedEventStart",
+        "domContentLoadedEventEnd",
+        "domComplete",
+        "loadEventStart",
+        "loadEventEnd",
+    ];
+
+    let mut values = Vec::with_capacity(keys.len());
+    for key in keys {
+        let val = obj.get(JsString::from(key), context)?;
+        values.push((JsString::from(key), val));
+    }
+
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let mut initializer = ObjectInitializer::new(context);
+    for (key, val) in values {
+        initializer.property(key, val, ro);
+    }
+
+    Ok(JsValue::from(initializer.build()))
+}
+
+fn performance_navigation_to_json(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("toJSON called on non-object"))
+    })?;
+
+    let keys = ["type", "redirectCount"];
+    let mut values = Vec::with_capacity(keys.len());
+    for key in keys {
+        let val = obj.get(JsString::from(key), context)?;
+        values.push((JsString::from(key), val));
+    }
+
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let mut initializer = ObjectInitializer::new(context);
+    for (key, val) in values {
+        initializer.property(key, val, ro);
+    }
+
+    Ok(JsValue::from(initializer.build()))
+}
+
+fn performance_entry_to_json(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("toJSON called on non-object"))
+    })?;
+
+    let name = obj.get(JsString::from("name"), context)?;
+    let entry_type = obj.get(JsString::from("entryType"), context)?;
+    let start_time = obj.get(JsString::from("startTime"), context)?;
+    let duration = obj.get(JsString::from("duration"), context)?;
+    let detail = obj.get(JsString::from("detail"), context)?;
+
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let mut initializer = ObjectInitializer::new(context);
+    initializer.property(JsString::from("name"), name, ro);
+    initializer.property(JsString::from("entryType"), entry_type, ro);
+    initializer.property(JsString::from("startTime"), start_time, ro);
+    initializer.property(JsString::from("duration"), duration, ro);
+
+    if !detail.is_undefined() {
+        initializer.property(JsString::from("detail"), detail, ro);
+    }
+
+    Ok(JsValue::from(initializer.build()))
+}
+
+fn performance_get_timing(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let origin_ms = get_time_origin_ms();
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let realm = context.realm().clone();
+    let to_json_fn = FunctionObjectBuilder::new(
+        &realm,
+        NativeFunction::from_fn_ptr(performance_timing_to_json),
+    )
+    .name("toJSON")
+    .build();
+
+    let timing_obj = ObjectInitializer::new(context)
+        .property(
+            JsString::from("navigationStart"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(JsString::from("unloadEventStart"), JsValue::from(0), ro)
+        .property(JsString::from("unloadEventEnd"), JsValue::from(0), ro)
+        .property(JsString::from("redirectStart"), JsValue::from(0), ro)
+        .property(JsString::from("redirectEnd"), JsValue::from(0), ro)
+        .property(JsString::from("fetchStart"), JsValue::from(origin_ms), ro)
+        .property(
+            JsString::from("domainLookupStart"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(
+            JsString::from("domainLookupEnd"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(JsString::from("connectStart"), JsValue::from(origin_ms), ro)
+        .property(JsString::from("connectEnd"), JsValue::from(origin_ms), ro)
+        .property(
+            JsString::from("secureConnectionStart"),
+            JsValue::from(0),
+            ro,
+        )
+        .property(JsString::from("requestStart"), JsValue::from(origin_ms), ro)
+        .property(
+            JsString::from("responseStart"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(JsString::from("responseEnd"), JsValue::from(origin_ms), ro)
+        .property(JsString::from("domLoading"), JsValue::from(origin_ms), ro)
+        .property(
+            JsString::from("domInteractive"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(
+            JsString::from("domContentLoadedEventStart"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(
+            JsString::from("domContentLoadedEventEnd"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(JsString::from("domComplete"), JsValue::from(origin_ms), ro)
+        .property(
+            JsString::from("loadEventStart"),
+            JsValue::from(origin_ms),
+            ro,
+        )
+        .property(JsString::from("loadEventEnd"), JsValue::from(origin_ms), ro)
+        .property(JsString::from("toJSON"), to_json_fn, ro)
+        .build();
+    Ok(JsValue::from(timing_obj))
+}
+
+fn performance_get_navigation(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let realm = context.realm().clone();
+    let to_json_fn = FunctionObjectBuilder::new(
+        &realm,
+        NativeFunction::from_fn_ptr(performance_navigation_to_json),
+    )
+    .name("toJSON")
+    .build();
+
+    let nav_obj = ObjectInitializer::new(context)
+        .property(JsString::from("type"), JsValue::from(0), ro)
+        .property(JsString::from("redirectCount"), JsValue::from(0), ro)
+        .property(JsString::from("toJSON"), to_json_fn, ro)
+        .build();
+    Ok(JsValue::from(nav_obj))
+}
+
 fn performance_mark(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let obj = this.as_object().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
@@ -167,16 +421,64 @@ fn performance_mark(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
         .to_std_string()
         .unwrap_or_default();
 
-    let elapsed = get_time_origin().elapsed();
-    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+    let mut detail = JsValue::undefined();
+    let mut start_time = get_time_origin().elapsed().as_secs_f64() * 1000.0;
+
+    if let Some(options_obj) = args.get(1).and_then(|v| {
+        if !v.is_undefined() && !v.is_null() {
+            v.as_object()
+        } else {
+            None
+        }
+    }) {
+        let det = options_obj.get(JsString::from("detail"), context)?;
+        if !det.is_undefined() {
+            detail = det;
+        }
+
+        let start_val = options_obj.get(JsString::from("startTime"), context)?;
+        if !start_val.is_undefined() && !start_val.is_null() {
+            let st = start_val.to_number(context)?;
+            if st < 0.0 {
+                return Err(JsError::from(
+                    JsNativeError::typ()
+                        .with_message("performance.mark: startTime cannot be negative"),
+                ));
+            }
+            start_time = st;
+        }
+    }
 
     performance.marks.borrow_mut().push(PerformanceMarkEntry {
         name: name.clone(),
-        start_time: elapsed_ms,
+        start_time,
+        detail: detail.clone(),
     });
 
-    let mark_obj = create_performance_mark_object(&name, elapsed_ms, context);
+    let mark_obj = create_performance_mark_object(&name, start_time, &detail, context);
     Ok(mark_obj)
+}
+
+fn resolve_mark_or_value(
+    val: &JsValue,
+    performance: &Performance,
+    context: &mut Context,
+) -> JsResult<f64> {
+    if val.is_undefined() || val.is_null() {
+        Ok(0.0)
+    } else if val.is_number() {
+        Ok(val.as_number().unwrap_or(0.0))
+    } else {
+        let name = val.to_string(context)?.to_std_string().unwrap_or_default();
+        let marks_borrow = performance.marks.borrow();
+        let mark_opt = marks_borrow.iter().rev().find(|m| m.name == name);
+        match mark_opt {
+            Some(mark) => Ok(mark.start_time),
+            None => Err(JsError::from(JsNativeError::syntax().with_message(
+                format!("performance.measure: mark '{}' not found", name),
+            ))),
+        }
+    }
 }
 
 fn performance_measure(
@@ -199,61 +501,123 @@ fn performance_measure(
         .to_std_string()
         .unwrap_or_default();
 
-    let mut start_time = 0.0;
-    if let Some(start_mark_val) = args.get(1) {
-        if start_mark_val.is_undefined() || start_mark_val.is_null() {
-            start_time = 0.0;
-        } else if start_mark_val.is_number() {
-            start_time = start_mark_val.as_number().unwrap_or(0.0);
-        } else {
-            let start_mark_name = start_mark_val
-                .to_string(context)?
-                .to_std_string()
-                .unwrap_or_default();
-            let marks_borrow = performance.marks.borrow();
-            let mark_opt = marks_borrow
-                .iter()
-                .rev()
-                .find(|m| m.name == start_mark_name);
-            match mark_opt {
-                Some(mark) => start_time = mark.start_time,
-                None => {
-                    return Err(JsError::from(JsNativeError::syntax().with_message(
-                        format!(
-                            "performance.measure: startMark '{}' not found",
-                            start_mark_name
-                        ),
-                    )));
-                }
-            }
-        }
-    }
+    let start_or_options_val = args.get(1);
 
-    let mut end_time = get_time_origin().elapsed().as_secs_f64() * 1000.0;
-    if let Some(end_mark_val) = args.get(2) {
-        if end_mark_val.is_undefined() || end_mark_val.is_null() {
-            // Keep default end_time
-        } else if end_mark_val.is_number() {
-            end_time = end_mark_val.as_number().unwrap_or(0.0);
-        } else {
-            let end_mark_name = end_mark_val
-                .to_string(context)?
-                .to_std_string()
-                .unwrap_or_default();
-            let marks_borrow = performance.marks.borrow();
-            let mark_opt = marks_borrow.iter().rev().find(|m| m.name == end_mark_name);
-            match mark_opt {
-                Some(mark) => end_time = mark.start_time,
-                None => {
-                    return Err(JsError::from(JsNativeError::syntax().with_message(
-                        format!("performance.measure: endMark '{}' not found", end_mark_name),
-                    )));
-                }
-            }
-        }
-    }
+    // Check if start_or_options_val is an options object
+    let is_options = start_or_options_val.is_some_and(|val| {
+        !val.is_undefined() && !val.is_null() && val.is_object() && !val.is_callable()
+    });
 
-    let duration = end_time - start_time;
+    let (start_time, duration, detail) = if is_options {
+        // If startOrMeasureOptions is a PerformanceMeasureOptions object and endMark is given, throw a TypeError.
+        if args.get(2).filter(|v| !v.is_undefined()).is_some() {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "performance.measure: endMark cannot be specified when options are used",
+            )));
+        }
+
+        let options_obj = start_or_options_val
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| {
+                JsError::from(
+                    JsNativeError::typ()
+                        .with_message("performance.measure: options must be an object"),
+                )
+            })?;
+
+        let mut detail = JsValue::undefined();
+        let det = options_obj.get(JsString::from("detail"), context)?;
+        if !det.is_undefined() {
+            detail = det;
+        }
+
+        let start_val = options_obj.get(JsString::from("start"), context)?;
+        let end_val = options_obj.get(JsString::from("end"), context)?;
+        let duration_val = options_obj.get(JsString::from("duration"), context)?;
+
+        let has_start = !start_val.is_undefined() && !start_val.is_null();
+        let has_end = !end_val.is_undefined() && !end_val.is_null();
+        let has_duration = !duration_val.is_undefined() && !duration_val.is_null();
+
+        // If start, duration, and end are all present, throw a TypeError
+        if has_start && has_duration && has_end {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "performance.measure: start, duration, and end cannot all be specified",
+            )));
+        }
+
+        // If duration is present and neither start nor end is present, throw a TypeError
+        if has_duration && !has_start && !has_end {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "performance.measure: duration cannot be specified without start or end",
+            )));
+        }
+
+        let duration_f64 = if has_duration {
+            let d = duration_val.to_number(context)?;
+            if d < 0.0 {
+                return Err(JsError::from(
+                    JsNativeError::typ()
+                        .with_message("performance.measure: duration cannot be negative"),
+                ));
+            }
+            Some(d)
+        } else {
+            None
+        };
+
+        let resolved_start;
+        let resolved_duration;
+
+        if has_start && has_end {
+            let s = resolve_mark_or_value(&start_val, &performance, context)?;
+            let e = resolve_mark_or_value(&end_val, &performance, context)?;
+            resolved_start = s;
+            resolved_duration = e - s;
+        } else if has_start && has_duration {
+            let s = resolve_mark_or_value(&start_val, &performance, context)?;
+            let dur = duration_f64.unwrap_or(0.0);
+            resolved_start = s;
+            resolved_duration = dur;
+        } else if has_duration && has_end {
+            let e = resolve_mark_or_value(&end_val, &performance, context)?;
+            let dur = duration_f64.unwrap_or(0.0);
+            resolved_start = e - dur;
+            resolved_duration = dur;
+        } else if has_start {
+            let s = resolve_mark_or_value(&start_val, &performance, context)?;
+            let e = get_time_origin().elapsed().as_secs_f64() * 1000.0;
+            resolved_start = s;
+            resolved_duration = e - s;
+        } else if has_end {
+            let e = resolve_mark_or_value(&end_val, &performance, context)?;
+            resolved_start = 0.0;
+            resolved_duration = e;
+        } else {
+            resolved_start = 0.0;
+            let e = get_time_origin().elapsed().as_secs_f64() * 1000.0;
+            resolved_duration = e;
+        }
+
+        (resolved_start, resolved_duration, detail)
+    } else {
+        let start_val = args.get(1).cloned().unwrap_or(JsValue::undefined());
+        let end_val = args.get(2).cloned().unwrap_or(JsValue::undefined());
+
+        let start_time = if start_val.is_undefined() || start_val.is_null() {
+            0.0
+        } else {
+            resolve_mark_or_value(&start_val, &performance, context)?
+        };
+
+        let end_time = if end_val.is_undefined() || end_val.is_null() {
+            get_time_origin().elapsed().as_secs_f64() * 1000.0
+        } else {
+            resolve_mark_or_value(&end_val, &performance, context)?
+        };
+
+        (start_time, end_time - start_time, JsValue::undefined())
+    };
 
     performance
         .measures
@@ -262,9 +626,11 @@ fn performance_measure(
             name: name.clone(),
             start_time,
             duration,
+            detail: detail.clone(),
         });
 
-    let measure_obj = create_performance_measure_object(&name, start_time, duration, context);
+    let measure_obj =
+        create_performance_measure_object(&name, start_time, duration, &detail, context);
     Ok(measure_obj)
 }
 
@@ -335,7 +701,7 @@ fn performance_get_entries(
     for mark in performance.marks.borrow().iter() {
         entries.push((
             mark.start_time,
-            create_performance_mark_object(&mark.name, mark.start_time, context),
+            create_performance_mark_object(&mark.name, mark.start_time, &mark.detail, context),
         ));
     }
 
@@ -346,6 +712,7 @@ fn performance_get_entries(
                 &measure.name,
                 measure.start_time,
                 measure.duration,
+                &measure.detail,
                 context,
             ),
         ));
@@ -387,7 +754,7 @@ fn performance_get_entries_by_type(
         for mark in performance.marks.borrow().iter() {
             entries.push((
                 mark.start_time,
-                create_performance_mark_object(&mark.name, mark.start_time, context),
+                create_performance_mark_object(&mark.name, mark.start_time, &mark.detail, context),
             ));
         }
     } else if entry_type == "measure" {
@@ -398,6 +765,7 @@ fn performance_get_entries_by_type(
                     &measure.name,
                     measure.start_time,
                     measure.duration,
+                    &measure.detail,
                     context,
                 ),
             ));
@@ -456,7 +824,12 @@ fn performance_get_entries_by_name(
             if mark.name == name {
                 entries.push((
                     mark.start_time,
-                    create_performance_mark_object(&mark.name, mark.start_time, context),
+                    create_performance_mark_object(
+                        &mark.name,
+                        mark.start_time,
+                        &mark.detail,
+                        context,
+                    ),
                 ));
             }
         }
@@ -471,6 +844,7 @@ fn performance_get_entries_by_name(
                         &measure.name,
                         measure.start_time,
                         measure.duration,
+                        &measure.detail,
                         context,
                     ),
                 ));
@@ -486,13 +860,28 @@ fn performance_get_entries_by_name(
     Ok(JsValue::from(array))
 }
 
-fn create_performance_mark_object(name: &str, start_time: f64, context: &mut Context) -> JsValue {
+fn create_performance_mark_object(
+    name: &str,
+    start_time: f64,
+    detail: &JsValue,
+    context: &mut Context,
+) -> JsValue {
     let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let realm = context.realm().clone();
+    let to_json_fn = FunctionObjectBuilder::new(
+        &realm,
+        NativeFunction::from_fn_ptr(performance_entry_to_json),
+    )
+    .name("toJSON")
+    .build();
+
     let mark_obj = ObjectInitializer::new(context)
         .property(JsString::from("name"), JsString::from(name), ro)
         .property(JsString::from("entryType"), JsString::from("mark"), ro)
         .property(JsString::from("startTime"), JsValue::from(start_time), ro)
         .property(JsString::from("duration"), JsValue::from(0.0), ro)
+        .property(JsString::from("detail"), detail.clone(), ro)
+        .property(JsString::from("toJSON"), to_json_fn, ro)
         .build();
     JsValue::from(mark_obj)
 }
@@ -501,14 +890,25 @@ fn create_performance_measure_object(
     name: &str,
     start_time: f64,
     duration: f64,
+    detail: &JsValue,
     context: &mut Context,
 ) -> JsValue {
     let ro = Attribute::ENUMERABLE | Attribute::CONFIGURABLE;
+    let realm = context.realm().clone();
+    let to_json_fn = FunctionObjectBuilder::new(
+        &realm,
+        NativeFunction::from_fn_ptr(performance_entry_to_json),
+    )
+    .name("toJSON")
+    .build();
+
     let measure_obj = ObjectInitializer::new(context)
         .property(JsString::from("name"), JsString::from(name), ro)
         .property(JsString::from("entryType"), JsString::from("measure"), ro)
         .property(JsString::from("startTime"), JsValue::from(start_time), ro)
         .property(JsString::from("duration"), JsValue::from(duration), ro)
+        .property(JsString::from("detail"), detail.clone(), ro)
+        .property(JsString::from("toJSON"), to_json_fn, ro)
         .build();
     JsValue::from(measure_obj)
 }
@@ -772,6 +1172,313 @@ mod tests {
             .eval(Source::from_bytes(
                 r#"
                 performance.getEntriesByName("mark1", "measure").length === 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_timing_and_navigation_api_surface() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // Check timing object exists and has valid numbers
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                performance.timing &&
+                typeof performance.timing.navigationStart === "number" &&
+                performance.timing.navigationStart > 0 &&
+                performance.timing.unloadEventStart === 0 &&
+                performance.timing.fetchStart === performance.timing.navigationStart
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // Check navigation object exists and has valid type and redirectCount
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                performance.navigation &&
+                performance.navigation.type === 0 &&
+                performance.navigation.redirectCount === 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_user_timing_l3_mark_options() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // 1. Mark with startTime and detail
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                {
+                    const m = performance.mark("custom-mark", {
+                        detail: { foo: "bar" },
+                        startTime: 123.45
+                    });
+                    m.name === "custom-mark" &&
+                    m.startTime === 123.45 &&
+                    m.detail.foo === "bar"
+                }
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. Mark with negative startTime should throw TypeError
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                {
+                    let threw = false;
+                    try {
+                        performance.mark("negative", { startTime: -5 });
+                    } catch (e) {
+                        threw = e instanceof TypeError;
+                    }
+                    threw
+                }
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_user_timing_l3_measure_options() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // Setup custom marks
+        context
+            .eval(Source::from_bytes(
+                r#"
+                performance.mark("m1", { startTime: 100 });
+                performance.mark("m2", { startTime: 250 });
+                "#,
+            ))
+            .unwrap();
+
+        // 1. Measure with start and end
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m1 = performance.measure("meas-1", {
+                    start: "m1",
+                    end: "m2",
+                    detail: "metadata-1"
+                });
+                m1.startTime === 100 &&
+                m1.duration === 150 &&
+                m1.detail === "metadata-1"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. Measure with start and duration
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m2 = performance.measure("meas-2", {
+                    start: "m1",
+                    duration: 50
+                });
+                m2.startTime === 100 &&
+                m2.duration === 50
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 3. Measure with duration and end
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m3 = performance.measure("meas-3", {
+                    end: "m2",
+                    duration: 75
+                });
+                m3.startTime === 175 &&
+                m3.duration === 75
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 4. Measure with negative duration throws TypeError
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threw4 = false;
+                try {
+                    performance.measure("meas-neg", {
+                        start: "m1",
+                        duration: -10
+                    });
+                } catch (e) {
+                    threw4 = e instanceof TypeError;
+                }
+                threw4
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 5. Measure with start, duration, and end throws TypeError
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threw5 = false;
+                try {
+                    performance.measure("meas-all", {
+                        start: "m1",
+                        end: "m2",
+                        duration: 100
+                    });
+                } catch (e) {
+                    threw5 = e instanceof TypeError;
+                }
+                threw5
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 6. Measure with duration and neither start nor end throws TypeError
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threw6 = false;
+                try {
+                    performance.measure("meas-dur-only", {
+                        duration: 100
+                    });
+                } catch (e) {
+                    threw6 = e instanceof TypeError;
+                }
+                threw6
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 7. Measure with options and endMark throws TypeError
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threw7 = false;
+                try {
+                    performance.measure("meas-conflict", { start: "m1" }, "m2");
+                } catch (e) {
+                    threw7 = e instanceof TypeError;
+                }
+                threw7
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_to_json_api_surface() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // 1. Performance.toJSON()
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const pJson = performance.toJSON();
+                typeof pJson === "object" &&
+                typeof pJson.timeOrigin === "number" &&
+                pJson.timeOrigin > 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. PerformanceTiming.toJSON()
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const tJson = performance.timing.toJSON();
+                typeof tJson === "object" &&
+                tJson.navigationStart === performance.timing.navigationStart &&
+                tJson.fetchStart === performance.timing.fetchStart &&
+                tJson.loadEventEnd === performance.timing.loadEventEnd
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 3. PerformanceNavigation.toJSON()
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const nJson = performance.navigation.toJSON();
+                typeof nJson === "object" &&
+                nJson.type === performance.navigation.type &&
+                nJson.redirectCount === performance.navigation.redirectCount
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 4. PerformanceEntry.toJSON() - Mark and Measure
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m = performance.mark("test-mark", { startTime: 123.45, detail: "some-detail" });
+                const mJson = m.toJSON();
+                mJson.name === "test-mark" &&
+                mJson.entryType === "mark" &&
+                mJson.startTime === 123.45 &&
+                mJson.duration === 0 &&
+                mJson.detail === "some-detail"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const meas = performance.measure("test-meas", { start: "test-mark", duration: 50, detail: "meas-detail" });
+                const measJson = meas.toJSON();
+                measJson.name === "test-meas" &&
+                measJson.entryType === "measure" &&
+                measJson.startTime === 123.45 &&
+                measJson.duration === 50 &&
+                measJson.detail === "meas-detail"
                 "#,
             ))
             .unwrap();
