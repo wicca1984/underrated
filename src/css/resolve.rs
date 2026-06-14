@@ -1527,7 +1527,7 @@ fn has_variable_references(components: &[ComponentValue]) -> bool {
 }
 
 fn resolve_unset_for_property(prop: &str, context: &ResolveContext) -> Option<CssValue> {
-    let is_inh = crate::css::property::is_inherited(prop);
+    let is_inh = prop.starts_with("--") || crate::css::property::is_inherited(prop);
     if is_inh {
         if let Some(parent) = &context.parent_value {
             Some(parent.clone())
@@ -1643,7 +1643,8 @@ pub fn resolve_value_with_context(
                     if let Some(revert_val) = &context.revert_value {
                         return Some(revert_val.clone());
                     } else if let Some(prop) = &context.property_name {
-                        let is_inh = crate::css::property::is_inherited(prop);
+                        let is_inh =
+                            prop.starts_with("--") || crate::css::property::is_inherited(prop);
                         if is_inh {
                             if let Some(parent) = &context.parent_value {
                                 return Some(parent.clone());
@@ -1674,7 +1675,8 @@ pub fn resolve_value_with_context(
                     } else if let Some(revert_val) = &context.revert_value {
                         return Some(revert_val.clone());
                     } else if let Some(prop) = &context.property_name {
-                        let is_inh = crate::css::property::is_inherited(prop);
+                        let is_inh =
+                            prop.starts_with("--") || crate::css::property::is_inherited(prop);
                         if is_inh {
                             if let Some(parent) = &context.parent_value {
                                 return Some(parent.clone());
@@ -3728,6 +3730,97 @@ mod tests {
             Some(CssValue::Color(crate::css::values::Color::Rgba(
                 0, 255, 0, 255
             ))) // inherits parent color
+        );
+    }
+
+    #[test]
+    fn test_t1053_improved_cascade_resolution() {
+        let layers = vec!["base".to_string(), "theme".to_string()];
+        let custom_props = HashMap::new();
+
+        // 1. Specificity tie-breaking with different source order
+        let decl_low_source = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decl_high_source = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_low_source, &decl_high_source, &layers),
+            std::cmp::Ordering::Less
+        );
+
+        // 2. Specificity tie-breaking with identical specificity and source order
+        let decl_identical = CascadeDeclaration {
+            value: "green".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        assert_eq!(
+            compare_declarations(&decl_low_source, &decl_identical, &layers),
+            std::cmp::Ordering::Equal
+        );
+
+        // 3. Unset keyword handling on custom property (should act as inherit)
+        let parent_foo = CssValue::Length(10.0, LengthUnit::Px);
+        let ctx_unset_custom = ResolveContext {
+            property_name: Some("--foo".to_string()),
+            parent_value: Some(parent_foo.clone()),
+            ..Default::default()
+        };
+        let comps_unset = crate::css::parser::parse_component_values("unset");
+        assert_eq!(
+            resolve_value_with_context(&comps_unset, &ctx_unset_custom, &custom_props),
+            Some(parent_foo.clone())
+        );
+
+        // 4. Unset keyword handling on custom property without parent
+        let ctx_unset_custom_no_parent = ResolveContext {
+            property_name: Some("--foo".to_string()),
+            parent_value: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_value_with_context(&comps_unset, &ctx_unset_custom_no_parent, &custom_props),
+            Some(CssValue::Keyword("unset".to_string()))
+        );
+
+        // 5. Revert and revert-layer handling for custom property (should act as inherit)
+        let ctx_revert_custom = ResolveContext {
+            property_name: Some("--foo".to_string()),
+            parent_value: Some(parent_foo.clone()),
+            ..Default::default()
+        };
+        let comps_revert = crate::css::parser::parse_component_values("revert");
+        assert_eq!(
+            resolve_value_with_context(&comps_revert, &ctx_revert_custom, &custom_props),
+            Some(parent_foo.clone())
+        );
+
+        let comps_revert_layer = crate::css::parser::parse_component_values("revert-layer");
+        assert_eq!(
+            resolve_value_with_context(&comps_revert_layer, &ctx_revert_custom, &custom_props),
+            Some(parent_foo.clone())
+        );
+
+        // 6. Cascade resolution with specificity tie-breaking
+        let decls = vec![decl_low_source, decl_high_source];
+        let res = resolve_cascade(&decls, &layers, &ResolveContext::default(), &custom_props);
+        assert_eq!(
+            res,
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            ))) // blue wins
         );
     }
 }
