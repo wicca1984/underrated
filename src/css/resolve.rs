@@ -291,6 +291,11 @@ fn component_to_calc_tokens(
                 || name.eq_ignore_ascii_case("round")
                 || name.eq_ignore_ascii_case("mod")
                 || name.eq_ignore_ascii_case("rem")
+                || name.eq_ignore_ascii_case("sqrt")
+                || name.eq_ignore_ascii_case("pow")
+                || name.eq_ignore_ascii_case("hypot")
+                || name.eq_ignore_ascii_case("log")
+                || name.eq_ignore_ascii_case("exp")
             {
                 evaluate_math_fn(
                     name,
@@ -320,7 +325,7 @@ fn component_to_calc_tokens(
     }
 }
 
-/// Evaluates CSS math functions `min()`, `max()`, `clamp()`, `abs()`, `sign()`, `round()`, `mod()`, and `rem()`.
+/// Evaluates CSS math functions `min()`, `max()`, `clamp()`, `abs()`, `sign()`, `round()`, `mod()`, `rem()`, `sqrt()`, `pow()`, `hypot()`, `log()`, and `exp()`.
 pub fn evaluate_math_fn(
     kind: &str,
     components: &[ComponentValue],
@@ -378,12 +383,12 @@ pub fn evaluate_math_fn(
 
     // Arity validation
     match kind_str {
-        "abs" | "sign" => {
+        "abs" | "sign" | "sqrt" | "exp" => {
             if numeric_args_slices.len() != 1 {
                 return None;
             }
         }
-        "mod" | "rem" => {
+        "mod" | "rem" | "pow" => {
             if numeric_args_slices.len() != 2 {
                 return None;
             }
@@ -398,8 +403,13 @@ pub fn evaluate_math_fn(
                 return None;
             }
         }
-        "min" | "max" => {
+        "min" | "max" | "hypot" => {
             if numeric_args_slices.is_empty() {
+                return None;
+            }
+        }
+        "log" => {
+            if numeric_args_slices.len() != 1 && numeric_args_slices.len() != 2 {
                 return None;
             }
         }
@@ -428,6 +438,16 @@ pub fn evaluate_math_fn(
     }
 
     // 4. Ensure all arguments are of the same kind: all Lengths in Px or all Numbers.
+    let is_exponential = matches!(kind_str, "sqrt" | "pow" | "hypot" | "log" | "exp");
+    if is_exponential {
+        // Exponential functions only accept plain numbers
+        for arg in &evaluated_args {
+            if !matches!(arg, CssValue::Number(_)) {
+                return None;
+            }
+        }
+    }
+
     let is_length = match evaluated_args[0] {
         CssValue::Length(_, LengthUnit::Px) => true,
         CssValue::Number(_) => false,
@@ -460,6 +480,13 @@ pub fn evaluate_math_fn(
             })
             .collect()
     };
+
+    // Safeguard input values against NaN or infinite values
+    for &v in &values {
+        if v.is_nan() || v.is_infinite() {
+            return None;
+        }
+    }
 
     // 6. Combine values based on math function kind.
     let result = if kind_str == "min" {
@@ -541,12 +568,87 @@ pub fn evaluate_math_fn(
             return None;
         }
         a - b * (a / b).trunc()
+    } else if kind_str == "sqrt" {
+        if values.len() != 1 {
+            return None;
+        }
+        let val = values[0];
+        if val < 0.0 {
+            return None;
+        }
+        let res = val.sqrt();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "pow" {
+        if values.len() != 2 {
+            return None;
+        }
+        let a = values[0];
+        let b = values[1];
+        if a < 0.0 && b.fract() != 0.0 {
+            return None;
+        }
+        let res = a.powf(b);
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "hypot" {
+        if values.is_empty() {
+            return None;
+        }
+        let mut sum_sq = 0.0;
+        for &v in &values {
+            sum_sq += v * v;
+        }
+        let res = sum_sq.sqrt();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "log" {
+        if values.len() == 1 {
+            let a = values[0];
+            if a <= 0.0 {
+                return None;
+            }
+            let res = a.ln();
+            if res.is_nan() || res.is_infinite() {
+                return None;
+            }
+            res
+        } else if values.len() == 2 {
+            let a = values[0];
+            let b = values[1];
+            if a <= 0.0 || b <= 0.0 || b == 1.0 {
+                return None;
+            }
+            let res = a.ln() / b.ln();
+            if res.is_nan() || res.is_infinite() {
+                return None;
+            }
+            res
+        } else {
+            return None;
+        }
+    } else if kind_str == "exp" {
+        if values.len() != 1 {
+            return None;
+        }
+        let val = values[0];
+        let res = val.exp();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
     } else {
         return None;
     };
 
     // 7. Return the result in the corresponding variant.
-    if kind_str == "sign" {
+    if kind_str == "sign" || is_exponential {
         Some(CssValue::Number(result))
     } else if is_length {
         Some(CssValue::Length(result, LengthUnit::Px))
@@ -730,6 +832,56 @@ pub fn resolve_value(
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("rem") => {
                 evaluate_math_fn(
                     "rem",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sqrt") => {
+                evaluate_math_fn(
+                    "sqrt",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("pow") => {
+                evaluate_math_fn(
+                    "pow",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("hypot") => {
+                evaluate_math_fn(
+                    "hypot",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("log") => {
+                evaluate_math_fn(
+                    "log",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("exp") => {
+                evaluate_math_fn(
+                    "exp",
                     value,
                     root_font_size,
                     viewport_w,
@@ -1130,6 +1282,102 @@ mod tests {
         assert_eq!(
             resolve_string("sign(max(5px, 10px))", 16.0, 1000.0, 800.0, &vars),
             Some(CssValue::Number(1.0))
+        );
+    }
+
+    #[test]
+    fn test_resolve_exponential_math_fns() {
+        let vars = HashMap::new();
+
+        // sqrt
+        assert_eq!(
+            resolve_string("sqrt(9)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(3.0))
+        );
+        assert_eq!(
+            resolve_string("sqrt(0)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(0.0))
+        );
+        assert_eq!(resolve_string("sqrt(-4)", 16.0, 1000.0, 800.0, &vars), None);
+        assert_eq!(
+            resolve_string("sqrt(9px)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // pow
+        assert_eq!(
+            resolve_string("pow(2, 3)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(8.0))
+        );
+        assert_eq!(
+            resolve_string("pow(-2, 3)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(-8.0))
+        );
+        assert_eq!(
+            resolve_string("pow(-2, 0.5)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+        assert_eq!(
+            resolve_string("pow(2px, 3)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // hypot
+        assert_eq!(
+            resolve_string("hypot(3, 4)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(5.0))
+        );
+        assert_eq!(
+            resolve_string("hypot(5)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(5.0))
+        );
+        assert_eq!(
+            resolve_string("hypot(1, 2, 2)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(3.0))
+        );
+        assert_eq!(
+            resolve_string("hypot(3px, 4px)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // log
+        assert_eq!(
+            resolve_string("log(1)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(0.0))
+        );
+        if let Some(CssValue::Number(val)) = resolve_string("log(8, 2)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 3.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        assert_eq!(resolve_string("log(0)", 16.0, 1000.0, 800.0, &vars), None);
+        assert_eq!(resolve_string("log(-5)", 16.0, 1000.0, 800.0, &vars), None);
+        assert_eq!(
+            resolve_string("log(8, 1)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+        assert_eq!(
+            resolve_string("log(8, -2)", 16.0, 1000.0, 800.0, &vars),
+            None
+        );
+
+        // exp
+        assert_eq!(
+            resolve_string("exp(0)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(1.0))
+        );
+        if let Some(CssValue::Number(val)) = resolve_string("exp(1)", 16.0, 1000.0, 800.0, &vars) {
+            assert!((val - std::f32::consts::E).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        assert_eq!(resolve_string("exp(1px)", 16.0, 1000.0, 800.0, &vars), None);
+
+        // nested math functions
+        assert_eq!(
+            resolve_string("sqrt(pow(2, 4))", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(4.0))
         );
     }
 }
