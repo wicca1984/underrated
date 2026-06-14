@@ -176,6 +176,7 @@ fn test_html5lib_tokenizer_conformance() {
         "tests/html5lib-tests/tokenizer/numericEntities.test",
         "tests/html5lib-tests/tokenizer/unicodeChars.test",
         "tests/html5lib-tests/tokenizer/unicodeCharsProblematic.test",
+        "tests/html5lib-tests/tokenizer/pendingSpecChanges.test",
     ];
 
     for file_path in &files {
