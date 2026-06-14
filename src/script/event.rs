@@ -207,7 +207,7 @@ impl Class for Event {
                 JsString::from("isTrusted"),
                 Some(get_is_trusted_fn),
                 None,
-                Attribute::all(),
+                Attribute::ENUMERABLE,
             )
             .accessor(
                 JsString::from("eventPhase"),
@@ -806,13 +806,17 @@ pub fn remove_event_listener(
     Ok(JsValue::undefined())
 }
 
-struct DispatchFlagGuard<'a> {
-    flag: &'a GcRefCell<bool>,
+struct EventDispatchGuard<'a> {
+    dispatch_flag: &'a GcRefCell<bool>,
+    event_phase: &'a GcRefCell<u16>,
+    current_target: &'a GcRefCell<Option<JsValue>>,
 }
 
-impl<'a> Drop for DispatchFlagGuard<'a> {
+impl<'a> Drop for EventDispatchGuard<'a> {
     fn drop(&mut self) {
-        *self.flag.borrow_mut() = false;
+        *self.dispatch_flag.borrow_mut() = false;
+        *self.event_phase.borrow_mut() = 0; // NONE
+        *self.current_target.borrow_mut() = None;
     }
 }
 
@@ -835,15 +839,27 @@ pub fn dispatch_event(
 
     // Try to downcast to our Event class
     if let Some(event) = event_obj.downcast_ref::<Event>() {
-        // Set dispatch flag
+        // Double dispatch check
+        if *event.dispatch_flag.borrow() {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "InvalidStateError: Event is already being dispatched",
+            )));
+        }
+
+        // Set dispatch flag and phase
         *event.dispatch_flag.borrow_mut() = true;
-        let _guard = DispatchFlagGuard {
-            flag: &event.dispatch_flag,
-        };
+        *event.event_phase.borrow_mut() = 2; // AT_TARGET
 
         // Set target and current_target
         *event.target.borrow_mut() = Some(this.clone());
         *event.current_target.borrow_mut() = Some(this.clone());
+
+        // Use guard for cleanup
+        let _guard = EventDispatchGuard {
+            dispatch_flag: &event.dispatch_flag,
+            event_phase: &event.event_phase,
+            current_target: &event.current_target,
+        };
 
         // Get list of listeners (either native or legacy)
         let mut listeners_to_call = Vec::new();
@@ -914,14 +930,31 @@ pub fn dispatch_event(
             }
         }
 
-        *event.current_target.borrow_mut() = None;
         Ok(JsValue::from(!*event.default_prevented.borrow()))
     } else {
         // Not a native Event object (maybe a plain object).
         let target_prop = JsString::from("target");
         let current_target_prop = JsString::from("currentTarget");
+        let event_phase_prop = JsString::from("eventPhase");
+        let dispatch_flag_prop = JsString::from("dispatchFlag");
+
+        // Double dispatch check on plain object
+        let dispatch_flag_val = event_obj.get(dispatch_flag_prop.clone(), context)?;
+        if dispatch_flag_val.as_boolean().unwrap_or(false) {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "InvalidStateError: Event is already being dispatched",
+            )));
+        }
+
+        event_obj.set(
+            dispatch_flag_prop.clone(),
+            JsValue::from(true),
+            false,
+            context,
+        )?;
         event_obj.set(target_prop.clone(), this.clone(), false, context)?;
         event_obj.set(current_target_prop.clone(), this.clone(), false, context)?;
+        event_obj.set(event_phase_prop.clone(), JsValue::from(2), false, context)?; // AT_TARGET
 
         let event_type_val = event_obj.get(JsString::from("type"), context)?;
         let event_type = event_type_val
@@ -929,71 +962,78 @@ pub fn dispatch_event(
             .to_std_string()
             .unwrap_or_default();
 
-        let mut listeners_to_call = Vec::new();
-        if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
-            let mut listeners = event_target.listeners.borrow_mut();
-            if let Some(list) = listeners.get_mut(&event_type) {
-                listeners_to_call = list.clone();
-                list.retain(|l| !l.once);
-            }
-        } else {
-            // Legacy path
-            let events_prop = JsString::from("__events__");
-            let events_val = obj.get(events_prop.clone(), context)?;
-            if let Some(events_obj) = events_val.as_object() {
-                let type_prop = JsString::from(event_type.as_str());
-                let handlers_val = events_obj.get(type_prop.clone(), context)?;
-                if let Some(handlers_obj) = handlers_val.as_object() {
-                    let length_val = handlers_obj.get(JsString::from("length"), context)?;
-                    let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
-                    for i in 0..length {
-                        if let Ok(handler) = handlers_obj.get(i, context) {
-                            listeners_to_call.push(EventListenerEntry {
-                                callback: handler,
-                                capture: false,
-                                once: false,
-                                passive: false,
-                            });
+        let res = (|| -> JsResult<()> {
+            let mut listeners_to_call = Vec::new();
+            if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
+                let mut listeners = event_target.listeners.borrow_mut();
+                if let Some(list) = listeners.get_mut(&event_type) {
+                    listeners_to_call = list.clone();
+                    list.retain(|l| !l.once);
+                }
+            } else {
+                // Legacy path
+                let events_prop = JsString::from("__events__");
+                let events_val = obj.get(events_prop.clone(), context)?;
+                if let Some(events_obj) = events_val.as_object() {
+                    let type_prop = JsString::from(event_type.as_str());
+                    let handlers_val = events_obj.get(type_prop.clone(), context)?;
+                    if let Some(handlers_obj) = handlers_val.as_object() {
+                        let length_val = handlers_obj.get(JsString::from("length"), context)?;
+                        let length = length_val.as_number().map(|n| n as usize).unwrap_or(0);
+                        for i in 0..length {
+                            if let Ok(handler) = handlers_obj.get(i, context) {
+                                listeners_to_call.push(EventListenerEntry {
+                                    callback: handler,
+                                    capture: false,
+                                    once: false,
+                                    passive: false,
+                                });
+                            }
                         }
                     }
                 }
             }
-        }
 
-        for listener in listeners_to_call {
-            let stopped_val = event_obj.get(JsString::from("propagationStopped"), context)?;
-            if stopped_val.as_boolean().unwrap_or(false) {
-                break;
-            }
+            for listener in listeners_to_call {
+                let stopped_val = event_obj.get(JsString::from("propagationStopped"), context)?;
+                if stopped_val.as_boolean().unwrap_or(false) {
+                    break;
+                }
 
-            // Phase check
-            let phase_val = event_obj.get(JsString::from("eventPhase"), context)?;
-            let phase = phase_val.as_number().map(|n| n as u16).unwrap_or(0);
-            if phase == 1 && !listener.capture {
-                continue;
-            }
-            if phase == 3 && listener.capture {
-                continue;
-            }
+                // Phase check
+                let phase_val = event_obj.get(JsString::from("eventPhase"), context)?;
+                let phase = phase_val.as_number().map(|n| n as u16).unwrap_or(0);
+                if phase == 1 && !listener.capture {
+                    continue;
+                }
+                if phase == 3 && listener.capture {
+                    continue;
+                }
 
-            if let Some(callable) = listener.callback.as_object() {
-                if callable.is_callable() {
-                    callable.call(this, std::slice::from_ref(event_val), context)?;
-                } else if let Ok(handle_event_val) =
-                    callable.get(JsString::from("handleEvent"), context)
-                    && let Some(handle_event_callable) = handle_event_val.as_object()
-                    && handle_event_callable.is_callable()
-                {
-                    handle_event_callable.call(
-                        &listener.callback,
-                        std::slice::from_ref(event_val),
-                        context,
-                    )?;
+                if let Some(callable) = listener.callback.as_object() {
+                    if callable.is_callable() {
+                        callable.call(this, std::slice::from_ref(event_val), context)?;
+                    } else if let Ok(handle_event_val) =
+                        callable.get(JsString::from("handleEvent"), context)
+                        && let Some(handle_event_callable) = handle_event_val.as_object()
+                        && handle_event_callable.is_callable()
+                    {
+                        handle_event_callable.call(
+                            &listener.callback,
+                            std::slice::from_ref(event_val),
+                            context,
+                        )?;
+                    }
                 }
             }
-        }
+            Ok(())
+        })();
 
-        event_obj.set(current_target_prop.clone(), JsValue::null(), false, context)?;
+        event_obj.set(dispatch_flag_prop, JsValue::from(false), false, context)?;
+        event_obj.set(event_phase_prop, JsValue::from(0), false, context)?;
+        event_obj.set(current_target_prop, JsValue::null(), false, context)?;
+
+        res?;
 
         let prevented_val = event_obj.get(JsString::from("defaultPrevented"), context)?;
         Ok(JsValue::from(!prevented_val.as_boolean().unwrap_or(false)))
@@ -1320,5 +1360,98 @@ mod tests {
         let arr = res.as_object().unwrap();
         assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true));
         assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_t0876_event_completeness_spec() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        // 1. Check isTrusted is non-configurable (LegacyUnforgeable)
+        let script = "{
+            let desc = Object.getOwnPropertyDescriptor(Event.prototype, 'isTrusted');
+            [desc.configurable, desc.enumerable];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(false)); // non-configurable!
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true)); // enumerable!
+
+        // 2. Check eventPhase is AT_TARGET (2) during dispatch and restored to NONE (0) after dispatch for native Event
+        let script = "{
+            let target = new EventTarget();
+            let ev = new Event('test');
+            let phase_before = ev.eventPhase;
+            let phase_during = null;
+            target.addEventListener('test', (e) => {
+                phase_during = e.eventPhase;
+            });
+            target.dispatchEvent(ev);
+            let phase_after = ev.eventPhase;
+            [phase_before, phase_during, phase_after];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_number(), Some(0.0)); // Event.NONE
+        assert_eq!(arr.get(1, &mut context).unwrap().as_number(), Some(2.0)); // Event.AT_TARGET
+        assert_eq!(arr.get(2, &mut context).unwrap().as_number(), Some(0.0)); // Event.NONE
+
+        // 3. Check eventPhase behavior for plain object
+        let script = "{
+            let target = new EventTarget();
+            let ev = { type: 'test' };
+            let phase_during = null;
+            target.addEventListener('test', (e) => {
+                phase_during = e.eventPhase;
+            });
+            target.dispatchEvent(ev);
+            let phase_after = ev.eventPhase;
+            [phase_during, phase_after];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_number(), Some(2.0)); // AT_TARGET
+        assert_eq!(arr.get(1, &mut context).unwrap().as_number(), Some(0.0)); // NONE
+
+        // 4. Check double dispatch of native Event throws InvalidStateError
+        let script = "{
+            let target = new EventTarget();
+            let ev = new Event('test');
+            let threw = false;
+            target.addEventListener('test', (e) => {
+                try {
+                    target.dispatchEvent(e);
+                } catch (err) {
+                    if (err.message.includes('InvalidStateError')) {
+                        threw = true;
+                    }
+                }
+            });
+            target.dispatchEvent(ev);
+            threw;
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 5. Check double dispatch of plain object throws InvalidStateError
+        let script = "{
+            let target = new EventTarget();
+            let ev = { type: 'test' };
+            let threw = false;
+            target.addEventListener('test', (e) => {
+                try {
+                    target.dispatchEvent(e);
+                } catch (err) {
+                    if (err.message.includes('InvalidStateError')) {
+                        threw = true;
+                    }
+                }
+            });
+            target.dispatchEvent(ev);
+            threw;
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
     }
 }
