@@ -16,6 +16,41 @@ fn normalize_value(val: &str) -> String {
     val.trim_matches(is_http_whitespace).to_string()
 }
 
+impl Headers {
+    fn get_iteration_entries(&self) -> Vec<(String, String)> {
+        let pairs = self.pairs.borrow();
+        // 1. Get unique keys in their first occurrence order, then sort them lexicographically
+        let mut unique_keys = Vec::new();
+        for (k, _) in pairs.iter() {
+            if !unique_keys.contains(k) {
+                unique_keys.push(k.clone());
+            }
+        }
+        unique_keys.sort();
+
+        // 2. Build the iteration entries
+        let mut result = Vec::new();
+        for key in unique_keys {
+            if key == "set-cookie" {
+                for (k, v) in pairs.iter() {
+                    if k == &key {
+                        result.push((key.clone(), v.clone()));
+                    }
+                }
+            } else {
+                let matched_values: Vec<&str> = pairs
+                    .iter()
+                    .filter(|(k, _)| k == &key)
+                    .map(|(_, v)| v.as_str())
+                    .collect();
+                let combined = matched_values.join(", ");
+                result.push((key, combined));
+            }
+        }
+        result
+    }
+}
+
 impl Class for Headers {
     const NAME: &'static str = "Headers";
     const LENGTH: usize = 0;
@@ -90,19 +125,7 @@ impl Class for Headers {
                                 let normalized_name = name.to_ascii_lowercase();
                                 let normalized_value = normalize_value(&value);
 
-                                // Follow append-like logic to merge duplicate headers on init
-                                let mut found = false;
-                                for (k, v) in pairs.iter_mut() {
-                                    if k == &normalized_name {
-                                        v.push_str(", ");
-                                        v.push_str(&normalized_value);
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if !found {
-                                    pairs.push((normalized_name, normalized_value));
-                                }
+                                pairs.push((normalized_name, normalized_value));
                             } else {
                                 return Err(JsError::from(
                                     JsNativeError::typ()
@@ -148,18 +171,7 @@ impl Class for Headers {
                             let normalized_name = key_str.to_ascii_lowercase();
                             let normalized_value = normalize_value(&val_str);
 
-                            let mut found = false;
-                            for (k, v) in pairs.iter_mut() {
-                                if k == &normalized_name {
-                                    v.push_str(", ");
-                                    v.push_str(&normalized_value);
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if !found {
-                                pairs.push((normalized_name, normalized_value));
-                            }
+                            pairs.push((normalized_name, normalized_value));
                         }
                     }
                 }
@@ -187,6 +199,11 @@ impl Class for Headers {
                 JsString::from("get"),
                 1,
                 NativeFunction::from_fn_ptr(headers_get),
+            )
+            .method(
+                JsString::from("getSetCookie"),
+                0,
+                NativeFunction::from_fn_ptr(headers_get_set_cookie),
             )
             .method(
                 JsString::from("has"),
@@ -252,19 +269,10 @@ pub fn headers_append(
     let normalized_name = name.to_ascii_lowercase();
     let normalized_value = normalize_value(&val);
 
-    let mut pairs = headers.pairs.borrow_mut();
-    let mut found = false;
-    for (k, v) in pairs.iter_mut() {
-        if k == &normalized_name {
-            v.push_str(", ");
-            v.push_str(&normalized_value);
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        pairs.push((normalized_name, normalized_value));
-    }
+    headers
+        .pairs
+        .borrow_mut()
+        .push((normalized_name, normalized_value));
 
     Ok(JsValue::undefined())
 }
@@ -335,13 +343,41 @@ pub fn headers_get(this: &JsValue, args: &[JsValue], context: &mut Context) -> J
     let normalized_name = name.to_ascii_lowercase();
 
     let pairs = headers.pairs.borrow();
-    for (k, v) in pairs.iter() {
-        if k == &normalized_name {
-            return Ok(JsValue::from(JsString::from(v.as_str())));
-        }
-    }
+    let matched_values: Vec<&str> = pairs
+        .iter()
+        .filter(|(k, _)| k == &normalized_name)
+        .map(|(_, v)| v.as_str())
+        .collect();
 
-    Ok(JsValue::null())
+    if matched_values.is_empty() {
+        Ok(JsValue::null())
+    } else {
+        let joined = matched_values.join(", ");
+        Ok(JsValue::from(JsString::from(joined)))
+    }
+}
+
+pub fn headers_get_set_cookie(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let headers = obj.downcast_ref::<Headers>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Headers object"))
+    })?;
+
+    let pairs = headers.pairs.borrow();
+    let elements: Vec<JsValue> = pairs
+        .iter()
+        .filter(|(k, _)| k == "set-cookie")
+        .map(|(_, v)| JsValue::from(JsString::from(v.as_str())))
+        .collect();
+
+    let array = boa_engine::object::builtins::JsArray::from_iter(elements, context);
+    Ok(JsValue::from(array))
 }
 
 pub fn headers_has(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -415,10 +451,7 @@ pub fn headers_for_each(
 
     let this_arg = args.get(1).cloned().unwrap_or_default();
 
-    // Get sorted keys
-    let mut entries = headers.pairs.borrow().clone();
-    // Sort lexicographically by lowercased name
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let entries = headers.get_iteration_entries();
 
     for (k, v) in entries {
         callback_fn.call(
@@ -443,8 +476,7 @@ pub fn headers_keys(this: &JsValue, _args: &[JsValue], context: &mut Context) ->
         JsError::from(JsNativeError::typ().with_message("Method called on non-Headers object"))
     })?;
 
-    let mut entries = headers.pairs.borrow().clone();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let entries = headers.get_iteration_entries();
 
     let elements: Vec<JsValue> = entries
         .iter()
@@ -474,8 +506,7 @@ pub fn headers_values(
         JsError::from(JsNativeError::typ().with_message("Method called on non-Headers object"))
     })?;
 
-    let mut entries = headers.pairs.borrow().clone();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let entries = headers.get_iteration_entries();
 
     let elements: Vec<JsValue> = entries
         .iter()
@@ -505,8 +536,7 @@ pub fn headers_entries(
         JsError::from(JsNativeError::typ().with_message("Method called on non-Headers object"))
     })?;
 
-    let mut entries = headers.pairs.borrow().clone();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let entries = headers.get_iteration_entries();
 
     let mut elements = Vec::with_capacity(entries.len());
     for (k, v) in entries.iter() {
@@ -638,6 +668,41 @@ mod tests {
                 // Symbol.iterator
                 const iterEntries = [...h];
                 if (iterEntries[0][0] !== "a" || iterEntries[0][1] !== "1") throw "Symbol.iterator mismatch";
+            }"#
+        ).unwrap();
+
+        // 8. getSetCookie and Set-Cookie duplicate-preserving iteration behavior (t0792)
+        host.eval(
+            r#"{
+                const h = new Headers([
+                    ["Set-Cookie", "a=1"],
+                    ["Set-Cookie", "b=2"],
+                    ["X-Custom", "x1"],
+                    ["X-Custom", "x2"]
+                ]);
+                const cookies = h.getSetCookie();
+                if (cookies.length !== 2) throw "getSetCookie length mismatch";
+                if (cookies[0] !== "a=1" || cookies[1] !== "b=2") throw "getSetCookie values mismatch";
+
+                // Set-Cookie should yield individual entries in iterator and forEach,
+                // but X-Custom should combine!
+                const entries = [...h.entries()];
+                if (entries.length !== 3) throw "entries length mismatch (expected 3)";
+                
+                // Sorted alphabetically: Set-Cookie vs X-Custom
+                // "set-cookie" vs "x-custom" -> "set-cookie" is first
+                if (entries[0][0] !== "set-cookie" || entries[0][1] !== "a=1") throw "First entry mismatch";
+                if (entries[1][0] !== "set-cookie" || entries[1][1] !== "b=2") throw "Second entry mismatch";
+                if (entries[2][0] !== "x-custom" || entries[2][1] !== "x1, x2") throw "Third entry mismatch";
+
+                // has and get behavior on Set-Cookie
+                if (!h.has("set-cookie")) throw "has('set-cookie') should be true";
+                if (h.get("set-cookie") !== "a=1, b=2") throw "get('set-cookie') should combine";
+
+                // delete works on Set-Cookie
+                h.delete("set-cookie");
+                if (h.has("set-cookie")) throw "has('set-cookie') should be false after delete";
+                if (h.getSetCookie().length !== 0) throw "getSetCookie should be empty after delete";
             }"#
         ).unwrap();
     }
