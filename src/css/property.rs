@@ -1414,7 +1414,7 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
     },
     PropertyMetadata {
         name: "pointer-events",
-        inherited: false,
+        inherited: true,
         initial: "auto",
         animatable: false,
     },
@@ -2196,8 +2196,43 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "background-position",
+        longhands: &["background-position-x", "background-position-y"],
+    },
+    ShorthandExpansion {
+        name: "background-repeat",
+        longhands: &["background-repeat-x", "background-repeat-y"],
+    },
+    ShorthandExpansion {
         name: "border",
         longhands: &["border-width", "border-style", "border-color"],
+    },
+    ShorthandExpansion {
+        name: "border-block",
+        longhands: &[
+            "border-block-start-width",
+            "border-block-start-style",
+            "border-block-start-color",
+            "border-block-end-width",
+            "border-block-end-style",
+            "border-block-end-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-block-end",
+        longhands: &[
+            "border-block-end-width",
+            "border-block-end-style",
+            "border-block-end-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-block-start",
+        longhands: &[
+            "border-block-start-width",
+            "border-block-start-style",
+            "border-block-start-color",
+        ],
     },
     ShorthandExpansion {
         name: "border-bottom",
@@ -2214,6 +2249,33 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "border-right-color",
             "border-bottom-color",
             "border-left-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-inline",
+        longhands: &[
+            "border-inline-start-width",
+            "border-inline-start-style",
+            "border-inline-start-color",
+            "border-inline-end-width",
+            "border-inline-end-style",
+            "border-inline-end-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-inline-end",
+        longhands: &[
+            "border-inline-end-width",
+            "border-inline-end-style",
+            "border-inline-end-color",
+        ],
+    },
+    ShorthandExpansion {
+        name: "border-inline-start",
+        longhands: &[
+            "border-inline-start-width",
+            "border-inline-start-style",
+            "border-inline-start-color",
         ],
     },
     ShorthandExpansion {
@@ -2307,6 +2369,17 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "font-variant",
+        longhands: &[
+            "font-variant-ligatures",
+            "font-variant-caps",
+            "font-variant-numeric",
+            "font-variant-east-asian",
+            "font-variant-alternates",
+            "font-variant-position",
+        ],
+    },
+    ShorthandExpansion {
         name: "gap",
         longhands: &["row-gap", "column-gap"],
     },
@@ -2349,6 +2422,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "inset",
         longhands: &["top", "right", "bottom", "left"],
+    },
+    ShorthandExpansion {
+        name: "inset-block",
+        longhands: &["inset-block-start", "inset-block-end"],
+    },
+    ShorthandExpansion {
+        name: "inset-inline",
+        longhands: &["inset-inline-start", "inset-inline-end"],
     },
     ShorthandExpansion {
         name: "list-style",
@@ -4337,5 +4418,122 @@ mod tests {
         // Test caret shorthand
         let caret_lh = shorthand_longhands("caret").expect("caret shorthand must be registered");
         assert_eq!(caret_lh, &["caret-color", "caret-shape"][..]);
+    }
+
+    #[test]
+    fn test_additive_properties_t0950() {
+        // Verify pointer-events is inherited as per spec-correct classification
+        let pe = lookup("pointer-events").expect("pointer-events must be registered");
+        assert_eq!(pe.name, "pointer-events");
+        assert!(pe.inherited, "pointer-events should be inherited");
+
+        // Verify the 11 added shorthand expansions
+        let bg_pos = shorthand_longhands("background-position")
+            .expect("background-position shorthand must be registered");
+        assert_eq!(
+            bg_pos,
+            &["background-position-x", "background-position-y"][..]
+        );
+
+        let bg_rep = shorthand_longhands("background-repeat")
+            .expect("background-repeat shorthand must be registered");
+        assert_eq!(bg_rep, &["background-repeat-x", "background-repeat-y"][..]);
+
+        let border_block =
+            shorthand_longhands("border-block").expect("border-block shorthand must be registered");
+        assert_eq!(
+            border_block,
+            &[
+                "border-block-start-width",
+                "border-block-start-style",
+                "border-block-start-color",
+                "border-block-end-width",
+                "border-block-end-style",
+                "border-block-end-color",
+            ][..]
+        );
+
+        let border_block_end = shorthand_longhands("border-block-end")
+            .expect("border-block-end shorthand must be registered");
+        assert_eq!(
+            border_block_end,
+            &[
+                "border-block-end-width",
+                "border-block-end-style",
+                "border-block-end-color",
+            ][..]
+        );
+
+        let border_block_start = shorthand_longhands("border-block-start")
+            .expect("border-block-start shorthand must be registered");
+        assert_eq!(
+            border_block_start,
+            &[
+                "border-block-start-width",
+                "border-block-start-style",
+                "border-block-start-color",
+            ][..]
+        );
+
+        let border_inline = shorthand_longhands("border-inline")
+            .expect("border-inline shorthand must be registered");
+        assert_eq!(
+            border_inline,
+            &[
+                "border-inline-start-width",
+                "border-inline-start-style",
+                "border-inline-start-color",
+                "border-inline-end-width",
+                "border-inline-end-style",
+                "border-inline-end-color",
+            ][..]
+        );
+
+        let border_inline_end = shorthand_longhands("border-inline-end")
+            .expect("border-inline-end shorthand must be registered");
+        assert_eq!(
+            border_inline_end,
+            &[
+                "border-inline-end-width",
+                "border-inline-end-style",
+                "border-inline-end-color",
+            ][..]
+        );
+
+        let border_inline_start = shorthand_longhands("border-inline-start")
+            .expect("border-inline-start shorthand must be registered");
+        assert_eq!(
+            border_inline_start,
+            &[
+                "border-inline-start-width",
+                "border-inline-start-style",
+                "border-inline-start-color",
+            ][..]
+        );
+
+        let font_variant =
+            shorthand_longhands("font-variant").expect("font-variant shorthand must be registered");
+        assert_eq!(
+            font_variant,
+            &[
+                "font-variant-ligatures",
+                "font-variant-caps",
+                "font-variant-numeric",
+                "font-variant-east-asian",
+                "font-variant-alternates",
+                "font-variant-position",
+            ][..]
+        );
+
+        let inset_block =
+            shorthand_longhands("inset-block").expect("inset-block shorthand must be registered");
+        assert_eq!(inset_block, &["inset-block-start", "inset-block-end"][..]);
+
+        let inset_inline =
+            shorthand_longhands("inset-inline").expect("inset-inline shorthand must be registered");
+        assert_eq!(
+            inset_inline,
+            &["inset-inline-start", "inset-inline-end"][..]
+        );
     }
 }
