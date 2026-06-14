@@ -1468,4 +1468,130 @@ mod tests {
         // non-text node -> None
         assert_eq!(dom.whole_text(p2), None);
     }
+
+    #[test]
+    fn test_t1052_split_text_extreme_and_special_cases() {
+        let mut dom = Dom::new();
+
+        // 1. Split text on an independent node at various boundaries
+        let indep = dom.create_node(NodeData::Text("independent".into()));
+        // Split at index 0
+        let part1 = dom.split_text(indep, 0).unwrap();
+        assert_eq!(dom.character_data(indep), Some("".into()));
+        assert_eq!(dom.character_data(part1), Some("independent".into()));
+        assert_eq!(dom.parent(indep), None);
+        assert_eq!(dom.parent(part1), None);
+
+        // Split independent node with empty data at index 0
+        let empty_indep = dom.create_node(NodeData::Text("".into()));
+        let part2 = dom.split_text(empty_indep, 0).unwrap();
+        assert_eq!(dom.character_data(empty_indep), Some("".into()));
+        assert_eq!(dom.character_data(part2), Some("".into()));
+
+        // 2. Split text with surrogate pairs and split surrogate indexing
+        // Rocket emoji (U+1F680) is "🚀" (UTF-16 surrogate pair: [0xd83e, 0xdd80])
+        let rocket_node = dom.create_node(NodeData::Text("🚀".into()));
+        // Split in the middle of surrogate pair (index 1)
+        let split_rocket = dom.split_text(rocket_node, 1).unwrap();
+        // Since we split the surrogate pair, each half should convert to replacement character lossily
+        assert_eq!(dom.character_data(rocket_node), Some("\u{FFFD}".into()));
+        assert_eq!(dom.character_data(split_rocket), Some("\u{FFFD}".into()));
+
+        // 3. Split text when parent is Element node with multiple children
+        let main_elem = dom.create_node(NodeData::Element {
+            name: "main".into(),
+            attrs: vec![],
+        });
+        let comment_before = dom.create_node(NodeData::Comment("before".into()));
+        let text_mid = dom.create_node(NodeData::Text("middle_text".into()));
+        let comment_after = dom.create_node(NodeData::Comment("after".into()));
+        dom.append_child(main_elem, comment_before);
+        dom.append_child(main_elem, text_mid);
+        dom.append_child(main_elem, comment_after);
+
+        let split_mid = dom.split_text(text_mid, 7).unwrap();
+        assert_eq!(dom.character_data(text_mid), Some("middle_".into()));
+        assert_eq!(dom.character_data(split_mid), Some("text".into()));
+        assert_eq!(dom.parent(split_mid), Some(main_elem));
+
+        // Children order must be: [comment_before, text_mid, split_mid, comment_after]
+        let children = dom.children(main_elem);
+        assert_eq!(children.len(), 4);
+        assert_eq!(children[0], comment_before);
+        assert_eq!(children[1], text_mid);
+        assert_eq!(children[2], split_mid);
+        assert_eq!(children[3], comment_after);
+    }
+
+    #[test]
+    fn test_t1052_whole_text_and_replace_whole_text_robustness() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "main".into(),
+            attrs: vec![],
+        });
+
+        // 1. whole_text with multiple empty adjacent text nodes
+        let e1 = dom.create_node(NodeData::Text("".into()));
+        let e2 = dom.create_node(NodeData::Text("".into()));
+        let e3 = dom.create_node(NodeData::Text("".into()));
+        dom.append_child(parent, e1);
+        dom.append_child(parent, e2);
+        dom.append_child(parent, e3);
+
+        assert_eq!(dom.whole_text(e2), Some("".into()));
+
+        // replace_whole_text on e2 with some text
+        let res1 = dom.replace_whole_text(e2, "hello").unwrap();
+        assert_eq!(res1, Some(e2));
+        assert_eq!(dom.character_data(e2), Some("hello".into()));
+        // e1 and e3 must have been removed
+        assert_eq!(dom.children(parent), vec![e2]);
+
+        // 2. replace_whole_text on independent node (no parent) with empty string
+        let indep = dom.create_node(NodeData::Text("orphan".into()));
+        let res_orphan = dom.replace_whole_text(indep, "").unwrap();
+        assert_eq!(res_orphan, None);
+        assert_eq!(dom.character_data(indep), Some("".into()));
+
+        // 3. whole_text on an element that has no parent
+        let el = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.whole_text(el), None);
+    }
+
+    #[test]
+    fn test_t1052_substring_replace_clamping_and_extreme_bounds() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("abcdef".into()));
+
+        // 1. substring_data with huge offset
+        assert_eq!(
+            dom.substring_data(text_node, 100, 5),
+            Err(DomError::IndexSize)
+        );
+
+        // 2. replace_data with huge offset
+        assert_eq!(
+            dom.replace_data(text_node, 100, 5, "xyz"),
+            Err(DomError::IndexSize)
+        );
+
+        // 3. substring_data with count = 0 at length boundary
+        assert_eq!(dom.substring_data(text_node, 6, 0), Ok("".into()));
+
+        // 4. replace_data with count = 0 at length boundary (acts as append)
+        assert_eq!(dom.replace_data(text_node, 6, 0, "ghi"), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("abcdefghi".into()));
+
+        // 5. delete_data with count = 0 (no-op)
+        assert_eq!(dom.delete_data(text_node, 3, 0), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("abcdefghi".into()));
+
+        // 6. delete_data with count larger than length
+        assert_eq!(dom.delete_data(text_node, 3, 1000), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("abc".into()));
+    }
 }
