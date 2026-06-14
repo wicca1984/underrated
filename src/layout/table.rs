@@ -174,8 +174,32 @@ pub fn layout_table_container(
             }
 
             let colspan = parse_span_attribute(dom, cell_node, "colspan").clamp(1, 1000);
-            let remaining_rows = rows.len() - r;
-            let rowspan = parse_span_attribute(dom, cell_node, "rowspan").clamp(1, remaining_rows);
+            let mut rowspan = parse_span_attribute(dom, cell_node, "rowspan");
+            if rowspan == 0 {
+                if let Some(current_row_node) = row_info.node
+                    && let Some(parent_id) = dom.parent(current_row_node)
+                    && parent_id != node
+                {
+                    let mut count = 0;
+                    for future_row in &rows[r..] {
+                        if let Some(fr_node) = future_row.node {
+                            if dom.parent(fr_node) == Some(parent_id) {
+                                count += 1;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    rowspan = count.max(1);
+                } else {
+                    rowspan = (rows.len() - r).max(1);
+                }
+            } else {
+                let remaining_rows = rows.len() - r;
+                rowspan = rowspan.clamp(1, remaining_rows);
+            }
 
             let placement = CellPlacement {
                 node: cell_node,
@@ -807,7 +831,13 @@ fn is_table_cell_element(dom: &Dom, node: NodeId) -> bool {
 fn parse_span_attribute(dom: &Dom, node: NodeId, name: &str) -> usize {
     if let Some(s) = dom.get_attribute(node, name) {
         if let Ok(val) = s.trim().parse::<i32>() {
-            if val <= 0 { 1 } else { val as usize }
+            if val < 0 {
+                1
+            } else if val == 0 {
+                if name == "rowspan" { 0 } else { 1 }
+            } else {
+                val as usize
+            }
         } else {
             1
         }
@@ -3005,5 +3035,223 @@ mod tests {
         // Table content width is exactly 200.0, so table box size.width should be exactly 200.0
         // (no padding added on sides!).
         assert_eq!(table_box.rect.size.width, 200.0);
+    }
+
+    #[test]
+    fn test_rowspan_zero_with_row_groups() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Group 1 (tbody)
+        let tbody_node = dom.create_node(NodeData::Element {
+            name: "tbody".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, tbody_node);
+
+        // Row 1
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(tbody_node, row1_node);
+
+        // Cell 1.1: rowspan="0"
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: vec![("rowspan".to_string(), "0".to_string())],
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        // Cell 1.2
+        let cell12_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell12_node);
+
+        // Row 2
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(tbody_node, row2_node);
+
+        // Cell 2.1
+        let cell21_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row2_node, cell21_node);
+
+        // Group 2 (tfoot)
+        let tfoot_node = dom.create_node(NodeData::Element {
+            name: "tfoot".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, tfoot_node);
+
+        // Row 3
+        let row3_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(tfoot_node, row3_node);
+
+        // Cell 3.1
+        let cell31_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row3_node, cell31_node);
+
+        let mut styles = HashMap::new();
+        styles.insert(tbody_node, style_with_display("block"));
+        styles.insert(tfoot_node, style_with_display("block"));
+        styles.insert(table_node, style_with_display("table"));
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+        styles.insert(row3_node, style_with_display("table-row"));
+
+        // Set dimensions
+        let mut cell11_style = style_with_display("table-cell");
+        cell11_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell11_style.insert("height".to_string(), CssValue::Length(20.0, LengthUnit::Px));
+        styles.insert(cell11_node, cell11_style);
+
+        let mut cell12_style = style_with_display("table-cell");
+        cell12_style.insert("width".to_string(), CssValue::Length(80.0, LengthUnit::Px));
+        cell12_style.insert("height".to_string(), CssValue::Length(15.0, LengthUnit::Px));
+        styles.insert(cell12_node, cell12_style);
+
+        let mut cell21_style = style_with_display("table-cell");
+        cell21_style.insert("width".to_string(), CssValue::Length(80.0, LengthUnit::Px));
+        cell21_style.insert("height".to_string(), CssValue::Length(25.0, LengthUnit::Px));
+        styles.insert(cell21_node, cell21_style);
+
+        let mut cell31_style = style_with_display("table-cell");
+        cell31_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell31_style.insert("height".to_string(), CssValue::Length(10.0, LengthUnit::Px));
+        styles.insert(cell31_node, cell31_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Cell 1.1 has rowspan="0". It is in Row 1, which belongs to Group 1 (tbody).
+        // Group 1 has Row 1 and Row 2. So Cell 1.1 spans 2 rows (Row 1 and Row 2), not Row 3.
+        // Row 1 height is max(cell11_height=20, cell12_height=15) = 20px (initially, but actually rowspan cell is ignored for row baseline if rowspan > 1, so row 1 baseline is cell 1.2 height = 15px. Row 2 height is cell 2.1 height = 25px. The combined height of row 1 and row 2 is 15 + 25 = 40px. Since cell 1.1's preferred height is 20, and the combined height of the rows is 40, cell 1.1 spans both rows with height 40).
+        // Let's verify cell positions and sizes.
+        assert_eq!(table_box.children.len(), 3); // 3 rows
+
+        let r1 = &table_box.children[0];
+        let cell11_box = &r1.children[0];
+        assert_eq!(cell11_box.node, Some(cell11_node));
+        assert_eq!(cell11_box.rect.size.width, 50.0);
+        assert_eq!(cell11_box.rect.size.height, 40.0); // Spans row 1 (15px) + row 2 (25px) = 40px!
+
+        let cell12_box = &r1.children[1];
+        assert_eq!(cell12_box.node, Some(cell12_node));
+        assert_eq!(cell12_box.rect.size.height, 15.0);
+
+        let r2 = &table_box.children[1];
+        let cell21_box = &r2.children[0];
+        assert_eq!(cell21_box.node, Some(cell21_node));
+        assert_eq!(cell21_box.rect.origin.x, 50.0); // pushed right by the rowspan cell
+
+        let r3 = &table_box.children[2];
+        let cell31_box = &r3.children[0];
+        assert_eq!(cell31_box.node, Some(cell31_node));
+        assert_eq!(cell31_box.rect.origin.x, 0.0); // starts at column 0 because the rowspan cell does NOT leak into row 3!
+    }
+
+    #[test]
+    fn test_rowspan_zero_without_row_groups() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Row 1
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row1_node);
+
+        // Cell 1.1: rowspan="0"
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: vec![("rowspan".to_string(), "0".to_string())],
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        // Cell 1.2
+        let cell12_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell12_node);
+
+        // Row 2
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row2_node);
+
+        // Cell 2.1
+        let cell21_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row2_node, cell21_node);
+
+        let mut styles = HashMap::new();
+        styles.insert(table_node, style_with_display("table"));
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+
+        // Set dimensions
+        let mut cell11_style = style_with_display("table-cell");
+        cell11_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell11_style.insert("height".to_string(), CssValue::Length(20.0, LengthUnit::Px));
+        styles.insert(cell11_node, cell11_style);
+
+        let mut cell12_style = style_with_display("table-cell");
+        cell12_style.insert("width".to_string(), CssValue::Length(80.0, LengthUnit::Px));
+        cell12_style.insert("height".to_string(), CssValue::Length(15.0, LengthUnit::Px));
+        styles.insert(cell12_node, cell12_style);
+
+        let mut cell21_style = style_with_display("table-cell");
+        cell21_style.insert("width".to_string(), CssValue::Length(80.0, LengthUnit::Px));
+        cell21_style.insert("height".to_string(), CssValue::Length(25.0, LengthUnit::Px));
+        styles.insert(cell21_node, cell21_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Cell 1.1 has rowspan="0". It is directly in table (no row group).
+        // It spans all remaining rows of the table (Row 1 and Row 2).
+        assert_eq!(table_box.children.len(), 2);
+
+        let r1 = &table_box.children[0];
+        let cell11_box = &r1.children[0];
+        assert_eq!(cell11_box.node, Some(cell11_node));
+        assert_eq!(cell11_box.rect.size.height, 40.0); // Spans row 1 (15px) + row 2 (25px) = 40px
+
+        let r2 = &table_box.children[1];
+        let cell21_box = &r2.children[0];
+        assert_eq!(cell21_box.node, Some(cell21_node));
+        assert_eq!(cell21_box.rect.origin.x, 50.0); // pushed right
     }
 }
