@@ -4805,6 +4805,51 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 }
                 return None;
             }
+            if name.eq_ignore_ascii_case("calc")
+                || name.eq_ignore_ascii_case("min")
+                || name.eq_ignore_ascii_case("max")
+                || name.eq_ignore_ascii_case("clamp")
+                || name.eq_ignore_ascii_case("round")
+                || name.eq_ignore_ascii_case("mod")
+                || name.eq_ignore_ascii_case("rem")
+                || name.eq_ignore_ascii_case("abs")
+                || name.eq_ignore_ascii_case("sign")
+                || name.eq_ignore_ascii_case("sin")
+                || name.eq_ignore_ascii_case("cos")
+                || name.eq_ignore_ascii_case("tan")
+                || name.eq_ignore_ascii_case("asin")
+                || name.eq_ignore_ascii_case("acos")
+                || name.eq_ignore_ascii_case("atan")
+                || name.eq_ignore_ascii_case("atan2")
+                || name.eq_ignore_ascii_case("pow")
+                || name.eq_ignore_ascii_case("sqrt")
+                || name.eq_ignore_ascii_case("hypot")
+                || name.eq_ignore_ascii_case("log")
+                || name.eq_ignore_ascii_case("exp")
+                || name.eq_ignore_ascii_case("repeating-linear-gradient")
+                || name.eq_ignore_ascii_case("repeating-radial-gradient")
+                || name.eq_ignore_ascii_case("repeating-conic-gradient")
+                || name.eq_ignore_ascii_case("blur")
+                || name.eq_ignore_ascii_case("brightness")
+                || name.eq_ignore_ascii_case("contrast")
+                || name.eq_ignore_ascii_case("drop-shadow")
+                || name.eq_ignore_ascii_case("grayscale")
+                || name.eq_ignore_ascii_case("hue-rotate")
+                || name.eq_ignore_ascii_case("invert")
+                || name.eq_ignore_ascii_case("opacity")
+                || name.eq_ignore_ascii_case("saturate")
+                || name.eq_ignore_ascii_case("sepia")
+                || name.eq_ignore_ascii_case("circle")
+                || name.eq_ignore_ascii_case("ellipse")
+                || name.eq_ignore_ascii_case("inset")
+                || name.eq_ignore_ascii_case("polygon")
+                || name.eq_ignore_ascii_case("path")
+                || name.eq_ignore_ascii_case("rect")
+                || name.eq_ignore_ascii_case("xywh")
+                || name.eq_ignore_ascii_case("env")
+            {
+                return Some(CssValue::Keyword(serialize_component_value(components[0])));
+            }
             None // TODO(spec): other functions
         }
         _ => None,
@@ -14760,6 +14805,113 @@ mod tests {
         assert_eq!(
             parse_value(&[view_comp]),
             Some(CssValue::Keyword("view(block)".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_modern_css_value_functions() {
+        // Test calc(10px + 20px)
+        let calc_comp = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[calc_comp]),
+            Some(CssValue::Keyword("calc(10px + 20px)".to_string()))
+        );
+
+        // Test clamp(10px, 50%, 100px)
+        let clamp_comp = ComponentValue::Function {
+            name: "clamp".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(50.0)),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 100.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[clamp_comp]),
+            Some(CssValue::Keyword("clamp(10px,50%,100px)".to_string()))
+        );
+
+        // Test sin(45deg)
+        let sin_comp = ComponentValue::Function {
+            name: "sin".to_string(),
+            value: vec![token(CssToken::Dimension {
+                value: 45.0,
+                unit: "deg".to_string(),
+            })],
+        };
+        assert_eq!(
+            parse_value(&[sin_comp]),
+            Some(CssValue::Keyword("sin(45deg)".to_string()))
+        );
+
+        // Test blur(5px)
+        let blur_comp = ComponentValue::Function {
+            name: "blur".to_string(),
+            value: vec![token(CssToken::Dimension {
+                value: 5.0,
+                unit: "px".to_string(),
+            })],
+        };
+        assert_eq!(
+            parse_value(&[blur_comp]),
+            Some(CssValue::Keyword("blur(5px)".to_string()))
+        );
+
+        // Test polygon(50% 0%, 0% 100%, 100% 100%)
+        let polygon_comp = ComponentValue::Function {
+            name: "polygon".to_string(),
+            value: vec![
+                token(CssToken::Percentage(50.0)),
+                token(CssToken::Whitespace),
+                token(CssToken::Percentage(0.0)),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(0.0)),
+                token(CssToken::Whitespace),
+                token(CssToken::Percentage(100.0)),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(100.0)),
+                token(CssToken::Whitespace),
+                token(CssToken::Percentage(100.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[polygon_comp]),
+            Some(CssValue::Keyword(
+                "polygon(50% 0%,0% 100%,100% 100%)".to_string()
+            ))
+        );
+
+        // Test env(safe-area-inset-top)
+        let env_comp = ComponentValue::Function {
+            name: "env".to_string(),
+            value: vec![token(CssToken::Ident("safe-area-inset-top".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[env_comp]),
+            Some(CssValue::Keyword("env(safe-area-inset-top)".to_string()))
         );
     }
 }
