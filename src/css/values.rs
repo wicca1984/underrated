@@ -4269,6 +4269,12 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("hwb") {
                 return parse_hwb_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("oklab") {
+                return parse_oklab_function(value).map(CssValue::Color);
+            }
+            if name.eq_ignore_ascii_case("oklch") {
+                return parse_oklch_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -4518,6 +4524,184 @@ fn parse_hwb_function(components: &[ComponentValue]) -> Option<Color> {
     let b = (b_chan * 255.0).round().clamp(0.0, 255.0) as u8;
 
     Some(Color::Rgba(r, g, b, alpha))
+}
+
+fn parse_oklab_function(components: &[ComponentValue]) -> Option<Color> {
+    enum OklArg {
+        Number(f64),
+        Percentage(f64),
+        Angle(f64),
+    }
+
+    let mut args = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(OklArg::Number(*v)),
+            ComponentValue::Token(CssToken::Percentage(v)) => args.push(OklArg::Percentage(*v)),
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let deg = match unit.to_ascii_lowercase().as_str() {
+                    "deg" => *value,
+                    "rad" => *value * 180.0 / std::f64::consts::PI,
+                    "grad" => *value * 0.9,
+                    "turn" => *value * 360.0,
+                    _ => return None,
+                };
+                args.push(OklArg::Angle(deg));
+            }
+            _ => return None,
+        }
+    }
+
+    if args.len() != 3 && args.len() != 4 {
+        return None;
+    }
+
+    // L (lightness): Number [0,1] or Percentage. Clamp L >= 0.
+    let l_val = match args[0] {
+        OklArg::Number(v) => v,
+        OklArg::Percentage(v) => v / 100.0,
+        _ => return None,
+    };
+    let l_val = l_val.max(0.0);
+
+    // a: Number (roughly [-0.4, 0.4]) or Percentage (100% = 0.4, -100% = -0.4).
+    let a_val = match args[1] {
+        OklArg::Number(v) => v,
+        OklArg::Percentage(v) => (v / 100.0) * 0.4,
+        _ => return None,
+    };
+
+    // b: Number (roughly [-0.4, 0.4]) or Percentage (100% = 0.4, -100% = -0.4).
+    let b_val = match args[2] {
+        OklArg::Number(v) => v,
+        OklArg::Percentage(v) => (v / 100.0) * 0.4,
+        _ => return None,
+    };
+
+    // alpha: Number [0,1] or Percentage. Default 1.0.
+    let alpha = if args.len() == 4 {
+        let a_val = match args[3] {
+            OklArg::Number(v) => v,
+            OklArg::Percentage(v) => v / 100.0,
+            _ => return None,
+        };
+        (a_val.clamp(0.0, 1.0) * 255.0).round() as u8
+    } else {
+        255
+    };
+
+    let color = oklab_to_color(l_val, a_val, b_val, alpha);
+    Some(color)
+}
+
+fn parse_oklch_function(components: &[ComponentValue]) -> Option<Color> {
+    enum OklArg {
+        Number(f64),
+        Percentage(f64),
+        Angle(f64),
+    }
+
+    let mut args = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(OklArg::Number(*v)),
+            ComponentValue::Token(CssToken::Percentage(v)) => args.push(OklArg::Percentage(*v)),
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let deg = match unit.to_ascii_lowercase().as_str() {
+                    "deg" => *value,
+                    "rad" => *value * 180.0 / std::f64::consts::PI,
+                    "grad" => *value * 0.9,
+                    "turn" => *value * 360.0,
+                    _ => return None,
+                };
+                args.push(OklArg::Angle(deg));
+            }
+            _ => return None,
+        }
+    }
+
+    if args.len() != 3 && args.len() != 4 {
+        return None;
+    }
+
+    // L (lightness): Number [0,1] or Percentage. Clamp L >= 0.
+    let l_val = match args[0] {
+        OklArg::Number(v) => v,
+        OklArg::Percentage(v) => v / 100.0,
+        _ => return None,
+    };
+    let l_val = l_val.max(0.0);
+
+    // C (chroma): Number >= 0 or Percentage (100% = 0.4). Clamp C >= 0.
+    let c_val = match args[1] {
+        OklArg::Number(v) => v,
+        OklArg::Percentage(v) => (v / 100.0) * 0.4,
+        _ => return None,
+    };
+    let c_val = c_val.max(0.0);
+
+    // H (hue): Number (degrees) or Angle. Normalize ((H % 360) + 360) % 360.
+    let h_deg = match args[2] {
+        OklArg::Number(v) => v,
+        OklArg::Angle(v) => v,
+        _ => return None,
+    };
+    let h_deg = ((h_deg % 360.0) + 360.0) % 360.0;
+
+    // alpha: Number [0,1] or Percentage. Default 1.0.
+    let alpha = if args.len() == 4 {
+        let a_val = match args[3] {
+            OklArg::Number(v) => v,
+            OklArg::Percentage(v) => v / 100.0,
+            _ => return None,
+        };
+        (a_val.clamp(0.0, 1.0) * 255.0).round() as u8
+    } else {
+        255
+    };
+
+    let h_rad = h_deg.to_radians();
+    let a_val = c_val * h_rad.cos();
+    let b_val = c_val * h_rad.sin();
+
+    let color = oklab_to_color(l_val, a_val, b_val, alpha);
+    Some(color)
+}
+
+fn oklab_to_color(l_val: f64, a_val: f64, b_val: f64, alpha: u8) -> Color {
+    let l_ = l_val + 0.3963377774 * a_val + 0.2158037573 * b_val;
+    let m_ = l_val - 0.1055613458 * a_val - 0.0638541728 * b_val;
+    let s_ = l_val - 0.0894841775 * a_val - 1.2914855480 * b_val;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    let r_lin = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g_lin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let b_lin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+
+    let r = linear_srgb_to_srgb(r_lin);
+    let g = linear_srgb_to_srgb(g_lin);
+    let b = linear_srgb_to_srgb(b_lin);
+
+    Color::Rgba(r, g, b, alpha)
+}
+
+fn linear_srgb_to_srgb(c: f64) -> u8 {
+    let c = c.clamp(0.0, 1.0);
+    let s = if c <= 0.0031308 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (s * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
@@ -5467,6 +5651,102 @@ mod tests {
 
         // Rejecting invalid argument counts: hwb(0 0%) -> None
         assert_eq!(parse("hwb(0 0%)"), None);
+    }
+
+    #[test]
+    fn test_parse_color_oklab_and_oklch() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // oklab(0 0 0) -> black
+        assert_eq!(
+            parse("oklab(0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // oklab(1 0 0) -> white
+        assert_eq!(
+            parse("oklab(1 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // oklab(100% 0 0) -> white
+        assert_eq!(
+            parse("oklab(100% 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // oklab(0.5 0 0) -> mid gray ~99 +/-2
+        let gray_oklab = parse("oklab(0.5 0 0)");
+        match gray_oklab {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert!((r as i32 - 99).abs() <= 2);
+                assert!((g as i32 - 99).abs() <= 2);
+                assert!((b as i32 - 99).abs() <= 2);
+                assert_eq!(alpha, 255);
+            }
+            _ => panic!("Expected oklab(0.5 0 0) to parse as gray"),
+        }
+
+        // oklch(0 0 0) -> black
+        assert_eq!(
+            parse("oklch(0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // oklch(1 0 0) -> white
+        assert_eq!(
+            parse("oklch(1 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // oklch(0.5 0 0) -> same gray ~99 +/-2
+        let gray_oklch = parse("oklch(0.5 0 0)");
+        match gray_oklch {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert!((r as i32 - 99).abs() <= 2);
+                assert!((g as i32 - 99).abs() <= 2);
+                assert!((b as i32 - 99).abs() <= 2);
+                assert_eq!(alpha, 255);
+            }
+            _ => panic!("Expected oklch(0.5 0 0) to parse as gray"),
+        }
+
+        // oklab(1 0 0 / 0.5) -> alpha within +/-1 of 128 (round(0.5*255) = 128)
+        let alpha_oklab = parse("oklab(1 0 0 / 0.5)");
+        match alpha_oklab {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 255);
+                assert_eq!(b, 255);
+                assert!((alpha as i32 - 128).abs() <= 1);
+            }
+            _ => panic!("Expected oklab(1 0 0 / 0.5) to parse with alpha"),
+        }
+
+        // Chromatic input: oklch(0.628 0.2577 29.23) -> all channels in [0, 255]
+        let chromatic_oklch = parse("oklch(0.628 0.2577 29.23)");
+        match chromatic_oklch {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(alpha, 255);
+                let _ = (r, g, b);
+            }
+            _ => panic!("Expected oklch(0.628 0.2577 29.23) to parse as a color"),
+        }
+
+        // Comma-separated: oklab(1, 0, 0)
+        assert_eq!(
+            parse("oklab(1, 0, 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // Angle unit for hue in oklch: oklch(1 0 180deg)
+        assert_eq!(
+            parse("oklch(1 0 180deg)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
     }
 
     #[test]
