@@ -705,6 +705,13 @@ impl TreeBuilder {
             return;
         }
 
+        if self.insertion_mode == InsertionMode::InTableText
+            && !matches!(token, Token::Character(_))
+        {
+            self.handle_in_table_text(token);
+            return;
+        }
+
         let use_foreign_content = if let Some(adjusted_current_node) =
             self.stack_of_open_elements.last().copied()
         {
@@ -1122,7 +1129,9 @@ impl TreeBuilder {
                         self_closing,
                     });
                     self.stack_of_open_elements.retain(|&id| id != head_id);
-                    self.insertion_mode = old_mode;
+                    if self.insertion_mode == InsertionMode::InHead {
+                        self.insertion_mode = old_mode;
+                    }
                 }
             }
             Token::EndTag { ref name, .. } if name != "body" && name != "html" && name != "br" => {
@@ -1236,12 +1245,22 @@ impl TreeBuilder {
                 "address" | "article" | "aside" | "blockquote" | "center" | "details"
                 | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure"
                 | "footer" | "header" | "hgroup" | "main" | "menu" | "nav" | "ol" | "pre"
-                | "listing" | "search" | "section" | "summary" | "ul" | "form" => {
+                | "listing" | "search" | "section" | "summary" | "ul" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name.clone(), attrs);
                     self.stack_of_open_elements.push(node);
                     if name == "pre" || name == "listing" {
                         self.ignore_next_lf = true;
+                    }
+                }
+                "form" => {
+                    let has_form = self.stack_of_open_elements.iter().any(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name: n, .. }) if n == "form")
+                    });
+                    if !has_form {
+                        self.close_p_element_if_in_button_scope();
+                        let node = self.create_and_insert_element(name.clone(), attrs);
+                        self.stack_of_open_elements.push(node);
                     }
                 }
                 "rb" | "rtc" => {
@@ -1514,6 +1533,24 @@ impl TreeBuilder {
                         self.stack_of_open_elements.push(node);
                     }
                     self.pop_until("p");
+                } else if name == "form" {
+                    let mut form_idx = None;
+                    for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+                        if matches!(self.dom.data(node_id), Some(NodeData::Element { name: n, .. }) if n == "form")
+                        {
+                            form_idx = Some(idx);
+                            break;
+                        }
+                    }
+                    if let Some(idx) = form_idx
+                        && self.is_in_scope("form")
+                    {
+                        self.generate_implied_end_tags(None);
+                        self.stack_of_open_elements.remove(idx);
+                    }
+                } else if name == "br" {
+                    self.reconstruct_active_formatting_elements();
+                    self.create_and_insert_element("br".to_string(), Vec::new());
                 } else if name == "ruby" {
                     if self.is_in_scope("ruby") {
                         self.generate_implied_end_tags(None);
@@ -2023,7 +2060,7 @@ impl TreeBuilder {
                         self.process_token(token);
                     }
                 }
-                "template" => {
+                "template" | "script" | "style" => {
                     self.handle_in_head(token);
                 }
                 "form" => {
@@ -2410,7 +2447,7 @@ impl TreeBuilder {
                 attrs,
                 self_closing,
             } => match name.as_str() {
-                "html" | "template" => {
+                "html" | "template" | "math" | "svg" => {
                     self.handle_in_body(Token::StartTag {
                         name,
                         attrs,
@@ -2469,7 +2506,7 @@ impl TreeBuilder {
                 }
             },
             Token::EndTag { name, attrs, self_closing } => match name.as_str() {
-                "template" => {
+                "template" | "math" | "svg" => {
                     self.handle_in_body(Token::EndTag {
                         name,
                         attrs,
@@ -2761,18 +2798,26 @@ impl TreeBuilder {
             let formatting_element_idx = match formatting_element_idx {
                 Some(idx) => idx,
                 None => {
-                    // Any other end tag entry
-                    let mut found_in_stack = false;
-                    for &id in self.stack_of_open_elements.iter().rev() {
-                        if matches!(self.dom.data(id), Some(NodeData::Element { name: n, .. }) if n == subject)
+                    // spec: If there is no such element, then instead act as described in the "any other end tag" entry of the "in body" insertion mode.
+                    let mut found_node_idx = None;
+                    for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+                        if let Some(NodeData::Element { name: el_name, .. }) =
+                            self.dom.data(node_id)
                         {
-                            found_in_stack = true;
-                            break;
+                            if el_name == subject {
+                                found_node_idx = Some(idx);
+                                break;
+                            }
+                            if self.is_special_element(el_name) {
+                                break;
+                            }
                         }
                     }
-                    if found_in_stack {
+                    if let Some(idx) = found_node_idx {
                         self.generate_implied_end_tags(Some(subject));
-                        self.pop_until(subject);
+                        while self.stack_of_open_elements.len() > idx {
+                            self.stack_of_open_elements.pop();
+                        }
                     }
                     return;
                 }
