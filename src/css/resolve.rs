@@ -325,26 +325,26 @@ fn component_to_calc_tokens(
                     )));
                     true
                 }
-                "vw" | "svw" | "lvw" | "dvw" | "vi" => {
+                "vw" | "svw" | "lvw" | "dvw" | "vi" | "svi" | "lvi" | "dvi" | "cqw" | "cqi" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * context.viewport_w / 100.0,
                     )));
                     true
                 }
-                "vh" | "svh" | "lvh" | "dvh" | "vb" => {
+                "vh" | "svh" | "lvh" | "dvh" | "vb" | "svb" | "lvb" | "dvb" | "cqh" | "cqb" => {
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * context.viewport_h / 100.0,
                     )));
                     true
                 }
-                "vmin" | "svmin" | "lvmin" | "dvmin" => {
+                "vmin" | "svmin" | "lvmin" | "dvmin" | "cqmin" => {
                     let vmin = context.viewport_w.min(context.viewport_h);
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * vmin / 100.0,
                     )));
                     true
                 }
-                "vmax" | "svmax" | "lvmax" | "dvmax" => {
+                "vmax" | "svmax" | "lvmax" | "dvmax" | "cqmax" => {
                     let vmax = context.viewport_w.max(context.viewport_h);
                     tokens.push(CalcToken::Val(CalcValue::Length(
                         *value as f32 * vmax / 100.0,
@@ -717,7 +717,7 @@ fn evaluate_math_fn_to_value_with_context(
             (CalcValue::Angle(_), CalcValue::Angle(_)) => {}
             _ => return None,
         },
-        "sqrt" | "pow" | "log" | "exp" | "hypot" => {
+        "sqrt" | "pow" | "log" | "exp" => {
             for arg in &evaluated_args {
                 if !matches!(arg, CalcValue::Number(_)) {
                     return None;
@@ -758,7 +758,7 @@ fn evaluate_math_fn_to_value_with_context(
     }
 
     // 5. Extract f32 values
-    let is_exponential = matches!(kind_str, "sqrt" | "pow" | "hypot" | "log" | "exp");
+    let is_exponential = matches!(kind_str, "sqrt" | "pow" | "log" | "exp");
     let is_length = matches!(evaluated_args[0], CalcValue::Length(_));
     let is_angle = matches!(evaluated_args[0], CalcValue::Angle(_));
 
@@ -1513,22 +1513,26 @@ pub fn resolve_value_with_context(
                         *value as f32 * context.root_font_size,
                         LengthUnit::Px,
                     )),
-                    "vw" | "svw" | "lvw" | "dvw" | "vi" => Some(CssValue::Length(
-                        *value as f32 * context.viewport_w / 100.0,
-                        LengthUnit::Px,
-                    )),
-                    "vh" | "svh" | "lvh" | "dvh" | "vb" => Some(CssValue::Length(
-                        *value as f32 * context.viewport_h / 100.0,
-                        LengthUnit::Px,
-                    )),
-                    "vmin" | "svmin" | "lvmin" | "dvmin" => {
+                    "vw" | "svw" | "lvw" | "dvw" | "vi" | "svi" | "lvi" | "dvi" | "cqw" | "cqi" => {
+                        Some(CssValue::Length(
+                            *value as f32 * context.viewport_w / 100.0,
+                            LengthUnit::Px,
+                        ))
+                    }
+                    "vh" | "svh" | "lvh" | "dvh" | "vb" | "svb" | "lvb" | "dvb" | "cqh" | "cqb" => {
+                        Some(CssValue::Length(
+                            *value as f32 * context.viewport_h / 100.0,
+                            LengthUnit::Px,
+                        ))
+                    }
+                    "vmin" | "svmin" | "lvmin" | "dvmin" | "cqmin" => {
                         let vmin = context.viewport_w.min(context.viewport_h);
                         Some(CssValue::Length(
                             *value as f32 * vmin / 100.0,
                             LengthUnit::Px,
                         ))
                     }
-                    "vmax" | "svmax" | "lvmax" | "dvmax" => {
+                    "vmax" | "svmax" | "lvmax" | "dvmax" | "cqmax" => {
                         let vmax = context.viewport_w.max(context.viewport_h);
                         Some(CssValue::Length(
                             *value as f32 * vmax / 100.0,
@@ -2191,7 +2195,7 @@ mod tests {
         );
         assert_eq!(
             resolve_string("hypot(3px, 4px)", 16.0, 1000.0, 800.0, &vars),
-            None
+            Some(CssValue::Length(5.0, LengthUnit::Px))
         );
 
         // log
@@ -2552,5 +2556,76 @@ mod tests {
             resolve_string_with_context("calc(10% + 20%)", &ctx_percentage),
             Some(CssValue::Length(150.0, LengthUnit::Px)) // 50 + 100 = 150
         );
+    }
+
+    #[test]
+    fn test_resolve_t0895_additive() {
+        let vars = HashMap::new();
+
+        // 1. New viewport units
+        assert_eq!(
+            resolve_string("10svi", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(100.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10lvi", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(100.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10dvi", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(100.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10svb", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10lvb", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10dvb", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+
+        // 2. Container query units falling back to viewport units
+        assert_eq!(
+            resolve_string("10cqw", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(100.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10cqh", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10cqi", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(100.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10cqb", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10cqmin", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(80.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("10cqmax", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(100.0, LengthUnit::Px))
+        );
+
+        // 3. hypot with dimensions/units inside calc and directly
+        assert_eq!(
+            resolve_string("hypot(3px, 4px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(5.0, LengthUnit::Px))
+        );
+        if let Some(CssValue::Number(val)) =
+            resolve_string("sin(hypot(30deg, 40deg))", 16.0, 1000.0, 800.0, &vars)
+        {
+            let expected_sin = (50.0f32).to_radians().sin();
+            assert!((val - expected_sin).abs() < 1e-5);
+        } else {
+            panic!("Expected a number for sin(hypot(30deg, 40deg))");
+        }
     }
 }
