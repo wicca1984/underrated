@@ -1191,4 +1191,76 @@ mod tests {
             Some("  original   spacing  ")
         );
     }
+
+    #[test]
+    fn test_domtokenlist_advanced_compliance_additional() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. Exact check on all 5 HTML ASCII whitespace characters: \t, \n, \r, \x0c, and ' '
+        for ws_char in &['\t', '\n', '\r', '\x0C', ' '] {
+            let token = format!("foo{}bar", ws_char);
+            assert_eq!(
+                dom.validate_class_token(&token),
+                Err(ClassTokenError::ContainsWhitespace),
+                "Failed to reject whitespace character: {:?}",
+                ws_char
+            );
+        }
+
+        // 2. Transactional safety for try_add_classes:
+        // If there's an error in any token, NO mutation is applied to the class attribute at all.
+        dom.set_attribute(el, "class", "initial");
+        let result = dom.try_add_classes(el, &["new1", "invalid token", "new2"]);
+        assert_eq!(result, Err(ClassTokenError::ContainsWhitespace));
+        // Verify it was transactional (not even 'new1' was added)
+        assert_eq!(dom.get_attribute(el, "class"), Some("initial"));
+
+        // 3. Transactional safety for try_remove_classes:
+        // If there's an error in any token, NO mutation is applied.
+        dom.set_attribute(el, "class", "foo bar baz");
+        let result = dom.try_remove_classes(el, &["foo", "invalid token", "baz"]);
+        assert_eq!(result, Err(ClassTokenError::ContainsWhitespace));
+        // Verify it was transactional (neither 'foo' nor 'baz' was removed)
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo bar baz"));
+
+        // 4. Checking replace_class with old == new where old is absent vs present
+        dom.set_attribute(el, "class", "  a   b  ");
+        assert!(!dom.replace_class(el, "c", "c")); // c absent, returns false and doesn't normalize
+        assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
+
+        assert!(dom.replace_class(el, "a", "a")); // a present, returns true and normalizes
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
+
+        // 5. Verification of all-or-nothing check in try_replace_class
+        assert_eq!(
+            dom.try_replace_class(el, "a", "with space"),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+        // Spacing must not be normalized or altered since it errored early
+        dom.set_attribute(el, "class", "  a   b  ");
+        assert_eq!(
+            dom.try_replace_class(el, "a", "with space"),
+            Err(ClassTokenError::ContainsWhitespace)
+        );
+        assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
+
+        // 6. class_list_length & class_list_item correctness
+        dom.set_attribute(el, "class", "  p   q   p  ");
+        assert_eq!(dom.class_list_length(el), 2);
+        assert_eq!(dom.class_list_item(el, 0), Some("p".to_string()));
+        assert_eq!(dom.class_list_item(el, 1), Some("q".to_string()));
+        assert_eq!(dom.class_list_item(el, 2), None);
+
+        // 7. Verify class_list_keys, class_list_values, class_list_entries
+        assert_eq!(dom.class_list_keys(el), vec![0, 1]);
+        assert_eq!(
+            dom.class_list_values(el),
+            vec!["p".to_string(), "q".to_string()]
+        );
+        assert_eq!(
+            dom.class_list_entries(el),
+            vec![(0, "p".to_string()), (1, "q".to_string())]
+        );
+    }
 }
