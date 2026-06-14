@@ -351,6 +351,144 @@ impl Dom {
             }
         }
     }
+
+    /// Replaces the text of the given Text node and all of its contiguous Text siblings with the given data.
+    ///
+    /// If data is empty, the node is removed from its parent and `None` is returned.
+    /// Returns `Err(DomError::NotSupported)` if the node is not a Text node.
+    // spec: https://dom.spec.whatwg.org/#dom-text-replacewholetext
+    pub fn replace_whole_text(
+        &mut self,
+        node: NodeId,
+        data: &str,
+    ) -> Result<Option<NodeId>, DomError> {
+        let is_text = if let Some(n) = self.arena.get(node) {
+            matches!(n.data, NodeData::Text(_))
+        } else {
+            return Err(DomError::NotSupported);
+        };
+
+        if !is_text {
+            return Err(DomError::NotSupported);
+        }
+
+        let parent = self.parent(node);
+        match parent {
+            None => {
+                if data.is_empty() {
+                    self.set_character_data(node, "")?;
+                    Ok(None)
+                } else {
+                    self.set_character_data(node, data)?;
+                    Ok(Some(node))
+                }
+            }
+            Some(parent_id) => {
+                let children = self.children(parent_id);
+                let idx = children
+                    .iter()
+                    .position(|&c| c == node)
+                    .ok_or(DomError::NotSupported)?;
+
+                // Find contiguous Text nodes
+                let mut start_idx = idx;
+                while start_idx > 0 {
+                    let prev_sibling = children[start_idx - 1];
+                    if let Some(NodeData::Text(_)) = self.data(prev_sibling) {
+                        start_idx -= 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let mut end_idx = idx;
+                while end_idx + 1 < children.len() {
+                    let next_sibling = children[end_idx + 1];
+                    if let Some(NodeData::Text(_)) = self.data(next_sibling) {
+                        end_idx += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let contiguous: Vec<NodeId> = children[start_idx..=end_idx].to_vec();
+
+                if data.is_empty() {
+                    // Remove all contiguous text nodes including the target node
+                    for &sibling in &contiguous {
+                        self.remove_child(parent_id, sibling);
+                    }
+                    Ok(None)
+                } else {
+                    // Set data of the target node
+                    self.set_character_data(node, data)?;
+
+                    // Remove all other contiguous text nodes
+                    for &sibling in &contiguous {
+                        if sibling != node {
+                            self.remove_child(parent_id, sibling);
+                        }
+                    }
+                    Ok(Some(node))
+                }
+            }
+        }
+    }
+
+    /// Removes the given node from its parent.
+    ///
+    /// If the node has no parent, this does nothing.
+    // spec: https://dom.spec.whatwg.org/#dom-childnode-remove
+    pub fn remove(&mut self, node: NodeId) {
+        if let Some(parent) = self.parent(node) {
+            self.remove_child(parent, node);
+        }
+    }
+
+    /// Inserts nodes before the given node in its parent's children.
+    ///
+    /// If the node has no parent, this does nothing.
+    // spec: https://dom.spec.whatwg.org/#dom-childnode-before
+    pub fn before(&mut self, node: NodeId, new_node: NodeId) {
+        if let Some(parent) = self.parent(node) {
+            self.insert_before(parent, new_node, Some(node));
+        }
+    }
+
+    /// Inserts nodes after the given node in its parent's children.
+    ///
+    /// If the node has no parent, this does nothing.
+    // spec: https://dom.spec.whatwg.org/#dom-childnode-after
+    pub fn after(&mut self, node: NodeId, new_node: NodeId) {
+        if let Some(parent) = self.parent(node) {
+            // Find the sibling immediately following `node`.
+            let next = if let Some(p_node) = self.arena.get(parent) {
+                let idx = p_node.children.iter().position(|&c| c == node);
+                idx.and_then(|i| p_node.children.get(i + 1).copied())
+            } else {
+                None
+            };
+            self.insert_before(parent, new_node, next);
+        }
+    }
+
+    /// Replaces the given node with another node in its parent's children.
+    ///
+    /// If the node has no parent, this does nothing.
+    // spec: https://dom.spec.whatwg.org/#dom-childnode-replacewith
+    pub fn replace_with(&mut self, node: NodeId, new_node: NodeId) {
+        if let Some(parent) = self.parent(node) {
+            // Find the position of `node`.
+            let next = if let Some(p_node) = self.arena.get(parent) {
+                let idx = p_node.children.iter().position(|&c| c == node);
+                idx.and_then(|i| p_node.children.get(i + 1).copied())
+            } else {
+                None
+            };
+            self.insert_before(parent, new_node, next);
+            self.remove_child(parent, node);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -779,5 +917,104 @@ mod tests {
         let replace_node = dom.create_node(NodeData::Text("abcde".into()));
         assert_eq!(dom.replace_data(replace_node, 1, 3, "xyz"), Ok(())); // replace "bcd" with "xyz"
         assert_eq!(dom.character_data(replace_node), Some("axyze".into()));
+    }
+
+    #[test]
+    fn test_t0897_replace_whole_text() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        let t1 = dom.create_node(NodeData::Text("a".into()));
+        let t2 = dom.create_node(NodeData::Text("b".into()));
+        let t3 = dom.create_node(NodeData::Text("c".into()));
+
+        dom.append_child(parent, t1);
+        dom.append_child(parent, t2);
+        dom.append_child(parent, t3);
+
+        // Replace whole text of t2 with "xyz"
+        let res = dom.replace_whole_text(t2, "xyz");
+        assert_eq!(res, Ok(Some(t2)));
+        assert_eq!(dom.character_data(t2), Some("xyz".into()));
+
+        // Contiguous nodes t1 and t3 should be removed
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0], t2);
+
+        // Try replacing with empty string
+        let res_empty = dom.replace_whole_text(t2, "");
+        assert_eq!(res_empty, Ok(None));
+        assert_eq!(dom.children(parent).len(), 0);
+    }
+
+    #[test]
+    fn test_t0897_replace_whole_text_errors_and_independent() {
+        let mut dom = Dom::new();
+        let comment_node = dom.create_node(NodeData::Comment("comment".into()));
+        let element_node = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+
+        assert_eq!(
+            dom.replace_whole_text(comment_node, "test"),
+            Err(DomError::NotSupported)
+        );
+        assert_eq!(
+            dom.replace_whole_text(element_node, "test"),
+            Err(DomError::NotSupported)
+        );
+
+        let independent_node = dom.create_node(NodeData::Text("independent".into()));
+        let res = dom.replace_whole_text(independent_node, "new");
+        assert_eq!(res, Ok(Some(independent_node)));
+        assert_eq!(dom.character_data(independent_node), Some("new".into()));
+
+        let res_empty = dom.replace_whole_text(independent_node, "");
+        assert_eq!(res_empty, Ok(None));
+        assert_eq!(dom.character_data(independent_node), Some("".into()));
+    }
+
+    #[test]
+    fn test_t0897_child_node_methods() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        let a = dom.create_node(NodeData::Text("a".into()));
+        let b = dom.create_node(NodeData::Text("b".into()));
+        let c = dom.create_node(NodeData::Text("c".into()));
+
+        dom.append_child(parent, a);
+        dom.append_child(parent, b);
+        dom.append_child(parent, c);
+
+        // 1. remove
+        dom.remove(b);
+        assert_eq!(dom.children(parent), vec![a, c]);
+
+        // 2. before
+        let before_node = dom.create_node(NodeData::Text("before".into()));
+        dom.before(c, before_node);
+        assert_eq!(dom.children(parent), vec![a, before_node, c]);
+
+        // 3. after
+        let after_node = dom.create_node(NodeData::Text("after".into()));
+        dom.after(c, after_node);
+        assert_eq!(dom.children(parent), vec![a, before_node, c, after_node]);
+
+        // 4. replace_with
+        let replaced_node = dom.create_node(NodeData::Text("replaced".into()));
+        dom.replace_with(c, replaced_node);
+        assert_eq!(
+            dom.children(parent),
+            vec![a, before_node, replaced_node, after_node]
+        );
     }
 }
