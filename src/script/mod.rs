@@ -1795,6 +1795,7 @@ impl BoaHost {
                     });
 
                     Object.defineProperty(node, 'lang', {
+                        // HTMLElement.lang reflected attribute binding (t0659)
                         get() {
                             return this.getAttribute('lang') || '';
                         },

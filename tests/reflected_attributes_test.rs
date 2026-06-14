@@ -509,3 +509,90 @@ fn test_popover_round_trip() {
     let res = host.eval_with_dom(script, &mut dom).unwrap();
     assert_eq!(res, "auto");
 }
+
+#[test]
+fn test_lang_empty_by_default() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.lang;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "");
+}
+
+#[test]
+fn test_lang_reflect_set_attribute() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.setAttribute('lang', 'fr');
+        el.lang;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "fr");
+}
+
+#[test]
+fn test_lang_setter_updates_attribute() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.lang = 'en-US';
+        el.getAttribute('lang');
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "en-US");
+}
+
+#[test]
+fn test_lang_round_trip() {
+    let mut dom = Dom::new();
+    let doc = dom.document();
+
+    let div = dom.create_node(NodeData::Element {
+        name: "div".into(),
+        attrs: vec![("id".into(), "target".into())],
+    });
+    dom.append_child(doc, div);
+
+    let mut host = BoaHost::new();
+    let script = r#"
+        const el = document.getElementById('target');
+        el.lang = 'ja';
+        el.lang;
+    "#;
+
+    let res = host.eval_with_dom(script, &mut dom).unwrap();
+    assert_eq!(res, "ja");
+}
