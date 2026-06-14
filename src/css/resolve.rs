@@ -128,37 +128,74 @@ fn parse_env_function(components: &[ComponentValue]) -> Option<(&str, Option<&[C
     }
 }
 
-/// Recursively performs custom-property variable substitution.
-/// Returns `None` if a cyclic reference or malformed var structure is detected.
-fn substitute_variables(
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SubstitutionError {
+    Cycle,
+    Missing,
+}
+
+fn substitute_variables_rec(
     components: &[ComponentValue],
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
     active_lookups: &mut HashSet<String>,
-) -> Option<Vec<ComponentValue>> {
+) -> Result<Vec<ComponentValue>, SubstitutionError> {
     let mut result = Vec::new();
     for comp in components {
         match comp {
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("var") => {
-                let (var_name, fallback) = parse_var_function(value)?;
+                let (var_name, fallback) =
+                    parse_var_function(value).ok_or(SubstitutionError::Missing)?;
                 if active_lookups.contains(var_name) {
-                    // TODO(spec): detect cycle and resolve to invalid/None
-                    return None;
+                    return Err(SubstitutionError::Cycle);
                 }
                 if let Some(sub_val) = custom_properties.get(var_name) {
                     active_lookups.insert(var_name.to_string());
-                    let resolved =
-                        substitute_variables(sub_val, custom_properties, active_lookups)?;
+                    let resolved_res =
+                        substitute_variables_rec(sub_val, custom_properties, active_lookups);
                     active_lookups.remove(var_name);
-                    result.extend(resolved);
+                    match resolved_res {
+                        Ok(resolved) => {
+                            result.extend(resolved);
+                        }
+                        Err(SubstitutionError::Cycle) => {
+                            if active_lookups.is_empty() {
+                                if let Some(fb) = fallback {
+                                    let resolved = substitute_variables_rec(
+                                        fb,
+                                        custom_properties,
+                                        active_lookups,
+                                    )?;
+                                    result.extend(resolved);
+                                } else {
+                                    return Err(SubstitutionError::Cycle);
+                                }
+                            } else {
+                                return Err(SubstitutionError::Cycle);
+                            }
+                        }
+                        Err(SubstitutionError::Missing) => {
+                            if let Some(fb) = fallback {
+                                let resolved = substitute_variables_rec(
+                                    fb,
+                                    custom_properties,
+                                    active_lookups,
+                                )?;
+                                result.extend(resolved);
+                            } else {
+                                return Err(SubstitutionError::Missing);
+                            }
+                        }
+                    }
                 } else if let Some(fb) = fallback {
-                    let resolved = substitute_variables(fb, custom_properties, active_lookups)?;
+                    let resolved = substitute_variables_rec(fb, custom_properties, active_lookups)?;
                     result.extend(resolved);
                 } else {
-                    return None;
+                    return Err(SubstitutionError::Missing);
                 }
             }
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("env") => {
-                let (env_name, fallback) = parse_env_function(value)?;
+                let (env_name, fallback) =
+                    parse_env_function(value).ok_or(SubstitutionError::Missing)?;
                 let known_env_val = match env_name {
                     "safe-area-inset-top"
                     | "safe-area-inset-right"
@@ -174,17 +211,18 @@ fn substitute_variables(
 
                 if let Some(resolved_env) = known_env_val {
                     let resolved =
-                        substitute_variables(&resolved_env, custom_properties, active_lookups)?;
+                        substitute_variables_rec(&resolved_env, custom_properties, active_lookups)?;
                     result.extend(resolved);
                 } else if let Some(fb) = fallback {
-                    let resolved = substitute_variables(fb, custom_properties, active_lookups)?;
+                    let resolved = substitute_variables_rec(fb, custom_properties, active_lookups)?;
                     result.extend(resolved);
                 } else {
-                    return None;
+                    return Err(SubstitutionError::Missing);
                 }
             }
             ComponentValue::Function { name, value } => {
-                let resolved_args = substitute_variables(value, custom_properties, active_lookups)?;
+                let resolved_args =
+                    substitute_variables_rec(value, custom_properties, active_lookups)?;
                 result.push(ComponentValue::Function {
                     name: name.clone(),
                     value: resolved_args,
@@ -192,7 +230,7 @@ fn substitute_variables(
             }
             ComponentValue::SimpleBlock { associated, value } => {
                 let resolved_block =
-                    substitute_variables(value, custom_properties, active_lookups)?;
+                    substitute_variables_rec(value, custom_properties, active_lookups)?;
                 result.push(ComponentValue::SimpleBlock {
                     associated: *associated,
                     value: resolved_block,
@@ -203,7 +241,17 @@ fn substitute_variables(
             }
         }
     }
-    Some(result)
+    Ok(result)
+}
+
+/// Recursively performs custom-property variable substitution.
+/// Returns `None` if a cyclic reference or malformed var structure is detected.
+fn substitute_variables(
+    components: &[ComponentValue],
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+    active_lookups: &mut HashSet<String>,
+) -> Option<Vec<ComponentValue>> {
+    substitute_variables_rec(components, custom_properties, active_lookups).ok()
 }
 
 struct CalcExprParser {
@@ -1460,12 +1508,71 @@ pub fn resolve_components(
     Some(result)
 }
 
+fn has_variable_references(components: &[ComponentValue]) -> bool {
+    for comp in components {
+        match comp {
+            ComponentValue::Function { name, value } => {
+                let lower = name.to_ascii_lowercase();
+                if lower == "var" || lower == "env" || has_variable_references(value) {
+                    return true;
+                }
+            }
+            ComponentValue::SimpleBlock { value, .. } if has_variable_references(value) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn resolve_unset_for_property(prop: &str, context: &ResolveContext) -> Option<CssValue> {
+    let is_inh = crate::css::property::is_inherited(prop);
+    if is_inh {
+        if let Some(parent) = &context.parent_value {
+            Some(parent.clone())
+        } else if let Some(init_str) = crate::css::property::initial_value(prop) {
+            let mut sub_context = context.clone();
+            sub_context.property_name = None;
+            resolve_string_with_context(init_str, &sub_context)
+        } else {
+            Some(CssValue::Keyword("unset".to_string()))
+        }
+    } else {
+        if let Some(init_str) = crate::css::property::initial_value(prop) {
+            let mut sub_context = context.clone();
+            sub_context.property_name = None;
+            resolve_string_with_context(init_str, &sub_context)
+        } else {
+            Some(CssValue::Keyword("unset".to_string()))
+        }
+    }
+}
+
+fn handle_invalid_computed_value(
+    components: &[ComponentValue],
+    context: &ResolveContext,
+) -> Option<CssValue> {
+    if !has_variable_references(components) {
+        return None;
+    }
+    let prop = context.property_name.as_ref()?;
+    if prop.starts_with("--") {
+        return None;
+    }
+    resolve_unset_for_property(prop, context)
+}
+
 pub fn resolve_value_with_context(
     components: &[ComponentValue],
     context: &ResolveContext,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
 ) -> Option<CssValue> {
-    let substituted = substitute_variables(components, custom_properties, &mut HashSet::new())?;
+    let substituted = match substitute_variables(components, custom_properties, &mut HashSet::new())
+    {
+        Some(s) => s,
+        None => return handle_invalid_computed_value(components, context),
+    };
 
     // Trim leading and trailing whitespace
     let mut start = 0;
@@ -1523,31 +1630,14 @@ pub fn resolve_value_with_context(
                     }
                 }
                 "unset" => {
-                    if let Some(prop) = &context.property_name {
-                        let is_inh = crate::css::property::is_inherited(prop);
-                        if is_inh {
-                            if let Some(parent) = &context.parent_value {
-                                return Some(parent.clone());
-                            } else if let Some(init_str) = crate::css::property::initial_value(prop)
-                            {
-                                let mut sub_context = context.clone();
-                                sub_context.property_name = None;
-                                return resolve_string_with_context(init_str, &sub_context);
-                            } else {
-                                return Some(CssValue::Keyword("unset".to_string()));
-                            }
-                        } else {
-                            if let Some(init_str) = crate::css::property::initial_value(prop) {
-                                let mut sub_context = context.clone();
-                                sub_context.property_name = None;
-                                return resolve_string_with_context(init_str, &sub_context);
-                            } else {
-                                return Some(CssValue::Keyword("unset".to_string()));
-                            }
-                        }
-                    } else {
-                        return Some(CssValue::Keyword("unset".to_string()));
+                    if let Some(val) = context
+                        .property_name
+                        .as_ref()
+                        .and_then(|prop| resolve_unset_for_property(prop, context))
+                    {
+                        return Some(val);
                     }
+                    return Some(CssValue::Keyword("unset".to_string()));
                 }
                 "revert" => {
                     if let Some(revert_val) = &context.revert_value {
@@ -1636,11 +1726,20 @@ pub fn resolve_value_with_context(
     }
 
     // Recursively resolve all components and then parse.
-    let resolved_components = resolve_components(trimmed, context, custom_properties)?;
-    if let Some(val) = crate::css::values::parse_value(&resolved_components) {
+    let resolved_components = match resolve_components(trimmed, context, custom_properties) {
+        Some(rc) => rc,
+        None => return handle_invalid_computed_value(components, context),
+    };
+
+    let parsed = if let Some(val) = crate::css::values::parse_value(&resolved_components) {
         Some(val)
     } else {
         crate::css::values::parse_transform(&resolved_components)
+    };
+
+    match parsed {
+        Some(p) => Some(p),
+        None => handle_invalid_computed_value(components, context),
     }
 }
 
@@ -2838,6 +2937,85 @@ mod tests {
         assert_eq!(
             resolve_string_with_context("revert-layer", &ctx_revert_non_inherited),
             Some(CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 0)))
+        );
+    }
+
+    #[test]
+    fn test_resolve_t0988_custom_property_correctness() {
+        // 1. Cycle detection ignoring internal fallbacks, but resolving to top-level fallback
+        let mut vars = HashMap::new();
+        vars.insert(
+            "--foo".to_string(),
+            crate::css::parser::parse_component_values("var(--bar, 10px)"),
+        );
+        vars.insert(
+            "--bar".to_string(),
+            crate::css::parser::parse_component_values("var(--foo, 20px)"),
+        );
+
+        // A standard property color referencing --foo with a 30px fallback should resolve to 30px
+        let ctx_top_fallback = ResolveContext {
+            property_name: Some("color".to_string()),
+            ..Default::default()
+        };
+        let components = crate::css::parser::parse_component_values("var(--foo, 30px)");
+        assert_eq!(
+            resolve_value_with_context(&components, &ctx_top_fallback, &vars),
+            Some(CssValue::Length(30.0, LengthUnit::Px))
+        );
+
+        // 2. Custom property with missing reference falling back to its fallback
+        let mut vars2 = HashMap::new();
+        vars2.insert(
+            "--baz".to_string(),
+            crate::css::parser::parse_component_values("var(--missing, 10px)"),
+        );
+        let components2 = crate::css::parser::parse_component_values("var(--baz, 20px)");
+        assert_eq!(
+            resolve_value_with_context(&components2, &ctx_top_fallback, &vars2),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
+
+        // 3. Invalid at computed-value time fallback to unset: inherited property inherits parent color
+        let parent_color = CssValue::Color(crate::css::values::Color::Rgba(0, 255, 0, 255));
+        let ctx_inherited = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(parent_color.clone()),
+            ..Default::default()
+        };
+        // var(--missing) has no fallback, so the standard color property is invalid at computed-value time
+        let components3 = crate::css::parser::parse_component_values("var(--missing)");
+        assert_eq!(
+            resolve_value_with_context(&components3, &ctx_inherited, &vars),
+            Some(parent_color)
+        );
+
+        // 4. Invalid at computed-value time fallback to unset: non-inherited property resets to initial
+        let ctx_non_inherited = ResolveContext {
+            property_name: Some("background-color".to_string()),
+            parent_value: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255,
+            ))),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_value_with_context(&components3, &ctx_non_inherited, &vars),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 0))) // initial background-color is transparent
+        );
+
+        // 5. Invalid syntax after substitution (invalid at computed-value time) resets to unset
+        let mut vars_invalid_val = HashMap::new();
+        vars_invalid_val.insert(
+            "--bad-val".to_string(),
+            crate::css::parser::parse_component_values("calc(10px +)"),
+        );
+        // color: var(--bad-val) -> color: calc(10px +) (syntactically invalid for color property)
+        let components4 = crate::css::parser::parse_component_values("var(--bad-val)");
+        assert_eq!(
+            resolve_value_with_context(&components4, &ctx_inherited, &vars_invalid_val),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 255, 0, 255
+            ))) // inherits parent color
         );
     }
 }
