@@ -23,6 +23,7 @@ pub mod crypto;
 pub mod event;
 pub mod formdata;
 pub mod headers;
+pub mod media_query;
 pub mod navigator;
 pub mod performance;
 pub mod screen;
@@ -143,6 +144,13 @@ impl BoaHost {
             JsString::from("structuredClone"),
             1,
             NativeFunction::from_fn_ptr(structured_clone_fn),
+        );
+
+        // Setup matchMedia global (t0741)
+        let _ = context.register_global_builtin_callable(
+            JsString::from("matchMedia"),
+            1,
+            NativeFunction::from_fn_ptr(media_query::match_media),
         );
 
         // Register XMLHttpRequest stub (t0242)
@@ -11016,6 +11024,40 @@ mod tests {
             host.eval("if (window.screen.width !== 1280) throw 'window width mismatch';")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn test_match_media_t0741() {
+        let mut host = BoaHost::new();
+
+        // Check if global and window.matchMedia exist and are functions
+        assert!(
+            host.eval(
+                "if (typeof matchMedia !== 'function') throw 'matchMedia is not a function';"
+            )
+            .is_ok()
+        );
+        assert!(host.eval("if (typeof window.matchMedia !== 'function') throw 'window.matchMedia is not a function';").is_ok());
+
+        // Check evaluating a matchMedia min-width 1000px matches === true (viewport width default is 1280)
+        assert!(host.eval("if (matchMedia('(min-width: 1000px)').matches !== true) throw 'min-width: 1000px should match';").is_ok());
+
+        // Check evaluating a matchMedia min-width 2000px matches === false (viewport width default is 1280)
+        assert!(host.eval("if (matchMedia('(min-width: 2000px)').matches !== false) throw 'min-width: 2000px should not match';").is_ok());
+
+        // Check that media query string is returned as-is
+        assert!(host.eval("if (matchMedia('(max-width: 1280px)').media !== '(max-width: 1280px)') throw 'media string mismatch';").is_ok());
+
+        // Check that addListener, removeListener, addEventListener, and removeEventListener accept callbacks and do not throw
+        let listener_test = r#"
+            const mql = matchMedia('(min-width: 1000px)');
+            const cb = () => {};
+            mql.addListener(cb);
+            mql.removeListener(cb);
+            mql.addEventListener('change', cb);
+            mql.removeEventListener('change', cb);
+        "#;
+        assert!(host.eval(listener_test).is_ok());
     }
 
     #[test]
