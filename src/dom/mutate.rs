@@ -1287,6 +1287,38 @@ impl Dom {
         }
     }
 
+    /// Returns whether the `playsinline` content attribute is present on a valid video element.
+    /// Returns `None` if the node is not a video element, or if the `NodeId` is invalid.
+    pub fn get_playsinline(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("video")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("playsinline")),
+            );
+        }
+        None
+    }
+
+    /// Sets or removes the `playsinline` content attribute on a valid video element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a video element, or if the `NodeId` is invalid.
+    pub fn set_playsinline(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("video")
+        {
+            if value {
+                self.set_attribute(node, "playsinline", "");
+            } else {
+                self.remove_attribute(node, "playsinline");
+            }
+        }
+    }
+
     /// Returns the value of the `kind` content attribute of a valid `<track>` element.
     /// Returns `None` if the node is not a `<track>` element, has no `kind` attribute,
     /// or if the `NodeId` is invalid.
@@ -1333,6 +1365,34 @@ impl Dom {
                 .map(|(_, v)| v.as_str());
         }
         None
+    }
+
+    /// Returns whether the `default` content attribute is present on a valid track element.
+    /// Returns `None` if the node is not a track element, or if the `NodeId` is invalid.
+    pub fn get_default(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("default")));
+        }
+        None
+    }
+
+    /// Sets or removes the `default` content attribute on a valid track element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a track element, or if the `NodeId` is invalid.
+    pub fn set_default(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            if value {
+                self.set_attribute(node, "default", "");
+            } else {
+                self.remove_attribute(node, "default");
+            }
+        }
     }
 
     /// Returns the value of the `sandbox` content attribute of a valid `<iframe>` element.
@@ -3311,6 +3371,34 @@ impl Dom {
         // TODO(spec): muted should track dynamic state separate from the content attribute.
         // For now, it reflects defaultMuted.
         self.set_default_muted(node, value);
+    }
+
+    /// Returns whether the `open` content attribute is present on a valid element node (details, dialog).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_open(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("details") || name.eq_ignore_ascii_case("dialog"))
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("open")));
+        }
+        None
+    }
+
+    /// Sets or removes the `open` content attribute on a valid element node (details, dialog).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_open(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("details") || name.eq_ignore_ascii_case("dialog"))
+        {
+            if value {
+                self.set_attribute(node, "open", "");
+            } else {
+                self.remove_attribute(node, "open");
+            }
+        }
     }
 }
 
@@ -6437,5 +6525,59 @@ mod tests {
         dom.set_muted(video_id, false);
         assert_eq!(dom.get_muted(audio_id), Some(false));
         assert_eq!(dom.get_muted(video_id), Some(false));
+    }
+
+    #[test]
+    fn test_reflected_attribute_accessors_t0908_new_boolean_attributes() {
+        let mut dom = Dom::new();
+        let details_id = elem(&mut dom, "details");
+        let dialog_id = elem(&mut dom, "dialog");
+        let video_id = elem(&mut dom, "video");
+        let track_id = elem(&mut dom, "track");
+        let div_id = elem(&mut dom, "div");
+
+        // 1. open (details, dialog)
+        assert_eq!(dom.get_open(details_id), Some(false));
+        assert_eq!(dom.get_open(dialog_id), Some(false));
+        assert_eq!(dom.get_open(div_id), None);
+
+        dom.set_open(details_id, true);
+        dom.set_open(dialog_id, true);
+        dom.set_open(div_id, true); // no-op
+
+        assert_eq!(dom.get_open(details_id), Some(true));
+        assert_eq!(dom.get_open(dialog_id), Some(true));
+        assert_eq!(dom.get_open(div_id), None);
+
+        dom.set_open(details_id, false);
+        dom.set_open(dialog_id, false);
+        assert_eq!(dom.get_open(details_id), Some(false));
+        assert_eq!(dom.get_open(dialog_id), Some(false));
+
+        // 2. playsinline (video)
+        assert_eq!(dom.get_playsinline(video_id), Some(false));
+        assert_eq!(dom.get_playsinline(div_id), None);
+
+        dom.set_playsinline(video_id, true);
+        dom.set_playsinline(div_id, true); // no-op
+
+        assert_eq!(dom.get_playsinline(video_id), Some(true));
+        assert_eq!(dom.get_playsinline(div_id), None);
+
+        dom.set_playsinline(video_id, false);
+        assert_eq!(dom.get_playsinline(video_id), Some(false));
+
+        // 3. default (track)
+        assert_eq!(dom.get_default(track_id), Some(false));
+        assert_eq!(dom.get_default(div_id), None);
+
+        dom.set_default(track_id, true);
+        dom.set_default(div_id, true); // no-op
+
+        assert_eq!(dom.get_default(track_id), Some(true));
+        assert_eq!(dom.get_default(div_id), None);
+
+        dom.set_default(track_id, false);
+        assert_eq!(dom.get_default(track_id), Some(false));
     }
 }
