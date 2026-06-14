@@ -5,7 +5,7 @@
 
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsObject, JsString};
+use boa_engine::{Context, JsError, JsObject, JsString, JsValue, NativeFunction};
 
 /// Returns the user agent string.
 pub fn user_agent() -> &'static str {
@@ -95,6 +95,34 @@ pub fn pdf_viewer_enabled() -> bool {
 /// Returns whether the browser is controlled by automation.
 pub fn webdriver() -> bool {
     false
+}
+
+/// Returns the approximate amount of device memory (RAM) in gigabytes.
+pub fn device_memory() -> f64 {
+    8.0
+}
+
+/// Returns the operating system CPU architecture or version.
+pub fn oscpu() -> &'static str {
+    "Linux x86_64"
+}
+
+/// Native implementation of `navigator.javaEnabled()`.
+fn navigator_java_enabled(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    Ok(JsValue::from(false))
+}
+
+/// Native implementation of `navigator.vibrate()`.
+fn navigator_vibrate(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> Result<JsValue, JsError> {
+    Ok(JsValue::from(false))
 }
 
 /// Creates the standard `navigator` object with the required properties.
@@ -199,6 +227,26 @@ pub fn create_navigator(context: &mut Context) -> JsObject {
             Attribute::all(),
         )
         .property(JsString::from("webdriver"), webdriver(), Attribute::all())
+        .property(
+            JsString::from("deviceMemory"),
+            device_memory(),
+            Attribute::all(),
+        )
+        .property(
+            JsString::from("oscpu"),
+            JsString::from(oscpu()),
+            Attribute::all(),
+        )
+        .function(
+            NativeFunction::from_fn_ptr(navigator_java_enabled),
+            JsString::from("javaEnabled"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(navigator_vibrate),
+            JsString::from("vibrate"),
+            1,
+        )
         .build()
 }
 
@@ -227,6 +275,8 @@ mod tests {
         assert_eq!(do_not_track(), None);
         assert!(pdf_viewer_enabled());
         assert!(!webdriver());
+        assert_eq!(device_memory(), 8.0);
+        assert_eq!(oscpu(), "Linux x86_64");
     }
 
     #[test]
@@ -260,7 +310,13 @@ mod tests {
             navigator.maxTouchPoints === 0 &&
             navigator.doNotTrack === null &&
             navigator.pdfViewerEnabled === true &&
-            navigator.webdriver === false
+            navigator.webdriver === false &&
+            navigator.deviceMemory === 8 &&
+            navigator.oscpu === 'Linux x86_64' &&
+            typeof navigator.javaEnabled === 'function' &&
+            navigator.javaEnabled() === false &&
+            typeof navigator.vibrate === 'function' &&
+            navigator.vibrate(100) === false
             "#,
         );
         let res = context.eval(source).unwrap();
