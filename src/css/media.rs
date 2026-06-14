@@ -949,6 +949,9 @@ fn parse_resolution_val(tokens: &[CssToken]) -> Option<f32> {
     if let Some(res) = parse_resolution(tokens) {
         return Some(res);
     }
+    if let Some(ratio) = parse_ratio(tokens) {
+        return Some(ratio);
+    }
     if let [CssToken::Number(val)] = tokens {
         return Some(*val as f32);
     }
@@ -3402,5 +3405,73 @@ mod tests {
         assert!(media_matches("(2vw <= width <= 200vw)", 800.0));
 
         set_viewport_h(1024.0); // Reset
+    }
+
+    #[test]
+    fn test_extended_range_syntax_and_ratios() {
+        set_device_pixel_ratio(2.0);
+        assert!(media_matches("(device-pixel-ratio >= 2/1)", 1000.0));
+        assert!(media_matches("(1.5 <= device-pixel-ratio <= 2.5)", 1000.0));
+        assert!(media_matches("(device-pixel-ratio = 2/1)", 1000.0));
+        assert!(media_matches("(device-pixel-ratio < 3/1)", 1000.0));
+        set_device_pixel_ratio(1.0);
+
+        set_viewport_h(1000.0);
+        // viewport_w = 1600.0, viewport_h = 1000.0 -> ratio = 1.6
+        assert!(media_matches("(aspect-ratio > 1.5)", 1600.0));
+        assert!(media_matches("(1 < aspect-ratio < 2)", 1600.0));
+        assert!(media_matches("(aspect-ratio = 16/10)", 1600.0));
+        set_viewport_h(1024.0);
+    }
+
+    #[test]
+    fn test_nested_logical_parentheses() {
+        assert!(media_matches("((((width >= 400px))))", 500.0));
+
+        set_viewport_h(500.0);
+        assert!(media_matches(
+            "(((width >= 400px) and (height >= 400px)))",
+            500.0
+        ));
+        assert!(media_matches("(not (((width < 400px))))", 500.0));
+        assert!(media_matches(
+            "((width >= 400px) or (height >= 400px))",
+            300.0
+        ));
+        assert!(media_matches(
+            "not ((width < 400px) and (height < 400px))",
+            500.0
+        ));
+
+        // Logical combinations
+        assert!(media_matches(
+            "(not (hover: none)) and (not (pointer: coarse))",
+            1000.0
+        ));
+        assert!(media_matches(
+            "((not (hover: hover)) or (not (pointer: coarse)))",
+            1000.0
+        ));
+        set_viewport_h(1024.0);
+    }
+
+    #[test]
+    fn test_feature_coverage_extreme_cases() {
+        // Floating point widths
+        assert!(media_matches("(width >= 400.5px)", 401.0));
+        assert!(!media_matches("(width >= 400.5px)", 400.0));
+
+        // Orientation
+        assert!(media_matches("(orientation)", 1000.0));
+
+        // Discrete features
+        assert!(media_matches("(monochrome: 0)", 1000.0));
+        assert!(media_matches("(grid: 0)", 1000.0));
+        assert!(media_matches("(color-index: 0)", 1000.0));
+        assert!(media_matches("(scan: progressive)", 1000.0));
+        assert!(media_matches("(display-mode: Browser)", 1000.0));
+        assert!(media_matches("(light-level: normal)", 1000.0));
+        assert!(media_matches("(any-pointer: fine)", 1000.0));
+        assert!(media_matches("(any-hover: hover)", 1000.0));
     }
 }
