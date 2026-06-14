@@ -1001,8 +1001,8 @@ fn invoke_listeners_on(
 
             let _passive_guard =
                 PassiveListenerGuard::new(&event.in_passive_listener, listener.passive);
-            if callable.is_callable() {
-                callable.call(curr_node, std::slice::from_ref(event_val), context)?;
+            let res = if callable.is_callable() {
+                callable.call(curr_node, std::slice::from_ref(event_val), context)
             } else if let Ok(handle_event_val) =
                 callable.get(JsString::from("handleEvent"), context)
                 && let Some(handle_event_callable) = handle_event_val.as_object()
@@ -1012,7 +1012,13 @@ fn invoke_listeners_on(
                     &listener.callback,
                     std::slice::from_ref(event_val),
                     context,
-                )?;
+                )
+            } else {
+                Ok(JsValue::undefined())
+            };
+
+            if let Err(err) = res {
+                eprintln!("Error in event listener callback: {:?}", err);
             }
         }
     }
@@ -1143,7 +1149,9 @@ fn invoke_listeners_on_plain(
                 )?;
             }
 
-            result?;
+            if let Err(err) = result {
+                eprintln!("Error in plain event listener callback: {:?}", err);
+            }
         }
     }
 
@@ -2603,6 +2611,61 @@ mod tests {
             if (stops.parent_called !== false) throw new Error("parent_called must be false for stopImmediatePropagation");
             if (passive_preventDefault_called !== false) throw new Error("passive_preventDefault_called must be false");
             if (normal_preventDefault_called !== true) throw new Error("normal_preventDefault_called must be true");
+            "OK";
+        }"#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "OK");
+    }
+
+    #[test]
+    fn test_t1044_event_listener_exception_safety() {
+        use crate::script::BoaHost;
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"{
+            const target = new EventTarget();
+            let first_called = false;
+            let second_called = false;
+
+            target.addEventListener('click', () => {
+                first_called = true;
+                throw new Error('This error is expected to be caught and not abort dispatchEvent');
+            });
+
+            target.addEventListener('click', () => {
+                second_called = true;
+            });
+
+            const ev = new Event('click');
+            const disp_res = target.dispatchEvent(ev);
+
+            if (first_called !== true) throw new Error("first_called must be true");
+            if (second_called !== true) throw new Error("second_called must be true");
+            if (disp_res !== true) throw new Error("dispatchEvent must return true (not prevented)");
+
+            // Now test plain object dispatch
+            const plain_target = new EventTarget();
+            let plain_first_called = false;
+            let plain_second_called = false;
+
+            plain_target.addEventListener('click', () => {
+                plain_first_called = true;
+                throw new Error('This error on plain object is also expected to be caught');
+            });
+
+            plain_target.addEventListener('click', () => {
+                plain_second_called = true;
+            });
+
+            const plain_ev = { type: 'click' };
+            const plain_disp_res = plain_target.dispatchEvent(plain_ev);
+
+            if (plain_first_called !== true) throw new Error("plain_first_called must be true");
+            if (plain_second_called !== true) throw new Error("plain_second_called must be true");
+            if (plain_disp_res !== true) throw new Error("plain dispatchEvent must return true");
+
             "OK";
         }"#;
 
