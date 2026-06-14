@@ -5542,4 +5542,277 @@ mod tests {
             assert!(!errors.contains(&"ambiguous-ampersand".to_string()));
         }
     }
+
+    #[test]
+    fn test_rawtext_end_tag_edge_cases_t0983() {
+        // Case 1: valid matching end tag </xmp> inside <xmp>
+        {
+            let stream = InputStream::from_utf8(b"<xmp></xmp>");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "xmp"));
+            let tok2 = t.next_token();
+            assert!(matches!(tok2, Token::EndTag { ref name, .. } if name == "xmp"));
+            assert_eq!(t.next_token(), Token::Eof);
+        }
+
+        // Case 2: non-matching end tag </style> inside <xmp> should be parsed as characters
+        {
+            let stream = InputStream::from_utf8(b"<xmp></style>");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "xmp"));
+            let mut chars = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => chars.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(chars, "</style>");
+        }
+
+        // Case 3: longer/mismatched name </xmpx> inside <xmp> should be parsed as characters
+        {
+            let stream = InputStream::from_utf8(b"<xmp></xmpx>");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "xmp"));
+            let mut chars = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => chars.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(chars, "</xmpx>");
+        }
+
+        // Case 4: self-closing matching end tag </xmp/> inside <xmp>
+        {
+            let stream = InputStream::from_utf8(b"<xmp></xmp/>");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "xmp"));
+            let tok2 = t.next_token();
+            if let Token::EndTag {
+                name, self_closing, ..
+            } = tok2
+            {
+                assert_eq!(name, "xmp");
+                assert!(self_closing);
+            } else {
+                panic!("Expected self-closing EndTag, got {:?}", tok2);
+            }
+            assert_eq!(t.next_token(), Token::Eof);
+        }
+
+        // Case 5: attributes on appropriate end tag </xmp a="b">
+        {
+            let stream = InputStream::from_utf8(b"<xmp></xmp a=\"b\">");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "xmp"));
+            let tok2 = t.next_token();
+            if let Token::EndTag { name, attrs, .. } = tok2 {
+                assert_eq!(name, "xmp");
+                assert_eq!(attrs, vec![("a".to_string(), "b".to_string())]);
+            } else {
+                panic!("Expected EndTag with attribute, got {:?}", tok2);
+            }
+            assert_eq!(t.next_token(), Token::Eof);
+        }
+    }
+
+    #[test]
+    fn test_script_data_end_tag_edge_cases_t0983() {
+        // Case 1: valid matching end tag </script> inside <script>
+        {
+            let stream = InputStream::from_utf8(b"<script></script>");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "script"));
+            let tok2 = t.next_token();
+            assert!(matches!(tok2, Token::EndTag { ref name, .. } if name == "script"));
+            assert_eq!(t.next_token(), Token::Eof);
+        }
+
+        // Case 2: non-matching end tag </style> inside <script> should be characters
+        {
+            let stream = InputStream::from_utf8(b"<script></style>");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "script"));
+            let mut chars = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => chars.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(chars, "</style>");
+        }
+
+        // Case 3: double escape states handling under script
+        {
+            let stream = InputStream::from_utf8(b"<script><!--<script>--></script>");
+            let mut t = Tokenizer::new(stream);
+            let tok1 = t.next_token();
+            assert!(matches!(tok1, Token::StartTag { ref name, .. } if name == "script"));
+            let mut chars = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => chars.push(c),
+                    Token::EndTag { ref name, .. } if name == "script" => break,
+                    Token::Eof => panic!("Unexpected EOF"),
+                    other => panic!("Unexpected token in script double escape: {:?}", other),
+                }
+            }
+            assert_eq!(chars, "<!--<script>-->");
+        }
+    }
+
+    #[test]
+    fn test_numeric_character_reference_edge_cases_t0983() {
+        // Case 1: absence of digits in decimal and hex
+        {
+            let stream = InputStream::from_utf8(b"&#;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "&#;");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(
+                errors.contains(&"absence-of-digits-in-numeric-character-reference".to_string())
+            );
+        }
+        {
+            let stream = InputStream::from_utf8(b"&#x;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "&#x;");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(
+                errors.contains(&"absence-of-digits-in-numeric-character-reference".to_string())
+            );
+        }
+
+        // Case 2: outside unicode range
+        {
+            let stream = InputStream::from_utf8(b"&#x110000;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{FFFD}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"character-reference-outside-unicode-range".to_string()));
+        }
+
+        // Case 3: surrogate character reference
+        {
+            let stream = InputStream::from_utf8(b"&#xD800;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{FFFD}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"surrogate-character-reference".to_string()));
+        }
+
+        // Case 4: noncharacter character reference
+        {
+            let stream = InputStream::from_utf8(b"&#xFDD0;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{FDD0}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"noncharacter-character-reference".to_string()));
+        }
+
+        // Case 5: null character reference
+        {
+            let stream = InputStream::from_utf8(b"&#0;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{FFFD}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"null-character-reference".to_string()));
+        }
+
+        // Case 6: control character with replacement (e.g. 0x80 -> Euro)
+        {
+            let stream = InputStream::from_utf8(b"&#x80;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{20AC}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"control-character-reference".to_string()));
+        }
+
+        // Case 7: control character without replacement (e.g. 0x1F -> unchanged)
+        {
+            let stream = InputStream::from_utf8(b"&#x1F;");
+            let mut t = Tokenizer::new(stream);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{001F}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"control-character-reference".to_string()));
+        }
+    }
 }
