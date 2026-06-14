@@ -5,6 +5,129 @@ use crate::layout::{LayoutBox, get_px, is_absolute_or_fixed, layout_node};
 use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Copy)]
+struct ChildMargins {
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    left_auto: bool,
+    right_auto: bool,
+    top_auto: bool,
+    bottom_auto: bool,
+}
+
+impl ChildMargins {
+    fn resolve(style: Option<&CategorizedComputedStyle>) -> Self {
+        let Some(style) = style else {
+            return Self {
+                left: 0.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: 0.0,
+                left_auto: false,
+                right_auto: false,
+                top_auto: false,
+                bottom_auto: false,
+            };
+        };
+        Self {
+            left: if style.reset_surround.margin_left == -1 {
+                0.0
+            } else {
+                style.reset_surround.margin_left as f32
+            },
+            right: if style.reset_surround.margin_right == -1 {
+                0.0
+            } else {
+                style.reset_surround.margin_right as f32
+            },
+            top: if style.reset_surround.margin_top == -1 {
+                0.0
+            } else {
+                style.reset_surround.margin_top as f32
+            },
+            bottom: if style.reset_surround.margin_bottom == -1 {
+                0.0
+            } else {
+                style.reset_surround.margin_bottom as f32
+            },
+            left_auto: style.reset_surround.margin_left == -1,
+            right_auto: style.reset_surround.margin_right == -1,
+            top_auto: style.reset_surround.margin_top == -1,
+            bottom_auto: style.reset_surround.margin_bottom == -1,
+        }
+    }
+
+    fn main_start(&self, direction: FlexDirection) -> f32 {
+        match direction {
+            FlexDirection::Row => self.left,
+            FlexDirection::RowReverse => self.right,
+            FlexDirection::Column => self.top,
+            FlexDirection::ColumnReverse => self.bottom,
+        }
+    }
+
+    fn main_end(&self, direction: FlexDirection) -> f32 {
+        match direction {
+            FlexDirection::Row => self.right,
+            FlexDirection::RowReverse => self.left,
+            FlexDirection::Column => self.bottom,
+            FlexDirection::ColumnReverse => self.top,
+        }
+    }
+
+    fn cross_start(&self, direction: FlexDirection) -> f32 {
+        if direction.is_row() {
+            self.top
+        } else {
+            self.left
+        }
+    }
+
+    fn cross_end(&self, direction: FlexDirection) -> f32 {
+        if direction.is_row() {
+            self.bottom
+        } else {
+            self.right
+        }
+    }
+
+    fn main_start_auto(&self, direction: FlexDirection) -> bool {
+        match direction {
+            FlexDirection::Row => self.left_auto,
+            FlexDirection::RowReverse => self.right_auto,
+            FlexDirection::Column => self.top_auto,
+            FlexDirection::ColumnReverse => self.bottom_auto,
+        }
+    }
+
+    fn main_end_auto(&self, direction: FlexDirection) -> bool {
+        match direction {
+            FlexDirection::Row => self.right_auto,
+            FlexDirection::RowReverse => self.left_auto,
+            FlexDirection::Column => self.bottom_auto,
+            FlexDirection::ColumnReverse => self.top_auto,
+        }
+    }
+
+    fn cross_start_auto(&self, direction: FlexDirection) -> bool {
+        if direction.is_row() {
+            self.top_auto
+        } else {
+            self.left_auto
+        }
+    }
+
+    fn cross_end_auto(&self, direction: FlexDirection) -> bool {
+        if direction.is_row() {
+            self.bottom_auto
+        } else {
+            self.right_auto
+        }
+    }
+}
+
 pub fn layout_flex_container(
     dom: &Dom,
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
@@ -203,6 +326,11 @@ pub fn layout_flex_container(
             } else {
                 child.rect.size.height
             };
+            let child_style = child.node.and_then(|id| styles.get(&id));
+            let margins = ChildMargins::resolve(child_style);
+            let child_main_outer_size = child_main_size
+                + margins.main_start(flex_direction)
+                + margins.main_end(flex_direction);
 
             let gap_to_add = if current_line.children.is_empty() {
                 0.0
@@ -211,7 +339,7 @@ pub fn layout_flex_container(
             };
 
             if !current_line.children.is_empty()
-                && current_line_main_size + gap_to_add + child_main_size > main_size
+                && current_line_main_size + gap_to_add + child_main_outer_size > main_size
             {
                 lines.push(current_line);
                 current_line = FlexLine {
@@ -222,7 +350,7 @@ pub fn layout_flex_container(
                 current_line_main_size += gap_to_add;
             }
 
-            current_line_main_size += child_main_size;
+            current_line_main_size += child_main_outer_size;
             current_line.children.push(child);
         }
 
@@ -238,11 +366,15 @@ pub fn layout_flex_container(
 
         for child_box in &line.children {
             if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
-                total_line_main_size += if flex_direction.is_row() {
+                let child_main_size = if flex_direction.is_row() {
                     child_box.rect.size.width
                 } else {
                     child_box.rect.size.height
                 };
+                let margins = ChildMargins::resolve(Some(child_style));
+                total_line_main_size += child_main_size
+                    + margins.main_start(flex_direction)
+                    + margins.main_end(flex_direction);
                 total_line_flex_grow += get_number(child_style, "flex-grow", 0.0);
             }
         }
@@ -345,13 +477,31 @@ pub fn layout_flex_container(
         let mut total_main_size = 0.0;
         let mut max_child_cross_size: f32 = 0.0;
         for child_box in &line.children {
-            if flex_direction.is_row() {
-                total_main_size += child_box.rect.size.width;
-                max_child_cross_size = max_child_cross_size.max(child_box.rect.size.height);
+            let child_style = child_box.node.and_then(|id| styles.get(&id));
+            let margins = ChildMargins::resolve(child_style);
+
+            let child_main_size = if flex_direction.is_row() {
+                child_box.rect.size.width
             } else {
-                total_main_size += child_box.rect.size.height;
-                max_child_cross_size = max_child_cross_size.max(child_box.rect.size.width);
-            }
+                child_box.rect.size.height
+            };
+
+            let child_cross_size = if flex_direction.is_row() {
+                child_box.rect.size.height
+            } else {
+                child_box.rect.size.width
+            };
+
+            let outer_main_size = child_main_size
+                + margins.main_start(flex_direction)
+                + margins.main_end(flex_direction);
+
+            let outer_cross_size = child_cross_size
+                + margins.cross_start(flex_direction)
+                + margins.cross_end(flex_direction);
+
+            total_main_size += outer_main_size;
+            max_child_cross_size = max_child_cross_size.max(outer_cross_size);
         }
         line_max_cross_sizes.push(max_child_cross_size);
         line_total_main_sizes.push(total_main_size);
@@ -479,7 +629,35 @@ pub fn layout_flex_container(
         let line_total_gap_size = gap_count as f32 * main_gap;
         let line_total_main_size_with_gap = line_total_main_size + line_total_gap_size;
 
-        let (mut main_cursor, spacing) = match justify_content {
+        let mut auto_margin_count = 0;
+        for child_box in &line.children {
+            let child_style = child_box.node.and_then(|id| styles.get(&id));
+            let margins = ChildMargins::resolve(child_style);
+            if margins.main_start_auto(flex_direction) {
+                auto_margin_count += 1;
+            }
+            if margins.main_end_auto(flex_direction) {
+                auto_margin_count += 1;
+            }
+        }
+
+        let mut line_auto_margin_share = 0.0;
+        let mut has_auto_margins = false;
+        if auto_margin_count > 0 {
+            let line_free_space = main_size - line_total_main_size_with_gap;
+            if line_free_space > 0.0 {
+                line_auto_margin_share = line_free_space / auto_margin_count as f32;
+                has_auto_margins = true;
+            }
+        }
+
+        let current_justify_content = if has_auto_margins {
+            JustifyContent::FlexStart
+        } else {
+            justify_content
+        };
+
+        let (mut main_cursor, spacing) = match current_justify_content {
             JustifyContent::FlexStart => (0.0, 0.0),
             JustifyContent::FlexEnd => (main_size - line_total_main_size_with_gap, 0.0),
             JustifyContent::Center => ((main_size - line_total_main_size_with_gap) / 2.0, 0.0),
@@ -518,6 +696,19 @@ pub fn layout_flex_container(
 
         for child_box in &mut line.children {
             let child_style = child_box.node.and_then(|id| styles.get(&id));
+            let margins = ChildMargins::resolve(child_style);
+
+            let used_main_start = if margins.main_start_auto(flex_direction) {
+                line_auto_margin_share
+            } else {
+                margins.main_start(flex_direction)
+            };
+
+            let used_main_end = if margins.main_end_auto(flex_direction) {
+                line_auto_margin_share
+            } else {
+                margins.main_end(flex_direction)
+            };
 
             let advance = if flex_direction.is_row() {
                 child_box.rect.size.width
@@ -531,44 +722,75 @@ pub fn layout_flex_container(
                 child_box.rect.size.width
             };
 
+            let cross_start_auto = margins.cross_start_auto(flex_direction);
+            let cross_end_auto = margins.cross_end_auto(flex_direction);
+
+            let child_outer_cross_size = child_cross_size
+                + margins.cross_start(flex_direction)
+                + margins.cross_end(flex_direction);
+            let extra_cross_space = (line_cross_size - child_outer_cross_size).max(0.0);
+
+            let (used_cross_start, used_cross_end) = if cross_start_auto || cross_end_auto {
+                if cross_start_auto && cross_end_auto {
+                    (extra_cross_space / 2.0, extra_cross_space / 2.0)
+                } else if cross_start_auto {
+                    (extra_cross_space, 0.0)
+                } else {
+                    (0.0, extra_cross_space)
+                }
+            } else {
+                (
+                    margins.cross_start(flex_direction),
+                    margins.cross_end(flex_direction),
+                )
+            };
+
             let child_align = get_align_self(child_style, align_items);
 
-            let cross_offset = match child_align {
-                AlignItems::FlexStart => 0.0,
-                AlignItems::FlexEnd => line_cross_size - child_cross_size,
-                AlignItems::Center => (line_cross_size - child_cross_size) / 2.0,
-                AlignItems::Stretch => {
-                    let has_explicit = if flex_direction.is_row() {
-                        has_explicit_size(child_style, "height")
-                    } else {
-                        has_explicit_size(child_style, "width")
-                    };
-                    if !has_explicit {
-                        let container_height = get_px(style, "height", 0.0);
-                        let mut stretched = line_cross_size;
-                        if let Some(cs) = child_style {
-                            stretched = clamp_cross_size(
-                                cs,
-                                stretched,
-                                flex_direction,
-                                content_width,
-                                container_height,
-                            );
-                        }
-                        if flex_direction.is_row() {
-                            child_box.rect.size.height = stretched;
-                        } else {
-                            child_box.rect.size.width = stretched;
-                        }
+            let cross_offset = if cross_start_auto || cross_end_auto {
+                used_cross_start
+            } else {
+                match child_align {
+                    AlignItems::FlexStart => used_cross_start,
+                    AlignItems::FlexEnd => line_cross_size - used_cross_end - child_cross_size,
+                    AlignItems::Center => {
+                        (line_cross_size - child_outer_cross_size) / 2.0 + used_cross_start
                     }
-                    0.0
-                }
-                AlignItems::Baseline => {
-                    // TODO(spec): True baseline alignment is not yet available.
-                    // Map baseline to flex-start for now.
-                    0.0
+                    AlignItems::Stretch => {
+                        let has_explicit = if flex_direction.is_row() {
+                            has_explicit_size(child_style, "height")
+                        } else {
+                            has_explicit_size(child_style, "width")
+                        };
+                        if !has_explicit {
+                            let container_height = get_px(style, "height", 0.0);
+                            let mut stretched = line_cross_size - used_cross_start - used_cross_end;
+                            if let Some(cs) = child_style {
+                                stretched = clamp_cross_size(
+                                    cs,
+                                    stretched,
+                                    flex_direction,
+                                    content_width,
+                                    container_height,
+                                );
+                            }
+                            if flex_direction.is_row() {
+                                child_box.rect.size.height = stretched;
+                            } else {
+                                child_box.rect.size.width = stretched;
+                            }
+                        }
+                        used_cross_start
+                    }
+                    AlignItems::Baseline => {
+                        // TODO(spec): True baseline alignment is not yet available.
+                        // Map baseline to flex-start for now.
+                        used_cross_start
+                    }
                 }
             };
+
+            main_cursor += used_main_start;
 
             let main_pos = if flex_direction.is_reverse() {
                 main_size - main_cursor - advance
@@ -599,7 +821,7 @@ pub fn layout_flex_container(
 
             crate::layout::position::shift_layout_box(child_box, styles, dx, dy, depth);
 
-            main_cursor += advance + main_gap + spacing;
+            main_cursor += advance + used_main_end + main_gap + spacing;
         }
 
         positioned_children.extend(line.children);
@@ -3238,5 +3460,149 @@ mod tests {
         assert!(approx_eq(container_box.children[1].rect.origin.y, 250.0));
         assert!(approx_eq(container_box.children[2].rect.origin.y, 200.0));
         assert!(approx_eq(container_box.children[3].rect.origin.y, 200.0));
+    }
+
+    #[test]
+    fn test_flex_item_margins_fixed() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 400px;
+            }
+            #child1 {
+                width: 100px;
+                height: 50px;
+                margin-left: 20px;
+                margin-right: 30px;
+                margin-top: 15px;
+            }
+            #child2 {
+                width: 100px;
+                height: 50px;
+                margin-left: 10px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+
+        // child1 border-box:
+        // x-origin should start at inner_x (0.0) + child1 margin-left (20px) = 20.0
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 20.0));
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 15.0));
+
+        // child2 border-box:
+        // x-origin should start after:
+        // child1 x-origin (20.0) + child1 width (100.0) + child1 margin-right (30px) + child2 margin-left (10px) = 160.0
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 160.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_flex_item_auto_margins_main() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child".into())],
+        });
+        dom.append_child(container, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                width: 300px;
+                justify-content: center; /* should be ignored because of auto margin */
+            }
+            #child {
+                width: 100px;
+                height: 50px;
+                margin-left: auto;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 1);
+        // The child has margin-left: auto, so it absorbs all remaining positive free space (300 - 100 = 200).
+        // So margin-left resolves to 200.0, meaning the child is pushed to the right side (x = 200.0).
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 200.0));
+    }
+
+    #[test]
+    fn test_flex_item_auto_margins_cross() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child".into())],
+        });
+        dom.append_child(container, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                height: 200px;
+                align-items: flex-end; /* should be ignored because of auto margins */
+            }
+            #child {
+                width: 100px;
+                height: 50px;
+                margin-top: auto;
+                margin-bottom: auto;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 1);
+        // Both top and bottom margins are auto, so they absorb remaining space on the cross axis (200 - 50 = 150) equally.
+        // Each resolves to 75.0, so the child is perfectly centered on the cross axis (y = 75.0).
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 75.0));
     }
 }
