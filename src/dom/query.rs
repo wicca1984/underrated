@@ -63,8 +63,28 @@ impl Dom {
             Err(_) => return None,
         };
 
-        self.descendants_iter(root)
-            .find(|&node_id| matches_with_scope(&selector_list, self, node_id, root))
+        let has_outside = selector_list.0.iter().any(can_match_outside);
+
+        if has_outside {
+            let search_root = self.get_root_node(root);
+            std::iter::once(search_root)
+                .chain(self.descendants_iter(search_root))
+                .find(|&node_id| {
+                    if node_id == root {
+                        return false;
+                    }
+                    if !matches!(self.data(node_id), Some(NodeData::Element { .. })) {
+                        return false;
+                    }
+                    selector_list.0.iter().any(|sel| {
+                        matches_complex_with_scope(sel, self, node_id, root)
+                            && (self.contains(root, node_id) || can_match_outside(sel))
+                    })
+                })
+        } else {
+            self.descendants_iter(root)
+                .find(|&node_id| matches_with_scope(&selector_list, self, node_id, root))
+        }
     }
 
     /// Returns all descendants of the given `root` node that match the given `selector` in document order.
@@ -74,9 +94,30 @@ impl Dom {
             Err(_) => return Vec::new(),
         };
 
-        self.descendants_iter(root)
-            .filter(|&node_id| matches_with_scope(&selector_list, self, node_id, root))
-            .collect()
+        let has_outside = selector_list.0.iter().any(can_match_outside);
+
+        if has_outside {
+            let search_root = self.get_root_node(root);
+            std::iter::once(search_root)
+                .chain(self.descendants_iter(search_root))
+                .filter(|&node_id| {
+                    if node_id == root {
+                        return false;
+                    }
+                    if !matches!(self.data(node_id), Some(NodeData::Element { .. })) {
+                        return false;
+                    }
+                    selector_list.0.iter().any(|sel| {
+                        matches_complex_with_scope(sel, self, node_id, root)
+                            && (self.contains(root, node_id) || can_match_outside(sel))
+                    })
+                })
+                .collect()
+        } else {
+            self.descendants_iter(root)
+                .filter(|&node_id| matches_with_scope(&selector_list, self, node_id, root))
+                .collect()
+        }
     }
 
     fn parse_scoped_selector(
@@ -523,6 +564,30 @@ fn preprocess_relative_selector(selector: &str) -> String {
         })
         .collect();
     processed_parts.join(", ")
+}
+
+fn can_match_outside(sel: &selector::ComplexSelector) -> bool {
+    if sel.parts.len() < 2 {
+        return false;
+    }
+    // Check if the first part is :scope
+    let first_compound = &sel.parts[0].1;
+    let has_scope = first_compound.components.iter().any(|comp| {
+        if let selector::Component::PseudoClass(s) = comp {
+            s.eq_ignore_ascii_case("scope")
+        } else {
+            false
+        }
+    });
+    if !has_scope {
+        return false;
+    }
+    // Check if the next combinator is a sibling combinator
+    let next_comb = sel.parts[1].0;
+    matches!(
+        next_comb,
+        selector::Combinator::NextSibling | selector::Combinator::SubsequentSibling
+    )
 }
 
 fn matches_with_scope(
@@ -1723,6 +1788,13 @@ mod tests {
         // Multi-part lists
         let matched_list = dom.query_selector_all_from(parent_div, "> span, > p");
         assert_eq!(matched_list, vec![child_span, sibling_p]);
+
+        // 4. Scoped relative selectors on child elements that match siblings outside the scoped root
+        assert_eq!(dom.query_selector_from(child_span, "+ p"), Some(sibling_p));
+        assert_eq!(
+            dom.query_selector_all_from(child_span, "~ p"),
+            vec![sibling_p]
+        );
     }
 
     #[test]
