@@ -664,10 +664,10 @@ impl TreeBuilder {
                     let node = self.create_and_insert_element(name, attrs);
                     self.stack_of_open_elements.push(node);
                 }
-                "address" | "article" | "aside" | "blockquote" | "details" | "dialog" | "dir"
-                | "div" | "dl" | "fieldset" | "figcaption" | "figure" | "footer" | "header"
-                | "hgroup" | "main" | "menu" | "nav" | "ol" | "pre" | "listing" | "section"
-                | "summary" | "ul" | "form" => {
+                "address" | "article" | "aside" | "blockquote" | "center" | "details"
+                | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure"
+                | "footer" | "header" | "hgroup" | "main" | "menu" | "nav" | "ol" | "pre"
+                | "listing" | "section" | "summary" | "ul" | "form" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
                     self.stack_of_open_elements.push(node);
@@ -799,6 +799,14 @@ impl TreeBuilder {
                     self.reconstruct_active_formatting_elements();
                     self.create_and_insert_element(name, attrs);
                     // TODO(spec): frameset-ok = false
+                }
+                "button" => {
+                    if self.is_in_scope("button") {
+                        self.pop_until("button");
+                    }
+                    self.reconstruct_active_formatting_elements();
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
                 }
                 "param" | "source" | "track" => {
                     self.create_and_insert_element(name, attrs);
@@ -1277,6 +1285,21 @@ impl TreeBuilder {
                 }
                 "template" => {
                     self.handle_in_head(token);
+                }
+                "form" => {
+                    self.create_and_insert_element(name.clone(), attrs.clone());
+                }
+                "input" => {
+                    let is_hidden = attrs.iter().any(|(k, v)| {
+                        k.eq_ignore_ascii_case("type") && v.eq_ignore_ascii_case("hidden")
+                    });
+                    if is_hidden {
+                        self.create_and_insert_element(name.clone(), attrs.clone());
+                    } else {
+                        self.foster_parenting = true;
+                        self.handle_in_body(token);
+                        self.foster_parenting = false;
+                    }
                 }
                 _ => {
                     self.foster_parenting = true;
