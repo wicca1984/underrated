@@ -545,6 +545,26 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "normal",
     },
     PropertyMetadata {
+        name: "row-gap",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "column-gap",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "justify-items",
+        inherited: false,
+        initial: "legacy",
+    },
+    PropertyMetadata {
+        name: "align-content",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
         name: "align-self",
         inherited: false,
         initial: "auto",
@@ -1052,6 +1072,37 @@ mod tests {
         let bbc = bbc.unwrap();
         assert_eq!(bbc.name, "border-bottom-color");
         assert!(!bbc.inherited);
+    }
+
+    #[test]
+    fn test_additional_properties_t0688() {
+        let row_gap = lookup("row-gap");
+        assert!(row_gap.is_some());
+        let row_gap = row_gap.unwrap();
+        assert_eq!(row_gap.name, "row-gap");
+        assert!(!row_gap.inherited);
+        assert_eq!(row_gap.initial, "normal");
+
+        let column_gap = lookup("column-gap");
+        assert!(column_gap.is_some());
+        let column_gap = column_gap.unwrap();
+        assert_eq!(column_gap.name, "column-gap");
+        assert!(!column_gap.inherited);
+        assert_eq!(column_gap.initial, "normal");
+
+        let justify_items = lookup("justify-items");
+        assert!(justify_items.is_some());
+        let justify_items = justify_items.unwrap();
+        assert_eq!(justify_items.name, "justify-items");
+        assert!(!justify_items.inherited);
+        assert_eq!(justify_items.initial, "legacy");
+
+        let align_content = lookup("align-content");
+        assert!(align_content.is_some());
+        let align_content = align_content.unwrap();
+        assert_eq!(align_content.name, "align-content");
+        assert!(!align_content.inherited);
+        assert_eq!(align_content.initial, "normal");
     }
 
     #[test]
