@@ -154,6 +154,27 @@ pub fn named_color(name: &str) -> Option<Color> {
         "whitesmoke" => Some(Color::Rgba(245, 245, 245, 255)),
         "yellow" => Some(Color::Rgba(255, 255, 0, 255)),
         "yellowgreen" => Some(Color::Rgba(154, 205, 50, 255)),
+        // CSS System Colors (CSS Color Module Level 4)
+        // These are UA-chosen light-theme defaults.
+        "canvas" => Some(Color::Rgba(255, 255, 255, 255)),
+        "canvastext" => Some(Color::Rgba(0, 0, 0, 255)),
+        "linktext" => Some(Color::Rgba(0, 0, 238, 255)),
+        "visitedtext" => Some(Color::Rgba(85, 26, 139, 255)),
+        "activetext" => Some(Color::Rgba(238, 0, 0, 255)),
+        "buttonface" => Some(Color::Rgba(240, 240, 240, 255)),
+        "buttontext" => Some(Color::Rgba(0, 0, 0, 255)),
+        "buttonborder" => Some(Color::Rgba(118, 118, 118, 255)),
+        "field" => Some(Color::Rgba(255, 255, 255, 255)),
+        "fieldtext" => Some(Color::Rgba(0, 0, 0, 255)),
+        "highlight" => Some(Color::Rgba(51, 153, 255, 255)),
+        "highlighttext" => Some(Color::Rgba(255, 255, 255, 255)),
+        "selecteditem" => Some(Color::Rgba(0, 90, 158, 255)),
+        "selecteditemtext" => Some(Color::Rgba(255, 255, 255, 255)),
+        "mark" => Some(Color::Rgba(255, 255, 0, 255)),
+        "marktext" => Some(Color::Rgba(0, 0, 0, 255)),
+        "graytext" => Some(Color::Rgba(128, 128, 128, 255)),
+        "accentcolor" => Some(Color::Rgba(0, 120, 215, 255)),
+        "accentcolortext" => Some(Color::Rgba(255, 255, 255, 255)),
         _ => None,
     }
 }
@@ -235,6 +256,64 @@ mod tests {
             Some(Color::Rgba(102, 51, 153, 255))
         );
         assert_eq!(named_color("unknown"), None);
+    }
+
+    #[test]
+    fn test_system_colors() {
+        // Test case-insensitive resolution of Level 4 system color keywords
+        assert_eq!(named_color("Canvas"), Some(Color::Rgba(255, 255, 255, 255)));
+        assert_eq!(named_color("canvas"), Some(Color::Rgba(255, 255, 255, 255)));
+        assert_eq!(named_color("CANVAS"), Some(Color::Rgba(255, 255, 255, 255)));
+        assert_eq!(named_color("CanvasText"), Some(Color::Rgba(0, 0, 0, 255)));
+        assert_eq!(named_color("canvastext"), Some(Color::Rgba(0, 0, 0, 255)));
+        assert_eq!(named_color("LinkText"), Some(Color::Rgba(0, 0, 238, 255)));
+        assert_eq!(
+            named_color("VisitedText"),
+            Some(Color::Rgba(85, 26, 139, 255))
+        );
+        assert_eq!(named_color("ActiveText"), Some(Color::Rgba(238, 0, 0, 255)));
+        assert_eq!(
+            named_color("ButtonFace"),
+            Some(Color::Rgba(240, 240, 240, 255))
+        );
+        assert_eq!(named_color("ButtonText"), Some(Color::Rgba(0, 0, 0, 255)));
+        assert_eq!(
+            named_color("ButtonBorder"),
+            Some(Color::Rgba(118, 118, 118, 255))
+        );
+        assert_eq!(named_color("Field"), Some(Color::Rgba(255, 255, 255, 255)));
+        assert_eq!(named_color("FieldText"), Some(Color::Rgba(0, 0, 0, 255)));
+        assert_eq!(
+            named_color("Highlight"),
+            Some(Color::Rgba(51, 153, 255, 255))
+        );
+        assert_eq!(
+            named_color("HighlightText"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            named_color("SelectedItem"),
+            Some(Color::Rgba(0, 90, 158, 255))
+        );
+        assert_eq!(
+            named_color("SelectedItemText"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(named_color("Mark"), Some(Color::Rgba(255, 255, 0, 255)));
+        assert_eq!(named_color("MarkText"), Some(Color::Rgba(0, 0, 0, 255)));
+        assert_eq!(
+            named_color("GrayText"),
+            Some(Color::Rgba(128, 128, 128, 255))
+        );
+        assert_eq!(
+            named_color("AccentColor"),
+            Some(Color::Rgba(0, 120, 215, 255))
+        );
+        assert_eq!(
+            named_color("AccentColorText"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(named_color("UnknownSystemColor"), None);
     }
 
     #[test]
