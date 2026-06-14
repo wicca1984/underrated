@@ -286,6 +286,12 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // so no element is ever playing and the pseudo-class always returns false.
                         false
                     }
+                    "muted" => {
+                        // TODO(spec): Real :muted matching requires tracking HTMLMediaElement audio state / media playback.
+                        // This engine has no media playback or audio state tracking, so no element is ever muted.
+                        // Thus, :muted always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3181,6 +3187,39 @@ mod tests {
         let sel_playing = parse_selector_list(":playing").unwrap();
         assert!(!matches(&sel_playing, &dom, video_elem));
         assert!(!matches(&sel_playing, &dom, div_elem));
+    }
+
+    #[test]
+    fn test_muted_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <audio>
+        let audio_elem = dom.create_node(NodeData::Element {
+            name: "audio".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, audio_elem);
+
+        // Matches :muted (should never match since we have no media audio/playback state)
+        let sel_muted = parse_selector_list(":muted").unwrap();
+        assert!(!matches(&sel_muted, &dom, div_elem));
+        assert!(!matches(&sel_muted, &dom, video_elem));
+        assert!(!matches(&sel_muted, &dom, audio_elem));
     }
 
     #[test]
