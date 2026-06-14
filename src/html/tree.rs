@@ -661,6 +661,17 @@ impl TreeBuilder {
                 }
                 "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                     self.close_p_element_if_in_button_scope();
+                    if let Some(&top_id) = self.stack_of_open_elements.last() {
+                        let is_heading = matches!(
+                            self.dom.data(top_id),
+                            Some(NodeData::Element { name: top_name, .. })
+                                if matches!(top_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+                        );
+                        if is_heading {
+                            // Parse error.
+                            self.stack_of_open_elements.pop();
+                        }
+                    }
                     let node = self.create_and_insert_element(name, attrs);
                     self.stack_of_open_elements.push(node);
                 }
@@ -776,7 +787,18 @@ impl TreeBuilder {
                     self.push_formatting_element(node);
                     self.stack_of_open_elements.push(node);
                 }
-                "b" | "big" | "code" | "em" | "font" | "i" | "nobr" | "s" | "small" | "strike"
+                "nobr" => {
+                    self.reconstruct_active_formatting_elements();
+                    if self.is_in_scope("nobr") {
+                        // Parse error.
+                        self.run_adoption_agency_algorithm("nobr");
+                        self.reconstruct_active_formatting_elements();
+                    }
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.push_formatting_element(node);
+                    self.stack_of_open_elements.push(node);
+                }
+                "b" | "big" | "code" | "em" | "font" | "i" | "s" | "small" | "strike"
                 | "strong" | "tt" | "u" => {
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
@@ -870,6 +892,13 @@ impl TreeBuilder {
                             self_closing: false,
                         });
                     }
+                } else if name == "p" {
+                    if !self.is_in_button_scope("p") {
+                        // Parse error.
+                        let node = self.create_and_insert_element("p".to_string(), Vec::new());
+                        self.stack_of_open_elements.push(node);
+                    }
+                    self.pop_until("p");
                 } else if self.is_formatting_element(&name) {
                     self.run_adoption_agency_algorithm(&name);
                 } else if self.is_special_element(&name) {
