@@ -457,6 +457,132 @@ fn service_worker_register(
     Ok(promise)
 }
 
+/// Helper to construct a resolved Promise.
+fn resolve_promise(val: JsValue, context: &mut Context) -> Result<JsValue, JsError> {
+    let promise_constructor = context
+        .global_object()
+        .get(JsString::from("Promise"), context)?
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Promise constructor not found"))
+        })?
+        .clone();
+
+    let resolve_method = promise_constructor
+        .get(JsString::from("resolve"), context)?
+        .as_object()
+        .ok_or_else(|| {
+            JsError::from(JsNativeError::typ().with_message("Promise.resolve not found"))
+        })?
+        .clone();
+
+    let promise = resolve_method.call(&JsValue::from(promise_constructor), &[val], context)?;
+    Ok(promise)
+}
+
+/// Native implementation of `navigator.storage.persisted()`.
+fn storage_persisted(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    resolve_promise(JsValue::from(false), context)
+}
+
+/// Native implementation of `navigator.storage.persist()`.
+fn storage_persist(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    resolve_promise(JsValue::from(false), context)
+}
+
+/// Native implementation of `navigator.storage.estimate()`.
+fn storage_estimate(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let estimate_val = ObjectInitializer::new(context)
+        .property(JsString::from("usage"), 0, Attribute::all())
+        .property(
+            JsString::from("quota"),
+            10_737_418_240_u64,
+            Attribute::all(),
+        ) // 10 GB
+        .build();
+    resolve_promise(estimate_val.into(), context)
+}
+
+/// Native implementation of `navigator.permissions.query()`.
+fn permissions_query(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let desc_val = args.first().ok_or_else(|| {
+        JsError::from(
+            JsNativeError::typ().with_message("TypeError: query requires at least 1 argument"),
+        )
+    })?;
+
+    let name = if let Some(desc_obj) = desc_val.as_object() {
+        desc_obj
+            .get(JsString::from("name"), context)?
+            .to_string(context)?
+    } else {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "TypeError: permission descriptor must be an object",
+        )));
+    };
+
+    // Construct a PermissionStatus-like object
+    let status = ObjectInitializer::new(context)
+        .property(
+            JsString::from("state"),
+            JsString::from("prompt"),
+            Attribute::all(),
+        )
+        .property(JsString::from("name"), name, Attribute::all())
+        .property(
+            JsString::from("onchange"),
+            JsValue::null(),
+            Attribute::all(),
+        )
+        .build();
+
+    resolve_promise(status.into(), context)
+}
+
+/// Native implementation of `navigator.mediaCapabilities.decodingInfo()`.
+fn media_capabilities_decoding_info(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let info = ObjectInitializer::new(context)
+        .property(JsString::from("supported"), true, Attribute::all())
+        .property(JsString::from("smooth"), true, Attribute::all())
+        .property(JsString::from("powerEfficient"), true, Attribute::all())
+        .build();
+    resolve_promise(info.into(), context)
+}
+
+/// Native implementation of `navigator.mediaCapabilities.encodingInfo()`.
+fn media_capabilities_encoding_info(
+    _this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> Result<JsValue, JsError> {
+    let info = ObjectInitializer::new(context)
+        .property(JsString::from("supported"), true, Attribute::all())
+        .property(JsString::from("smooth"), true, Attribute::all())
+        .property(JsString::from("powerEfficient"), true, Attribute::all())
+        .build();
+    resolve_promise(info.into(), context)
+}
+
 /// Creates the standard `navigator` object with the required properties.
 ///
 /// Under the W3C and HTML specifications, `navigator` exposes client information.
@@ -553,6 +679,66 @@ pub fn create_navigator(context: &mut Context) -> JsObject {
         .function(
             NativeFunction::from_fn_ptr(service_worker_register),
             JsString::from("register"),
+            1,
+        )
+        .build();
+
+    let storage = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(storage_persisted),
+            JsString::from("persisted"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(storage_persist),
+            JsString::from("persist"),
+            0,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(storage_estimate),
+            JsString::from("estimate"),
+            0,
+        )
+        .build();
+
+    let permissions = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(permissions_query),
+            JsString::from("query"),
+            1,
+        )
+        .build();
+
+    let user_activation = ObjectInitializer::new(context)
+        .property(JsString::from("isActive"), false, Attribute::all())
+        .property(JsString::from("hasBeenActive"), false, Attribute::all())
+        .build();
+
+    let connection = ObjectInitializer::new(context)
+        .property(JsString::from("downlink"), 10.0, Attribute::all())
+        .property(
+            JsString::from("effectiveType"),
+            JsString::from("4g"),
+            Attribute::all(),
+        )
+        .property(JsString::from("rtt"), 50, Attribute::all())
+        .property(JsString::from("saveData"), false, Attribute::all())
+        .property(
+            JsString::from("onchange"),
+            JsValue::null(),
+            Attribute::all(),
+        )
+        .build();
+
+    let media_capabilities = ObjectInitializer::new(context)
+        .function(
+            NativeFunction::from_fn_ptr(media_capabilities_decoding_info),
+            JsString::from("decodingInfo"),
+            1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(media_capabilities_encoding_info),
+            JsString::from("encodingInfo"),
             1,
         )
         .build();
@@ -660,6 +846,19 @@ pub fn create_navigator(context: &mut Context) -> JsObject {
         .property(
             JsString::from("serviceWorker"),
             service_worker,
+            Attribute::all(),
+        )
+        .property(JsString::from("storage"), storage, Attribute::all())
+        .property(JsString::from("permissions"), permissions, Attribute::all())
+        .property(
+            JsString::from("userActivation"),
+            user_activation,
+            Attribute::all(),
+        )
+        .property(JsString::from("connection"), connection, Attribute::all())
+        .property(
+            JsString::from("mediaCapabilities"),
+            media_capabilities,
             Attribute::all(),
         )
         .property(JsString::from("plugins"), plugins_array, Attribute::all())
@@ -830,5 +1029,85 @@ mod tests {
         );
         let res_check = context.eval(check_source).unwrap();
         assert_eq!(res_check.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_navigator_completeness_and_async_apis() {
+        let mut context = Context::default();
+        let navigator = create_navigator(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("navigator"),
+            navigator,
+            Attribute::all(),
+        );
+
+        let sync_checks = Source::from_bytes(
+            r#"
+            typeof navigator.storage === 'object' &&
+            typeof navigator.permissions === 'object' &&
+            typeof navigator.userActivation === 'object' &&
+            typeof navigator.connection === 'object' &&
+            typeof navigator.mediaCapabilities === 'object' &&
+            navigator.connection.downlink === 10 &&
+            navigator.connection.effectiveType === '4g' &&
+            navigator.connection.rtt === 50 &&
+            navigator.connection.saveData === false &&
+            navigator.connection.onchange === null &&
+            navigator.userActivation.isActive === false &&
+            navigator.userActivation.hasBeenActive === false
+            "#,
+        );
+        let res_sync = context.eval(sync_checks).unwrap();
+        assert_eq!(res_sync.as_boolean(), Some(true));
+
+        let async_checks = Source::from_bytes(
+            r#"
+            let storage_estimate = null;
+            let storage_persisted = null;
+            let storage_persist = null;
+            let permission_status = null;
+            let media_decoding = null;
+            let media_encoding = null;
+
+            navigator.storage.estimate()
+                .then(res => { storage_estimate = res; });
+            navigator.storage.persisted()
+                .then(res => { storage_persisted = res; });
+            navigator.storage.persist()
+                .then(res => { storage_persist = res; });
+            navigator.permissions.query({ name: 'geolocation' })
+                .then(res => { permission_status = res; });
+            navigator.mediaCapabilities.decodingInfo({})
+                .then(res => { media_decoding = res; });
+            navigator.mediaCapabilities.encodingInfo({})
+                .then(res => { media_encoding = res; });
+            "#,
+        );
+        context.eval(async_checks).unwrap();
+        let _ = context.run_jobs();
+
+        let check_async_results = Source::from_bytes(
+            r#"
+            storage_estimate !== null &&
+            storage_estimate.usage === 0 &&
+            storage_estimate.quota === 10 * 1024 * 1024 * 1024 &&
+            storage_persisted === false &&
+            storage_persist === false &&
+            permission_status !== null &&
+            permission_status.state === 'prompt' &&
+            permission_status.name === 'geolocation' &&
+            permission_status.onchange === null &&
+            media_decoding !== null &&
+            media_decoding.supported === true &&
+            media_decoding.smooth === true &&
+            media_decoding.powerEfficient === true &&
+            media_encoding !== null &&
+            media_encoding.supported === true &&
+            media_encoding.smooth === true &&
+            media_encoding.powerEfficient === true
+            "#,
+        );
+        let res_async = context.eval(check_async_results).unwrap();
+        assert_eq!(res_async.as_boolean(), Some(true));
     }
 }
