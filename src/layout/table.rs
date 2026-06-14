@@ -294,6 +294,55 @@ pub fn layout_table_container(
         });
     }
 
+    // Determine which rows are hidden (empty-cells: hide handling in separated borders model)
+    let mut row_is_hidden = vec![false; rows.len()];
+    if !is_border_collapse(style) {
+        for r in 0..rows.len() {
+            let mut cell_nodes_in_row = Vec::new();
+            for col in 0..num_cols {
+                if let Some(placement) = cell_placements.values().find(|p| {
+                    r >= p.row_idx
+                        && r < p.row_idx + p.rowspan
+                        && col >= p.col_idx
+                        && col < p.col_idx + p.colspan
+                }) && !cell_nodes_in_row.contains(&placement.node)
+                {
+                    cell_nodes_in_row.push(placement.node);
+                }
+            }
+
+            if !cell_nodes_in_row.is_empty() {
+                let mut all_hidden_empty = true;
+                for &cell_node in &cell_nodes_in_row {
+                    let cell_style = styles.get(&cell_node);
+                    let is_hide =
+                        cell_style.is_some_and(|s| s.inherited_effects.empty_cells == "hide");
+                    let is_empty = is_cell_empty(dom, cell_node);
+                    if !(is_hide && is_empty) {
+                        all_hidden_empty = false;
+                        break;
+                    }
+                }
+                if all_hidden_empty {
+                    row_is_hidden[r] = true;
+                }
+            } else {
+                let table_style = styles.get(&node);
+                let row_style = rows[r].node.and_then(|rn| styles.get(&rn));
+                let empty_cells_val = row_style
+                    .map(|s| s.inherited_effects.empty_cells.as_str())
+                    .unwrap_or_else(|| {
+                        table_style
+                            .map(|s| s.inherited_effects.empty_cells.as_str())
+                            .unwrap_or("show")
+                    });
+                if empty_cells_val == "hide" {
+                    row_is_hidden[r] = true;
+                }
+            }
+        }
+    }
+
     // TODO(spec): border-collapse: full border conflict resolution (shared edges, width/precedence) not implemented; here we only collapse inter-cell spacing to zero.
     let (spacing_h, spacing_v) = if is_border_collapse(style) {
         (0.0, 0.0)
@@ -588,6 +637,13 @@ pub fn layout_table_container(
         }
     }
 
+    // Force hidden rows to 0.0 height
+    for r in 0..rows.len() {
+        if row_is_hidden[r] {
+            row_heights[r] = 0.0;
+        }
+    }
+
     let table_width =
         final_content_width + padding_left + padding_right + border_left + border_right;
 
@@ -634,12 +690,20 @@ pub fn layout_table_container(
     let row_start_y = curr_y + border_top + padding_top;
     curr_y = row_start_y;
 
-    for r in 0..rows.len() {
+    let visible_rows: Vec<usize> = (0..rows.len()).filter(|&ri| !row_is_hidden[ri]).collect();
+    if !visible_rows.is_empty() {
+        for &vr in &visible_rows {
+            curr_y += spacing_v;
+            row_y_offsets[vr] = curr_y;
+            curr_y += row_heights[vr];
+        }
         curr_y += spacing_v;
-        row_y_offsets[r] = curr_y;
-        curr_y += row_heights[r];
     }
-    curr_y += spacing_v;
+    for r in 0..rows.len() {
+        if row_is_hidden[r] {
+            row_y_offsets[r] = row_start_y;
+        }
+    }
 
     // 3. Table border box bottom edge is here
     let table_bottom_y = curr_y + padding_bottom + border_bottom;
@@ -668,14 +732,25 @@ pub fn layout_table_container(
                     + padding_left
                     + (col_idx + 1) as f32 * spacing_h
                     + col_offset_x;
-                let cell_y = row_y_offsets[r];
+
+                let spanned_rows: Vec<usize> = (r..(r + placement.rowspan))
+                    .filter(|&ri| !row_is_hidden[ri])
+                    .collect();
+
+                let (cell_y, cell_height) = if spanned_rows.is_empty() {
+                    (row_start_y, 0.0)
+                } else {
+                    let first_vr = spanned_rows[0];
+                    let last_vr = spanned_rows[spanned_rows.len() - 1];
+                    let top = row_y_offsets[first_vr];
+                    let bottom = row_y_offsets[last_vr] + row_heights[last_vr];
+                    (top, bottom - top)
+                };
 
                 let cell_width: f32 = col_widths[col_idx..(col_idx + placement.colspan)]
                     .iter()
                     .sum::<f32>()
                     + (placement.colspan - 1) as f32 * spacing_h;
-                let cell_height: f32 = row_heights[r..(r + placement.rowspan)].iter().sum::<f32>()
-                    + (placement.rowspan - 1) as f32 * spacing_v;
 
                 if let Some(mut cell_box) = layout_node(
                     dom,
@@ -989,6 +1064,30 @@ fn gather_col_widths(
         }
     }
     col_widths
+}
+
+fn cell_has_rendered_content(dom: &Dom, node_id: NodeId) -> bool {
+    for &child in dom.children(node_id) {
+        if let Some(data) = dom.data(child) {
+            match data {
+                NodeData::Element { .. } => {
+                    return true;
+                }
+                NodeData::Text(s) if !s.is_empty() => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if cell_has_rendered_content(dom, child) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_cell_empty(dom: &Dom, cell_node: NodeId) -> bool {
+    !cell_has_rendered_content(dom, cell_node)
 }
 
 #[cfg(test)]
@@ -3557,5 +3656,132 @@ mod tests {
         assert_eq!(c1.rect.size.width, 200.0);
         assert_eq!(c2.rect.size.width, 100.0);
         assert_eq!(c3.rect.size.width, 200.0);
+    }
+
+    #[test]
+    fn test_empty_cells_layout_hiding() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Create table element
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Row 1: has one empty cell (empty-cells: show)
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row1_node);
+
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        // Row 2: has one empty cell (empty-cells: hide) -> should be completely hidden/collapsed!
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row2_node);
+
+        let cell21_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row2_node, cell21_node);
+
+        // Row 3: has one non-empty cell (empty-cells: hide, but not empty) -> should remain visible!
+        let row3_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row3_node);
+
+        let cell31_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row3_node, cell31_node);
+        let cell31_text = dom.create_node(NodeData::Text("Hello".to_string()));
+        dom.append_child(cell31_node, cell31_text);
+
+        // Setup styles
+        let mut styles = HashMap::new();
+
+        // Table style: width 200px, border-spacing: 10px
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        table_style.insert(
+            "border-spacing".to_string(),
+            CssValue::Length(10.0, LengthUnit::Px),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+        styles.insert(row3_node, style_with_display("table-row"));
+
+        // Cell 1.1: empty, empty-cells: show (default). Height 30px.
+        let mut cell11_style = style_with_display("table-cell");
+        cell11_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell11_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        styles.insert(cell11_node, cell11_style);
+
+        // Cell 2.1: empty, empty-cells: hide. Height 40px.
+        let mut cell21_style = style_with_display("table-cell");
+        cell21_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell21_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        cell21_style.inherited_effects =
+            std::sync::Arc::new(crate::style::categorized::InheritedEffects {
+                visibility: "visible".to_string(),
+                empty_cells: "hide".to_string(),
+            });
+        styles.insert(cell21_node, cell21_style);
+
+        // Cell 3.1: non-empty, empty-cells: hide. Height 25px.
+        let mut cell31_style = style_with_display("table-cell");
+        cell31_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell31_style.insert("height".to_string(), CssValue::Length(25.0, LengthUnit::Px));
+        cell31_style.inherited_effects =
+            std::sync::Arc::new(crate::style::categorized::InheritedEffects {
+                visibility: "visible".to_string(),
+                empty_cells: "hide".to_string(),
+            });
+        styles.insert(cell31_node, cell31_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 10.0, 20.0, 0)
+            .expect("should layout table");
+
+        // Verify row 2 is hidden:
+        // Visible rows should be: Row 1 (index 0) and Row 3 (index 2).
+        // Total heights: Row 1 (30.0) + Row 3 (25.0) = 55.0.
+        // Spacings: Spacing is only between visible rows and outer edges:
+        // Spacing before Row 1 (10.0), spacing between Row 1 and Row 3 (10.0), spacing after Row 3 (10.0).
+        // Total spacing height: 3 * 10.0 = 30.0.
+        // Total table height should be: 55.0 + 30.0 = 85.0!
+        assert_eq!(table_box.rect.size.height, 85.0);
+
+        // Let's check row positions and heights:
+        assert_eq!(table_box.children.len(), 3);
+
+        // Row 1 (visible)
+        let r1 = &table_box.children[0];
+        assert_eq!(r1.rect.origin.y, 30.0); // 20.0 (border_box_y) + 10.0 (spacing)
+        assert_eq!(r1.rect.size.height, 30.0);
+
+        // Row 2 (hidden)
+        let r2 = &table_box.children[1];
+        assert_eq!(r2.rect.size.height, 0.0);
+
+        // Row 3 (visible)
+        let r3 = &table_box.children[2];
+        assert_eq!(r3.rect.origin.y, 70.0); // 30.0 (Row 1 top) + 30.0 (Row 1 height) + 10.0 (spacing between r1 and r3)
+        assert_eq!(r3.rect.size.height, 25.0);
     }
 }
