@@ -192,6 +192,7 @@ pub struct TreeBuilder {
     pub quirks_mode: QuirksMode,
     pending_table_character_tokens: Vec<char>,
     original_insertion_mode: Option<InsertionMode>,
+    ignore_next_lf: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,6 +345,7 @@ impl TreeBuilder {
             quirks_mode: QuirksMode::default(),
             pending_table_character_tokens: Vec::new(),
             original_insertion_mode: None,
+            ignore_next_lf: false,
         }
     }
 
@@ -585,6 +587,13 @@ impl TreeBuilder {
     }
 
     fn process_token(&mut self, token: Token) {
+        if self.ignore_next_lf {
+            self.ignore_next_lf = false;
+            if let Token::Character('\n') = token {
+                return;
+            }
+        }
+
         let use_foreign_content = if let Some(adjusted_current_node) =
             self.stack_of_open_elements.last().copied()
         {
@@ -1097,8 +1106,11 @@ impl TreeBuilder {
                 | "footer" | "header" | "hgroup" | "main" | "menu" | "nav" | "ol" | "pre"
                 | "listing" | "section" | "summary" | "ul" | "form" => {
                     self.close_p_element_if_in_button_scope();
-                    let node = self.create_and_insert_element(name, attrs);
+                    let node = self.create_and_insert_element(name.clone(), attrs);
                     self.stack_of_open_elements.push(node);
+                    if name == "pre" || name == "listing" {
+                        self.ignore_next_lf = true;
+                    }
                 }
                 "li" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1238,6 +1250,14 @@ impl TreeBuilder {
                     self.reconstruct_active_formatting_elements();
                     self.create_and_insert_element(name, attrs);
                     // TODO(spec): frameset-ok = false
+                }
+                "textarea" => {
+                    let node = self.create_and_insert_element(name.clone(), attrs);
+                    self.stack_of_open_elements.push(node);
+                    self.tokenizer.set_initial_state("RCDATA state");
+                    self.tokenizer.set_last_start_tag(&name);
+                    self.ignore_next_lf = true;
+                    self.insertion_mode = InsertionMode::Text;
                 }
                 "button" => {
                     if self.is_in_scope("button") {
@@ -2312,7 +2332,6 @@ impl TreeBuilder {
                 | "main"
                 | "marquee"
                 | "menu"
-                | "menuitem"
                 | "meta"
                 | "nav"
                 | "noembed"
@@ -2506,7 +2525,7 @@ impl TreeBuilder {
             // Step 10:
             let mut furthest_block = None;
             let mut furthest_block_stack_idx = None;
-            for idx in ((in_stack_idx + 1)..self.stack_of_open_elements.len()).rev() {
+            for idx in (in_stack_idx + 1)..self.stack_of_open_elements.len() {
                 let id = self.stack_of_open_elements[idx];
                 if let Some(NodeData::Element { name: n, .. }) = self.dom.data(id)
                     && self.is_special_element(n)
@@ -2565,13 +2584,13 @@ impl TreeBuilder {
                 }
 
                 // If inner_loop_counter is greater than 3 and node is in the list of active formatting elements, then remove node from the list of active formatting elements.
-                let in_formatting_idx =
-                    self.list_of_active_formatting_elements
-                        .iter()
-                        .position(|&e| match e {
-                            FormattingElement::Node(id) => id == node,
-                            _ => false,
-                        });
+                let mut in_formatting_idx = self
+                    .list_of_active_formatting_elements
+                    .iter()
+                    .position(|&e| match e {
+                        FormattingElement::Node(id) => id == node,
+                        _ => false,
+                    });
 
                 if inner_loop_counter > 3
                     && let Some(f_idx) = in_formatting_idx
@@ -2580,7 +2599,7 @@ impl TreeBuilder {
                     if bookmark_idx > f_idx {
                         bookmark_idx -= 1;
                     }
-                    continue;
+                    in_formatting_idx = None;
                 }
 
                 // If node is not in the list of active formatting elements, then remove node from the stack of open elements, and repeat this loop.
@@ -3814,5 +3833,43 @@ mod tests {
             }
         }
         assert!(found, "post-script element (id=after) was not found in DOM");
+    }
+
+    #[test]
+    fn test_adoption_agency_algorithm_fix() {
+        let html = "<a>1<div>2<div>3</a>4</div>5</div>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        let serialized = dom.serialize(dom.document());
+        assert_eq!(
+            serialized,
+            "<html><head></head><body><a>1</a><div><a>2</a><div><a>3</a>4</div>5</div></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_pre_textarea_ignore_next_lf() {
+        let html_pre = "<pre>\n\nA</pre>";
+        let dom_pre = parse_document(InputStream::from_utf8(html_pre.as_bytes()));
+        assert_eq!(
+            dom_pre.serialize(dom_pre.document()),
+            "<html><head></head><body><pre>\nA</pre></body></html>"
+        );
+
+        let html_textarea = "<textarea>\n\nB</textarea>";
+        let dom_textarea = parse_document(InputStream::from_utf8(html_textarea.as_bytes()));
+        assert_eq!(
+            dom_textarea.serialize(dom_textarea.document()),
+            "<html><head></head><body><textarea>\nB</textarea></body></html>"
+        );
+    }
+
+    #[test]
+    fn test_menuitem_li_closing() {
+        let html = "<li><menuitem><li>";
+        let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
+        assert_eq!(
+            dom.serialize(dom.document()),
+            "<html><head></head><body><li><menuitem></menuitem></li><li></li></body></html>"
+        );
     }
 }
