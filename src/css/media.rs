@@ -514,7 +514,7 @@ fn evaluate_single_query(tokens: &[CssToken], viewport_w: f32) -> bool {
     if is_negated { !matches } else { matches }
 }
 
-/// Parses a CSS <ratio> from a slice of tokens.
+/// Parses a CSS `<ratio>` from a slice of tokens.
 fn parse_ratio(tokens: &[CssToken]) -> Option<f32> {
     if tokens.is_empty() {
         return None;
