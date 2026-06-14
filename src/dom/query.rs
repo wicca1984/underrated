@@ -556,7 +556,7 @@ fn matches_component_with_scope(
     // Spec: https://drafts.csswg.org/selectors-4/#match-against-element
     if !matches!(dom.data(node), Some(NodeData::Element { .. })) {
         if let selector::Component::PseudoClass(s) = comp
-            && s == "scope"
+            && s.eq_ignore_ascii_case("scope")
         {
             return node == scope;
         }
@@ -564,7 +564,7 @@ fn matches_component_with_scope(
     }
 
     match comp {
-        selector::Component::PseudoClass(s) if s == "scope" => node == scope,
+        selector::Component::PseudoClass(s) if s.eq_ignore_ascii_case("scope") => node == scope,
         selector::Component::Not(sub) => !matches_compound_with_scope(sub, dom, node, scope),
         selector::Component::Is(list) => list
             .0
@@ -576,6 +576,76 @@ fn matches_component_with_scope(
             .any(|sel| matches_complex_with_scope(sel, dom, node, scope)),
         selector::Component::Has(list) => matches_has_with_scope(list, dom, node, scope),
         selector::Component::PseudoElement(_) => false, // Pseudo-elements do not match DOM element nodes under querySelector or matches()
+        selector::Component::Attribute {
+            name,
+            op,
+            value,
+            modifier,
+        } => {
+            let attrs = match dom.data(node) {
+                Some(NodeData::Element { attrs, .. }) => attrs,
+                _ => return false,
+            };
+            let attr_val = attrs
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v);
+
+            match (attr_val, op, value) {
+                (Some(_), None, _) => true, // Presence only
+                (Some(v), Some(op), Some(val)) => {
+                    let case_insensitive = match modifier {
+                        Some('i') | Some('I') => true,
+                        Some('s') | Some('S') => false,
+                        _ => {
+                            // Default HTML case-insensitive attributes
+                            name.eq_ignore_ascii_case("type")
+                                || name.eq_ignore_ascii_case("lang")
+                                || name.eq_ignore_ascii_case("dir")
+                                || name.eq_ignore_ascii_case("align")
+                                || name.eq_ignore_ascii_case("valign")
+                                || name.eq_ignore_ascii_case("method")
+                                || name.eq_ignore_ascii_case("rel")
+                                || name.eq_ignore_ascii_case("target")
+                                || name.eq_ignore_ascii_case("media")
+                        }
+                    };
+
+                    if case_insensitive {
+                        match op {
+                            selector::AttrOp::Exact => v.eq_ignore_ascii_case(val),
+                            selector::AttrOp::Includes => v
+                                .split(crate::ascii::is_html_whitespace)
+                                .any(|c| c.eq_ignore_ascii_case(val)),
+                            selector::AttrOp::DashMatch => {
+                                v.eq_ignore_ascii_case(val)
+                                    || (starts_with_ignore_ascii_case(v, val)
+                                        && v.as_bytes().get(val.len()) == Some(&b'-'))
+                            }
+                            selector::AttrOp::Prefix => starts_with_ignore_ascii_case(v, val),
+                            selector::AttrOp::Suffix => ends_with_ignore_ascii_case(v, val),
+                            selector::AttrOp::Substring => contains_ignore_ascii_case(v, val),
+                        }
+                    } else {
+                        match op {
+                            selector::AttrOp::Exact => v == val,
+                            selector::AttrOp::Includes => {
+                                v.split(crate::ascii::is_html_whitespace).any(|c| c == val)
+                            }
+                            selector::AttrOp::DashMatch => {
+                                v == val
+                                    || (v.starts_with(val)
+                                        && v.as_bytes().get(val.len()) == Some(&b'-'))
+                            }
+                            selector::AttrOp::Prefix => v.starts_with(val),
+                            selector::AttrOp::Suffix => v.ends_with(val),
+                            selector::AttrOp::Substring => v.contains(val),
+                        }
+                    }
+                }
+                _ => false,
+            }
+        }
         _ => {
             // For all other components, match using standard selector::matches_complex
             let temp_compound = selector::CompoundSelector {
@@ -587,6 +657,31 @@ fn matches_component_with_scope(
             selector::matches_complex(&temp_sel, dom, node)
         }
     }
+}
+
+fn starts_with_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if a.len() < b.len() {
+        return false;
+    }
+    a[..b.len()].eq_ignore_ascii_case(b)
+}
+
+fn ends_with_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if a.len() < b.len() {
+        return false;
+    }
+    a[a.len() - b.len()..].eq_ignore_ascii_case(b)
+}
+
+fn contains_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if b.is_empty() {
+        return true;
+    }
+    if a.len() < b.len() {
+        return false;
+    }
+    let b_lower = b.to_ascii_lowercase();
+    a.to_ascii_lowercase().contains(&b_lower)
 }
 
 fn has_sibling_combinator(parts: &[(selector::Combinator, selector::CompoundSelector)]) -> bool {
@@ -1618,5 +1713,87 @@ mod tests {
         // querySelector / querySelectorAll must never return non-elements even if the selector is :not(div)
         let results = dom.query_selector_all_from(div, ":not(div)");
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_t0960_advanced_attribute_and_scope_matching() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 1. Case-insensitive :scope matching
+        let host = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "host".into())],
+        });
+        dom.append_child(doc, host);
+
+        assert!(dom.matches(host, ":SCOPE"));
+        assert!(dom.matches(host, ":Scope"));
+        assert!(dom.matches(host, ":scope"));
+
+        // 2. Case-insensitive attribute name matching
+        let btn = dom.create_node(NodeData::Element {
+            name: "button".into(),
+            attrs: vec![
+                ("class".into(), "btn-test".into()),
+                ("type".into(), "SUBMIT".into()),
+                ("lang".into(), "en-US".into()),
+            ],
+        });
+        dom.append_child(host, btn);
+
+        // [CLASS=...] matches even with uppercase attribute name
+        assert_eq!(
+            dom.query_selector_from(host, "[CLASS=\"btn-test\"]"),
+            Some(btn)
+        );
+        assert_eq!(
+            dom.query_selector_from(host, "[Class=\"btn-test\"]"),
+            Some(btn)
+        );
+
+        // 3. Case-insensitive attribute value modifier ('i' and 'I')
+        // exact match
+        assert_eq!(
+            dom.query_selector_from(host, "[class=\"BTN-TEST\" i]"),
+            Some(btn)
+        );
+        assert_eq!(
+            dom.query_selector_from(host, "[class=\"BTN-TEST\" I]"),
+            Some(btn)
+        );
+        // prefix match
+        assert_eq!(
+            dom.query_selector_from(host, "[class^=\"BTN\" i]"),
+            Some(btn)
+        );
+        // suffix match
+        assert_eq!(
+            dom.query_selector_from(host, "[class$=\"TEST\" i]"),
+            Some(btn)
+        );
+        // substring match
+        assert_eq!(
+            dom.query_selector_from(host, "[class*=\"N-TE\" i]"),
+            Some(btn)
+        );
+
+        // 4. Case-sensitive forcing with 's' and 'S'
+        // type="SUBMIT" in btn is uppercase. Default "type" is case-insensitive, but 's' or 'S' forces it to be sensitive.
+        assert_eq!(
+            dom.query_selector_from(host, "[type=\"submit\"]"),
+            Some(btn)
+        ); // default is insensitive, matches "SUBMIT"
+        assert_eq!(dom.query_selector_from(host, "[type=\"submit\" s]"), None); // forced sensitive, "submit" != "SUBMIT"
+        assert_eq!(
+            dom.query_selector_from(host, "[type=\"SUBMIT\" s]"),
+            Some(btn)
+        ); // forced sensitive, matches "SUBMIT"
+        assert_eq!(dom.query_selector_from(host, "[type=\"submit\" S]"), None); // forced sensitive with 'S'
+
+        // 5. Default HTML case-insensitive matching for standard attributes
+        // type, lang, dir, etc.
+        assert_eq!(dom.query_selector_from(host, "[lang=\"en-us\"]"), Some(btn)); // "en-US" matches "en-us"
+        assert_eq!(dom.query_selector_from(host, "[lang|=\"en\"]"), Some(btn)); // dash-match
     }
 }
