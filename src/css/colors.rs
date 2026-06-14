@@ -663,6 +663,29 @@ pub fn color_to_oklch(color: Color) -> (f32, f32, f32, f32) {
     (l, c, h, alpha)
 }
 
+/// Serializes a Color into its standard CSS Color Module Level 4 string representation.
+/// Opaque colors (alpha = 255) are serialized as `rgb(r, g, b)`.
+/// Non-opaque colors (alpha < 255) are serialized as `rgba(r, g, b, a)`,
+/// where `a` is a float in `[0.0, 1.0]` with trailing zeros omitted.
+/// Spec: <https://www.w3.org/TR/css-color-4/#serializing-color-values>
+pub fn serialize_color(color: Color) -> String {
+    let Color::Rgba(r, g, b, a) = color;
+    if a == 255 {
+        format!("rgb({}, {}, {})", r, g, b)
+    } else if a == 0 {
+        format!("rgba({}, {}, {}, 0)", r, g, b)
+    } else {
+        let alpha_val = a as f32 / 255.0;
+        // Format with up to 5 decimal places to be precise
+        let formatted = format!("{:.5}", alpha_val);
+        let mut trimmed = formatted.trim_end_matches('0');
+        if trimmed.ends_with('.') {
+            trimmed = &trimmed[..trimmed.len() - 1];
+        }
+        format!("rgba({}, {}, {}, {})", r, g, b, trimmed)
+    }
+}
+
 /// Parses a CSS color string into a Color.
 /// Supports hex colors (#RGB, #RGBA, #RRGGBB, #RRGGBBAA), functional notations, and named/system colors.
 /// Spec: <https://www.w3.org/TR/css-color-4/#color-syntax>
@@ -2137,5 +2160,39 @@ mod tests {
             mix_colors(red.clone(), blue.clone(), 0.5, "hsl", Some("longer")).unwrap();
         let (h_longer, _, _, _) = color_to_hsl(mixed_hsl_longer);
         assert!((h_longer - 120.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_serialize_color() {
+        // Opaque color
+        assert_eq!(
+            serialize_color(Color::Rgba(255, 0, 0, 255)),
+            "rgb(255, 0, 0)"
+        );
+        assert_eq!(
+            serialize_color(Color::Rgba(0, 255, 128, 255)),
+            "rgb(0, 255, 128)"
+        );
+
+        // Transparent color
+        assert_eq!(serialize_color(Color::Rgba(0, 0, 0, 0)), "rgba(0, 0, 0, 0)");
+        assert_eq!(
+            serialize_color(Color::Rgba(255, 100, 50, 0)),
+            "rgba(255, 100, 50, 0)"
+        );
+
+        // Semi-transparent colors with fractional alphas
+        assert_eq!(
+            serialize_color(Color::Rgba(0, 0, 255, 128)),
+            "rgba(0, 0, 255, 0.50196)"
+        );
+        assert_eq!(
+            serialize_color(Color::Rgba(100, 150, 200, 26)),
+            "rgba(100, 150, 200, 0.10196)"
+        );
+        assert_eq!(
+            serialize_color(Color::Rgba(255, 255, 255, 51)),
+            "rgba(255, 255, 255, 0.2)"
+        );
     }
 }
