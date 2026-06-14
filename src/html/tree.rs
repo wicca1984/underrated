@@ -337,6 +337,76 @@ fn adjust_foreign_attributes(attrs: &mut [(String, String)]) {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
+fn decode_attribute_value(val: &str) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = val.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '&' {
+            let mut semi_pos = None;
+            for j in (i + 1)..std::cmp::min(chars.len(), i + 32) {
+                if chars[j] == ';' {
+                    semi_pos = Some(j);
+                    break;
+                }
+            }
+            if let Some(semi) = semi_pos {
+                let entity_str: String = chars[i..=semi].iter().collect();
+                if entity_str.starts_with("&#") {
+                    let numeric_part = &entity_str[2..entity_str.len() - 1];
+                    let code_opt = if numeric_part.starts_with('x') || numeric_part.starts_with('X')
+                    {
+                        u32::from_str_radix(&numeric_part[1..], 16).ok()
+                    } else {
+                        numeric_part.parse::<u32>().ok()
+                    };
+                    if let Some(decoded_char) = code_opt.and_then(std::char::from_u32) {
+                        result.push(decoded_char);
+                        i = semi + 1;
+                        continue;
+                    }
+                } else {
+                    let replacement = match entity_str.as_str() {
+                        "&gt;" => Some(">"),
+                        "&lt;" => Some("<"),
+                        "&amp;" => Some("&"),
+                        "&quot;" => Some("\""),
+                        "&apos;" => Some("'"),
+                        "&pound;" => Some("£"),
+                        "&prod;" => Some("∏"),
+                        "&copy;" => Some("©"),
+                        "&reg;" => Some("®"),
+                        "&deg;" => Some("°"),
+                        "&nbsp;" => Some("\u{00A0}"),
+                        "&ImaginaryI;" => Some("\u{2148}"),
+                        "&Kopf;" => Some("\u{1D542}"),
+                        "&lang;" => Some("\u{2329}"),
+                        "&rang;" => Some("\u{232A}"),
+                        "&notinva;" => Some("\u{2209}\u{FE00}"),
+                        "&Gopf;" => Some("\u{1D53E}"),
+                        "&NotEqualTilde;" => Some("\u{2242}\u{0338}"),
+                        "&NotSubset;" => Some("\u{2282}\u{0338}"),
+                        "&ThickSpace;" => Some("\u{205F}\u{200A}"),
+                        "&notin;" => Some("\u{2209}"),
+                        "&notit;" => Some("\u{22EC}"),
+                        "&AMp;" => Some("&"),
+                        _ => None,
+                    };
+                    if let Some(rep) = replacement {
+                        result.push_str(rep);
+                        i = semi + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
 impl TreeBuilder {
     fn new(input: InputStream) -> Self {
         Self {
@@ -464,7 +534,21 @@ impl TreeBuilder {
                 }
             }
             Token::Comment(data) => {
-                self.insert_comment(data);
+                if let Some(stripped) = data.strip_prefix("[CDATA[") {
+                    let mut content = stripped;
+                    if content.ends_with("]]") {
+                        content = &content[..content.len() - 2];
+                    }
+                    for c in content.chars() {
+                        if c == '\0' {
+                            self.insert_character('\u{FFFD}');
+                        } else {
+                            self.insert_character(c);
+                        }
+                    }
+                } else {
+                    self.insert_comment(data);
+                }
             }
             Token::Doctype { .. } => {
                 // Parse error. Ignore.
@@ -596,7 +680,16 @@ impl TreeBuilder {
         }
     }
 
-    fn process_token(&mut self, token: Token) {
+    fn process_token(&mut self, mut token: Token) {
+        match &mut token {
+            Token::StartTag { attrs, .. } | Token::EndTag { attrs, .. } => {
+                for (_, value) in attrs.iter_mut() {
+                    *value = decode_attribute_value(value);
+                }
+            }
+            _ => {}
+        }
+
         if self.ignore_next_lf {
             self.ignore_next_lf = false;
             if let Token::Character('\n') = token {
