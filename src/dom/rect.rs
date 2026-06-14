@@ -179,6 +179,93 @@ impl DomRectReadOnly {
     pub fn to_mutable(self) -> DomRect {
         DomRect::new(self.x, self.y, self.width, self.height)
     }
+
+    /// Returns true if the given point is inside or on the edge of the rectangle.
+    /// Handles NaN coordinates correctly (always returns false if any value is NaN).
+    pub fn contains_point(&self, px: f64, py: f64) -> bool {
+        if px.is_nan() || py.is_nan() {
+            return false;
+        }
+        let left = self.left();
+        let right = self.right();
+        let top = self.top();
+        let bottom = self.bottom();
+        if left.is_nan() || right.is_nan() || top.is_nan() || bottom.is_nan() {
+            return false;
+        }
+        px >= left && px <= right && py >= top && py <= bottom
+    }
+
+    /// Returns true if this rectangle intersects with another rectangle.
+    /// Overlapping on the edge is considered an intersection.
+    /// Handles NaN coordinates correctly (returns false if any coordinate is NaN).
+    pub fn intersects(&self, other: &Self) -> bool {
+        let s_left = self.left();
+        let s_right = self.right();
+        let s_top = self.top();
+        let s_bottom = self.bottom();
+        let o_left = other.left();
+        let o_right = other.right();
+        let o_top = other.top();
+        let o_bottom = other.bottom();
+
+        if s_left.is_nan()
+            || s_right.is_nan()
+            || s_top.is_nan()
+            || s_bottom.is_nan()
+            || o_left.is_nan()
+            || o_right.is_nan()
+            || o_top.is_nan()
+            || o_bottom.is_nan()
+        {
+            return false;
+        }
+
+        s_left <= o_right && s_right >= o_left && s_top <= o_bottom && s_bottom >= o_top
+    }
+
+    /// Returns the smallest rectangle that contains both this rectangle and another rectangle.
+    ///
+    /// If either rectangle contains NaN values, returns a default (zeroed) rectangle.
+    pub fn union(&self, other: &Self) -> Self {
+        let s_left = self.left();
+        let s_right = self.right();
+        let s_top = self.top();
+        let s_bottom = self.bottom();
+        let o_left = other.left();
+        let o_right = other.right();
+        let o_top = other.top();
+        let o_bottom = other.bottom();
+
+        if s_left.is_nan()
+            || s_right.is_nan()
+            || s_top.is_nan()
+            || s_bottom.is_nan()
+            || o_left.is_nan()
+            || o_right.is_nan()
+            || o_top.is_nan()
+            || o_bottom.is_nan()
+        {
+            return Self::default();
+        }
+
+        let min_x = s_left.min(o_left);
+        let min_y = s_top.min(o_top);
+        let max_x = s_right.max(o_right);
+        let max_y = s_bottom.max(o_bottom);
+
+        Self::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
+
+    /// Translates the origin of the rectangle by `dx` and `dy`, returning a new `DomRectReadOnly`.
+    pub fn translate(&self, dx: f64, dy: f64) -> Self {
+        Self::new(self.x + dx, self.y + dy, self.width, self.height)
+    }
+
+    /// Scales both the position and the size of the rectangle by `sx` and `sy`, returning a new `DomRectReadOnly`.
+    pub fn scale(&self, sx: f64, sy: f64) -> Self {
+        Self::new(self.x * sx, self.y * sy, self.width * sx, self.height * sy)
+    }
 }
 
 /// `DomRect` represents a rectangle, which is the type of object returned by
@@ -368,6 +455,93 @@ impl DomRect {
     pub fn to_readonly(self) -> DomRectReadOnly {
         DomRectReadOnly::new(self.x, self.y, self.width, self.height)
     }
+
+    /// Returns true if the given point is inside or on the edge of the rectangle.
+    /// Handles NaN coordinates correctly (always returns false if any value is NaN).
+    pub fn contains_point(&self, px: f64, py: f64) -> bool {
+        if px.is_nan() || py.is_nan() {
+            return false;
+        }
+        let left = self.left();
+        let right = self.right();
+        let top = self.top();
+        let bottom = self.bottom();
+        if left.is_nan() || right.is_nan() || top.is_nan() || bottom.is_nan() {
+            return false;
+        }
+        px >= left && px <= right && py >= top && py <= bottom
+    }
+
+    /// Returns true if this rectangle intersects with another rectangle.
+    /// Overlapping on the edge is considered an intersection.
+    /// Handles NaN coordinates correctly (returns false if any coordinate is NaN).
+    pub fn intersects(&self, other: &Self) -> bool {
+        let s_left = self.left();
+        let s_right = self.right();
+        let s_top = self.top();
+        let s_bottom = self.bottom();
+        let o_left = other.left();
+        let o_right = other.right();
+        let o_top = other.top();
+        let o_bottom = other.bottom();
+
+        if s_left.is_nan()
+            || s_right.is_nan()
+            || s_top.is_nan()
+            || s_bottom.is_nan()
+            || o_left.is_nan()
+            || o_right.is_nan()
+            || o_top.is_nan()
+            || o_bottom.is_nan()
+        {
+            return false;
+        }
+
+        s_left <= o_right && s_right >= o_left && s_top <= o_bottom && s_bottom >= o_top
+    }
+
+    /// Returns the smallest rectangle that contains both this rectangle and another rectangle.
+    ///
+    /// If either rectangle contains NaN values, returns a default (zeroed) rectangle.
+    pub fn union(&self, other: &Self) -> Self {
+        let s_left = self.left();
+        let s_right = self.right();
+        let s_top = self.top();
+        let s_bottom = self.bottom();
+        let o_left = other.left();
+        let o_right = other.right();
+        let o_top = other.top();
+        let o_bottom = other.bottom();
+
+        if s_left.is_nan()
+            || s_right.is_nan()
+            || s_top.is_nan()
+            || s_bottom.is_nan()
+            || o_left.is_nan()
+            || o_right.is_nan()
+            || o_top.is_nan()
+            || o_bottom.is_nan()
+        {
+            return Self::default();
+        }
+
+        let min_x = s_left.min(o_left);
+        let min_y = s_top.min(o_top);
+        let max_x = s_right.max(o_right);
+        let max_y = s_bottom.max(o_bottom);
+
+        Self::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    }
+
+    /// Translates the origin of the rectangle by `dx` and `dy`, returning a new `DomRect`.
+    pub fn translate(&self, dx: f64, dy: f64) -> Self {
+        Self::new(self.x + dx, self.y + dy, self.width, self.height)
+    }
+
+    /// Scales both the position and the size of the rectangle by `sx` and `sy`, returning a new `DomRect`.
+    pub fn scale(&self, sx: f64, sy: f64) -> Self {
+        Self::new(self.x * sx, self.y * sy, self.width * sx, self.height * sy)
+    }
 }
 
 impl From<DomRect> for DomRectReadOnly {
@@ -379,6 +553,50 @@ impl From<DomRect> for DomRectReadOnly {
 impl From<DomRectReadOnly> for DomRect {
     fn from(rect: DomRectReadOnly) -> Self {
         Self::new(rect.x, rect.y, rect.width, rect.height)
+    }
+}
+
+impl From<crate::geom::Rect> for DomRect {
+    fn from(rect: crate::geom::Rect) -> Self {
+        Self::new(
+            rect.origin.x as f64,
+            rect.origin.y as f64,
+            rect.size.width as f64,
+            rect.size.height as f64,
+        )
+    }
+}
+
+impl From<crate::geom::Rect> for DomRectReadOnly {
+    fn from(rect: crate::geom::Rect) -> Self {
+        Self::new(
+            rect.origin.x as f64,
+            rect.origin.y as f64,
+            rect.size.width as f64,
+            rect.size.height as f64,
+        )
+    }
+}
+
+impl From<DomRect> for crate::geom::Rect {
+    fn from(rect: DomRect) -> Self {
+        crate::geom::Rect::new(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        )
+    }
+}
+
+impl From<DomRectReadOnly> for crate::geom::Rect {
+    fn from(rect: DomRectReadOnly) -> Self {
+        crate::geom::Rect::new(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        )
     }
 }
 
@@ -410,6 +628,11 @@ impl DomRectList {
             self.rects.iter().map(|r| r.serialize()).collect();
         serde_json::Value::Array(serialized_rects)
     }
+
+    /// Returns an iterator over the rectangles in the list.
+    pub fn iter(&self) -> std::slice::Iter<'_, DomRect> {
+        self.rects.iter()
+    }
 }
 
 impl std::ops::Index<usize> for DomRectList {
@@ -423,6 +646,30 @@ impl std::ops::Index<usize> for DomRectList {
 impl FromIterator<DomRect> for DomRectList {
     fn from_iter<T: IntoIterator<Item = DomRect>>(iter: T) -> Self {
         Self::new(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for DomRectList {
+    type Item = DomRect;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.rects.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a DomRectList {
+    type Item = &'a DomRect;
+    type IntoIter = std::slice::Iter<'a, DomRect>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.rects.iter()
+    }
+}
+
+impl Extend<DomRect> for DomRectList {
+    fn extend<T: IntoIterator<Item = DomRect>>(&mut self, iter: T) {
+        self.rects.extend(iter);
     }
 }
 
@@ -723,6 +970,111 @@ mod tests {
 
         let from_readonly: DomRect = DomRect::from(readonly);
         assert_eq!(from_readonly.x(), 2.0);
+    }
+
+    #[test]
+    fn test_geom_rect_conversions() {
+        let g_rect = crate::geom::Rect::new(1.0, 2.0, 3.0, 4.0);
+
+        let dom_rect: DomRect = DomRect::from(g_rect);
+        assert_eq!(dom_rect.x(), 1.0);
+        assert_eq!(dom_rect.y(), 2.0);
+        assert_eq!(dom_rect.width(), 3.0);
+        assert_eq!(dom_rect.height(), 4.0);
+
+        let dom_readonly_rect: DomRectReadOnly = DomRectReadOnly::from(g_rect);
+        assert_eq!(dom_readonly_rect.x(), 1.0);
+        assert_eq!(dom_readonly_rect.y(), 2.0);
+        assert_eq!(dom_readonly_rect.width(), 3.0);
+        assert_eq!(dom_readonly_rect.height(), 4.0);
+
+        let back_g_rect: crate::geom::Rect = crate::geom::Rect::from(dom_rect);
+        assert_eq!(back_g_rect.origin.x, 1.0);
+        assert_eq!(back_g_rect.origin.y, 2.0);
+        assert_eq!(back_g_rect.size.width, 3.0);
+        assert_eq!(back_g_rect.size.height, 4.0);
+
+        let back_g_rect2: crate::geom::Rect = crate::geom::Rect::from(dom_readonly_rect);
+        assert_eq!(back_g_rect2.origin.x, 1.0);
+        assert_eq!(back_g_rect2.origin.y, 2.0);
+        assert_eq!(back_g_rect2.size.width, 3.0);
+        assert_eq!(back_g_rect2.size.height, 4.0);
+    }
+
+    #[test]
+    fn test_t0909_geometry_enhancements() {
+        // test contains_point
+        let rect = DomRect::new(10.0, 20.0, 100.0, 50.0);
+        assert!(rect.contains_point(15.0, 25.0));
+        assert!(rect.contains_point(10.0, 20.0)); // boundary
+        assert!(rect.contains_point(110.0, 70.0)); // boundary
+        assert!(!rect.contains_point(5.0, 25.0));
+        assert!(!rect.contains_point(15.0, 75.0));
+        assert!(!rect.contains_point(f64::NAN, 25.0));
+
+        let rect_neg = DomRectReadOnly::new(10.0, 20.0, -100.0, -50.0);
+        // left: -90.0, right: 10.0, top: -30.0, bottom: 20.0
+        assert!(rect_neg.contains_point(0.0, 0.0));
+        assert!(rect_neg.contains_point(-90.0, -30.0));
+        assert!(!rect_neg.contains_point(15.0, 0.0));
+
+        // test intersects
+        let r1 = DomRect::new(0.0, 0.0, 10.0, 10.0);
+        let r2 = DomRect::new(5.0, 5.0, 10.0, 10.0);
+        let r3 = DomRect::new(20.0, 20.0, 5.0, 5.0);
+        assert!(r1.intersects(&r2));
+        assert!(r2.intersects(&r1));
+        assert!(!r1.intersects(&r3));
+
+        let r_neg1 = DomRectReadOnly::new(0.0, 0.0, -10.0, -10.0); // -10 to 0
+        let r_neg2 = DomRectReadOnly::new(-5.0, -5.0, -10.0, -10.0); // -15 to -5
+        let r_neg3 = DomRectReadOnly::new(5.0, 5.0, -2.0, -2.0); // 3 to 5
+        assert!(r_neg1.intersects(&r_neg2));
+        assert!(!r_neg1.intersects(&r_neg3));
+
+        // test union
+        let u = r1.union(&r2);
+        assert_eq!(u.x(), 0.0);
+        assert_eq!(u.y(), 0.0);
+        assert_eq!(u.width(), 15.0);
+        assert_eq!(u.height(), 15.0);
+
+        let u_neg = r_neg1.union(&r_neg2);
+        assert_eq!(u_neg.left(), -15.0);
+        assert_eq!(u_neg.right(), 0.0);
+        assert_eq!(u_neg.top(), -15.0);
+        assert_eq!(u_neg.bottom(), 0.0);
+
+        // test translate & scale
+        let t = r1.translate(2.0, 3.0);
+        assert_eq!(t.x(), 2.0);
+        assert_eq!(t.y(), 3.0);
+        assert_eq!(t.width(), 10.0);
+        assert_eq!(t.height(), 10.0);
+
+        let s = r1.scale(2.0, 3.0);
+        assert_eq!(s.x(), 0.0);
+        assert_eq!(s.y(), 0.0);
+        assert_eq!(s.width(), 20.0);
+        assert_eq!(s.height(), 30.0);
+
+        // test DomRectList iter, into_iter, extend
+        let list1 = DomRectList::new(vec![r1, r2]);
+        let mut count = 0;
+        for _r in &list1 {
+            count += 1;
+        }
+        assert_eq!(count, 2);
+
+        let mut list2 = DomRectList::default();
+        list2.extend(list1);
+        assert_eq!(list2.length(), 2);
+
+        let mut count_owned = 0;
+        for _r in list2 {
+            count_owned += 1;
+        }
+        assert_eq!(count_owned, 2);
     }
 
     #[test]
