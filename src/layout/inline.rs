@@ -139,55 +139,13 @@ fn create_line_box_adjusted(
     mut children: Vec<LayoutBox>,
     offset_x: f32,
     offset_y: f32,
-    width: f32,
+    mut width: f32,
     line_height: f32,
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
     text_align: &str,
     containing_width: f32,
     is_last_line: bool,
 ) -> LayoutBox {
-    // For each child, adjust its Y position to align its bottom edge with the bottom of the line box.
-    let line_box_bottom_y = offset_y + line_height;
-
-    for child in &mut children {
-        let mut target_y;
-        let border_box_height = child.rect.size.height;
-
-        if let Some(style) = child
-            .node
-            .filter(|&id| is_inline_block(styles, id))
-            .and_then(|id| styles.get(&id))
-        {
-            let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
-            if let Some(abs_baseline_y) = find_last_fragment_baseline(child, styles, dom) {
-                let baseline_offset_from_top = abs_baseline_y - child.rect.origin.y;
-                target_y = line_box_bottom_y - baseline_offset_from_top;
-            } else {
-                target_y = line_box_bottom_y - margin_bottom - border_box_height;
-            }
-        } else {
-            target_y = line_box_bottom_y - border_box_height;
-        }
-
-        // Apply vertical-align shift
-        if let Some(node_id) = child.node {
-            let shift = get_vertical_align_shift(
-                node_id,
-                block_container,
-                dom,
-                styles,
-                line_height,
-                border_box_height,
-            );
-            target_y += shift;
-        }
-
-        let delta = target_y - child.rect.origin.y;
-        if delta != 0.0 {
-            shift_y(child, delta);
-        }
-    }
-
     let is_center_element = block_container
         .and_then(|id| dom.data(id))
         .is_some_and(|data| matches!(data, NodeData::Element { name, .. } if name == "center"));
@@ -206,18 +164,6 @@ fn create_line_box_adjusted(
     };
 
     let is_rtl = direction == "rtl";
-
-    if is_rtl {
-        for child in &mut children {
-            let old_x = child.rect.origin.x;
-            let new_x = 2.0 * offset_x + width - old_x - child.rect.size.width;
-            let delta = new_x - old_x;
-            if delta != 0.0 {
-                shift_x(child, delta);
-            }
-        }
-        children.reverse();
-    }
 
     let base_align = match style_text_align {
         "start" => {
@@ -273,6 +219,127 @@ fn create_line_box_adjusted(
     } else {
         base_align
     };
+
+    if resolved_align == "right" || resolved_align == "center" {
+        // Calculate trimmed width by ignoring trailing collapsible whitespace
+        let mut trimmed_width = 0.0f32;
+        let mut last_non_space_index = None;
+
+        // Find the last child that is not a collapsible trailing space
+        for (i, child) in children.iter().enumerate().rev() {
+            if let Some(ref text) = child.text
+                && let Some(node_id) = child.node
+            {
+                let style_ws = if let Some(style) = styles.get(&node_id) {
+                    style.inherited_text.white_space.as_str()
+                } else {
+                    "normal"
+                };
+                let collapse = matches!(style_ws, "nowrap" | "pre-line" | "normal");
+
+                if collapse {
+                    if text == " " {
+                        // This is a collapsible space. Skip it!
+                        continue;
+                    } else if text.ends_with(' ') {
+                        // It ends with space. This is the last non-space child, but we need to subtract the trailing space width!
+                        last_non_space_index = Some((i, true));
+                        break;
+                    }
+                }
+            }
+            // If it's not a collapsible text child, or doesn't end with space, it is our last non-space child!
+            last_non_space_index = Some((i, false));
+            break;
+        }
+
+        if let Some((idx, ends_with_space)) = last_non_space_index {
+            // The width of the line content up to the last non-space child (exclusive of the last child)
+            for child in children.iter().take(idx) {
+                let right_edge = child.rect.origin.x + child.rect.size.width - offset_x;
+                if right_edge > trimmed_width {
+                    trimmed_width = right_edge;
+                }
+            }
+            // Plus the width of the last non-space child (potentially trimmed of its trailing spaces)
+            let last_child = &children[idx];
+            let mut last_child_width = last_child.rect.size.width;
+            if ends_with_space
+                && let Some(ref text) = last_child.text
+                && let Some(node_id) = last_child.node
+            {
+                let trimmed_text = text.trim_end_matches(' ').to_string();
+                let letter_spacing = get_inherited_letter_spacing(node_id, dom, styles);
+                let font = crate::font::BitmapFont::builtin();
+                let char_count = trimmed_text.chars().count();
+                let base_width = font.measure(&trimmed_text) as f32;
+                last_child_width = if char_count > 1 {
+                    base_width + (char_count - 1) as f32 * letter_spacing
+                } else {
+                    base_width
+                };
+            }
+            let right_edge = last_child.rect.origin.x + last_child_width - offset_x;
+            if right_edge > trimmed_width {
+                trimmed_width = right_edge;
+            }
+        }
+        width = trimmed_width;
+    }
+
+    // For each child, adjust its Y position to align its bottom edge with the bottom of the line box.
+    let line_box_bottom_y = offset_y + line_height;
+
+    for child in &mut children {
+        let mut target_y;
+        let border_box_height = child.rect.size.height;
+
+        if let Some(style) = child
+            .node
+            .filter(|&id| is_inline_block(styles, id))
+            .and_then(|id| styles.get(&id))
+        {
+            let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+            if let Some(abs_baseline_y) = find_last_fragment_baseline(child, styles, dom) {
+                let baseline_offset_from_top = abs_baseline_y - child.rect.origin.y;
+                target_y = line_box_bottom_y - baseline_offset_from_top;
+            } else {
+                target_y = line_box_bottom_y - margin_bottom - border_box_height;
+            }
+        } else {
+            target_y = line_box_bottom_y - border_box_height;
+        }
+
+        // Apply vertical-align shift
+        if let Some(node_id) = child.node {
+            let shift = get_vertical_align_shift(
+                node_id,
+                block_container,
+                dom,
+                styles,
+                line_height,
+                border_box_height,
+            );
+            target_y += shift;
+        }
+
+        let delta = target_y - child.rect.origin.y;
+        if delta != 0.0 {
+            shift_y(child, delta);
+        }
+    }
+
+    if is_rtl {
+        for child in &mut children {
+            let old_x = child.rect.origin.x;
+            let new_x = 2.0 * offset_x + width - old_x - child.rect.size.width;
+            let delta = new_x - old_x;
+            if delta != 0.0 {
+                shift_x(child, delta);
+            }
+        }
+        children.reverse();
+    }
 
     let final_align = match resolved_align {
         "start" => {
@@ -646,7 +713,7 @@ pub fn layout_inline_run(
                                 }
 
                                 // Skip leading whitespace on a new line (only if collapsing whitespace)
-                                if collapse && cursor_x == 0.0 && word == " " {
+                                if collapse && current_line_children.is_empty() && word == " " {
                                     continue;
                                 }
 
@@ -2918,5 +2985,79 @@ mod tests {
         let child_box_baseline_y = inner_line.rect.origin.y + inner_line.rect.size.height;
         let parent_line_baseline_y = line.rect.origin.y + line.rect.size.height;
         assert_eq!(child_box_baseline_y, parent_line_baseline_y);
+    }
+
+    #[test]
+    fn test_trailing_whitespace_trimming_right_align() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // A word with trailing collapsible space
+        let t = dom.create_node(NodeData::Text("hello ".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-align: right; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Container of width 100px.
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 100.0, 0.0, 0.0, 0, "right", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 1);
+        let child_box = &line.children[0];
+
+        // The text box content is still preserved as "hello "
+        assert_eq!(child_box.text, Some("hello ".to_string()));
+
+        // Under standard right-alignment without trailing space trimming, "hello " (48px) would
+        // start at 100.0 - 48.0 = 52.0.
+        // But with trailing space trimming, "hello" (40px) is aligned to the right edge.
+        // So the right edge of "hello" (trimmed) is 100.0.
+        // Thus, the starting x coordinate of the box is 100.0 - 40.0 = 60.0!
+        assert_eq!(child_box.rect.origin.x, 60.0);
+    }
+
+    #[test]
+    fn test_leading_whitespace_collapsing_with_text_indent() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // A text starting with leading collapsible space
+        let t = dom.create_node(NodeData::Text(" hello".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-indent: 40px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Container of width 200px.
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 200.0, 0.0, 0.0, 0, "left", 40.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 1);
+        let child_box = &line.children[0];
+
+        // The leading space is collapsed/skipped, so we have exactly "hello" (40px width).
+        assert_eq!(child_box.text, Some("hello".to_string()));
+
+        // Because of text-indent: 40px, the word starts exactly at x = 40.0
+        assert_eq!(child_box.rect.origin.x, 40.0);
     }
 }
