@@ -648,14 +648,17 @@ pub(crate) fn get_line_box_bounds_at_y(
             }
 
             if !inside_nested_bfc {
-                let is_isolated = if !children.is_empty() {
-                    if let Some(first_node) = children[0].node {
-                        is_isolated_by_bfc(rf.node_id, first_node, children, styles)
-                    } else {
-                        false
+                let is_isolated = {
+                    let mut isolated = false;
+                    for child in children {
+                        if let Some(node_id) = child.node
+                            && is_isolated_by_bfc(rf.node_id, node_id, children, styles)
+                        {
+                            isolated = true;
+                            break;
+                        }
                     }
-                } else {
-                    false
+                    isolated
                 };
 
                 if !is_isolated {
@@ -676,7 +679,7 @@ pub(crate) fn get_line_box_bounds_at_y(
 
 #[cfg(test)]
 mod tests {
-    use super::LayoutBox;
+    use super::{LayoutBox, RegisteredFloat, SESSION};
     use crate::css::parser::parse_stylesheet;
     use crate::dom::{Dom, NodeData};
     use crate::layout::layout_document;
@@ -2213,5 +2216,134 @@ mod tests {
             p_layout.rect.origin.y - bfc_layout.rect.origin.y,
             10.0
         ));
+    }
+
+    #[test]
+    fn test_line_box_shortening_with_anonymous_sibling() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let bfc_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(doc, bfc_node);
+
+        let f_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(bfc_node, f_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .bfc { display: inline-block; }
+            .float { float: left; width: 100px; height: 50px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let float_box = LayoutBox {
+            node: Some(f_node),
+            rect: crate::geom::Rect::new(10.0, 0.0, 100.0, 50.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let bfc_box = LayoutBox {
+            node: Some(bfc_node),
+            rect: crate::geom::Rect::new(10.0, 0.0, 100.0, 50.0),
+            children: vec![float_box],
+            text: None,
+        };
+
+        let anon_box = LayoutBox {
+            node: None,
+            rect: crate::geom::Rect::new(0.0, 0.0, 0.0, 0.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let children = vec![anon_box, bfc_box];
+
+        // Query outer line-box bounds
+        let (left, right) =
+            super::get_line_box_bounds_at_y(&children, &styles, 10.0, 20.0, 10.0, 400.0);
+        // BFC isolation should still work even when the first sibling is anonymous (node = None)!
+        assert!(approx_eq(left, 10.0));
+        assert!(approx_eq(right, 410.0));
+    }
+
+    #[test]
+    fn test_line_box_shortening_bfc_isolates_outer_float_with_anonymous_sibling() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Outer float in body context
+        let outer_float_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "outer-float".into())],
+        });
+        dom.append_child(doc, outer_float_node);
+
+        // BFC container
+        let bfc_node = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "bfc".into())],
+        });
+        dom.append_child(doc, bfc_node);
+
+        // Inside BFC container: we have some child
+        let inner_child_node = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(bfc_node, inner_child_node);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .outer-float { float: left; width: 50px; height: 50px; }
+            .bfc { display: inline-block; width: 100px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Record the outer float in the session registry
+        SESSION.with(|session| {
+            let mut s = session.borrow_mut();
+            s.floats.clear();
+            s.floats.push(RegisteredFloat {
+                node_id: outer_float_node,
+                float_type: "left".to_string(),
+                x: 10.0,
+                y: 0.0,
+                width: 50.0,
+                height: 50.0,
+            });
+        });
+
+        // Let's build layout box for the inner children
+        let inner_anon_box = LayoutBox {
+            node: None,
+            rect: crate::geom::Rect::new(0.0, 0.0, 0.0, 0.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let inner_child_box = LayoutBox {
+            node: Some(inner_child_node),
+            rect: crate::geom::Rect::new(10.0, 10.0, 80.0, 20.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        // Sibling children inside the BFC: first is anonymous, second is a normal element
+        let children = vec![inner_anon_box, inner_child_box];
+
+        // Query line-box bounds inside the BFC
+        let (left, right) =
+            super::get_line_box_bounds_at_y(&children, &styles, 10.0, 20.0, 10.0, 100.0);
+        // Because the line box is inside the BFC, it must be completely isolated from the outer float!
+        assert!(approx_eq(left, 10.0));
+        assert!(approx_eq(right, 110.0));
     }
 }
