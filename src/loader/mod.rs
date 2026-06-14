@@ -483,6 +483,7 @@ pub fn sniff_response(
             crate::encoding::Charset::Iso8859_14 => Some("iso-8859-14".to_string()),
             crate::encoding::Charset::Koi8R => Some("koi8-r".to_string()),
             crate::encoding::Charset::Koi8U => Some("koi8-u".to_string()),
+            crate::encoding::Charset::Ibm866 => Some("ibm866".to_string()),
         };
     }
 
