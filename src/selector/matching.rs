@@ -281,6 +281,11 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // so no element is ever in picture-in-picture and the pseudo-class always returns false.
                         false
                     }
+                    "playing" => {
+                        // TODO(spec): This engine has no media playback / HTMLMediaElement playback state,
+                        // so no element is ever playing and the pseudo-class always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3151,6 +3156,31 @@ mod tests {
         assert!(!matches(&sel_fullscreen, &dom, a_with_href));
         assert!(!matches(&sel_fullscreen, &dom, div_elem));
         assert!(!matches(&sel_fullscreen, &dom, dialog_elem));
+    }
+
+    #[test]
+    fn test_playing_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // Matches :playing (should never match since we have no media playback / HTMLMediaElement playback state)
+        let sel_playing = parse_selector_list(":playing").unwrap();
+        assert!(!matches(&sel_playing, &dom, video_elem));
+        assert!(!matches(&sel_playing, &dom, div_elem));
     }
 
     #[test]
