@@ -97,17 +97,6 @@ impl Affine {
         }
     }
 
-    // TODO(spec): The following 3D transform functions are not supported in 2D Affine layout:
-    // - translate3d(tx, ty, tz)
-    // - translateZ(tz)
-    // - scale3d(sx, sy, sz)
-    // - scaleZ(sz)
-    // - rotate3d(rx, ry, rz, deg)
-    // - rotateX(deg)
-    // - rotateY(deg)
-    // - rotateZ(deg) (same as rotate(deg) in 2D)
-    // - matrix3d(...)
-
     #[inline]
     pub fn multiply(&self, rhs: &Affine) -> Affine {
         let a1 = self.m[0];
@@ -187,6 +176,630 @@ fn resolve_length(lp: &crate::css::values::LengthOrPercent) -> f32 {
         LengthUnit::Pt => lp.value * 96.0 / 72.0,
         LengthUnit::Percent => 0.0, // TODO(spec): percentage translation requires layout box reference size
         _ => lp.value,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Matrix3d {
+    pub m: [f32; 16],
+}
+
+impl Matrix3d {
+    #[inline]
+    pub fn identity() -> Self {
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn translate(tx: f32, ty: f32, tz: f32) -> Self {
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, tx, 0.0, 1.0, 0.0, ty, 0.0, 0.0, 1.0, tz, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn scale(sx: f32, sy: f32, sz: f32) -> Self {
+        Matrix3d {
+            m: [
+                sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, sz, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn rotate_x(deg: f32) -> Self {
+        let rad = deg.to_radians();
+        let cos = rad.cos();
+        let sin = rad.sin();
+        Matrix3d {
+            m: [
+                1.0, 0.0, 0.0, 0.0, 0.0, cos, -sin, 0.0, 0.0, sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn rotate_y(deg: f32) -> Self {
+        let rad = deg.to_radians();
+        let cos = rad.cos();
+        let sin = rad.sin();
+        Matrix3d {
+            m: [
+                cos, 0.0, sin, 0.0, 0.0, 1.0, 0.0, 0.0, -sin, 0.0, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn rotate_z(deg: f32) -> Self {
+        let rad = deg.to_radians();
+        let cos = rad.cos();
+        let sin = rad.sin();
+        Matrix3d {
+            m: [
+                cos, -sin, 0.0, 0.0, sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }
+    }
+
+    pub fn rotate_3d(rx: f32, ry: f32, rz: f32, deg: f32) -> Self {
+        let len_sq = rx * rx + ry * ry + rz * rz;
+        if len_sq < 1e-12 {
+            return Self::identity();
+        }
+        let len = len_sq.sqrt();
+        let ux = rx / len;
+        let uy = ry / len;
+        let uz = rz / len;
+
+        let rad = deg.to_radians();
+        let cos = rad.cos();
+        let sin = rad.sin();
+        let t = 1.0 - cos;
+
+        Matrix3d {
+            m: [
+                t * ux * ux + cos,
+                t * ux * uy - sin * uz,
+                t * ux * uz + sin * uy,
+                0.0,
+                t * ux * uy + sin * uz,
+                t * uy * uy + cos,
+                t * uy * uz - sin * ux,
+                0.0,
+                t * ux * uz - sin * uy,
+                t * uy * uz + sin * ux,
+                t * uz * uz + cos,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        }
+    }
+
+    #[inline]
+    pub fn perspective(d: f32) -> Self {
+        let mut m = Self::identity();
+        if d > 0.0 {
+            m.m[14] = -1.0 / d; // row 3, col 2: w' gets -z/d
+        }
+        m
+    }
+
+    #[inline]
+    pub fn multiply(&self, rhs: &Matrix3d) -> Self {
+        let mut out = [0.0; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                let mut sum = 0.0;
+                for k in 0..4 {
+                    sum += self.m[r * 4 + k] * rhs.m[k * 4 + c];
+                }
+                out[r * 4 + c] = sum;
+            }
+        }
+        Matrix3d { m: out }
+    }
+
+    #[inline]
+    pub fn apply_point_3d(&self, x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+        let px = self.m[0] * x + self.m[1] * y + self.m[2] * z + self.m[3];
+        let py = self.m[4] * x + self.m[5] * y + self.m[6] * z + self.m[7];
+        let pz = self.m[8] * x + self.m[9] * y + self.m[10] * z + self.m[11];
+        let pw = self.m[12] * x + self.m[13] * y + self.m[14] * z + self.m[15];
+
+        if pw != 0.0 && pw != 1.0 {
+            (px / pw, py / pw, pz / pw)
+        } else {
+            (px, py, pz)
+        }
+    }
+
+    #[inline]
+    pub fn apply_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let p = self.apply_point_3d(x, y, 0.0);
+        (p.0, p.1)
+    }
+
+    #[inline]
+    pub fn is_identity(&self) -> bool {
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        self.m
+            .iter()
+            .zip(identity.iter())
+            .all(|(&val, &id)| (val - id).abs() < 1e-6)
+    }
+
+    pub fn to_2d(&self) -> Option<Affine> {
+        let eps = 1e-5;
+        if self.m[2].abs() < eps && // m02
+           self.m[6].abs() < eps && // m12
+           self.m[8].abs() < eps && // m20
+           self.m[9].abs() < eps && // m21
+           (self.m[10] - 1.0).abs() < eps && // m22
+           self.m[11].abs() < eps && // m23
+           self.m[12].abs() < eps && // m30
+           self.m[13].abs() < eps && // m31
+           self.m[14].abs() < eps && // m32
+           (self.m[15] - 1.0).abs() < eps
+        {
+            // m33
+            Some(Affine {
+                m: [
+                    self.m[0], // a
+                    self.m[4], // b
+                    self.m[1], // c
+                    self.m[5], // d
+                    self.m[3], // e
+                    self.m[7], // f
+                ],
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn from_transform_fns(fns: &[TransformFn]) -> Self {
+        let aff = Affine::from_transform_fns(fns);
+        Matrix3d::from(aff)
+    }
+}
+
+impl From<Affine> for Matrix3d {
+    fn from(a: Affine) -> Self {
+        Matrix3d {
+            m: [
+                a.m[0], a.m[2], 0.0, a.m[4], a.m[1], a.m[3], 0.0, a.m[5], 0.0, 0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0,
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Decomposed2d {
+    pub translate: (f32, f32),
+    pub scale: (f32, f32),
+    pub angle: f32, // degrees
+    pub skew: f32,  // skew factor (tan of skew angle)
+}
+
+impl Decomposed2d {
+    pub fn recompose(&self) -> Affine {
+        let translate = Affine::translate(self.translate.0, self.translate.1);
+        let rotate = Affine::rotate(self.angle);
+        let skew_aff = Affine {
+            m: [1.0, 0.0, self.skew, 1.0, 0.0, 0.0],
+        };
+        let scale = Affine::scale(self.scale.0, self.scale.1);
+
+        translate
+            .multiply(&rotate)
+            .multiply(&skew_aff)
+            .multiply(&scale)
+    }
+}
+
+impl Affine {
+    pub fn decompose(&self) -> Option<Decomposed2d> {
+        let a = self.m[0];
+        let b = self.m[1];
+        let c = self.m[2];
+        let d = self.m[3];
+        let e = self.m[4];
+        let f = self.m[5];
+
+        let translate = (e, f);
+
+        let mut scale_x = (a * a + b * b).sqrt();
+        let mut scale_y = (c * c + d * d).sqrt();
+
+        let det = a * d - b * c;
+        if det.abs() < 1e-12 {
+            return None;
+        }
+
+        if det < 0.0 {
+            if a < d {
+                scale_x = -scale_x;
+            } else {
+                scale_y = -scale_y;
+            }
+        }
+
+        let norm_a = if scale_x != 0.0 { a / scale_x } else { 0.0 };
+        let norm_b = if scale_x != 0.0 { b / scale_x } else { 0.0 };
+        let norm_c = if scale_y != 0.0 { c / scale_y } else { 0.0 };
+        let norm_d = if scale_y != 0.0 { d / scale_y } else { 0.0 };
+
+        let rad = norm_b.atan2(norm_a);
+        let angle = rad.to_degrees();
+
+        let sn = (-rad).sin();
+        let cs = (-rad).cos();
+        let row1x = cs * norm_c - sn * norm_d;
+        let row1y = sn * norm_c + cs * norm_d;
+
+        let skew = if row1y != 0.0 { row1x / row1y } else { 0.0 };
+        let scale_y = scale_y * row1y;
+
+        Some(Decomposed2d {
+            translate,
+            scale: (scale_x, scale_y),
+            angle,
+            skew,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Decomposed3d {
+    pub translate: (f32, f32, f32),
+    pub scale: (f32, f32, f32),
+    pub skew: (f32, f32, f32),             // xy, xz, yz
+    pub perspective: (f32, f32, f32, f32), // px, py, pz, pw
+    pub quaternion: (f32, f32, f32, f32),  // x, y, z, w
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Vec3 {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+impl Vec3 {
+    fn new(x: f32, y: f32, z: f32) -> Self {
+        Vec3 { x, y, z }
+    }
+
+    fn len(&self) -> f32 {
+        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
+    }
+
+    fn normalize(&self) -> Self {
+        let l = self.len();
+        if l == 0.0 {
+            *self
+        } else {
+            Vec3 {
+                x: self.x / l,
+                y: self.y / l,
+                z: self.z / l,
+            }
+        }
+    }
+
+    fn dot(&self, other: &Vec3) -> f32 {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    fn combine(&self, other: &Vec3, ascl: f32, bscl: f32) -> Vec3 {
+        Vec3 {
+            x: ascl * self.x + bscl * other.x,
+            y: ascl * self.y + bscl * other.y,
+            z: ascl * self.z + bscl * other.z,
+        }
+    }
+
+    fn cross(&self, other: &Vec3) -> Vec3 {
+        Vec3 {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn det3x3(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32, g: f32, h: f32, i: f32) -> f32 {
+    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+}
+
+fn det4x4(m: &[f32; 16]) -> f32 {
+    let sub0 = det3x3(m[5], m[6], m[7], m[9], m[10], m[11], m[13], m[14], m[15]);
+    let sub1 = det3x3(m[4], m[6], m[7], m[8], m[10], m[11], m[12], m[14], m[15]);
+    let sub2 = det3x3(m[4], m[5], m[7], m[8], m[9], m[11], m[12], m[13], m[15]);
+    let sub3 = det3x3(m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]);
+
+    m[0] * sub0 - m[1] * sub1 + m[2] * sub2 - m[3] * sub3
+}
+
+fn submatrix3x3(m: &[f32; 16], r: usize, c: usize) -> [f32; 9] {
+    let mut out = [0.0; 9];
+    let mut out_idx = 0;
+    for row in 0..4 {
+        if row == r {
+            continue;
+        }
+        for col in 0..4 {
+            if col == c {
+                continue;
+            }
+            out[out_idx] = m[row * 4 + col];
+            out_idx += 1;
+        }
+    }
+    out
+}
+
+fn cofactor(m: &[f32; 16], r: usize, c: usize) -> f32 {
+    let sub = submatrix3x3(m, r, c);
+    let d = det3x3(
+        sub[0], sub[1], sub[2], sub[3], sub[4], sub[5], sub[6], sub[7], sub[8],
+    );
+    if (r + c) % 2 == 1 { -d } else { d }
+}
+
+fn inverse4x4(m: &[f32; 16]) -> Option<[f32; 16]> {
+    let det = det4x4(m);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let mut adj = [0.0; 16];
+    for r in 0..4 {
+        for c in 0..4 {
+            adj[c * 4 + r] = cofactor(m, r, c);
+        }
+    }
+    for val in adj.iter_mut() {
+        *val /= det;
+    }
+    Some(adj)
+}
+
+impl Matrix3d {
+    pub fn decompose(&self) -> Option<Decomposed3d> {
+        let mut t = [0.0; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                t[r * 4 + c] = self.m[c * 4 + r];
+            }
+        }
+
+        let t15 = t[15];
+        if t15 == 0.0 {
+            return None;
+        }
+        for val in t.iter_mut() {
+            *val /= t15;
+        }
+
+        let mut perspective_matrix = t;
+        perspective_matrix[3] = 0.0;
+        perspective_matrix[7] = 0.0;
+        perspective_matrix[11] = 0.0;
+        perspective_matrix[15] = 1.0;
+
+        if det4x4(&perspective_matrix).abs() < 1e-12 {
+            return None;
+        }
+
+        let mut perspective = (0.0, 0.0, 0.0, 1.0);
+        if t[3] != 0.0 || t[7] != 0.0 || t[11] != 0.0 {
+            let right_hand_side = [t[3], t[7], t[11], t[15]];
+            if let Some(inv_perspective_matrix) = inverse4x4(&perspective_matrix) {
+                let mut trans_inv = [0.0; 16];
+                for r in 0..4 {
+                    for c in 0..4 {
+                        trans_inv[r * 4 + c] = inv_perspective_matrix[c * 4 + r];
+                    }
+                }
+                let px = trans_inv[0] * right_hand_side[0]
+                    + trans_inv[1] * right_hand_side[1]
+                    + trans_inv[2] * right_hand_side[2]
+                    + trans_inv[3] * right_hand_side[3];
+                let py = trans_inv[4] * right_hand_side[0]
+                    + trans_inv[5] * right_hand_side[1]
+                    + trans_inv[6] * right_hand_side[2]
+                    + trans_inv[7] * right_hand_side[3];
+                let pz = trans_inv[8] * right_hand_side[0]
+                    + trans_inv[9] * right_hand_side[1]
+                    + trans_inv[10] * right_hand_side[2]
+                    + trans_inv[11] * right_hand_side[3];
+                let pw = trans_inv[12] * right_hand_side[0]
+                    + trans_inv[13] * right_hand_side[1]
+                    + trans_inv[14] * right_hand_side[2]
+                    + trans_inv[15] * right_hand_side[3];
+                perspective = (px, py, pz, pw);
+            } else {
+                return None;
+            }
+        }
+
+        let translate = (t[12], t[13], t[14]);
+
+        let mut row0 = Vec3::new(t[0], t[1], t[2]);
+        let mut row1 = Vec3::new(t[4], t[5], t[6]);
+        let mut row2 = Vec3::new(t[8], t[9], t[10]);
+
+        let mut scale_x = row0.len();
+        row0 = row0.normalize();
+
+        let mut skew_xy = row0.dot(&row1);
+        row1 = row1.combine(&row0, 1.0, -skew_xy);
+
+        let mut scale_y = row1.len();
+        row1 = row1.normalize();
+        if scale_y != 0.0 {
+            skew_xy /= scale_y;
+        }
+
+        let mut skew_xz = row0.dot(&row2);
+        row2 = row2.combine(&row0, 1.0, -skew_xz);
+
+        let mut skew_yz = row1.dot(&row2);
+        row2 = row2.combine(&row1, 1.0, -skew_yz);
+
+        let mut scale_z = row2.len();
+        row2 = row2.normalize();
+        if scale_z != 0.0 {
+            skew_xz /= scale_z;
+            skew_yz /= scale_z;
+        }
+
+        let pdum3 = row1.cross(&row2);
+        if row0.dot(&pdum3) < 0.0 {
+            scale_x = -scale_x;
+            scale_y = -scale_y;
+            scale_z = -scale_z;
+            row0.x = -row0.x;
+            row0.y = -row0.y;
+            row0.z = -row0.z;
+            row1.x = -row1.x;
+            row1.y = -row1.y;
+            row1.z = -row1.z;
+            row2.x = -row2.x;
+            row2.y = -row2.y;
+            row2.z = -row2.z;
+        }
+
+        let row00 = row0.x;
+        let row01 = row0.y;
+        let row02 = row0.z;
+        let row10 = row1.x;
+        let row11 = row1.y;
+        let row12 = row1.z;
+        let row20 = row2.x;
+        let row21 = row2.y;
+        let row22 = row2.z;
+
+        let quaternion;
+        let tr = row00 + row11 + row22;
+        if tr > 0.0 {
+            let s = 0.5 / (tr + 1.0).sqrt();
+            quaternion = (
+                (row21 - row12) * s,
+                (row02 - row20) * s,
+                (row10 - row01) * s,
+                0.25 / s,
+            );
+        } else if row00 > row11 && row00 > row22 {
+            let s = (1.0 + row00 - row11 - row22).sqrt() * 2.0;
+            quaternion = (
+                0.25 * s,
+                (row01 + row10) / s,
+                (row02 + row20) / s,
+                (row21 - row12) / s,
+            );
+        } else if row11 > row22 {
+            let s = (1.0 + row11 - row00 - row22).sqrt() * 2.0;
+            quaternion = (
+                (row01 + row10) / s,
+                0.25 * s,
+                (row12 + row21) / s,
+                (row02 - row20) / s,
+            );
+        } else {
+            let s = (1.0 + row22 - row00 - row11).sqrt() * 2.0;
+            quaternion = (
+                (row02 + row20) / s,
+                (row12 + row21) / s,
+                0.25 * s,
+                (row10 - row01) / s,
+            );
+        }
+
+        Some(Decomposed3d {
+            translate,
+            scale: (scale_x, scale_y, scale_z),
+            skew: (skew_xy, skew_xz, skew_yz),
+            perspective,
+            quaternion,
+        })
+    }
+}
+
+impl Decomposed3d {
+    pub fn recompose(&self) -> Matrix3d {
+        let mut persp_m = Matrix3d::identity();
+        persp_m.m[12] = self.perspective.0;
+        persp_m.m[13] = self.perspective.1;
+        persp_m.m[14] = self.perspective.2;
+        persp_m.m[15] = self.perspective.3;
+
+        let trans_m = Matrix3d::translate(self.translate.0, self.translate.1, self.translate.2);
+
+        let qx = self.quaternion.0;
+        let qy = self.quaternion.1;
+        let qz = self.quaternion.2;
+        let qw = self.quaternion.3;
+        let x2 = qx + qx;
+        let y2 = qy + qy;
+        let z2 = qz + qz;
+        let xx = qx * x2;
+        let xy = qx * y2;
+        let xz = qx * z2;
+        let yy = qy * y2;
+        let yz = qy * z2;
+        let zz = qz * z2;
+        let wx = qw * x2;
+        let wy = qw * y2;
+        let wz = qw * z2;
+
+        let rot_m = Matrix3d {
+            m: [
+                1.0 - (yy + zz),
+                xy + wz,
+                xz - wy,
+                0.0,
+                xy - wz,
+                1.0 - (xx + zz),
+                yz + wx,
+                0.0,
+                xz + wy,
+                yz - wx,
+                1.0 - (xx + yy),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        };
+
+        let mut skew_m = Matrix3d::identity();
+        skew_m.m[1] = self.skew.0;
+        skew_m.m[2] = self.skew.1;
+        skew_m.m[6] = self.skew.2;
+
+        let scale_m = Matrix3d::scale(self.scale.0, self.scale.1, self.scale.2);
+
+        persp_m
+            .multiply(&trans_m)
+            .multiply(&rot_m)
+            .multiply(&skew_m)
+            .multiply(&scale_m)
     }
 }
 
@@ -327,5 +940,120 @@ mod tests {
         let fns = vec![TransformFn::Matrix([2.0, 0.0, 0.0, 3.0, 5.0, 7.0])];
         let aff = Affine::from_transform_fns(&fns);
         assert_eq!(aff.m, [2.0, 0.0, 0.0, 3.0, 5.0, 7.0]);
+    }
+
+    #[test]
+    fn test_matrix3d_identity() {
+        let m = Matrix3d::identity();
+        assert!(m.is_identity());
+        let p = m.apply_point_3d(1.0, 2.0, 3.0);
+        assert_eq!(p, (1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn test_matrix3d_translate_scale() {
+        let t = Matrix3d::translate(1.0, 2.0, 3.0);
+        let s = Matrix3d::scale(2.0, 3.0, 4.0);
+        let combined = s.multiply(&t); // apply t first, then s
+
+        let p1 = combined.apply_point_3d(0.0, 0.0, 0.0);
+        assert_eq!(p1, (2.0, 6.0, 12.0));
+
+        let p2 = combined.apply_point(0.0, 0.0);
+        assert_eq!(p2, (2.0, 6.0));
+    }
+
+    #[test]
+    fn test_matrix3d_rotations() {
+        // Rotate Z 90 deg: (1, 0, 0) -> (0, 1, 0)
+        let rz = Matrix3d::rotate_z(90.0);
+        let p = rz.apply_point_3d(1.0, 0.0, 0.0);
+        assert!(p.0.abs() < 1e-5);
+        assert!((p.1 - 1.0).abs() < 1e-5);
+        assert_eq!(p.2, 0.0);
+
+        // Rotate X 90 deg: (0, 1, 0) -> (0, 0, 1)
+        let rx = Matrix3d::rotate_x(90.0);
+        let p = rx.apply_point_3d(0.0, 1.0, 0.0);
+        assert_eq!(p.0, 0.0);
+        assert!(p.1.abs() < 1e-5);
+        assert!((p.2 - 1.0).abs() < 1e-5);
+
+        // Rotate Y 90 deg: (0, 0, 1) -> (1, 0, 0)
+        let ry = Matrix3d::rotate_y(90.0);
+        let p = ry.apply_point_3d(0.0, 0.0, 1.0);
+        assert!((p.0 - 1.0).abs() < 1e-5);
+        assert_eq!(p.1, 0.0);
+        assert!(p.2.abs() < 1e-5);
+
+        // Rotate 3D around (1, 1, 1) normalized
+        let r3d = Matrix3d::rotate_3d(1.0, 1.0, 1.0, 120.0);
+        let p = r3d.apply_point_3d(1.0, 0.0, 0.0);
+        assert!(p.0.abs() < 1e-5);
+        assert!((p.1 - 1.0).abs() < 1e-5);
+        assert!(p.2.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_matrix3d_perspective() {
+        let p_mat = Matrix3d::perspective(10.0);
+        // perspective(10) on (0, 0, -5.0) -> w' = -(-5)/10 + 1 = 1.5
+        // apply_point_3d of (2.0, 3.0, -5.0) -> (2/1.5, 3/1.5, -5/1.5)
+        let p = p_mat.apply_point_3d(2.0, 3.0, -5.0);
+        assert!((p.0 - 2.0 / 1.5).abs() < 1e-5);
+        assert!((p.1 - 3.0 / 1.5).abs() < 1e-5);
+        assert!((p.2 - -5.0 / 1.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_matrix3d_conversions() {
+        let aff = Affine::scale(2.0, 3.0).multiply(&Affine::translate(4.0, 5.0));
+        let m3d = Matrix3d::from(aff);
+        let aff_back = m3d.to_2d().unwrap();
+        assert_eq!(aff, aff_back);
+
+        let non_2d = Matrix3d::translate(0.0, 0.0, 5.0);
+        assert!(non_2d.to_2d().is_none());
+    }
+
+    #[test]
+    fn test_decompose_2d() {
+        let orig = Affine::translate(10.0, 20.0)
+            .multiply(&Affine::rotate(45.0))
+            .multiply(&Affine::skew_x(30.0))
+            .multiply(&Affine::scale(2.0, 3.0));
+
+        let decomp = orig.decompose().unwrap();
+        assert!((decomp.translate.0 - 10.0).abs() < 1e-5);
+        assert!((decomp.translate.1 - 20.0).abs() < 1e-5);
+        assert!((decomp.scale.0 - 2.0).abs() < 1e-5);
+        assert!((decomp.scale.1 - 3.0).abs() < 1e-5);
+        assert!((decomp.angle - 45.0).abs() < 1e-5);
+        assert!((decomp.skew - 30.0f32.to_radians().tan()).abs() < 1e-5);
+
+        let recomposed = decomp.recompose();
+        for i in 0..6 {
+            assert!((orig.m[i] - recomposed.m[i]).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn test_decompose_3d() {
+        let orig = Matrix3d::translate(10.0, 20.0, 30.0)
+            .multiply(&Matrix3d::rotate_y(45.0))
+            .multiply(&Matrix3d::scale(2.0, 3.0, 4.0));
+
+        let decomp = orig.decompose().unwrap();
+        assert!((decomp.translate.0 - 10.0).abs() < 1e-5);
+        assert!((decomp.translate.1 - 20.0).abs() < 1e-5);
+        assert!((decomp.translate.2 - 30.0).abs() < 1e-5);
+        assert!((decomp.scale.0 - 2.0).abs() < 1e-5);
+        assert!((decomp.scale.1 - 3.0).abs() < 1e-5);
+        assert!((decomp.scale.2 - 4.0).abs() < 1e-5);
+
+        let recomposed = decomp.recompose();
+        for i in 0..16 {
+            assert!((orig.m[i] - recomposed.m[i]).abs() < 1e-4);
+        }
     }
 }
