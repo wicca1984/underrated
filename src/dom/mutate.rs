@@ -438,6 +438,206 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `action` content attribute of a valid element node,
+    /// but only if the tag is `form`.
+    /// Returns `None` if the node is not a `form` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_action(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("action"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `method` content attribute of a valid element node,
+    /// but only if the tag is `form`.
+    /// Returns `None` if the node is not a `form` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_method(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("method"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `enctype` content attribute of a valid element node,
+    /// but only if the tag is `form`.
+    /// Returns `None` if the node is not a `form` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_enctype(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("enctype"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `width` content attribute of a valid element node,
+    /// but only if the tag is `img` or `canvas`.
+    /// Returns `None` if the node is not an `img` or `canvas` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_width(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("canvas"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("width"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `height` content attribute of a valid element node,
+    /// but only if the tag is `img` or `canvas`.
+    /// Returns `None` if the node is not an `img` or `canvas` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_height(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("canvas"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("height"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `max` content attribute of a valid element node,
+    /// but only if the tag is `input`.
+    /// Returns `None` if the node is not an `input` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_max(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("max"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `min` content attribute of a valid element node,
+    /// but only if the tag is `input`.
+    /// Returns `None` if the node is not an `input` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_min(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("min"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `step` content attribute of a valid element node,
+    /// but only if the tag is `input`.
+    /// Returns `None` if the node is not an `input` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_step(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("step"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `pattern` content attribute of a valid element node,
+    /// but only if the tag is `input`.
+    /// Returns `None` if the node is not an `input` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_pattern(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("pattern"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `accept` content attribute of a valid element node,
+    /// but only if the tag is `input`.
+    /// Returns `None` if the node is not an `input` element, or if the `NodeId` is invalid.
+    /// If the attribute is absent, returns `Some("")`.
+    pub fn get_accept(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("accept"))
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or(""),
+            );
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -1493,5 +1693,157 @@ mod tests {
         // 7. Invalid NodeId should return None
         let dom2 = Dom::new();
         assert_eq!(dom2.get_type(input_id), None);
+    }
+
+    #[test]
+    fn test_new_reflected_getters() {
+        let mut dom = Dom::new();
+
+        // --- get_action, get_method, get_enctype (form) ---
+        let form_id = dom.create_node(NodeData::Element {
+            name: "form".to_string(),
+            attrs: vec![
+                ("action".to_string(), "/submit".to_string()),
+                ("method".to_string(), "post".to_string()),
+                ("enctype".to_string(), "multipart/form-data".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_action(form_id), Some("/submit"));
+        assert_eq!(dom.get_method(form_id), Some("post"));
+        assert_eq!(dom.get_enctype(form_id), Some("multipart/form-data"));
+
+        // Case-insensitivity tests for form elements
+        let form_caps_id = dom.create_node(NodeData::Element {
+            name: "FORM".to_string(),
+            attrs: vec![
+                ("ACTION".to_string(), "/SUBMIT".to_string()),
+                ("METHOD".to_string(), "POST".to_string()),
+                ("ENCTYPE".to_string(), "MULTIPART".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_action(form_caps_id), Some("/SUBMIT"));
+        assert_eq!(dom.get_method(form_caps_id), Some("POST"));
+        assert_eq!(dom.get_enctype(form_caps_id), Some("MULTIPART"));
+
+        // When absent, they should return Some("")
+        let form_absent_id = dom.create_node(NodeData::Element {
+            name: "form".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_action(form_absent_id), Some(""));
+        assert_eq!(dom.get_method(form_absent_id), Some(""));
+        assert_eq!(dom.get_enctype(form_absent_id), Some(""));
+
+        // When node is invalid/non-form, they should return None
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("action".to_string(), "x".to_string()),
+                ("method".to_string(), "x".to_string()),
+                ("enctype".to_string(), "x".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_action(div_id), None);
+        assert_eq!(dom.get_method(div_id), None);
+        assert_eq!(dom.get_enctype(div_id), None);
+
+        // --- get_width, get_height (img, canvas) ---
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![
+                ("width".to_string(), "400".to_string()),
+                ("height".to_string(), "300".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_width(img_id), Some("400"));
+        assert_eq!(dom.get_height(img_id), Some("300"));
+
+        let canvas_id = dom.create_node(NodeData::Element {
+            name: "canvas".to_string(),
+            attrs: vec![
+                ("width".to_string(), "800".to_string()),
+                ("height".to_string(), "600".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_width(canvas_id), Some("800"));
+        assert_eq!(dom.get_height(canvas_id), Some("600"));
+
+        // When absent, they should return Some("")
+        let img_absent_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_width(img_absent_id), Some(""));
+        assert_eq!(dom.get_height(img_absent_id), Some(""));
+
+        // When invalid tag, they should return None
+        assert_eq!(dom.get_width(div_id), None);
+        assert_eq!(dom.get_height(div_id), None);
+
+        // --- get_max, get_min, get_step, get_pattern, get_accept (input) ---
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![
+                ("max".to_string(), "10".to_string()),
+                ("min".to_string(), "1".to_string()),
+                ("step".to_string(), "2".to_string()),
+                ("pattern".to_string(), "[0-9]+".to_string()),
+                ("accept".to_string(), "image/*".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_max(input_id), Some("10"));
+        assert_eq!(dom.get_min(input_id), Some("1"));
+        assert_eq!(dom.get_step(input_id), Some("2"));
+        assert_eq!(dom.get_pattern(input_id), Some("[0-9]+"));
+        assert_eq!(dom.get_accept(input_id), Some("image/*"));
+
+        // Case-insensitivity for input attributes
+        let input_caps_id = dom.create_node(NodeData::Element {
+            name: "INPUT".to_string(),
+            attrs: vec![
+                ("MAX".to_string(), "20".to_string()),
+                ("MIN".to_string(), "5".to_string()),
+                ("STEP".to_string(), "3".to_string()),
+                ("PATTERN".to_string(), "a".to_string()),
+                ("ACCEPT".to_string(), "b".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_max(input_caps_id), Some("20"));
+        assert_eq!(dom.get_min(input_caps_id), Some("5"));
+        assert_eq!(dom.get_step(input_caps_id), Some("3"));
+        assert_eq!(dom.get_pattern(input_caps_id), Some("a"));
+        assert_eq!(dom.get_accept(input_caps_id), Some("b"));
+
+        // When absent, they should return Some("")
+        let input_absent_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_max(input_absent_id), Some(""));
+        assert_eq!(dom.get_min(input_absent_id), Some(""));
+        assert_eq!(dom.get_step(input_absent_id), Some(""));
+        assert_eq!(dom.get_pattern(input_absent_id), Some(""));
+        assert_eq!(dom.get_accept(input_absent_id), Some(""));
+
+        // When invalid tag, they should return None
+        assert_eq!(dom.get_max(div_id), None);
+        assert_eq!(dom.get_min(div_id), None);
+        assert_eq!(dom.get_step(div_id), None);
+        assert_eq!(dom.get_pattern(div_id), None);
+        assert_eq!(dom.get_accept(div_id), None);
+
+        // --- Invalid NodeId should return None for all ---
+        let foreign_dom = Dom::new();
+        let foreign_node = dom.create_node(NodeData::Text("hi".to_string()));
+        assert_eq!(foreign_dom.get_action(foreign_node), None);
+        assert_eq!(foreign_dom.get_method(foreign_node), None);
+        assert_eq!(foreign_dom.get_enctype(foreign_node), None);
+        assert_eq!(foreign_dom.get_width(foreign_node), None);
+        assert_eq!(foreign_dom.get_height(foreign_node), None);
+        assert_eq!(foreign_dom.get_max(foreign_node), None);
+        assert_eq!(foreign_dom.get_min(foreign_node), None);
+        assert_eq!(foreign_dom.get_step(foreign_node), None);
+        assert_eq!(foreign_dom.get_pattern(foreign_node), None);
+        assert_eq!(foreign_dom.get_accept(foreign_node), None);
     }
 }
