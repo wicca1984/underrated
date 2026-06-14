@@ -49,6 +49,39 @@ fn get_font_size(style: &CategorizedComputedStyle) -> f32 {
     style.inherited_text.font_size as f32
 }
 
+fn find_last_fragment_baseline(
+    lb: &LayoutBox,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    _dom: &Dom,
+) -> Option<f32> {
+    if lb.text.is_some() {
+        return Some(lb.rect.origin.y + lb.rect.size.height);
+    }
+
+    if let Some(node_id) = lb.node
+        && is_inline_block(styles, node_id)
+    {
+        for child in lb.children.iter().rev() {
+            if let Some(bl) = find_last_fragment_baseline(child, styles, _dom) {
+                return Some(bl);
+            }
+        }
+        let margin_bottom = styles
+            .get(&node_id)
+            .map(|style| crate::layout::get_px(style, "margin-bottom", 0.0))
+            .unwrap_or(0.0);
+        return Some(lb.rect.origin.y + lb.rect.size.height + margin_bottom);
+    }
+
+    for child in lb.children.iter().rev() {
+        if let Some(bl) = find_last_fragment_baseline(child, styles, _dom) {
+            return Some(bl);
+        }
+    }
+
+    None
+}
+
 #[allow(clippy::collapsible_if)]
 fn get_vertical_align_shift(
     node: NodeId,
@@ -126,7 +159,12 @@ fn create_line_box_adjusted(
             .and_then(|id| styles.get(&id))
         {
             let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
-            target_y = line_box_bottom_y - margin_bottom - border_box_height;
+            if let Some(abs_baseline_y) = find_last_fragment_baseline(child, styles, dom) {
+                let baseline_offset_from_top = abs_baseline_y - child.rect.origin.y;
+                target_y = line_box_bottom_y - baseline_offset_from_top;
+            } else {
+                target_y = line_box_bottom_y - margin_bottom - border_box_height;
+            }
         } else {
             target_y = line_box_bottom_y - border_box_height;
         }
@@ -2798,5 +2836,87 @@ mod tests {
             0.0,
         );
         assert_eq!(line_boxes_left[0].children[0].rect.origin.x, 0.0);
+    }
+
+    #[test]
+    fn test_inline_block_baseline_empty() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let ib = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "ib-class".into())],
+        });
+        dom.append_child(div, ib);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .ib-class { display: inline-block; width: 50px; height: 30px; margin-bottom: 5px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 1);
+        let child_box = &line.children[0];
+
+        let line_box_bottom_y = line.rect.size.height;
+        let expected_y = line_box_bottom_y - 5.0 - 30.0;
+        assert_eq!(child_box.rect.origin.y, expected_y);
+    }
+
+    #[test]
+    fn test_inline_block_baseline_with_text() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let ib = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "ib-class".into())],
+        });
+        dom.append_child(div, ib);
+
+        let t_inner = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(ib, t_inner);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .ib-class { display: inline-block; width: 50px; height: 40px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 1);
+        let child_box = &line.children[0];
+
+        assert_eq!(child_box.children.len(), 1);
+        let inner_line = &child_box.children[0];
+
+        let child_box_baseline_y = inner_line.rect.origin.y + inner_line.rect.size.height;
+        let parent_line_baseline_y = line.rect.origin.y + line.rect.size.height;
+        assert_eq!(child_box_baseline_y, parent_line_baseline_y);
     }
 }
