@@ -315,9 +315,10 @@ fn create_line_box_adjusted(
                 } else {
                     "normal"
                 };
-                let collapse = matches!(style_ws, "nowrap" | "pre-line" | "normal");
+                let collapse_or_hang =
+                    matches!(style_ws, "nowrap" | "pre-line" | "normal" | "pre-wrap");
 
-                if collapse {
+                if collapse_or_hang {
                     if text == " " {
                         // This is a collapsible space. Skip it!
                         continue;
@@ -487,8 +488,14 @@ fn create_line_box_adjusted(
 
     // Adjust X positions based on text-align centering/right alignment
     let delta_x = match final_align {
-        "center" => ((containing_width - width) / 2.0).max(0.0),
-        "right" => (containing_width - width).max(0.0),
+        "center" => {
+            let val = (containing_width - width) / 2.0;
+            if is_rtl { val } else { val.max(0.0) }
+        }
+        "right" => {
+            let val = containing_width - width;
+            if is_rtl { val } else { val.max(0.0) }
+        }
         _ => 0.0,
     };
 
@@ -523,7 +530,7 @@ fn create_line_box_adjusted(
     };
 
     if has_ellipsis {
-        let is_rtl = direction == "rtl";
+        let overflow_left = delta_x < 0.0;
         let measure_for_node = |node_id: NodeId, s: &str| -> f32 {
             let font = crate::font::BitmapFont::builtin();
             let char_count = s.chars().count();
@@ -536,7 +543,7 @@ fn create_line_box_adjusted(
             }
         };
 
-        if is_rtl {
+        if overflow_left {
             let mut clip_idx = None;
             for (idx, child) in children.iter().enumerate().rev() {
                 if child.rect.origin.x < offset_x {
@@ -749,7 +756,13 @@ pub fn layout_inline_run(
                         "normal"
                     };
 
-                    let break_all = style_wb == "break-all";
+                    let style_lb = if let Some(style) = styles.get(&node) {
+                        style.inherited_text.line_break.as_str()
+                    } else {
+                        "auto"
+                    };
+
+                    let break_all = style_wb == "break-all" || style_lb == "anywhere";
 
                     let break_word = if let Some(style) = styles.get(&node) {
                         style.inherited_text.overflow_wrap == "break-word"
@@ -811,9 +824,15 @@ pub fn layout_inline_run(
                             if collapse && word_stripped.ends_with(' ') {
                                 let trimmed = word_stripped.trim_end_matches(' ');
                                 check_width = measure_text(trimmed);
+                            } else if style_ws == "pre-wrap" && word_stripped == " " {
+                                check_width = 0.0;
                             }
 
-                            if !allow_wrap || cursor_x + check_width <= containing_width {
+                            let is_hanging_space = style_ws == "pre-wrap" && word_stripped == " ";
+                            if !allow_wrap
+                                || is_hanging_space
+                                || cursor_x + check_width <= containing_width
+                            {
                                 if collapse
                                     && current_line_children.is_empty()
                                     && word_stripped == " "
@@ -850,9 +869,15 @@ pub fn layout_inline_run(
                                     if collapse && rem_word_stripped.ends_with(' ') {
                                         let trimmed = rem_word_stripped.trim_end_matches(' ');
                                         check_width = measure_text(trimmed);
+                                    } else if style_ws == "pre-wrap" && rem_word_stripped == " " {
+                                        check_width = 0.0;
                                     }
 
-                                    if cursor_x + check_width <= containing_width {
+                                    let is_hanging_space =
+                                        style_ws == "pre-wrap" && rem_word_stripped == " ";
+                                    if is_hanging_space
+                                        || cursor_x + check_width <= containing_width
+                                    {
                                         if !(collapse
                                             && current_line_children.is_empty()
                                             && rem_word_stripped == " ")
@@ -896,7 +921,11 @@ pub fn layout_inline_run(
                                                     true,
                                                 ));
                                             }
-                                        } else if c == '-' || c == '\u{2010}' || is_cjk(c) {
+                                        } else if c == '\u{200B}'
+                                            || c == '-'
+                                            || c == '\u{2010}'
+                                            || (is_cjk(c) && style_wb != "keep-all")
+                                        {
                                             let end_idx = current_byte_idx + c.len_utf8();
                                             let prefix = &rem_word[..end_idx];
                                             let suffix = &rem_word[end_idx..];
@@ -959,7 +988,17 @@ pub fn layout_inline_run(
                                         current_line_height = node_line_height;
                                         rem_word = suffix;
                                     } else {
-                                        if cursor_x > 0.0 {
+                                        let mut chars_iter = rem_word_stripped.char_indices();
+                                        let first_char_fits =
+                                            if let Some((_, first_c)) = chars_iter.next() {
+                                                let first_char_width =
+                                                    measure_text(&first_c.to_string());
+                                                cursor_x + first_char_width <= containing_width
+                                            } else {
+                                                false
+                                            };
+
+                                        if cursor_x > 0.0 && !(break_all && first_char_fits) {
                                             let lh = push_line_box(
                                                 &mut current_line_children,
                                                 cursor_x,
@@ -1220,7 +1259,7 @@ fn is_cjk(c: char) -> bool {
 }
 
 fn strip_soft_hyphens(s: &str) -> String {
-    s.replace('\u{00AD}', "")
+    s.replace(['\u{00AD}', '\u{200B}'], "")
 }
 
 fn preprocess_text(text: &str, collapse: bool, preserve_newlines: bool, tab_size: usize) -> String {
@@ -3461,5 +3500,242 @@ mod tests {
             line_boxes_none[0].children[0].text,
             Some("apple".to_string())
         );
+    }
+
+    #[test]
+    fn test_pre_wrap_hanging_spaces() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello      ".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { white-space: pre-wrap; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // width 50.0 is enough for "hello" but not with all trailing spaces.
+        // Under pre-wrap, trailing spaces should hang (not wrap), so they should all be on 1 line.
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        // The spaces are kept on the line (not wrapped)
+        assert!(line.children.len() > 1);
+    }
+
+    #[test]
+    fn test_break_spaces_wrapping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello      ".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { white-space: pre-wrap; }");
+        let mut styles = compute_styles(&dom, &stylesheet);
+
+        for style in styles.values_mut() {
+            std::sync::Arc::make_mut(&mut style.inherited_text).white_space =
+                "break-spaces".to_string();
+        }
+
+        let children = dom.children(div);
+        // Under break-spaces, trailing spaces must wrap/break, so they will overflow 50px and form multiple lines.
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 50.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+        assert!(line_boxes.len() > 1);
+    }
+
+    #[test]
+    fn test_word_break_keep_all_cjk() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("日本語".into()));
+        dom.append_child(div, t);
+
+        // Under normal word-break, CJK can break anywhere, so it will break into multiple lines on a 16px wide container.
+        let stylesheet_normal = parse_stylesheet("div { word-break: normal; }");
+        let styles_normal = compute_styles(&dom, &stylesheet_normal);
+        let children_normal = dom.children(div);
+        let (line_boxes_normal, _) = layout_inline_run(
+            &dom,
+            &styles_normal,
+            children_normal,
+            16.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        assert!(line_boxes_normal.len() > 1);
+
+        // Under keep-all word-break, CJK does not break, so it overflows onto exactly 1 line.
+        let stylesheet_keep = parse_stylesheet("div { word-break: keep-all; }");
+        let styles_keep = compute_styles(&dom, &stylesheet_keep);
+        let children_keep = dom.children(div);
+        let (line_boxes_keep, _) = layout_inline_run(
+            &dom,
+            &styles_keep,
+            children_keep,
+            16.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        assert_eq!(line_boxes_keep.len(), 1);
+    }
+
+    #[test]
+    fn test_word_break_break_all_and_line_break_anywhere() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t1 = dom.create_node(NodeData::Text("abc ".into()));
+        dom.append_child(div, t1);
+        let t2 = dom.create_node(NodeData::Text("def".into()));
+        dom.append_child(div, t2);
+
+        // Under break-all, we should break character-by-character on the current line.
+        // Width 40px: "abc " is 32px (8px/char). 8px remains.
+        // "def" is processed, "d" is placed on first line, "ef" is wrapped to second.
+        let stylesheet_all = parse_stylesheet("div { word-break: break-all; }");
+        let styles_all = compute_styles(&dom, &stylesheet_all);
+        let children_all = dom.children(div);
+        let (line_boxes_all, _) = layout_inline_run(
+            &dom,
+            &styles_all,
+            children_all,
+            40.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        assert!(line_boxes_all.len() >= 2);
+        // The first line should have two children: "abc " and "d"
+        assert_eq!(line_boxes_all[0].children.len(), 2);
+        assert_eq!(line_boxes_all[0].children[0].text, Some("abc ".to_string()));
+        assert_eq!(line_boxes_all[0].children[1].text, Some("d".to_string()));
+
+        // Under line-break: anywhere, it should behave exactly the same
+        let stylesheet_anywhere = parse_stylesheet("div { line-break: anywhere; }");
+        let styles_anywhere = compute_styles(&dom, &stylesheet_anywhere);
+        let children_anywhere = dom.children(div);
+        let (line_boxes_anywhere, _) = layout_inline_run(
+            &dom,
+            &styles_anywhere,
+            children_anywhere,
+            40.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+
+        assert!(line_boxes_anywhere.len() >= 2);
+        assert_eq!(line_boxes_anywhere[0].children.len(), 2);
+        assert_eq!(
+            line_boxes_anywhere[0].children[0].text,
+            Some("abc ".to_string())
+        );
+        assert_eq!(
+            line_boxes_anywhere[0].children[1].text,
+            Some("d".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rtl_text_overflow_ellipsis() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("extremely_long_text_overflow_rtl".into()));
+        dom.append_child(div, t);
+
+        let stylesheet =
+            parse_stylesheet("div { direction: rtl; text-overflow: ellipsis; overflow: hidden; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Width 80.0 forces overflow. Ellipsis should be placed on the left side because it's RTL overflow.
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 80.0, 0.0, 0.0, 0, "right", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 1);
+        let child_box = &line.children[0];
+
+        // RTL ellipsis should start with '…' on the left side!
+        assert!(child_box.text.as_ref().unwrap().starts_with('…'));
+    }
+
+    #[test]
+    fn test_zero_width_space_opportunity() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("abc\u{200b}def".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { word-break: normal; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Width 24.0 fits "abc" but not "abcdef".
+        // It should break exactly at the zero-width space!
+        let (line_boxes, _) =
+            layout_inline_run(&dom, &styles, children, 24.0, 0.0, 0.0, 0, "left", 0.0, 0.0);
+
+        assert_eq!(line_boxes.len(), 2);
+        assert_eq!(line_boxes[0].children.len(), 1);
+        assert_eq!(line_boxes[0].children[0].text, Some("abc".to_string()));
+        assert_eq!(line_boxes[1].children.len(), 1);
+        assert_eq!(line_boxes[1].children[0].text, Some("def".to_string()));
     }
 }
