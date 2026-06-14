@@ -350,6 +350,7 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         false
                     }
                     "checked" => is_checked(dom, node),
+                    "open" => is_open(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
                     "enabled" => is_enabled(dom, node),
@@ -769,6 +770,20 @@ fn is_checked(dom: &Dom, node: NodeId) -> bool {
                 && attrs
                     .iter()
                     .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "checked"))
+        }
+        _ => false,
+    }
+}
+
+fn is_open(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { name, attrs }) => {
+            let is_applicable = ascii::eq_ignore_ascii_case(name, "details")
+                || ascii::eq_ignore_ascii_case(name, "dialog");
+            is_applicable
+                && attrs
+                    .iter()
+                    .any(|(k, _)| ascii::eq_ignore_ascii_case(k, "open"))
         }
         _ => false,
     }
@@ -2552,6 +2567,102 @@ mod tests {
             &parse_selector_list(":read-write").unwrap(),
             &dom,
             input_mixed_readonly
+        ));
+    }
+
+    #[test]
+    fn test_open_pseudo_class() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <details open>
+        let details_open = dom.create_node(NodeData::Element {
+            name: "details".into(),
+            attrs: vec![("open".into(), "".into())],
+        });
+        dom.append_child(doc, details_open);
+
+        // <details> (not open)
+        let details_closed = dom.create_node(NodeData::Element {
+            name: "details".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, details_closed);
+
+        // <dialog open>
+        let dialog_open = dom.create_node(NodeData::Element {
+            name: "dialog".into(),
+            attrs: vec![("open".into(), "".into())],
+        });
+        dom.append_child(doc, dialog_open);
+
+        // <dialog> (not open)
+        let dialog_closed = dom.create_node(NodeData::Element {
+            name: "dialog".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, dialog_closed);
+
+        // <div open> (div is not details/dialog, should not match :open)
+        let div_open = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("open".into(), "".into())],
+        });
+        dom.append_child(doc, div_open);
+
+        // <DeTaIlS OpEn> (case-insensitive check)
+        let details_mixed_open = dom.create_node(NodeData::Element {
+            name: "DeTaIlS".into(),
+            attrs: vec![("OpEn".into(), "true".into())],
+        });
+        dom.append_child(doc, details_mixed_open);
+
+        // <DiAlOg OpEn> (case-insensitive check)
+        let dialog_mixed_open = dom.create_node(NodeData::Element {
+            name: "DiAlOg".into(),
+            attrs: vec![("OpEn".into(), "true".into())],
+        });
+        dom.append_child(doc, dialog_mixed_open);
+
+        // Assert matches
+        assert!(matches(
+            &parse_selector_list(":open").unwrap(),
+            &dom,
+            details_open
+        ));
+        assert!(!matches(
+            &parse_selector_list(":open").unwrap(),
+            &dom,
+            details_closed
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":open").unwrap(),
+            &dom,
+            dialog_open
+        ));
+        assert!(!matches(
+            &parse_selector_list(":open").unwrap(),
+            &dom,
+            dialog_closed
+        ));
+
+        assert!(!matches(
+            &parse_selector_list(":open").unwrap(),
+            &dom,
+            div_open
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":open").unwrap(),
+            &dom,
+            details_mixed_open
+        ));
+
+        assert!(matches(
+            &parse_selector_list(":open").unwrap(),
+            &dom,
+            dialog_mixed_open
         ));
     }
 
