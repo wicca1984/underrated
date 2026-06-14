@@ -285,3 +285,144 @@ fn run_test_file(path: &str) {
         }
     }
 }
+
+#[test]
+fn test_t1016_special_states() {
+    let run_case = |input: &str, initial_state: &str, last_start_tag: Option<&str>| -> Vec<Token> {
+        let stream = InputStream::from_utf8(input.as_bytes());
+        let mut tokenizer = Tokenizer::new(stream);
+        tokenizer.set_initial_state(initial_state);
+        if let Some(tag) = last_start_tag {
+            tokenizer.set_last_start_tag(tag);
+        }
+        let mut tokens = Vec::new();
+        loop {
+            let tok = tokenizer.next_token();
+            if tok == Token::Eof {
+                break;
+            }
+            tokens.push(tok);
+        }
+        tokens
+    };
+
+    // Helper to extract characters as a String
+    let get_chars = |tokens: &[Token]| -> String {
+        let mut s = String::new();
+        for tok in tokens {
+            if let Token::Character(c) = tok {
+                s.push(*c);
+            } else {
+                panic!("Expected only character tokens, but got: {:?}", tok);
+            }
+        }
+        s
+    };
+
+    // 1. RCDATA appropriate end tag
+    {
+        let tokens = run_case("hello</title>", "RCDATA state", Some("title"));
+        assert_eq!(tokens.len(), 6); // 'h', 'e', 'l', 'l', 'o', EndTag
+        assert_eq!(get_chars(&tokens[0..5]), "hello");
+        assert_eq!(
+            tokens[5],
+            Token::EndTag {
+                name: "title".to_string(),
+                attrs: vec![],
+                self_closing: false
+            }
+        );
+    }
+
+    // 2. RCDATA inappropriate end tag
+    {
+        let tokens = run_case("hello</style>", "RCDATA state", Some("title"));
+        // Should all be characters
+        assert_eq!(get_chars(&tokens), "hello</style>");
+    }
+
+    // 3. RAWTEXT appropriate end tag
+    {
+        let tokens = run_case(
+            "body { color: red; }</style>",
+            "RAWTEXT state",
+            Some("style"),
+        );
+        assert_eq!(tokens.len(), 21); // 20 chars, 1 EndTag
+        assert_eq!(get_chars(&tokens[0..20]), "body { color: red; }");
+        assert_eq!(
+            tokens[20],
+            Token::EndTag {
+                name: "style".to_string(),
+                attrs: vec![],
+                self_closing: false
+            }
+        );
+    }
+
+    // 4. RAWTEXT inappropriate end tag
+    {
+        let tokens = run_case(
+            "body { color: red; }</script>",
+            "RAWTEXT state",
+            Some("style"),
+        );
+        assert_eq!(get_chars(&tokens), "body { color: red; }</script>");
+    }
+
+    // 5. ScriptData appropriate end tag
+    {
+        let tokens = run_case("hello</script>", "Script data state", Some("script"));
+        assert_eq!(tokens.len(), 6);
+        assert_eq!(get_chars(&tokens[0..5]), "hello");
+        assert_eq!(
+            tokens[5],
+            Token::EndTag {
+                name: "script".to_string(),
+                attrs: vec![],
+                self_closing: false
+            }
+        );
+    }
+
+    // 6. ScriptData inappropriate end tag
+    {
+        let tokens = run_case("hello</style>", "Script data state", Some("script"));
+        assert_eq!(get_chars(&tokens), "hello</style>");
+    }
+
+    // 7. ScriptData escaped appropriate end tag in comment-like sequence
+    {
+        let tokens = run_case("<!--</script>-->", "Script data state", Some("script"));
+        // Output should have: characters of "<!--", then EndTag("script"), then characters of "-->"
+        let end_tag_idx = tokens
+            .iter()
+            .position(|t| matches!(t, Token::EndTag { .. }))
+            .expect("Should find EndTag");
+        assert_eq!(get_chars(&tokens[0..end_tag_idx]), "<!--");
+        assert_eq!(
+            tokens[end_tag_idx],
+            Token::EndTag {
+                name: "script".to_string(),
+                attrs: vec![],
+                self_closing: false
+            }
+        );
+        assert_eq!(get_chars(&tokens[end_tag_idx + 1..]), "-->");
+    }
+
+    // 8. ScriptData double-escaped state with nested tag that does not terminate
+    {
+        let tokens = run_case(
+            "<!--<script>hello</script>-->",
+            "Script data state",
+            Some("script"),
+        );
+        let has_end_tag = tokens.iter().any(|t| matches!(t, Token::EndTag { .. }));
+        assert!(
+            !has_end_tag,
+            "Should not contain any EndTag token in double escaped state"
+        );
+        assert_eq!(get_chars(&tokens), "<!--<script>hello</script>-->");
+    }
+}
