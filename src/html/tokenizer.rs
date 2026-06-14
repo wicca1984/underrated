@@ -113,6 +113,10 @@ enum State {
     DoctypeSystemIdentifierSingleQuoted,
     AfterDoctypeSystemIdentifier,
     BogusDoctype,
+    // CDATA section states
+    CdataSection,
+    CdataSectionBracket,
+    CdataSectionEnd,
     // Character reference states
     CharacterReference,
     NamedCharacterReference,
@@ -147,6 +151,7 @@ impl Tokenizer {
             "RAWTEXT state" => self.state = State::Rawtext,
             "Script data state" => self.state = State::ScriptData,
             "PLAINTEXT state" => self.state = State::Plaintext,
+            "CDATA section state" => self.state = State::CdataSection,
             _ => {}
         }
     }
@@ -2351,6 +2356,51 @@ impl Tokenizer {
                         _ => {
                             self.state = State::ScriptDataDoubleEscaped;
                             self.input.reconsume();
+                        }
+                    }
+                }
+                State::CdataSection => {
+                    // // spec: §13.2.5.68 CDATA section state
+                    match c {
+                        Some(']') => {
+                            self.state = State::CdataSectionBracket;
+                        }
+                        None => {
+                            self.input.reconsume();
+                            self.state = State::Data;
+                        }
+                        Some(c_val) => {
+                            return Token::Character(c_val);
+                        }
+                    }
+                }
+                State::CdataSectionBracket => {
+                    // // spec: §13.2.5.69 CDATA section bracket state
+                    match c {
+                        Some(']') => {
+                            self.state = State::CdataSectionEnd;
+                        }
+                        _ => {
+                            self.token_buffer.push_back(Token::Character(']'));
+                            self.input.reconsume();
+                            self.state = State::CdataSection;
+                        }
+                    }
+                }
+                State::CdataSectionEnd => {
+                    // // spec: §13.2.5.70 CDATA section end state
+                    match c {
+                        Some('>') => {
+                            self.state = State::Data;
+                        }
+                        Some(']') => {
+                            self.token_buffer.push_back(Token::Character(']'));
+                        }
+                        _ => {
+                            self.token_buffer.push_back(Token::Character(']'));
+                            self.token_buffer.push_back(Token::Character(']'));
+                            self.input.reconsume();
+                            self.state = State::CdataSection;
                         }
                     }
                 }
