@@ -199,6 +199,108 @@ pub fn insert_into_nearest_ancestor_layout_box(
     layout_tree.children.push(child_box);
 }
 
+fn get_form_control_button_label_local(dom: &Dom, node: NodeId) -> Option<String> {
+    if let Some(crate::dom::NodeData::Element { name, .. }) = dom.data(node) {
+        if name.eq_ignore_ascii_case("button") {
+            return Some(dom.text_content(node));
+        } else if name.eq_ignore_ascii_case("input")
+            && let Some(type_attr) = dom.get_attribute(node, "type")
+        {
+            let t_trimmed = type_attr.trim();
+            if t_trimmed.eq_ignore_ascii_case("submit")
+                || t_trimmed.eq_ignore_ascii_case("button")
+                || t_trimmed.eq_ignore_ascii_case("reset")
+            {
+                let label = dom
+                    .get_attribute(node, "value")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "Submit".to_string());
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
+fn is_inline_level_local(
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    dom: &Dom,
+    child: NodeId,
+) -> bool {
+    if let Some(data) = dom.data(child) {
+        match data {
+            crate::dom::NodeData::Text(_) => true,
+            crate::dom::NodeData::Element { .. } => {
+                if let Some(style) = styles.get(&child) {
+                    let disp = &style.reset_box.display;
+                    disp == "inline" || disp == "inline-block"
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    } else {
+        false
+    }
+}
+
+fn max_content_width_local(
+    dom: &Dom,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    node: NodeId,
+    depth: usize,
+) -> f32 {
+    if depth > crate::layout::MAX_DEPTH {
+        return 0.0;
+    }
+
+    if let Some(style) = styles.get(&node)
+        && style.reset_box.width != -1
+    {
+        return style.reset_box.width as f32;
+    }
+
+    if let Some(label) = get_form_control_button_label_local(dom, node) {
+        return crate::font::BitmapFont::builtin().measure(&label) as f32;
+    }
+
+    if let Some(crate::dom::NodeData::Text(text)) = dom.data(node) {
+        return crate::font::BitmapFont::builtin().measure(text) as f32;
+    }
+
+    let children = crate::layout::get_layoutable_children(dom, styles, node);
+    if children.is_empty() {
+        return 0.0;
+    }
+
+    let mut has_block_child = false;
+    let mut children_contributions = Vec::with_capacity(children.len());
+
+    for &child in &children {
+        let child_content_width = max_content_width_local(dom, styles, child, depth + 1);
+        let mut child_h_padding_border = 0.0;
+        if let Some(child_style) = styles.get(&child) {
+            child_h_padding_border += crate::layout::get_px(child_style, "padding-left", 0.0);
+            child_h_padding_border += crate::layout::get_px(child_style, "padding-right", 0.0);
+            child_h_padding_border += crate::layout::get_px(child_style, "border-left-width", 0.0);
+            child_h_padding_border += crate::layout::get_px(child_style, "border-right-width", 0.0);
+            if !is_inline_level_local(styles, dom, child) {
+                has_block_child = true;
+            }
+        }
+        children_contributions.push(child_content_width + child_h_padding_border);
+    }
+
+    if has_block_child {
+        children_contributions
+            .into_iter()
+            .fold(0.0_f32, |acc, w| acc.max(w))
+    } else {
+        children_contributions.into_iter().sum()
+    }
+}
+
 /// Performs layout for absolute and fixed elements and integrates them into the layout tree.
 /// spec: S-31
 pub fn layout_absolute_and_fixed_elements(
@@ -237,8 +339,55 @@ pub fn layout_absolute_and_fixed_elements(
             style.reset_surround.top as f32
         };
 
-        // Layout the node with viewport width as containing width, and top/left as offsets
-        if let Some(mut child_box) = layout_node(dom, styles, node, viewport_width, left, top, 0) {
+        // Determine available width based on offsets
+        let has_left = style.reset_surround.left != -1;
+        let has_right = style.reset_surround.right != -1;
+
+        let available_width = if has_left && has_right {
+            let left_val = style.reset_surround.left as f32;
+            let right_val = style.reset_surround.right as f32;
+            (viewport_width - left_val - right_val).max(0.0)
+        } else if has_left {
+            let left_val = style.reset_surround.left as f32;
+            (viewport_width - left_val).max(0.0)
+        } else if has_right {
+            let right_val = style.reset_surround.right as f32;
+            (viewport_width - right_val).max(0.0)
+        } else {
+            viewport_width
+        };
+
+        // Determine containing width parameter for layout_node
+        let layout_containing_width = if style.reset_box.width == -1 {
+            if has_left && has_right {
+                // Stretched width!
+                available_width
+            } else {
+                // Shrink-to-fit width!
+                let preferred_width = max_content_width_local(dom, styles, node, 0);
+                let padding_left = crate::layout::get_px(style, "padding-left", 0.0);
+                let padding_right = crate::layout::get_px(style, "padding-right", 0.0);
+                let border_left = crate::layout::get_px(style, "border-left-width", 0.0);
+                let border_right = crate::layout::get_px(style, "border-right-width", 0.0);
+                let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
+                let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
+                let h_padding_border_margin = padding_left
+                    + padding_right
+                    + border_left
+                    + border_right
+                    + margin_left
+                    + margin_right;
+                let target_width = preferred_width + h_padding_border_margin;
+                target_width.min(available_width).max(0.0)
+            }
+        } else {
+            viewport_width
+        };
+
+        // Layout the node with computed containing width, and top/left as offsets
+        if let Some(mut child_box) =
+            layout_node(dom, styles, node, layout_containing_width, left, top, 0)
+        {
             // If left is auto (-1) and right is set (not -1), position from the right offset.
             // Also, if both are set and direction is RTL, right wins over left.
             let use_right_for_rtl = style.reset_surround.left != -1
@@ -267,6 +416,21 @@ pub fn layout_absolute_and_fixed_elements(
                 for child in &mut child_box.children {
                     shift_layout_box(child, styles, 0.0, shift_dy, 1);
                 }
+            }
+
+            // If both top and bottom are set, and height is auto (-1), stretch the height of the border box
+            if style.reset_surround.top != -1
+                && style.reset_surround.bottom != -1
+                && style.reset_box.height == -1
+            {
+                let top_val = style.reset_surround.top as f32;
+                let bottom_val = style.reset_surround.bottom as f32;
+                let container_height = root_box.rect.size.height;
+                let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
+                let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+                let target_height =
+                    (container_height - top_val - bottom_val - margin_top - margin_bottom).max(0.0);
+                child_box.rect.size.height = target_height;
             }
 
             // Find nearest ancestor in the layout tree and append to its children
@@ -797,5 +961,172 @@ mod tests {
         // Fixed child ignores relative ancestor shift and position. It should be positioned at viewport (15, 25).
         assert_eq!(child_box.rect.origin.x, 15.0);
         assert_eq!(child_box.rect.origin.y, 25.0);
+    }
+
+    #[test]
+    fn test_absolute_position_shrink_to_fit() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, child);
+
+        let text = dom.create_node(NodeData::Text("Hello".into()));
+        dom.append_child(child, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                left: 10px;
+                top: 10px;
+                /* width is auto by default */
+            }
+            span {
+                display: inline;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // Hello width should be 5 * 8 = 40px
+        assert_eq!(div_box.rect.size.width, 40.0);
+    }
+
+    #[test]
+    fn test_absolute_position_stretch_width() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                left: 50px;
+                right: 70px;
+                top: 10px;
+                /* width is auto */
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // x = 50px, width = viewport_width - left - right = 800.0 - 50.0 - 70.0 = 680.0
+        assert_eq!(div_box.rect.origin.x, 50.0);
+        assert_eq!(div_box.rect.size.width, 680.0);
+    }
+
+    #[test]
+    fn test_absolute_position_stretch_height() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; height: 400px; }
+            div {
+                display: block;
+                position: absolute;
+                left: 10px;
+                top: 40px;
+                bottom: 60px;
+                /* height is auto */
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // y = 40px
+        assert_eq!(div_box.rect.origin.y, 40.0);
+        let expected_height = layout_tree.rect.size.height - 40.0 - 60.0;
+        assert_eq!(div_box.rect.size.height, expected_height);
     }
 }
