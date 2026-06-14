@@ -359,3 +359,32 @@ fn test_html5lib_tokenizer_conformance() {
         BASELINE_MAX_FAILURES
     );
 }
+
+#[test]
+fn test_named_entities_in_attributes_semicolon_behavior() {
+    let inputs = [
+        (
+            "<div a=\"&amp;b\">",
+            vec![("a".to_string(), "&b".to_string())],
+        ),
+        (
+            "<div a=\"&amp=b\">",
+            vec![("a".to_string(), "&amp=b".to_string())],
+        ),
+        (
+            "<div a=\"&ampb\">",
+            vec![("a".to_string(), "&ampb".to_string())],
+        ),
+    ];
+    for (input, expected_attrs) in inputs {
+        let stream = InputStream::from_utf8(input.as_bytes());
+        let mut tokenizer = Tokenizer::new(stream);
+        let tok = tokenizer.next_token();
+        if let Token::StartTag { mut attrs, .. } = tok {
+            attrs.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(attrs, expected_attrs, "Failed for input: {}", input);
+        } else {
+            panic!("Expected StartTag, got {:?}", tok);
+        }
+    }
+}

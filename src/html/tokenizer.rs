@@ -2811,6 +2811,7 @@ impl Tokenizer {
             };
 
             let ignore_match = is_in_attribute
+                && !name.ends_with(';')
                 && matches!(next_char, Some(nc) if nc.is_ascii_alphanumeric() || nc == '=');
 
             if ignore_match {
