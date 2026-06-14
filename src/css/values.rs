@@ -5856,33 +5856,67 @@ fn parse_rgb_function(components: &[ComponentValue]) -> Option<Color> {
     }
 
     // Basic support for rgb(r, g, b) or rgba(r, g, b, a)
-    // Filter out whitespace and commas
+    // Filter out whitespace, commas, and slashes
+    enum RgbArg {
+        Number(f32),
+        Percentage(f32),
+    }
+
     let mut args = Vec::new();
     for component in components {
         match component {
             ComponentValue::Token(CssToken::Whitespace)
-            | ComponentValue::Token(CssToken::Comma) => {}
-            ComponentValue::Token(CssToken::Number(v)) => args.push(*v as f32),
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(RgbArg::Number(*v as f32)),
             ComponentValue::Token(CssToken::Percentage(v)) => {
-                args.push((*v as f32 / 100.0) * 255.0)
+                args.push(RgbArg::Percentage(*v as f32))
             }
             _ => return None,
         }
     }
 
     if args.len() == 3 {
+        let r = match args[0] {
+            RgbArg::Number(v) => v,
+            RgbArg::Percentage(v) => (v / 100.0) * 255.0,
+        };
+        let g = match args[1] {
+            RgbArg::Number(v) => v,
+            RgbArg::Percentage(v) => (v / 100.0) * 255.0,
+        };
+        let b = match args[2] {
+            RgbArg::Number(v) => v,
+            RgbArg::Percentage(v) => (v / 100.0) * 255.0,
+        };
         Some(Color::Rgba(
-            args[0].clamp(0.0, 255.0) as u8,
-            args[1].clamp(0.0, 255.0) as u8,
-            args[2].clamp(0.0, 255.0) as u8,
+            r.clamp(0.0, 255.0) as u8,
+            g.clamp(0.0, 255.0) as u8,
+            b.clamp(0.0, 255.0) as u8,
             255,
         ))
     } else if args.len() == 4 {
+        let r = match args[0] {
+            RgbArg::Number(v) => v,
+            RgbArg::Percentage(v) => (v / 100.0) * 255.0,
+        };
+        let g = match args[1] {
+            RgbArg::Number(v) => v,
+            RgbArg::Percentage(v) => (v / 100.0) * 255.0,
+        };
+        let b = match args[2] {
+            RgbArg::Number(v) => v,
+            RgbArg::Percentage(v) => (v / 100.0) * 255.0,
+        };
+        let a_val = match args[3] {
+            RgbArg::Number(v) => v,
+            RgbArg::Percentage(v) => v / 100.0,
+        };
         Some(Color::Rgba(
-            args[0].clamp(0.0, 255.0) as u8,
-            args[1].clamp(0.0, 255.0) as u8,
-            args[2].clamp(0.0, 255.0) as u8,
-            (args[3].clamp(0.0, 1.0) * 255.0) as u8,
+            r.clamp(0.0, 255.0) as u8,
+            g.clamp(0.0, 255.0) as u8,
+            b.clamp(0.0, 255.0) as u8,
+            (a_val.clamp(0.0, 1.0) * 255.0) as u8,
         ))
     } else {
         None
@@ -5980,15 +6014,27 @@ fn parse_hsl_function(components: &[ComponentValue]) -> Option<Color> {
     enum HslArg {
         Number(f64),
         Percentage(f64),
+        Angle(f64),
     }
 
     let mut args = Vec::new();
     for component in components {
         match component {
             ComponentValue::Token(CssToken::Whitespace)
-            | ComponentValue::Token(CssToken::Comma) => {}
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
             ComponentValue::Token(CssToken::Number(v)) => args.push(HslArg::Number(*v)),
             ComponentValue::Token(CssToken::Percentage(v)) => args.push(HslArg::Percentage(*v)),
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let deg = match unit.to_ascii_lowercase().as_str() {
+                    "deg" => *value,
+                    "rad" => *value * 180.0 / std::f64::consts::PI,
+                    "grad" => *value * 0.9,
+                    "turn" => *value * 360.0,
+                    _ => return None,
+                };
+                args.push(HslArg::Angle(deg));
+            }
             _ => return None,
         }
     }
@@ -6000,6 +6046,7 @@ fn parse_hsl_function(components: &[ComponentValue]) -> Option<Color> {
     // Parse Hue
     let h_val = match args[0] {
         HslArg::Number(v) => v,
+        HslArg::Angle(v) => v,
         _ => return None,
     };
     let h = ((h_val % 360.0) + 360.0) % 360.0;
@@ -6023,6 +6070,7 @@ fn parse_hsl_function(components: &[ComponentValue]) -> Option<Color> {
         let a_val = match args[3] {
             HslArg::Number(v) => v,
             HslArg::Percentage(v) => v / 100.0,
+            _ => return None,
         };
         (a_val.clamp(0.0, 1.0) * 255.0) as u8
     } else {
@@ -6052,6 +6100,7 @@ fn parse_hwb_function(components: &[ComponentValue]) -> Option<Color> {
     enum HwbArg {
         Number(f64),
         Percentage(f64),
+        Angle(f64),
     }
 
     let mut args = Vec::new();
@@ -6062,6 +6111,16 @@ fn parse_hwb_function(components: &[ComponentValue]) -> Option<Color> {
             | ComponentValue::Token(CssToken::Delim('/')) => {}
             ComponentValue::Token(CssToken::Number(v)) => args.push(HwbArg::Number(*v)),
             ComponentValue::Token(CssToken::Percentage(v)) => args.push(HwbArg::Percentage(*v)),
+            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+                let deg = match unit.to_ascii_lowercase().as_str() {
+                    "deg" => *value,
+                    "rad" => *value * 180.0 / std::f64::consts::PI,
+                    "grad" => *value * 0.9,
+                    "turn" => *value * 360.0,
+                    _ => return None,
+                };
+                args.push(HwbArg::Angle(deg));
+            }
             _ => return None,
         }
     }
@@ -6073,6 +6132,7 @@ fn parse_hwb_function(components: &[ComponentValue]) -> Option<Color> {
     // Parse Hue
     let h_val = match args[0] {
         HwbArg::Number(v) => v,
+        HwbArg::Angle(v) => v,
         _ => return None,
     };
     let h = ((h_val % 360.0) + 360.0) % 360.0;
@@ -6096,6 +6156,7 @@ fn parse_hwb_function(components: &[ComponentValue]) -> Option<Color> {
         let a_val = match args[3] {
             HwbArg::Number(v) => v,
             HwbArg::Percentage(v) => v / 100.0,
+            _ => return None,
         };
         (a_val.clamp(0.0, 1.0) * 255.0) as u8
     } else {
@@ -6907,10 +6968,14 @@ fn parse_color_mix_function(components: &[ComponentValue]) -> Option<Color> {
     }
 
     let colorspace = parse_colorspace(args[0])?;
-    if !colorspace.eq_ignore_ascii_case("srgb") {
+    let is_linear = if colorspace.eq_ignore_ascii_case("srgb") {
+        false
+    } else if colorspace.eq_ignore_ascii_case("srgb-linear") {
+        true
+    } else {
         // TODO(spec): Support non-srgb interpolation colorspaces in color-mix()
         return None;
-    }
+    };
 
     let (color1, p1) = parse_color_with_optional_percentage(args[1])?;
     let (color2, p2) = parse_color_with_optional_percentage(args[2])?;
@@ -6937,14 +7002,34 @@ fn parse_color_mix_function(components: &[ComponentValue]) -> Option<Color> {
     let Color::Rgba(r1_u8, g1_u8, b1_u8, a1_u8) = color1;
     let Color::Rgba(r2_u8, g2_u8, b2_u8, a2_u8) = color2;
 
-    let r1 = r1_u8 as f64 / 255.0;
-    let g1 = g1_u8 as f64 / 255.0;
-    let b1 = b1_u8 as f64 / 255.0;
+    let (r1, g1, b1) = if is_linear {
+        (
+            srgb_to_linear_srgb(r1_u8),
+            srgb_to_linear_srgb(g1_u8),
+            srgb_to_linear_srgb(b1_u8),
+        )
+    } else {
+        (
+            r1_u8 as f64 / 255.0,
+            g1_u8 as f64 / 255.0,
+            b1_u8 as f64 / 255.0,
+        )
+    };
     let a1 = a1_u8 as f64 / 255.0;
 
-    let r2 = r2_u8 as f64 / 255.0;
-    let g2 = g2_u8 as f64 / 255.0;
-    let b2 = b2_u8 as f64 / 255.0;
+    let (r2, g2, b2) = if is_linear {
+        (
+            srgb_to_linear_srgb(r2_u8),
+            srgb_to_linear_srgb(g2_u8),
+            srgb_to_linear_srgb(b2_u8),
+        )
+    } else {
+        (
+            r2_u8 as f64 / 255.0,
+            g2_u8 as f64 / 255.0,
+            b2_u8 as f64 / 255.0,
+        )
+    };
     let a2 = a2_u8 as f64 / 255.0;
 
     // Premultiply
@@ -6972,9 +7057,19 @@ fn parse_color_mix_function(components: &[ComponentValue]) -> Option<Color> {
     let final_a = mixed_a * alpha_multiplier;
 
     // Convert back to u8 RGBA
-    let r_out = (mixed_r * 255.0).round().clamp(0.0, 255.0) as u8;
-    let g_out = (mixed_g * 255.0).round().clamp(0.0, 255.0) as u8;
-    let b_out = (mixed_b * 255.0).round().clamp(0.0, 255.0) as u8;
+    let (r_out, g_out, b_out) = if is_linear {
+        (
+            linear_srgb_to_srgb(mixed_r),
+            linear_srgb_to_srgb(mixed_g),
+            linear_srgb_to_srgb(mixed_b),
+        )
+    } else {
+        (
+            (mixed_r * 255.0).round().clamp(0.0, 255.0) as u8,
+            (mixed_g * 255.0).round().clamp(0.0, 255.0) as u8,
+            (mixed_b * 255.0).round().clamp(0.0, 255.0) as u8,
+        )
+    };
     let a_out = (final_a * 255.0).round().clamp(0.0, 255.0) as u8;
 
     Some(Color::Rgba(r_out, g_out, b_out, a_out))
@@ -15171,5 +15266,95 @@ mod tests {
                 Some(CssValue::Keyword(kw.to_string()))
             );
         }
+    }
+
+    #[test]
+    fn test_t0890_css_values_completeness() {
+        // 1. Test rgb space-separated / modern slash syntax
+        let rgb_modern = vec![
+            token(CssToken::Number(255.0)),
+            token(CssToken::Whitespace),
+            token(CssToken::Number(0.0)),
+            token(CssToken::Whitespace),
+            token(CssToken::Number(0.0)),
+            token(CssToken::Whitespace),
+            token(CssToken::Delim('/')),
+            token(CssToken::Whitespace),
+            token(CssToken::Number(0.5)),
+        ];
+        assert_eq!(
+            parse_rgb_function(&rgb_modern),
+            Some(Color::Rgba(255, 0, 0, 127))
+        );
+
+        // 2. Test rgb legacy / percentage alpha
+        let rgba_percentage = vec![
+            token(CssToken::Number(0.0)),
+            token(CssToken::Comma),
+            token(CssToken::Number(255.0)),
+            token(CssToken::Comma),
+            token(CssToken::Number(0.0)),
+            token(CssToken::Comma),
+            token(CssToken::Percentage(50.0)),
+        ];
+        assert_eq!(
+            parse_rgb_function(&rgba_percentage),
+            Some(Color::Rgba(0, 255, 0, 127))
+        );
+
+        // 3. Test hsl hue angle / slash syntax
+        let hsl_angle = vec![
+            token(CssToken::Dimension {
+                value: 120.0,
+                unit: "deg".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Percentage(100.0)),
+            token(CssToken::Whitespace),
+            token(CssToken::Percentage(50.0)),
+            token(CssToken::Whitespace),
+            token(CssToken::Delim('/')),
+            token(CssToken::Whitespace),
+            token(CssToken::Percentage(50.0)),
+        ];
+        assert_eq!(
+            parse_hsl_function(&hsl_angle),
+            Some(Color::Rgba(0, 255, 0, 127))
+        );
+
+        // 4. Test hwb hue angle / slash syntax
+        let hwb_angle = vec![
+            token(CssToken::Dimension {
+                value: 120.0,
+                unit: "deg".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            token(CssToken::Percentage(0.0)),
+            token(CssToken::Whitespace),
+            token(CssToken::Percentage(0.0)),
+            token(CssToken::Whitespace),
+            token(CssToken::Delim('/')),
+            token(CssToken::Whitespace),
+            token(CssToken::Number(0.5)),
+        ];
+        assert_eq!(
+            parse_hwb_function(&hwb_angle),
+            Some(Color::Rgba(0, 255, 0, 127))
+        );
+
+        // 5. Test color-mix with srgb-linear colorspace interpolation
+        let color_mix_linear = vec![
+            token(CssToken::Ident("in".to_string())),
+            token(CssToken::Whitespace),
+            token(CssToken::Ident("srgb-linear".to_string())),
+            token(CssToken::Comma),
+            token(CssToken::Ident("red".to_string())),
+            token(CssToken::Comma),
+            token(CssToken::Ident("blue".to_string())),
+        ];
+        assert_eq!(
+            parse_color_mix_function(&color_mix_linear),
+            Some(Color::Rgba(188, 0, 188, 255))
+        );
     }
 }
