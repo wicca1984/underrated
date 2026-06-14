@@ -47,25 +47,33 @@ impl Dom {
 
     /// Returns the first descendant of the given `root` node that matches the given `selector`.
     pub fn query_selector_from(&self, root: NodeId, selector: &str) -> Option<NodeId> {
-        let selector_list = match selector::parse_selector_list(selector) {
+        let selector_list = match self.parse_scoped_selector(selector) {
             Ok(list) => list,
             Err(_) => return None,
         };
 
         self.descendants_iter(root)
-            .find(|&node_id| selector::matches(&selector_list, self, node_id))
+            .find(|&node_id| matches_with_scope(&selector_list, self, node_id, root))
     }
 
     /// Returns all descendants of the given `root` node that match the given `selector` in document order.
     pub fn query_selector_all_from(&self, root: NodeId, selector: &str) -> Vec<NodeId> {
-        let selector_list = match selector::parse_selector_list(selector) {
+        let selector_list = match self.parse_scoped_selector(selector) {
             Ok(list) => list,
             Err(_) => return Vec::new(),
         };
 
         self.descendants_iter(root)
-            .filter(|&node_id| selector::matches(&selector_list, self, node_id))
+            .filter(|&node_id| matches_with_scope(&selector_list, self, node_id, root))
             .collect()
+    }
+
+    fn parse_scoped_selector(
+        &self,
+        selector: &str,
+    ) -> Result<selector::SelectorList, selector::SelectorParseError> {
+        let preprocessed = preprocess_relative_selector(selector);
+        selector::parse_selector_list(&preprocessed)
     }
 
     /// Returns the first following sibling of the given `node` that is an element.
@@ -138,24 +146,24 @@ impl Dom {
     /// Returns true if the element matches the given `selector`.
     // spec: https://dom.spec.whatwg.org/#dom-element-matches
     pub fn matches(&self, node: NodeId, selector: &str) -> bool {
-        let selector_list = match selector::parse_selector_list(selector) {
+        let selector_list = match self.parse_scoped_selector(selector) {
             Ok(list) => list,
             Err(_) => return false,
         };
-        selector::matches(&selector_list, self, node)
+        matches_with_scope(&selector_list, self, node, node)
     }
 
     /// Returns the closest ancestor of the given `node` (including `node` itself)
     /// that matches the given `selector`.
     // spec: https://dom.spec.whatwg.org/#dom-element-closest
     pub fn closest(&self, node: NodeId, selector: &str) -> Option<NodeId> {
-        let selector_list = match selector::parse_selector_list(selector) {
+        let selector_list = match self.parse_scoped_selector(selector) {
             Ok(list) => list,
             Err(_) => return None,
         };
         let mut curr = Some(node);
         while let Some(curr_node) = curr {
-            if selector::matches(&selector_list, self, curr_node) {
+            if matches_with_scope(&selector_list, self, curr_node, curr_node) {
                 return Some(curr_node);
             }
             curr = self.parent(curr_node);
@@ -283,6 +291,209 @@ impl Dom {
             curr = parent;
         }
         curr
+    }
+}
+
+fn split_selector_list(selector: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+
+    for c in selector.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                parts.push(current);
+                current = String::new();
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+fn preprocess_relative_selector(selector: &str) -> String {
+    let parts = split_selector_list(selector);
+    let processed_parts: Vec<String> = parts
+        .into_iter()
+        .map(|part| {
+            let trimmed = part.trim();
+            if trimmed.starts_with('>') || trimmed.starts_with('+') || trimmed.starts_with('~') {
+                format!(":scope {}", trimmed)
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect();
+    processed_parts.join(", ")
+}
+
+fn matches_with_scope(
+    list: &selector::SelectorList,
+    dom: &Dom,
+    node: NodeId,
+    scope: NodeId,
+) -> bool {
+    list.0
+        .iter()
+        .any(|sel| matches_complex_with_scope(sel, dom, node, scope))
+}
+
+fn matches_complex_with_scope(
+    sel: &selector::ComplexSelector,
+    dom: &Dom,
+    node: NodeId,
+    scope: NodeId,
+) -> bool {
+    if sel.parts.is_empty() {
+        return false;
+    }
+
+    let last_part_idx = sel.parts.len() - 1;
+    let (_, compound) = &sel.parts[last_part_idx];
+
+    if !matches_compound_with_scope(compound, dom, node, scope) {
+        return false;
+    }
+
+    if last_part_idx == 0 {
+        return true;
+    }
+
+    matches_rest_with_scope(
+        &sel.parts[..last_part_idx],
+        dom,
+        node,
+        sel.parts[last_part_idx].0,
+        scope,
+    )
+}
+
+fn matches_rest_with_scope(
+    parts: &[(selector::Combinator, selector::CompoundSelector)],
+    dom: &Dom,
+    node: NodeId,
+    comb: selector::Combinator,
+    scope: NodeId,
+) -> bool {
+    match comb {
+        selector::Combinator::Descendant => {
+            let mut current = dom.parent(node);
+            while let Some(ancestor) = current {
+                if matches_complex_at_part_with_scope(parts, dom, ancestor, scope) {
+                    return true;
+                }
+                current = dom.parent(ancestor);
+            }
+            false
+        }
+        selector::Combinator::Child => {
+            if let Some(parent) = dom.parent(node) {
+                matches_complex_at_part_with_scope(parts, dom, parent, scope)
+            } else {
+                false
+            }
+        }
+        selector::Combinator::NextSibling => {
+            if let Some(prev) = dom.previous_element_sibling(node) {
+                matches_complex_at_part_with_scope(parts, dom, prev, scope)
+            } else {
+                false
+            }
+        }
+        selector::Combinator::SubsequentSibling => {
+            let mut current = dom.previous_element_sibling(node);
+            while let Some(sibling) = current {
+                if matches_complex_at_part_with_scope(parts, dom, sibling, scope) {
+                    return true;
+                }
+                current = dom.previous_element_sibling(sibling);
+            }
+            false
+        }
+    }
+}
+
+fn matches_complex_at_part_with_scope(
+    parts: &[(selector::Combinator, selector::CompoundSelector)],
+    dom: &Dom,
+    node: NodeId,
+    scope: NodeId,
+) -> bool {
+    if parts.is_empty() {
+        return false;
+    }
+
+    let last_idx = parts.len() - 1;
+    let (_, compound) = &parts[last_idx];
+
+    if !matches_compound_with_scope(compound, dom, node, scope) {
+        return false;
+    }
+
+    if last_idx == 0 {
+        return true;
+    }
+
+    matches_rest_with_scope(&parts[..last_idx], dom, node, parts[last_idx].0, scope)
+}
+
+fn matches_compound_with_scope(
+    compound: &selector::CompoundSelector,
+    dom: &Dom,
+    node: NodeId,
+    scope: NodeId,
+) -> bool {
+    if compound.components.is_empty() {
+        return false;
+    }
+    compound
+        .components
+        .iter()
+        .all(|comp| matches_component_with_scope(comp, dom, node, scope))
+}
+
+fn matches_component_with_scope(
+    comp: &selector::Component,
+    dom: &Dom,
+    node: NodeId,
+    scope: NodeId,
+) -> bool {
+    match comp {
+        selector::Component::PseudoClass(s) if s == "scope" => node == scope,
+        selector::Component::Not(sub) => !matches_compound_with_scope(sub, dom, node, scope),
+        selector::Component::Is(list) => list
+            .0
+            .iter()
+            .any(|sel| matches_complex_with_scope(sel, dom, node, scope)),
+        selector::Component::Where(list) => list
+            .0
+            .iter()
+            .any(|sel| matches_complex_with_scope(sel, dom, node, scope)),
+        _ => {
+            // For all other components, match using standard selector::matches_complex
+            let temp_compound = selector::CompoundSelector {
+                components: vec![comp.clone()],
+            };
+            let temp_sel = selector::ComplexSelector {
+                parts: vec![(selector::Combinator::Descendant, temp_compound)],
+            };
+            selector::matches_complex(&temp_sel, dom, node)
+        }
     }
 }
 
@@ -740,5 +951,63 @@ mod tests {
 
         assert_eq!(dom.get_root_node(detached_parent), detached_parent);
         assert_eq!(dom.get_root_node(detached_child), detached_parent);
+    }
+
+    #[test]
+    fn test_scoped_relative_selector_completeness() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let parent_div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "parent".into())],
+        });
+        dom.append_child(doc, parent_div);
+
+        let child_span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("id".into(), "child".into())],
+        });
+        dom.append_child(parent_div, child_span);
+
+        let sibling_p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "sibling".into())],
+        });
+        dom.append_child(parent_div, sibling_p);
+
+        // 1. query_selector_from with :scope and relative selectors
+        assert_eq!(
+            dom.query_selector_from(parent_div, ":scope > span"),
+            Some(child_span)
+        );
+        assert_eq!(
+            dom.query_selector_from(parent_div, "> span"),
+            Some(child_span)
+        );
+        assert_eq!(
+            dom.query_selector_from(parent_div, "span + p"),
+            Some(sibling_p)
+        );
+        assert_eq!(
+            dom.query_selector_from(parent_div, "> span + p"),
+            Some(sibling_p)
+        );
+
+        // 2. recursive/functional :scope matching
+        assert_eq!(
+            dom.query_selector_from(parent_div, ":not(:scope)"),
+            Some(child_span)
+        );
+
+        // 3. matches and closest with :scope
+        assert!(dom.matches(parent_div, ":scope"));
+        assert!(dom.matches(parent_div, "div:scope"));
+        assert!(!dom.matches(parent_div, "span:scope"));
+        assert_eq!(dom.closest(child_span, ":scope"), Some(child_span));
+
+        // Multi-part lists
+        let matched_list = dom.query_selector_all_from(parent_div, "> span, > p");
+        assert_eq!(matched_list, vec![child_span, sibling_p]);
     }
 }
