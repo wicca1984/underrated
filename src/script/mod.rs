@@ -1979,6 +1979,32 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'referrerPolicy', {
+                        get() {
+                            const attr = this.getAttribute('referrerpolicy');
+                            if (attr === null) {
+                                return '';
+                            }
+                            const lower = attr.toLowerCase();
+                            if (lower === 'no-referrer' ||
+                                lower === 'no-referrer-when-downgrade' ||
+                                lower === 'same-origin' ||
+                                lower === 'origin' ||
+                                lower === 'strict-origin' ||
+                                lower === 'origin-when-cross-origin' ||
+                                lower === 'strict-origin-when-cross-origin' ||
+                                lower === 'unsafe-url') {
+                                return lower;
+                            }
+                            return '';
+                        },
+                        set(val) {
+                            this.setAttribute('referrerpolicy', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'writingSuggestions', {
                         get() {
                             const attr = this.getAttribute('writingsuggestions');
@@ -13244,6 +13270,61 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("inherit|true|true|false|plaintext-only|inherit|true|true|false|false|plaintext-only|plaintext-only|removed|inherit|syntax-error-dom-exception".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_reflected_referrer_policy() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+
+            // 1. Absent -> empty string
+            let r_absent = div.referrerPolicy;
+
+            // 2. Valid token (mixed case) via setAttribute -> canonical lowercase token
+            div.setAttribute('referrerpolicy', 'No-ReFeRrEr-WhEn-DoWnGrAdE');
+            let r_valid_mixed = div.referrerPolicy;
+
+            // 3. Invalid token -> empty string
+            div.setAttribute('referrerpolicy', 'some-unknown-policy');
+            let r_invalid = div.referrerPolicy;
+
+            // 4. Empty content attribute -> empty string
+            div.setAttribute('referrerpolicy', '');
+            let r_empty = div.referrerPolicy;
+
+            // 5. Setter -> writes through verbatim (case preserved in attribute, but getter lowercases)
+            div.referrerPolicy = 'SaMe-OrIgIn';
+            let r_set_attr = div.getAttribute('referrerpolicy');
+            let r_set_get = div.referrerPolicy;
+
+            // 6. Test other known tokens just to be thorough
+            div.setAttribute('referrerpolicy', 'no-referrer');
+            let t1 = div.referrerPolicy;
+            div.setAttribute('referrerpolicy', 'same-origin');
+            let t2 = div.referrerPolicy;
+            div.setAttribute('referrerpolicy', 'origin');
+            let t3 = div.referrerPolicy;
+            div.setAttribute('referrerpolicy', 'strict-origin');
+            let t4 = div.referrerPolicy;
+            div.setAttribute('referrerpolicy', 'origin-when-cross-origin');
+            let t5 = div.referrerPolicy;
+            div.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+            let t6 = div.referrerPolicy;
+            div.setAttribute('referrerpolicy', 'unsafe-url');
+            let t7 = div.referrerPolicy;
+
+            [
+                r_absent, r_valid_mixed, r_invalid, r_empty, r_set_attr, r_set_get,
+                t1, t2, t3, t4, t5, t6, t7
+            ].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|no-referrer-when-downgrade|||SaMe-OrIgIn|same-origin|no-referrer|same-origin|origin|strict-origin|origin-when-cross-origin|strict-origin-when-cross-origin|unsafe-url".to_string())
         );
     }
 
