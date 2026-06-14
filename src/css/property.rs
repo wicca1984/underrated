@@ -5375,6 +5375,9 @@ fn is_valid_css_identifier(s: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
+    if trimmed == "-" {
+        return false;
+    }
     if is_css_wide_keyword(trimmed) {
         return false;
     }
@@ -5497,7 +5500,10 @@ fn is_length_token(s: &str) -> bool {
         return true;
     }
     let lower = s.to_ascii_lowercase();
-    for unit in &["px", "em", "rem", "vh", "vw", "cm", "mm", "in", "pt", "pc"] {
+    for unit in &[
+        "px", "em", "rem", "vh", "vw", "cm", "mm", "in", "pt", "pc", "ex", "ch", "lh", "rlh",
+        "cap", "ic", "vmin", "vmax", "vi", "vb", "q",
+    ] {
         if lower.ends_with(unit) {
             let num_part = &lower[..lower.len() - unit.len()];
             if num_part.parse::<f64>().is_ok() {
@@ -5521,6 +5527,14 @@ fn is_color_token(s: &str) -> bool {
         || s_trimmed.starts_with("rgba(")
         || s_trimmed.starts_with("hsl(")
         || s_trimmed.starts_with("hsla(")
+        || s_trimmed.starts_with("hwb(")
+        || s_trimmed.starts_with("lab(")
+        || s_trimmed.starts_with("lch(")
+        || s_trimmed.starts_with("oklab(")
+        || s_trimmed.starts_with("oklch(")
+        || s_trimmed.starts_with("color(")
+        || s_trimmed.starts_with("light-dark(")
+        || s_trimmed.starts_with("device-cmyk(")
     {
         return s_trimmed.ends_with(')');
     }
@@ -5693,6 +5707,11 @@ fn is_image_token(s: &str) -> bool {
         || lower.starts_with("repeating-linear-gradient(")
         || lower.starts_with("repeating-radial-gradient(")
         || lower.starts_with("repeating-conic-gradient(")
+        || lower.starts_with("image(")
+        || lower.starts_with("image-set(")
+        || lower.starts_with("cross-fade(")
+        || lower.starts_with("element(")
+        || lower.starts_with("paint(")
 }
 
 fn is_transform_function_token(s: &str) -> bool {
@@ -5723,9 +5742,13 @@ fn is_transform_function_token(s: &str) -> bool {
 }
 
 fn is_custom_ident_token(s: &str) -> bool {
-    is_valid_css_identifier(s)
+    let s_trimmed = s.trim();
+    if s_trimmed.starts_with("--") {
+        return false;
+    }
+    is_valid_css_identifier(s_trimmed)
         && !matches!(
-            s.to_ascii_lowercase().as_str(),
+            s_trimmed.to_ascii_lowercase().as_str(),
             "length"
                 | "number"
                 | "percentage"
@@ -5740,6 +5763,7 @@ fn is_custom_ident_token(s: &str) -> bool {
                 | "transform-function"
                 | "transform-list"
                 | "custom-ident"
+                | "default"
         )
 }
 
@@ -8671,5 +8695,45 @@ mod tests {
             validate_custom_property_registration(&r_err6),
             Err(CustomPropertyValidationError::InvalidInitialValue)
         );
+    }
+
+    #[test]
+    fn test_property_parsing_improvements_t1068() {
+        // 1. Verify standard absolute & relative length units
+        for unit in &[
+            "ex", "ch", "lh", "rlh", "cap", "ic", "vmin", "vmax", "vi", "vb", "q",
+        ] {
+            assert!(is_length_token(&format!("2.5{}", unit)));
+            assert!(is_length_token(&format!("-1{}", unit)));
+        }
+
+        // 2. Verify modern functional color notations
+        for col_fn in &[
+            "hwb",
+            "lab",
+            "lch",
+            "oklab",
+            "oklch",
+            "color",
+            "light-dark",
+            "device-cmyk",
+        ] {
+            assert!(is_color_token(&format!("{}(foo)", col_fn)));
+        }
+
+        // 3. Verify modern functional image/gradient notations
+        for img_fn in &["image", "image-set", "cross-fade", "element", "paint"] {
+            assert!(is_image_token(&format!("{}(foo)", img_fn)));
+        }
+
+        // 4. Verify custom-ident exclusions (default, starting with double-hyphen)
+        assert!(!is_custom_ident_token("--foo"));
+        assert!(!is_custom_ident_token("default"));
+        assert!(is_custom_ident_token("my-valid-ident"));
+
+        // 5. Verify single hyphen rejection in is_valid_css_identifier
+        assert!(!is_valid_css_identifier("-"));
+        assert!(is_valid_css_identifier("a-"));
+        assert!(is_valid_css_identifier("-a"));
     }
 }
