@@ -107,6 +107,8 @@ pub enum DisplayMode {
     Browser,
     WindowControlsOverlay,
     PictureInPicture,
+    Tabbed,
+    Borderless,
 }
 
 /// Represents the overflow behavior of the output device in the block axis.
@@ -198,6 +200,9 @@ thread_local! {
     static COLOR_GAMUT: Cell<ColorGamut> = const { Cell::new(ColorGamut::Srgb) };
     static DEVICE_WIDTH: Cell<f32> = const { Cell::new(1920.0) };
     static DEVICE_HEIGHT: Cell<f32> = const { Cell::new(1080.0) };
+    static DISPLAY_MODE: Cell<DisplayMode> = const { Cell::new(DisplayMode::Browser) };
+    static OVERFLOW_BLOCK: Cell<OverflowBlock> = const { Cell::new(OverflowBlock::Scroll) };
+    static OVERFLOW_INLINE: Cell<OverflowInline> = const { Cell::new(OverflowInline::Scroll) };
 }
 
 /// Sets the device pixel ratio (DPR) for the current thread (default 1.0).
@@ -480,22 +485,34 @@ pub fn color_gamut() -> ColorGamut {
     COLOR_GAMUT.with(|c| c.get())
 }
 
+/// Sets the display mode of the application.
+pub fn set_display_mode(val: DisplayMode) {
+    DISPLAY_MODE.with(|c| c.set(val));
+}
+
 /// Gets the display mode of the application.
-/// TODO(spec): true environment querying is not yet wired.
 pub fn display_mode() -> DisplayMode {
-    DisplayMode::Browser
+    DISPLAY_MODE.with(|c| c.get())
+}
+
+/// Sets the overflow behavior of the output device in the block axis.
+pub fn set_overflow_block(val: OverflowBlock) {
+    OVERFLOW_BLOCK.with(|c| c.set(val));
 }
 
 /// Gets the overflow behavior of the output device in the block axis.
-/// TODO(spec): true environment querying is not yet wired.
 pub fn overflow_block() -> OverflowBlock {
-    OverflowBlock::Scroll
+    OVERFLOW_BLOCK.with(|c| c.get())
+}
+
+/// Sets the overflow behavior of the output device in the inline axis.
+pub fn set_overflow_inline(val: OverflowInline) {
+    OVERFLOW_INLINE.with(|c| c.set(val));
 }
 
 /// Gets the overflow behavior of the output device in the inline axis.
-/// TODO(spec): true environment querying is not yet wired.
 pub fn overflow_inline() -> OverflowInline {
-    OverflowInline::Scroll
+    OVERFLOW_INLINE.with(|c| c.get())
 }
 
 /// Serializes component values back to a CSS string.
@@ -1374,6 +1391,8 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
                 (DisplayMode::Browser, "browser") => return true,
                 (DisplayMode::WindowControlsOverlay, "window-controls-overlay") => return true,
                 (DisplayMode::PictureInPicture, "picture-in-picture") => return true,
+                (DisplayMode::Tabbed, "tabbed") => return true,
+                (DisplayMode::Borderless, "borderless") => return true,
                 _ => return false,
             }
         }
@@ -1412,9 +1431,9 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         if let CssToken::Ident(val) = &tokens[2] {
             let val_lower = val.to_ascii_lowercase();
             let current = dynamic_range();
-            match (current, val_lower.as_str()) {
-                (DynamicRange::Standard, "standard") => return true,
-                (DynamicRange::High, "high") => return true,
+            match val_lower.as_str() {
+                "standard" => return true,
+                "high" => return matches!(current, DynamicRange::High),
                 _ => return false,
             }
         }
@@ -1425,9 +1444,9 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         if let CssToken::Ident(val) = &tokens[2] {
             let val_lower = val.to_ascii_lowercase();
             let current = video_dynamic_range();
-            match (current, val_lower.as_str()) {
-                (DynamicRange::Standard, "standard") => return true,
-                (DynamicRange::High, "high") => return true,
+            match val_lower.as_str() {
+                "standard" => return true,
+                "high" => return matches!(current, DynamicRange::High),
                 _ => return false,
             }
         }
@@ -1492,10 +1511,10 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         if let CssToken::Ident(val) = &tokens[2] {
             let val_lower = val.to_ascii_lowercase();
             let current = video_color_gamut();
-            match (current, val_lower.as_str()) {
-                (ColorGamut::Srgb, "srgb") => return true,
-                (ColorGamut::P3, "p3") => return true,
-                (ColorGamut::Rec2020, "rec2020") => return true,
+            match val_lower.as_str() {
+                "srgb" => return true,
+                "p3" => return matches!(current, ColorGamut::P3 | ColorGamut::Rec2020),
+                "rec2020" => return matches!(current, ColorGamut::Rec2020),
                 _ => return false,
             }
         }
@@ -2865,9 +2884,9 @@ mod tests {
         assert!(!media_matches("(dynamic-range: high)", 1000.0));
         assert!(media_matches("(dynamic-range)", 1000.0));
 
-        // Configure: High
+        // Configure: High (also matches standard)
         set_dynamic_range(DynamicRange::High);
-        assert!(!media_matches("(dynamic-range: standard)", 1000.0));
+        assert!(media_matches("(dynamic-range: standard)", 1000.0));
         assert!(media_matches("(dynamic-range: high)", 1000.0));
 
         // Reset to standard
@@ -2878,9 +2897,9 @@ mod tests {
         assert!(!media_matches("(video-dynamic-range: high)", 1000.0));
         assert!(media_matches("(video-dynamic-range)", 1000.0));
 
-        // Configure: High
+        // Configure: High (also matches standard)
         set_video_dynamic_range(DynamicRange::High);
-        assert!(!media_matches("(video-dynamic-range: standard)", 1000.0));
+        assert!(media_matches("(video-dynamic-range: standard)", 1000.0));
         assert!(media_matches("(video-dynamic-range: high)", 1000.0));
 
         // Reset to standard
@@ -2964,10 +2983,10 @@ mod tests {
         assert!(!media_matches("(video-color-gamut: p3)", 1000.0));
         assert!(media_matches("(video-color-gamut)", 1000.0));
 
-        // Configure: P3
+        // Configure: P3 (also matches srgb)
         set_video_color_gamut(ColorGamut::P3);
         assert!(media_matches("(video-color-gamut: p3)", 1000.0));
-        assert!(!media_matches("(video-color-gamut: srgb)", 1000.0));
+        assert!(media_matches("(video-color-gamut: srgb)", 1000.0));
 
         // Reset
         set_video_color_gamut(ColorGamut::Srgb);
@@ -3257,5 +3276,69 @@ mod tests {
         assert!(media_matches("(color-gamut: srgb)", 1000.0));
         assert!(!media_matches("(color-gamut: p3)", 1000.0));
         assert!(!media_matches("(color-gamut: rec2020)", 1000.0));
+    }
+
+    #[test]
+    fn test_new_standard_media_features() {
+        // 1. video-color-gamut subsetting rules
+        set_video_color_gamut(ColorGamut::Rec2020);
+        assert!(media_matches("(video-color-gamut: srgb)", 1000.0));
+        assert!(media_matches("(video-color-gamut: p3)", 1000.0));
+        assert!(media_matches("(video-color-gamut: rec2020)", 1000.0));
+
+        set_video_color_gamut(ColorGamut::P3);
+        assert!(media_matches("(video-color-gamut: srgb)", 1000.0));
+        assert!(media_matches("(video-color-gamut: p3)", 1000.0));
+        assert!(!media_matches("(video-color-gamut: rec2020)", 1000.0));
+
+        set_video_color_gamut(ColorGamut::Srgb);
+        assert!(media_matches("(video-color-gamut: srgb)", 1000.0));
+        assert!(!media_matches("(video-color-gamut: p3)", 1000.0));
+        assert!(!media_matches("(video-color-gamut: rec2020)", 1000.0));
+
+        // 2. dynamic-range and video-dynamic-range subsetting rules
+        set_dynamic_range(DynamicRange::High);
+        assert!(media_matches("(dynamic-range: standard)", 1000.0));
+        assert!(media_matches("(dynamic-range: high)", 1000.0));
+
+        set_dynamic_range(DynamicRange::Standard);
+        assert!(media_matches("(dynamic-range: standard)", 1000.0));
+        assert!(!media_matches("(dynamic-range: high)", 1000.0));
+
+        set_video_dynamic_range(DynamicRange::High);
+        assert!(media_matches("(video-dynamic-range: standard)", 1000.0));
+        assert!(media_matches("(video-dynamic-range: high)", 1000.0));
+
+        set_video_dynamic_range(DynamicRange::Standard);
+        assert!(media_matches("(video-dynamic-range: standard)", 1000.0));
+        assert!(!media_matches("(video-dynamic-range: high)", 1000.0));
+
+        // 3. display-mode with new Tabbed and Borderless values and thread-local configuration
+        set_display_mode(DisplayMode::Tabbed);
+        assert!(media_matches("(display-mode: tabbed)", 1000.0));
+        assert!(!media_matches("(display-mode: borderless)", 1000.0));
+        assert!(!media_matches("(display-mode: browser)", 1000.0));
+
+        set_display_mode(DisplayMode::Borderless);
+        assert!(!media_matches("(display-mode: tabbed)", 1000.0));
+        assert!(media_matches("(display-mode: borderless)", 1000.0));
+
+        set_display_mode(DisplayMode::Browser);
+        assert!(media_matches("(display-mode: browser)", 1000.0));
+
+        // 4. overflow-block and overflow-inline configurations
+        set_overflow_block(OverflowBlock::None);
+        assert!(media_matches("(overflow-block: none)", 1000.0));
+        assert!(!media_matches("(overflow-block: scroll)", 1000.0));
+
+        set_overflow_block(OverflowBlock::Scroll);
+        assert!(media_matches("(overflow-block: scroll)", 1000.0));
+
+        set_overflow_inline(OverflowInline::None);
+        assert!(media_matches("(overflow-inline: none)", 1000.0));
+        assert!(!media_matches("(overflow-inline: scroll)", 1000.0));
+
+        set_overflow_inline(OverflowInline::Scroll);
+        assert!(media_matches("(overflow-inline: scroll)", 1000.0));
     }
 }
