@@ -238,6 +238,36 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "alternate",
     },
+    PropertyMetadata {
+        name: "line-break",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "white-space-collapse",
+        inherited: true,
+        initial: "collapse",
+    },
+    PropertyMetadata {
+        name: "text-wrap-style",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "text-wrap-mode",
+        inherited: true,
+        initial: "wrap",
+    },
+    PropertyMetadata {
+        name: "text-underline-position",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "text-emphasis-color",
+        inherited: true,
+        initial: "currentcolor",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1321,6 +1351,51 @@ mod tests {
         assert_eq!(ruby_position.name, "ruby-position");
         assert!(ruby_position.inherited);
         assert_eq!(ruby_position.initial, "alternate");
+    }
+
+    #[test]
+    fn test_additive_properties_t0717() {
+        let line_break = lookup("line-break");
+        assert!(line_break.is_some());
+        let line_break = line_break.unwrap();
+        assert_eq!(line_break.name, "line-break");
+        assert!(line_break.inherited);
+        assert_eq!(line_break.initial, "auto");
+
+        let white_space_collapse = lookup("white-space-collapse");
+        assert!(white_space_collapse.is_some());
+        let white_space_collapse = white_space_collapse.unwrap();
+        assert_eq!(white_space_collapse.name, "white-space-collapse");
+        assert!(white_space_collapse.inherited);
+        assert_eq!(white_space_collapse.initial, "collapse");
+
+        let text_wrap_style = lookup("text-wrap-style");
+        assert!(text_wrap_style.is_some());
+        let text_wrap_style = text_wrap_style.unwrap();
+        assert_eq!(text_wrap_style.name, "text-wrap-style");
+        assert!(text_wrap_style.inherited);
+        assert_eq!(text_wrap_style.initial, "auto");
+
+        let text_wrap_mode = lookup("text-wrap-mode");
+        assert!(text_wrap_mode.is_some());
+        let text_wrap_mode = text_wrap_mode.unwrap();
+        assert_eq!(text_wrap_mode.name, "text-wrap-mode");
+        assert!(text_wrap_mode.inherited);
+        assert_eq!(text_wrap_mode.initial, "wrap");
+
+        let text_underline_position = lookup("text-underline-position");
+        assert!(text_underline_position.is_some());
+        let text_underline_position = text_underline_position.unwrap();
+        assert_eq!(text_underline_position.name, "text-underline-position");
+        assert!(text_underline_position.inherited);
+        assert_eq!(text_underline_position.initial, "auto");
+
+        let text_emphasis_color = lookup("text-emphasis-color");
+        assert!(text_emphasis_color.is_some());
+        let text_emphasis_color = text_emphasis_color.unwrap();
+        assert_eq!(text_emphasis_color.name, "text-emphasis-color");
+        assert!(text_emphasis_color.inherited);
+        assert_eq!(text_emphasis_color.initial, "currentcolor");
     }
 
     #[test]
