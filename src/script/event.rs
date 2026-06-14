@@ -930,7 +930,7 @@ fn invoke_listeners_on(
     }
 
     for listener in listeners_to_call {
-        if *event.propagation_stopped.borrow() || *event.immediate_propagation_stopped.borrow() {
+        if *event.immediate_propagation_stopped.borrow() {
             break;
         }
 
@@ -1025,8 +1025,9 @@ fn invoke_listeners_on_plain(
     }
 
     for listener in listeners_to_call {
-        let stopped_val = event_obj.get(JsString::from("propagationStopped"), context)?;
-        if stopped_val.as_boolean().unwrap_or(false) {
+        let immediate_stopped_val =
+            event_obj.get(JsString::from("immediatePropagationStopped"), context)?;
+        if immediate_stopped_val.as_boolean().unwrap_or(false) {
             break;
         }
 
@@ -1227,7 +1228,11 @@ pub fn dispatch_event(
                 for curr_node in path_list.iter().skip(1).rev() {
                     let stopped_val =
                         event_obj.get(JsString::from("propagationStopped"), context)?;
-                    if stopped_val.as_boolean().unwrap_or(false) {
+                    let imm_stopped_val =
+                        event_obj.get(JsString::from("immediatePropagationStopped"), context)?;
+                    if stopped_val.as_boolean().unwrap_or(false)
+                        || imm_stopped_val.as_boolean().unwrap_or(false)
+                    {
                         break;
                     }
                     event_obj.set(event_phase_prop.clone(), JsValue::from(1), false, context)?; // CAPTURING_PHASE
@@ -1250,7 +1255,11 @@ pub fn dispatch_event(
             // Phase 2: At Target Phase
             if !path_list.is_empty() {
                 let stopped_val = event_obj.get(JsString::from("propagationStopped"), context)?;
-                if !stopped_val.as_boolean().unwrap_or(false) {
+                let imm_stopped_val =
+                    event_obj.get(JsString::from("immediatePropagationStopped"), context)?;
+                if !stopped_val.as_boolean().unwrap_or(false)
+                    && !imm_stopped_val.as_boolean().unwrap_or(false)
+                {
                     let curr_node = &path_list[0];
                     event_obj.set(event_phase_prop.clone(), JsValue::from(2), false, context)?; // AT_TARGET
                     event_obj.set(
@@ -1274,7 +1283,11 @@ pub fn dispatch_event(
                 for curr_node in path_list.iter().skip(1) {
                     let stopped_val =
                         event_obj.get(JsString::from("propagationStopped"), context)?;
-                    if stopped_val.as_boolean().unwrap_or(false) {
+                    let imm_stopped_val =
+                        event_obj.get(JsString::from("immediatePropagationStopped"), context)?;
+                    if stopped_val.as_boolean().unwrap_or(false)
+                        || imm_stopped_val.as_boolean().unwrap_or(false)
+                    {
                         break;
                     }
                     event_obj.set(event_phase_prop.clone(), JsValue::from(3), false, context)?; // BUBBLING_PHASE
@@ -2039,5 +2052,148 @@ mod tests {
         assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true)); // called_normal
         assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true)); // ev.defaultPrevented (now true)
         assert_eq!(arr.get(3, &mut context).unwrap().as_boolean(), Some(false)); // dispatch_result (false means prevented)
+    }
+
+    #[test]
+    fn test_t1007_stop_propagation_correctness() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        // 1. stopPropagation on native Event
+        let script = "{
+            const parent = new EventTarget();
+            const child = new EventTarget();
+            child.parentNode = parent;
+
+            let child_l1_called = false;
+            let child_l2_called = false;
+            let parent_l1_called = false;
+
+            child.addEventListener('click', (e) => {
+                child_l1_called = true;
+                e.stopPropagation();
+            });
+
+            child.addEventListener('click', (e) => {
+                child_l2_called = true; // should still run because stopPropagation does not stop immediate propagation
+            });
+
+            parent.addEventListener('click', (e) => {
+                parent_l1_called = true; // should NOT run because stopPropagation stops parent propagation
+            });
+
+            child.dispatchEvent(new Event('click', { bubbles: true }));
+            [child_l1_called, child_l2_called, parent_l1_called];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(false));
+    }
+
+    #[test]
+    fn test_t1007_target_phase_both_listeners() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        let script = "{
+            const target = new EventTarget();
+            const order = [];
+
+            // Add non-capture then capture listener
+            target.addEventListener('click', () => {
+                order.push('bubble');
+            }, { capture: false });
+
+            target.addEventListener('click', () => {
+                order.push('capture');
+            }, { capture: true });
+
+            target.dispatchEvent(new Event('click'));
+            order;
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        let length = arr
+            .get(JsString::from("length"), &mut context)
+            .unwrap()
+            .as_number()
+            .unwrap() as usize;
+        let mut items = Vec::new();
+        for i in 0..length {
+            let item = arr
+                .get(i, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap();
+            items.push(item);
+        }
+        // At target, they run in registration order regardless of capture flag!
+        assert_eq!(items, vec!["bubble", "capture"]);
+    }
+
+    #[test]
+    fn test_t1007_custom_event_detail_and_propagation() {
+        use crate::script::BoaHost;
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        let script = r#"{
+            if (typeof CustomEvent === "undefined") throw new Error("CustomEvent undefined");
+
+            const parent = new EventTarget();
+            const child = new EventTarget();
+            child.parentNode = parent;
+
+            let child_called = false;
+            let parent_called = false;
+            let observed_detail = null;
+
+            parent.addEventListener("custom", (e) => {
+                parent_called = true;
+                observed_detail = e.detail;
+            });
+
+            child.addEventListener("custom", (e) => {
+                child_called = true;
+                e.stopPropagation(); // Stop propagating to parent
+            });
+
+            const ev = new CustomEvent("custom", {
+                detail: { payload: "t1007-data" },
+                bubbles: true
+            });
+
+            child.dispatchEvent(ev);
+            
+            // Wait, we also want to verify e.detail can be read on parent if we didn't stop propagation!
+            const ev2 = new CustomEvent("custom2", {
+                detail: { payload: "t1007-data2" },
+                bubbles: true
+            });
+            let parent_called_2 = false;
+            let observed_detail_2 = null;
+            parent.addEventListener("custom2", (e) => {
+                parent_called_2 = true;
+                observed_detail_2 = e.detail;
+            });
+            child.dispatchEvent(ev2);
+
+            if (child_called !== true) throw new Error("child_called must be true");
+            if (parent_called !== false) throw new Error("parent_called must be false because propagation was stopped");
+            if (parent_called_2 !== true) throw new Error("parent_called_2 must be true because propagation was not stopped");
+            if (observed_detail_2 === null || observed_detail_2.payload !== "t1007-data2") {
+                throw new Error("observed_detail_2 incorrect");
+            }
+            "OK";
+        }"#;
+
+        let res = host.eval_with_dom(script, &mut dom).unwrap();
+        assert_eq!(res, "OK");
     }
 }
