@@ -3106,7 +3106,8 @@ pub fn expand_shorthand_values(
         | "border-inline-color"
         | "border-inline-style"
         | "border-inline-width"
-        | "text-spacing" => {
+        | "text-spacing"
+        | "overflow" => {
             let longhands =
                 shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
             if values.len() > 2 {
@@ -3450,6 +3451,273 @@ pub fn expand_shorthand_values(
                 },
             ])
         }
+        "flex-flow" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 2 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut direction = None;
+            let mut wrap = None;
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if matches!(
+                    lower.as_str(),
+                    "row" | "row-reverse" | "column" | "column-reverse"
+                ) {
+                    if direction.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    direction = Some(val.to_string());
+                } else if matches!(lower.as_str(), "nowrap" | "wrap" | "wrap-reverse") {
+                    if wrap.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    wrap = Some(val.to_string());
+                } else {
+                    return Err(ShorthandError::InvalidValue);
+                }
+            }
+            let dir = direction.unwrap_or_else(|| "row".to_string());
+            let wrp = wrap.unwrap_or_else(|| "nowrap".to_string());
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: dir,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: wrp,
+                },
+            ])
+        }
+        "flex" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            if values.len() == 1 && values[0].trim().eq_ignore_ascii_case("none") {
+                return Ok(vec![
+                    ExpandedProperty {
+                        name: "flex-grow",
+                        value: "0".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "flex-shrink",
+                        value: "0".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "flex-basis",
+                        value: "auto".to_string(),
+                    },
+                ]);
+            }
+
+            let mut grow = None;
+            let mut shrink = None;
+            let mut basis = None;
+
+            if values.len() == 1 {
+                let val = values[0];
+                let lower = val.trim().to_ascii_lowercase();
+                if lower.parse::<f64>().is_ok() {
+                    grow = Some(val.to_string());
+                    shrink = Some("1".to_string());
+                    basis = Some("0%".to_string());
+                } else {
+                    grow = Some("1".to_string());
+                    shrink = Some("1".to_string());
+                    basis = Some(val.to_string());
+                }
+            } else if values.len() == 2 {
+                let val0 = values[0];
+                let val1 = values[1];
+                let lower1 = val1.trim().to_ascii_lowercase();
+                if lower1.parse::<f64>().is_ok() {
+                    grow = Some(val0.to_string());
+                    shrink = Some(val1.to_string());
+                    basis = Some("0%".to_string());
+                } else {
+                    grow = Some(val0.to_string());
+                    shrink = Some("1".to_string());
+                    basis = Some(val1.to_string());
+                }
+            } else if values.len() == 3 {
+                grow = Some(values[0].to_string());
+                shrink = Some(values[1].to_string());
+                basis = Some(values[2].to_string());
+            }
+
+            let g = grow.ok_or(ShorthandError::InvalidValue)?;
+            let s = shrink.ok_or(ShorthandError::InvalidValue)?;
+            let b = basis.ok_or(ShorthandError::InvalidValue)?;
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: g,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: s,
+                },
+                ExpandedProperty {
+                    name: longhands[2],
+                    value: b,
+                },
+            ])
+        }
+        "grid-column" | "grid-row" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            let slash_idx = values.iter().position(|&v| v == "/");
+            let (start_vals, end_vals) = match slash_idx {
+                Some(idx) => (&values[..idx], Some(&values[idx + 1..])),
+                None => (values, None),
+            };
+
+            if start_vals.len() != 1 {
+                return Err(ShorthandError::InvalidValue);
+            }
+            if end_vals.is_some_and(|ev| ev.len() != 1) {
+                return Err(ShorthandError::InvalidValue);
+            }
+
+            let start_val = start_vals[0].to_string();
+            let end_val = match end_vals {
+                Some(ev) => ev[0].to_string(),
+                None => "auto".to_string(),
+            };
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: start_val,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: end_val,
+                },
+            ])
+        }
+        "list-style" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+
+            let mut list_type = None;
+            let mut position = None;
+            let mut image = None;
+
+            if values.len() == 1 && values[0].trim().eq_ignore_ascii_case("none") {
+                list_type = Some("none".to_string());
+                image = Some("none".to_string());
+            } else {
+                for &val in values {
+                    let lower = val.trim().to_ascii_lowercase();
+                    if matches!(lower.as_str(), "inside" | "outside") {
+                        if position.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        position = Some(val.to_string());
+                    } else if lower.starts_with("url(")
+                        || lower.starts_with("image(")
+                        || lower.starts_with("linear-gradient(")
+                    {
+                        if image.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        image = Some(val.to_string());
+                    } else {
+                        if list_type.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        list_type = Some(val.to_string());
+                    }
+                }
+            }
+
+            let t = list_type.unwrap_or_else(|| "disc".to_string());
+            let p = position.unwrap_or_else(|| "outside".to_string());
+            let img = image.unwrap_or_else(|| "none".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: t,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: p,
+                },
+                ExpandedProperty {
+                    name: longhands[2],
+                    value: img,
+                },
+            ])
+        }
+        "transition" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 4 {
+                return Err(ShorthandError::TooManyValues);
+            }
+
+            let mut property = None;
+            let mut duration = None;
+            let mut timing_fn = None;
+            let mut delay = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_time_value(&lower) {
+                    if duration.is_none() {
+                        duration = Some(val.to_string());
+                    } else if delay.is_none() {
+                        delay = Some(val.to_string());
+                    } else {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                } else if is_timing_function_value(&lower) {
+                    if timing_fn.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    timing_fn = Some(val.to_string());
+                } else {
+                    if property.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    property = Some(val.to_string());
+                }
+            }
+
+            let prop = property.unwrap_or_else(|| "all".to_string());
+            let dur = duration.unwrap_or_else(|| "0s".to_string());
+            let tf = timing_fn.unwrap_or_else(|| "ease".to_string());
+            let dl = delay.unwrap_or_else(|| "0s".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: prop,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: dur,
+                },
+                ExpandedProperty {
+                    name: longhands[2],
+                    value: tf,
+                },
+                ExpandedProperty {
+                    name: longhands[3],
+                    value: dl,
+                },
+            ])
+        }
         _ => Err(ShorthandError::InvalidShorthand),
     }
 }
@@ -3518,6 +3786,35 @@ fn expand_radius_1_to_4(values: &[&str]) -> [String; 4] {
             (*values[3]).to_string(),
         ],
     }
+}
+
+fn is_time_value(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    for unit in &["ms", "s"] {
+        if lower.ends_with(unit) {
+            let num_part = &lower[..lower.len() - unit.len()];
+            if num_part.parse::<f64>().is_ok() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_timing_function_value(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "linear"
+            | "ease"
+            | "ease-in"
+            | "ease-out"
+            | "ease-in-out"
+            | "step-start"
+            | "step-end"
+    ) || lower.starts_with("cubic-bezier(")
+        || lower.starts_with("steps(")
+        || lower.starts_with("linear(")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
