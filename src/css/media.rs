@@ -344,6 +344,171 @@ pub fn media_matches(query: &str, viewport_w: f32) -> bool {
     false
 }
 
+/// Helper to filter out top-level whitespace from a list of component values.
+fn clean_values(values: &[ComponentValue]) -> Vec<&ComponentValue> {
+    values
+        .iter()
+        .filter(|v| !matches!(v, ComponentValue::Token(CssToken::Whitespace)))
+        .collect()
+}
+
+/// Helper to check if a component value is a case-insensitive identifier matching `keyword`.
+fn is_keyword(cv: &ComponentValue, keyword: &str) -> bool {
+    if let ComponentValue::Token(t) = cv {
+        is_ident(t, keyword)
+    } else {
+        false
+    }
+}
+
+/// Splits a slice of component values on a top-level keyword (like "and" or "or").
+fn split_by_keyword<'a>(
+    values: &[&'a ComponentValue],
+    keyword: &str,
+) -> Vec<Vec<&'a ComponentValue>> {
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+    for &cv in values {
+        if is_keyword(cv, keyword) {
+            parts.push(std::mem::take(&mut current));
+        } else {
+            current.push(cv);
+        }
+    }
+    parts.push(current);
+    parts
+}
+
+/// Evaluates a CSS `@supports` condition (represented as a slice of `ComponentValue` pointers).
+fn evaluate_supports_condition(values: &[&ComponentValue]) -> bool {
+    if values.is_empty() {
+        return false;
+    }
+
+    // 1. Check for 'and' and 'or' combinators at this level
+    let mut has_and = false;
+    let mut has_or = false;
+    for &cv in values {
+        if is_keyword(cv, "and") {
+            has_and = true;
+        }
+        if is_keyword(cv, "or") {
+            has_or = true;
+        }
+    }
+
+    if has_and && has_or {
+        // Mixing 'and' and 'or' without parentheses is invalid
+        return false;
+    }
+
+    if has_and {
+        let parts = split_by_keyword(values, "and");
+        for part in &parts {
+            if part.is_empty() {
+                return false;
+            }
+        }
+        return parts.iter().all(|part| evaluate_supports_condition(part));
+    }
+
+    if has_or {
+        let parts = split_by_keyword(values, "or");
+        for part in &parts {
+            if part.is_empty() {
+                return false;
+            }
+        }
+        return parts.iter().any(|part| evaluate_supports_condition(part));
+    }
+
+    // 2. Check for negation
+    if is_keyword(values[0], "not") {
+        if values.len() < 2 {
+            return false;
+        }
+        // Negate the evaluation of the rest of the condition
+        return !evaluate_supports_condition(&values[1..]);
+    }
+
+    // 3. Single `<supports-in-parens>` operand
+    if values.len() == 1 {
+        if let ComponentValue::SimpleBlock {
+            associated: '(',
+            value: inner_values,
+        } = values[0]
+        {
+            // Find the first top-level colon inside this parenthesis block.
+            if let Some(colon_idx) = inner_values
+                .iter()
+                .position(|cv| matches!(cv, ComponentValue::Token(CssToken::Colon)))
+            {
+                // Before colon: property name (must be exactly one Ident, ignoring Whitespace)
+                let before_colon = &inner_values[..colon_idx];
+                let name_tokens: Vec<&ComponentValue> = before_colon
+                    .iter()
+                    .filter(|cv| !matches!(cv, ComponentValue::Token(CssToken::Whitespace)))
+                    .collect();
+
+                if name_tokens.len() == 1
+                    && let ComponentValue::Token(CssToken::Ident(prop_name)) = name_tokens[0]
+                {
+                    let name = prop_name.trim();
+                    if name.is_empty() {
+                        return false;
+                    }
+                    let is_recognized = crate::css::property::lookup(name).is_some()
+                        || crate::css::property::shorthand_longhands(name).is_some();
+                    if !is_recognized {
+                        return false;
+                    }
+
+                    // After colon: value (keep inner whitespace, trim leading/trailing whitespace)
+                    let after_colon = &inner_values[colon_idx + 1..];
+                    let mut start = 0;
+                    while start < after_colon.len()
+                        && matches!(
+                            after_colon[start],
+                            ComponentValue::Token(CssToken::Whitespace)
+                        )
+                    {
+                        start += 1;
+                    }
+                    let mut end = after_colon.len();
+                    while end > start
+                        && matches!(
+                            after_colon[end - 1],
+                            ComponentValue::Token(CssToken::Whitespace)
+                        )
+                    {
+                        end -= 1;
+                    }
+
+                    let val_components: Vec<ComponentValue> = after_colon[start..end].to_vec();
+                    return crate::css::values::parse_property_value(name, &val_components)
+                        .is_some();
+                }
+            }
+
+            // Otherwise, it must be a nested `<supports-condition>`
+            let cleaned_inner = clean_values(inner_values);
+            return evaluate_supports_condition(&cleaned_inner);
+        } else {
+            // TODO(spec): selector(...) / font-tech(...) / font-format(...) / other general-enclosed
+            return false;
+        }
+    }
+
+    false
+}
+
+/// Evaluates a supports condition string.
+pub fn supports_condition_matches(condition: &str) -> bool {
+    let components = crate::css::parser::parse_component_values(condition);
+    let cleaned = clean_values(&components);
+    evaluate_supports_condition(&cleaned)
+}
+
 /// Hostile stylesheets can nest @media rules arbitrarily deep.
 /// To prevent resource exhaustion and stack overflow, we restrict depth.
 const MAX_MEDIA_NEST_DEPTH: usize = 32;
@@ -400,6 +565,28 @@ pub fn extract_matched_rules(stylesheet: &Stylesheet, viewport_w: f32) -> Vec<Qu
                     if next_depth > MAX_MEDIA_NEST_DEPTH {
                         eprintln!(
                             "css: @media nesting exceeded {MAX_MEDIA_NEST_DEPTH}, skipping deeper rules"
+                        );
+                        continue;
+                    }
+
+                    let inner_css = serialize_component_values(block);
+                    let inner_stylesheet = crate::css::parser::parse_stylesheet(&inner_css);
+                    stack.push(Frame {
+                        rules: RulesSource::Owned(inner_stylesheet.rules),
+                        index: 0,
+                        depth: next_depth,
+                    });
+                }
+            }
+            Rule::At(at_rule) if at_rule.name == "supports" => {
+                let cleaned_prelude = clean_values(&at_rule.prelude);
+                if evaluate_supports_condition(&cleaned_prelude)
+                    && let Some(block) = &at_rule.block
+                {
+                    let next_depth = frame.depth + 1;
+                    if next_depth > MAX_MEDIA_NEST_DEPTH {
+                        eprintln!(
+                            "css: @supports nesting exceeded {MAX_MEDIA_NEST_DEPTH}, skipping deeper rules"
                         );
                         continue;
                     }
@@ -629,5 +816,93 @@ mod tests {
         assert!(!media_matches("(PREFERS-COLOR-SCHEME: LiGhT)", 1000.0));
         // Reset to default
         set_preferred_color_scheme(ColorScheme::Light);
+    }
+
+    #[test]
+    fn test_supports_condition_matches_basic() {
+        // Supported basic feature
+        assert!(supports_condition_matches("(color: red)"));
+        assert!(supports_condition_matches("(display: block)"));
+
+        // Unsupported basic feature (unknown property name)
+        assert!(!supports_condition_matches("(totally-not-a-prop: 5px)"));
+
+        // Negated unsupported feature -> true
+        assert!(supports_condition_matches("not (totally-not-a-prop: 5px)"));
+
+        // Negated supported feature -> false
+        assert!(!supports_condition_matches("not (color: red)"));
+
+        // Conjunction (and):
+        // true and true -> true
+        assert!(supports_condition_matches(
+            "(color: red) and (display: block)"
+        ));
+        // true and false -> false
+        assert!(!supports_condition_matches(
+            "(color: red) and (totally-not-a-prop: 5px)"
+        ));
+        // false and false -> false
+        assert!(!supports_condition_matches(
+            "(totally-not-a-prop: 5px) and (totally-not-another-prop: 10px)"
+        ));
+
+        // Disjunction (or):
+        // true or false -> true
+        assert!(supports_condition_matches(
+            "(color: red) or (totally-not-a-prop: 5px)"
+        ));
+        // false or false -> false
+        assert!(!supports_condition_matches(
+            "(totally-not-a-prop: 5px) or (totally-not-another-prop: 10px)"
+        ));
+
+        // Nesting and complex combinations:
+        assert!(supports_condition_matches(
+            "((color: red) and (display: block))"
+        ));
+        assert!(supports_condition_matches(
+            "not ((color: red) and (totally-not-a-prop: 5px))"
+        ));
+    }
+
+    #[test]
+    fn test_extract_matched_rules_supports() {
+        // 1. @supports (color: red) { div { color: red; } } -> div rule is returned
+        let stylesheet1 =
+            crate::css::parser::parse_stylesheet("@supports (color: red) { div { color: red; } }");
+        let matched1 = extract_matched_rules(&stylesheet1, 1000.0);
+        assert_eq!(matched1.len(), 1);
+        assert_eq!(serialize_component_values(&matched1[0].prelude), "div ");
+
+        // 2. @supports (totally-not-a-prop: 5px) { div { color: red } } -> div rule is NOT returned
+        let stylesheet2 = crate::css::parser::parse_stylesheet(
+            "@supports (totally-not-a-prop: 5px) { div { color: red; } }",
+        );
+        let matched2 = extract_matched_rules(&stylesheet2, 1000.0);
+        assert!(matched2.is_empty());
+
+        // 3. @supports not (totally-not-a-prop: 5px) { div { color: red } } -> div rule IS returned
+        let stylesheet3 = crate::css::parser::parse_stylesheet(
+            "@supports not (totally-not-a-prop: 5px) { div { color: red; } }",
+        );
+        let matched3 = extract_matched_rules(&stylesheet3, 1000.0);
+        assert_eq!(matched3.len(), 1);
+        assert_eq!(serialize_component_values(&matched3[0].prelude), "div ");
+
+        // 4. Conjunction and disjunction nested rules
+        let stylesheet4 = crate::css::parser::parse_stylesheet(
+            "
+            @supports (color: red) and (totally-not-a-prop: 5px) {
+                span { color: green; }
+            }
+            @supports (color: red) or (totally-not-a-prop: 5px) {
+                p { color: blue; }
+            }
+            ",
+        );
+        let matched4 = extract_matched_rules(&stylesheet4, 1000.0);
+        assert_eq!(matched4.len(), 1);
+        assert_eq!(serialize_component_values(&matched4[0].prelude), "p ");
     }
 }
