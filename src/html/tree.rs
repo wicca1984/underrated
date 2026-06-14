@@ -451,7 +451,11 @@ impl TreeBuilder {
     fn handle_foreign_content(&mut self, token: Token) {
         match token {
             Token::Character(c) => {
-                self.insert_character(c);
+                if c == '\0' {
+                    self.insert_character('\u{FFFD}');
+                } else {
+                    self.insert_character(c);
+                }
             }
             Token::Comment(data) => {
                 self.insert_comment(data);
@@ -1026,7 +1030,11 @@ impl TreeBuilder {
     fn handle_text(&mut self, token: Token) {
         match token {
             Token::Character(c) => {
-                self.insert_character(c);
+                if c == '\0' {
+                    self.insert_character('\u{FFFD}');
+                } else {
+                    self.insert_character(c);
+                }
             }
             Token::Eof => {
                 // Parse error.
@@ -1046,9 +1054,12 @@ impl TreeBuilder {
     fn handle_in_body(&mut self, token: Token) {
         match token {
             Token::Character(c) => {
-                // TODO(spec): handle null character
-                self.reconstruct_active_formatting_elements();
-                self.insert_character(c);
+                if c == '\0' {
+                    // Parse error. Ignore the token.
+                } else {
+                    self.reconstruct_active_formatting_elements();
+                    self.insert_character(c);
+                }
             }
             Token::Comment(data) => {
                 self.insert_comment(data);
@@ -1111,6 +1122,38 @@ impl TreeBuilder {
                     if name == "pre" || name == "listing" {
                         self.ignore_next_lf = true;
                     }
+                }
+                "rb" | "rtc" => {
+                    if self.is_in_scope("ruby") {
+                        self.generate_implied_end_tags(None);
+                        while let Some(&top_id) = self.stack_of_open_elements.last() {
+                            if let Some(NodeData::Element { name: top_name, .. }) =
+                                self.dom.data(top_id)
+                                && top_name == "ruby"
+                            {
+                                break;
+                            }
+                            self.stack_of_open_elements.pop();
+                        }
+                    }
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
+                }
+                "rp" | "rt" => {
+                    if self.is_in_scope("ruby") {
+                        self.generate_implied_end_tags(Some("rtc"));
+                        while let Some(&top_id) = self.stack_of_open_elements.last() {
+                            if let Some(NodeData::Element { name: top_name, .. }) =
+                                self.dom.data(top_id)
+                                && (top_name == "ruby" || top_name == "rtc")
+                            {
+                                break;
+                            }
+                            self.stack_of_open_elements.pop();
+                        }
+                    }
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.stack_of_open_elements.push(node);
                 }
                 "li" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1336,6 +1379,66 @@ impl TreeBuilder {
                         self.stack_of_open_elements.push(node);
                     }
                     self.pop_until("p");
+                } else if name == "ruby" {
+                    if self.is_in_scope("ruby") {
+                        self.generate_implied_end_tags(None);
+                        if let Some(&top_id) = self.stack_of_open_elements.last()
+                            && let Some(NodeData::Element { name: top_name, .. }) =
+                                self.dom.data(top_id)
+                            && top_name != "ruby"
+                        {
+                            // Parse error.
+                        }
+                        self.pop_until("ruby");
+                    }
+                } else if matches!(name.as_str(), "rb" | "rtc") {
+                    if self.is_in_scope(&name) {
+                        self.generate_implied_end_tags(Some(&name));
+                        if let Some(&top_id) = self.stack_of_open_elements.last()
+                            && let Some(NodeData::Element { name: top_name, .. }) =
+                                self.dom.data(top_id)
+                            && top_name != &name
+                        {
+                            // Parse error.
+                        }
+                        self.pop_until(&name);
+                    }
+                } else if matches!(name.as_str(), "rt" | "rp") {
+                    if self.is_in_scope(&name) {
+                        while let Some(&top_id) = self.stack_of_open_elements.last() {
+                            if let Some(NodeData::Element { name: top_name, .. }) =
+                                self.dom.data(top_id)
+                            {
+                                if top_name == "rtc" || top_name == &name {
+                                    break;
+                                }
+                                if matches!(
+                                    top_name.as_str(),
+                                    "dd" | "dt"
+                                        | "li"
+                                        | "optgroup"
+                                        | "option"
+                                        | "p"
+                                        | "rb"
+                                        | "rp"
+                                        | "rt"
+                                        | "rtc"
+                                ) {
+                                    self.stack_of_open_elements.pop();
+                                    continue;
+                                }
+                            }
+                            break;
+                        }
+                        if let Some(&top_id) = self.stack_of_open_elements.last()
+                            && let Some(NodeData::Element { name: top_name, .. }) =
+                                self.dom.data(top_id)
+                            && top_name != &name
+                        {
+                            // Parse error.
+                        }
+                        self.pop_until(&name);
+                    }
                 } else if self.is_formatting_element(&name) {
                     self.run_adoption_agency_algorithm(&name);
                 } else if matches!(

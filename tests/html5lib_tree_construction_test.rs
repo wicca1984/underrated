@@ -48,7 +48,8 @@ fn parse_dat_file<P: AsRef<Path>>(path: P) -> Vec<TestCase> {
     for (line_idx, line) in lines.iter().enumerate() {
         let line_trimmed = line.trim_end_matches('\r');
         if line_trimmed == "#data" {
-            if let Some(case) = current_case.take() {
+            if let Some(mut case) = current_case.take() {
+                case.expected_document = case.expected_document.trim_end_matches('\n').to_string();
                 cases.push(case);
             }
             current_case = Some(TestCase {
@@ -100,7 +101,7 @@ fn parse_dat_file<P: AsRef<Path>>(path: P) -> Vec<TestCase> {
                             c.document_fragment = Some(line_trimmed.to_string());
                         }
                     }
-                    Some("document") if line_trimmed.starts_with('|') => {
+                    Some("document") => {
                         if !c.expected_document.is_empty() {
                             c.expected_document.push('\n');
                         }
@@ -111,7 +112,8 @@ fn parse_dat_file<P: AsRef<Path>>(path: P) -> Vec<TestCase> {
             }
         }
     }
-    if let Some(case) = current_case {
+    if let Some(mut case) = current_case {
+        case.expected_document = case.expected_document.trim_end_matches('\n').to_string();
         cases.push(case);
     }
     cases
@@ -358,7 +360,7 @@ fn test_html5lib_tree_construction_conformance() {
         }
     }
 
-    const BASELINE: usize = 1097;
+    const BASELINE: usize = 1157;
 
     eprintln!(
         "html5lib tree-construction: PASS={} FAIL={} SKIP={} (baseline >= {})",
