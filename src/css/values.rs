@@ -4814,6 +4814,12 @@ fn validate_math_expression(components: &[ComponentValue]) -> bool {
             }
             ComponentValue::Function { name, value } => {
                 let name_lower = name.to_ascii_lowercase();
+                if (name_lower == "var" && parse_var_function(value).is_none())
+                    || (name_lower == "env" && parse_env_function(value).is_none())
+                {
+                    return false;
+                }
+
                 if name_lower == "calc"
                     || name_lower == "min"
                     || name_lower == "max"
@@ -4961,6 +4967,15 @@ impl MathParser {
 fn parse_comma_separated_components(
     components: &[ComponentValue],
 ) -> Option<Vec<Vec<ComponentValue>>> {
+    // Reject trailing comma
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+    if let Some(ComponentValue::Token(CssToken::Comma)) = non_ws.last() {
+        return None;
+    }
+
     let mut args = Vec::new();
     let mut current = Vec::new();
     for comp in components {
@@ -5061,6 +5076,20 @@ fn parse_math_tokens(components: &[ComponentValue]) -> Option<Vec<MathToken>> {
                 CssToken::Comma => tokens.push(MathToken::Comma),
                 CssToken::LeftParen => tokens.push(MathToken::LeftParen),
                 CssToken::RightParen => tokens.push(MathToken::RightParen),
+                CssToken::Ident(s) => {
+                    let s_lower = s.to_ascii_lowercase();
+                    if s_lower == "pi" {
+                        tokens.push(MathToken::Expr(MathExpr::Number(std::f32::consts::PI)));
+                    } else if s_lower == "e" {
+                        tokens.push(MathToken::Expr(MathExpr::Number(std::f32::consts::E)));
+                    } else if s_lower == "infinity" {
+                        tokens.push(MathToken::Expr(MathExpr::Number(f32::INFINITY)));
+                    } else if s_lower == "nan" {
+                        tokens.push(MathToken::Expr(MathExpr::Number(f32::NAN)));
+                    } else {
+                        return None; // Parse error for unrecognized identifiers in calc!
+                    }
+                }
                 _ => {
                     tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
                         comp,
@@ -5085,17 +5114,13 @@ fn parse_math_tokens(components: &[ComponentValue]) -> Option<Vec<MathToken>> {
                     if let Some(inner) = parse_math_expr(value) {
                         tokens.push(MathToken::Expr(inner));
                     } else {
-                        tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
-                            comp,
-                        ))));
+                        return None;
                     }
                 } else if name_lower == "round" {
                     if let Some(inner) = parse_round_arguments(value) {
                         tokens.push(MathToken::Expr(inner));
                     } else {
-                        tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
-                            comp,
-                        ))));
+                        return None;
                     }
                 } else if let Some(func) = match name_lower.as_str() {
                     "min" => Some(MathFunc::Min),
@@ -5127,14 +5152,10 @@ fn parse_math_tokens(components: &[ComponentValue]) -> Option<Vec<MathToken>> {
                         if ok {
                             tokens.push(MathToken::Expr(MathExpr::Func(func, args)));
                         } else {
-                            tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
-                                comp,
-                            ))));
+                            return None;
                         }
                     } else {
-                        tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
-                            comp,
-                        ))));
+                        return None;
                     }
                 } else {
                     tokens.push(MathToken::Expr(MathExpr::Raw(serialize_component_value(
@@ -5401,76 +5422,151 @@ impl MathExpr {
                         }
                     }
                     MathFunc::Min => {
-                        if s_args.iter().all(|a| matches!(a, MathExpr::Number(_))) {
-                            let mut min_val = f32::INFINITY;
-                            for arg in &s_args {
-                                if let MathExpr::Number(v) = arg {
-                                    min_val = min_val.min(*v);
-                                }
-                            }
-                            MathExpr::Number(min_val)
-                        } else if s_args.is_empty() {
+                        if s_args.is_empty() {
                             MathExpr::Func(*func, s_args)
                         } else {
-                            let first_unit = match &s_args[0] {
-                                MathExpr::Length(_, u) => Some(u.clone()),
-                                _ => None,
-                            };
-                            if let Some(ref u) = first_unit {
-                                let all_same = s_args.iter().all(|a| match a {
-                                    MathExpr::Length(_, unit) => unit == u,
-                                    _ => false,
-                                });
-                                if all_same {
-                                    let mut min_val = f32::INFINITY;
-                                    for arg in &s_args {
-                                        if let MathExpr::Length(v, _) = arg {
-                                            min_val = min_val.min(*v);
-                                        }
+                            let mut numbers: Vec<f32> = Vec::new();
+                            let mut px_vals = Vec::new();
+                            let mut em_vals = Vec::new();
+                            let mut rem_vals = Vec::new();
+                            let mut pt_vals = Vec::new();
+                            let mut percent_vals = Vec::new();
+                            let mut vw_vals = Vec::new();
+                            let mut vh_vals = Vec::new();
+                            let mut others = Vec::new();
+
+                            for arg in &s_args {
+                                match arg {
+                                    MathExpr::Number(v) => numbers.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Px) => px_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Em) => em_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Rem) => rem_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Pt) => pt_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Percent) => {
+                                        percent_vals.push(*v)
                                     }
-                                    MathExpr::Length(min_val, u.clone())
-                                } else {
-                                    MathExpr::Func(*func, s_args)
+                                    MathExpr::Length(v, LengthUnit::Vw) => vw_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Vh) => vh_vals.push(*v),
+                                    _ => others.push(arg.clone()),
                                 }
+                            }
+
+                            let mut simplified_args = Vec::new();
+                            if !numbers.is_empty() {
+                                let min_val = numbers.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args.push(MathExpr::Number(min_val));
+                            }
+                            if !px_vals.is_empty() {
+                                let min_val = px_vals.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args.push(MathExpr::Length(min_val, LengthUnit::Px));
+                            }
+                            if !em_vals.is_empty() {
+                                let min_val = em_vals.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args.push(MathExpr::Length(min_val, LengthUnit::Em));
+                            }
+                            if !rem_vals.is_empty() {
+                                let min_val = rem_vals.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args.push(MathExpr::Length(min_val, LengthUnit::Rem));
+                            }
+                            if !pt_vals.is_empty() {
+                                let min_val = pt_vals.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args.push(MathExpr::Length(min_val, LengthUnit::Pt));
+                            }
+                            if !percent_vals.is_empty() {
+                                let min_val =
+                                    percent_vals.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args
+                                    .push(MathExpr::Length(min_val, LengthUnit::Percent));
+                            }
+                            if !vw_vals.is_empty() {
+                                let min_val = vw_vals.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args.push(MathExpr::Length(min_val, LengthUnit::Vw));
+                            }
+                            if !vh_vals.is_empty() {
+                                let min_val = vh_vals.into_iter().fold(f32::INFINITY, f32::min);
+                                simplified_args.push(MathExpr::Length(min_val, LengthUnit::Vh));
+                            }
+                            simplified_args.extend(others);
+
+                            if simplified_args.len() == 1 {
+                                simplified_args[0].clone()
                             } else {
-                                MathExpr::Func(*func, s_args)
+                                MathExpr::Func(*func, simplified_args)
                             }
                         }
                     }
                     MathFunc::Max => {
-                        if s_args.iter().all(|a| matches!(a, MathExpr::Number(_))) {
-                            let mut max_val = f32::NEG_INFINITY;
-                            for arg in &s_args {
-                                if let MathExpr::Number(v) = arg {
-                                    max_val = max_val.max(*v);
-                                }
-                            }
-                            MathExpr::Number(max_val)
-                        } else if s_args.is_empty() {
+                        if s_args.is_empty() {
                             MathExpr::Func(*func, s_args)
                         } else {
-                            let first_unit = match &s_args[0] {
-                                MathExpr::Length(_, u) => Some(u.clone()),
-                                _ => None,
-                            };
-                            if let Some(ref u) = first_unit {
-                                let all_same = s_args.iter().all(|a| match a {
-                                    MathExpr::Length(_, unit) => unit == u,
-                                    _ => false,
-                                });
-                                if all_same {
-                                    let mut max_val = f32::NEG_INFINITY;
-                                    for arg in &s_args {
-                                        if let MathExpr::Length(v, _) = arg {
-                                            max_val = max_val.max(*v);
-                                        }
+                            let mut numbers: Vec<f32> = Vec::new();
+                            let mut px_vals = Vec::new();
+                            let mut em_vals = Vec::new();
+                            let mut rem_vals = Vec::new();
+                            let mut pt_vals = Vec::new();
+                            let mut percent_vals = Vec::new();
+                            let mut vw_vals = Vec::new();
+                            let mut vh_vals = Vec::new();
+                            let mut others = Vec::new();
+
+                            for arg in &s_args {
+                                match arg {
+                                    MathExpr::Number(v) => numbers.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Px) => px_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Em) => em_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Rem) => rem_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Pt) => pt_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Percent) => {
+                                        percent_vals.push(*v)
                                     }
-                                    MathExpr::Length(max_val, u.clone())
-                                } else {
-                                    MathExpr::Func(*func, s_args)
+                                    MathExpr::Length(v, LengthUnit::Vw) => vw_vals.push(*v),
+                                    MathExpr::Length(v, LengthUnit::Vh) => vh_vals.push(*v),
+                                    _ => others.push(arg.clone()),
                                 }
+                            }
+
+                            let mut simplified_args = Vec::new();
+                            if !numbers.is_empty() {
+                                let max_val = numbers.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args.push(MathExpr::Number(max_val));
+                            }
+                            if !px_vals.is_empty() {
+                                let max_val = px_vals.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args.push(MathExpr::Length(max_val, LengthUnit::Px));
+                            }
+                            if !em_vals.is_empty() {
+                                let max_val = em_vals.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args.push(MathExpr::Length(max_val, LengthUnit::Em));
+                            }
+                            if !rem_vals.is_empty() {
+                                let max_val =
+                                    rem_vals.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args.push(MathExpr::Length(max_val, LengthUnit::Rem));
+                            }
+                            if !pt_vals.is_empty() {
+                                let max_val = pt_vals.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args.push(MathExpr::Length(max_val, LengthUnit::Pt));
+                            }
+                            if !percent_vals.is_empty() {
+                                let max_val =
+                                    percent_vals.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args
+                                    .push(MathExpr::Length(max_val, LengthUnit::Percent));
+                            }
+                            if !vw_vals.is_empty() {
+                                let max_val = vw_vals.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args.push(MathExpr::Length(max_val, LengthUnit::Vw));
+                            }
+                            if !vh_vals.is_empty() {
+                                let max_val = vh_vals.into_iter().fold(f32::NEG_INFINITY, f32::max);
+                                simplified_args.push(MathExpr::Length(max_val, LengthUnit::Vh));
+                            }
+                            simplified_args.extend(others);
+
+                            if simplified_args.len() == 1 {
+                                simplified_args[0].clone()
                             } else {
-                                MathExpr::Func(*func, s_args)
+                                MathExpr::Func(*func, simplified_args)
                             }
                         }
                     }
@@ -5772,6 +5868,286 @@ fn serialize_top_level_math(expr: &MathExpr) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MathType {
+    Length,
+    Number,
+    Percent,
+    Unresolved,
+}
+
+fn get_math_expr_type(expr: &MathExpr) -> Option<MathType> {
+    match expr {
+        MathExpr::Length(_, unit) => {
+            if *unit == LengthUnit::Percent {
+                Some(MathType::Percent)
+            } else {
+                Some(MathType::Length)
+            }
+        }
+        MathExpr::Number(_) => Some(MathType::Number),
+        MathExpr::Raw(_) => Some(MathType::Unresolved),
+        MathExpr::Op(lhs, op, rhs) => {
+            let t_lhs = get_math_expr_type(lhs)?;
+            let t_rhs = get_math_expr_type(rhs)?;
+            match op {
+                MathOp::Add | MathOp::Sub => {
+                    match (t_lhs, t_rhs) {
+                        (MathType::Unresolved, _) | (_, MathType::Unresolved) => {
+                            Some(MathType::Unresolved)
+                        }
+                        (MathType::Length, MathType::Length) => Some(MathType::Length),
+                        (MathType::Number, MathType::Number) => Some(MathType::Number),
+                        (MathType::Percent, MathType::Percent) => Some(MathType::Percent),
+                        (MathType::Length, MathType::Percent)
+                        | (MathType::Percent, MathType::Length) => Some(MathType::Length),
+                        _ => None, // Type mismatch! (e.g. Length + Number)
+                    }
+                }
+                MathOp::Mul => {
+                    match (t_lhs, t_rhs) {
+                        (MathType::Unresolved, _) | (_, MathType::Unresolved) => {
+                            Some(MathType::Unresolved)
+                        }
+                        (MathType::Number, MathType::Number) => Some(MathType::Number),
+                        (MathType::Length, MathType::Number)
+                        | (MathType::Number, MathType::Length) => Some(MathType::Length),
+                        (MathType::Percent, MathType::Number)
+                        | (MathType::Number, MathType::Percent) => Some(MathType::Percent),
+                        _ => None, // Invalid multiplication! (e.g. Length * Length)
+                    }
+                }
+                MathOp::Div => {
+                    match (t_lhs, t_rhs) {
+                        (MathType::Unresolved, _) | (_, MathType::Unresolved) => {
+                            Some(MathType::Unresolved)
+                        }
+                        // RHS of division must be a Number!
+                        (t_l, MathType::Number) => Some(t_l),
+                        _ => None, // Invalid division! (e.g. divided by Length)
+                    }
+                }
+            }
+        }
+        MathExpr::Round(_, a, b) => {
+            let t_a = get_math_expr_type(a)?;
+            let t_b = get_math_expr_type(b)?;
+            match (t_a, t_b) {
+                (MathType::Unresolved, _) | (_, MathType::Unresolved) => Some(MathType::Unresolved),
+                (MathType::Length, MathType::Length) => Some(MathType::Length),
+                (MathType::Number, MathType::Number) => Some(MathType::Number),
+                (MathType::Percent, MathType::Percent) => Some(MathType::Percent),
+                (MathType::Length, MathType::Percent) | (MathType::Percent, MathType::Length) => {
+                    Some(MathType::Length)
+                }
+                _ => None,
+            }
+        }
+        MathExpr::Func(func, args) => {
+            match func {
+                MathFunc::Calc => {
+                    if args.len() == 1 {
+                        get_math_expr_type(&args[0])
+                    } else {
+                        None
+                    }
+                }
+                MathFunc::Min | MathFunc::Max => {
+                    if args.is_empty() {
+                        return None;
+                    }
+                    let mut resolved_type = MathType::Unresolved;
+                    for arg in args {
+                        let t_arg = get_math_expr_type(arg)?;
+                        match (resolved_type, t_arg) {
+                            (MathType::Unresolved, t) => {
+                                resolved_type = t;
+                            }
+                            (_t, MathType::Unresolved) => {
+                                // compatible
+                            }
+                            (t1, t2) if t1 == t2 => {
+                                // compatible
+                            }
+                            (MathType::Length, MathType::Percent)
+                            | (MathType::Percent, MathType::Length) => {
+                                resolved_type = MathType::Length;
+                            }
+                            _ => return None, // Incompatible types! (e.g. min(10px, 5))
+                        }
+                    }
+                    Some(resolved_type)
+                }
+                MathFunc::Clamp => {
+                    if args.len() != 3 {
+                        return None;
+                    }
+                    let t_min = get_math_expr_type(&args[0])?;
+                    let t_val = get_math_expr_type(&args[1])?;
+                    let t_max = get_math_expr_type(&args[2])?;
+                    // They must be compatible
+                    let mut resolved_type = MathType::Unresolved;
+                    for t in &[t_min, t_val, t_max] {
+                        match (resolved_type, *t) {
+                            (MathType::Unresolved, other) => {
+                                resolved_type = other;
+                            }
+                            (_other, MathType::Unresolved) => {
+                                // compatible
+                            }
+                            (t1, t2) if t1 == t2 => {
+                                // compatible
+                            }
+                            (MathType::Length, MathType::Percent)
+                            | (MathType::Percent, MathType::Length) => {
+                                resolved_type = MathType::Length;
+                            }
+                            _ => return None, // Incompatible types in clamp
+                        }
+                    }
+                    Some(resolved_type)
+                }
+                MathFunc::Abs | MathFunc::Sign | MathFunc::Sqrt | MathFunc::Exp => {
+                    if args.len() != 1 {
+                        return None;
+                    }
+                    let t = get_math_expr_type(&args[0])?;
+                    match func {
+                        MathFunc::Abs => Some(t),
+                        MathFunc::Sign => Some(MathType::Number),
+                        MathFunc::Sqrt | MathFunc::Exp => {
+                            if t == MathType::Number || t == MathType::Unresolved {
+                                Some(MathType::Number)
+                            } else {
+                                None // Sqrt/Exp only allowed on Number
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                MathFunc::Mod | MathFunc::Rem | MathFunc::Pow => {
+                    if args.len() != 2 {
+                        return None;
+                    }
+                    let t_a = get_math_expr_type(&args[0])?;
+                    let t_b = get_math_expr_type(&args[1])?;
+                    match func {
+                        MathFunc::Pow => {
+                            if (t_a == MathType::Number || t_a == MathType::Unresolved)
+                                && (t_b == MathType::Number || t_b == MathType::Unresolved)
+                            {
+                                Some(MathType::Number)
+                            } else {
+                                None
+                            }
+                        }
+                        MathFunc::Mod | MathFunc::Rem => match (t_a, t_b) {
+                            (MathType::Unresolved, _) | (_, MathType::Unresolved) => {
+                                Some(MathType::Unresolved)
+                            }
+                            (MathType::Length, MathType::Length) => Some(MathType::Length),
+                            (MathType::Number, MathType::Number) => Some(MathType::Number),
+                            (MathType::Percent, MathType::Percent) => Some(MathType::Percent),
+                            (MathType::Length, MathType::Percent)
+                            | (MathType::Percent, MathType::Length) => Some(MathType::Length),
+                            _ => None,
+                        },
+                        _ => unreachable!(),
+                    }
+                }
+                MathFunc::Hypot => {
+                    let mut resolved_type = MathType::Unresolved;
+                    for arg in args {
+                        let t = get_math_expr_type(arg)?;
+                        match (resolved_type, t) {
+                            (MathType::Unresolved, other) => {
+                                resolved_type = other;
+                            }
+                            (_other, MathType::Unresolved) => {}
+                            (t1, t2) if t1 == t2 => {}
+                            (MathType::Length, MathType::Percent)
+                            | (MathType::Percent, MathType::Length) => {
+                                resolved_type = MathType::Length;
+                            }
+                            _ => return None,
+                        }
+                    }
+                    Some(resolved_type)
+                }
+                MathFunc::Log => {
+                    if args.len() != 1 && args.len() != 2 {
+                        return None;
+                    }
+                    for arg in args {
+                        let t = get_math_expr_type(arg)?;
+                        if t != MathType::Number && t != MathType::Unresolved {
+                            return None;
+                        }
+                    }
+                    Some(MathType::Number)
+                }
+            }
+        }
+    }
+}
+
+fn has_division_by_zero(expr: &MathExpr) -> bool {
+    match expr {
+        MathExpr::Length(_, _) => false,
+        MathExpr::Number(_) => false,
+        MathExpr::Raw(_) => false,
+        MathExpr::Op(lhs, op, rhs) => {
+            if has_division_by_zero(lhs) || has_division_by_zero(rhs) {
+                return true;
+            }
+            if *op == MathOp::Div {
+                let simplified_rhs = rhs.simplify();
+                if let MathExpr::Number(0.0) = simplified_rhs {
+                    return true;
+                }
+            }
+            false
+        }
+        MathExpr::Round(_, a, b) => {
+            if has_division_by_zero(a) || has_division_by_zero(b) {
+                return true;
+            }
+            let simplified_b = b.simplify();
+            if let MathExpr::Number(0.0) = simplified_b {
+                return true;
+            }
+            if let MathExpr::Length(0.0, _) = simplified_b {
+                return true;
+            }
+            false
+        }
+        MathExpr::Func(func, args) => {
+            for arg in args {
+                if has_division_by_zero(arg) {
+                    return true;
+                }
+            }
+            match func {
+                MathFunc::Log if !args.is_empty() => match args[0].simplify() {
+                    MathExpr::Number(v) if v <= 0.0 => return true,
+                    _ => {}
+                },
+                MathFunc::Sqrt if !args.is_empty() => match args[0].simplify() {
+                    MathExpr::Number(v) if v < 0.0 => return true,
+                    _ => {}
+                },
+                MathFunc::Mod | MathFunc::Rem if args.len() == 2 => match args[1].simplify() {
+                    MathExpr::Number(0.0) => return true,
+                    MathExpr::Length(0.0, _) => return true,
+                    _ => {}
+                },
+                _ => {}
+            }
+            false
+        }
+    }
+}
+
 fn parse_calc_function(
     _name: &str,
     value: &[ComponentValue],
@@ -5781,6 +6157,9 @@ fn parse_calc_function(
         return None;
     }
     if let Some(expr) = parse_math_expr(std::slice::from_ref(orig_comp)) {
+        if get_math_expr_type(&expr).is_none() || has_division_by_zero(&expr) {
+            return None;
+        }
         let simplified = expr.simplify();
         match simplified {
             MathExpr::Length(v, u) => Some(CssValue::Length(v, u)),
@@ -5791,7 +6170,7 @@ fn parse_calc_function(
             }
         }
     } else {
-        Some(CssValue::Keyword(serialize_component_value(orig_comp)))
+        None
     }
 }
 
@@ -17666,5 +18045,248 @@ mod tests {
         let valid_delay = CssValue::Keyword("-50ms".to_string());
         assert!(is_valid_property_value("transition-delay", &valid_delay));
         assert!(is_valid_property_value("animation-delay", &valid_delay));
+    }
+
+    #[test]
+    fn test_t1037_math_and_var_edge_cases() {
+        // 1. Trailing comma in function arguments validation
+        // min(10px, 20px,) should be invalid (None)
+        let min_trailing_comma = ComponentValue::Function {
+            name: "min".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+            ],
+        };
+        assert_eq!(parse_value(&[min_trailing_comma]), None);
+
+        // 2. var() and env() syntax checking in validate_math_expression
+        // calc(1px + var(red)) should be invalid because var(red) is invalid (no -- prefix)
+        let calc_invalid_var = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "var".to_string(),
+                    value: vec![token(CssToken::Ident("red".to_string()))],
+                },
+            ],
+        };
+        assert_eq!(parse_value(&[calc_invalid_var]), None);
+
+        // 3. Division by zero and domain errors validation
+        // calc(10px / 0) should be invalid (None)
+        let calc_div_zero = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('/')),
+                token(CssToken::Whitespace),
+                token(CssToken::Number(0.0)),
+            ],
+        };
+        assert_eq!(parse_value(&[calc_div_zero]), None);
+
+        // calc(10px / (5 - 5)) should be invalid (None)
+        let calc_div_sub_zero = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('/')),
+                token(CssToken::Whitespace),
+                ComponentValue::SimpleBlock {
+                    associated: '(',
+                    value: vec![
+                        token(CssToken::Number(5.0)),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('-')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Number(5.0)),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(parse_value(&[calc_div_sub_zero]), None);
+
+        // sqrt(-1) domain error should be invalid (None)
+        let calc_sqrt_neg = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![ComponentValue::Function {
+                name: "sqrt".to_string(),
+                value: vec![token(CssToken::Number(-1.0))],
+            }],
+        };
+        assert_eq!(parse_value(&[calc_sqrt_neg]), None);
+
+        // log(0) domain error should be invalid (None)
+        let calc_log_zero = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![ComponentValue::Function {
+                name: "log".to_string(),
+                value: vec![token(CssToken::Number(0.0))],
+            }],
+        };
+        assert_eq!(parse_value(&[calc_log_zero]), None);
+
+        // mod(10px, 0px) division by zero should be invalid (None)
+        let calc_mod_zero = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![ComponentValue::Function {
+                name: "mod".to_string(),
+                value: vec![
+                    token(CssToken::Dimension {
+                        value: 10.0,
+                        unit: "px".to_string(),
+                    }),
+                    token(CssToken::Comma),
+                    token(CssToken::Dimension {
+                        value: 0.0,
+                        unit: "px".to_string(),
+                    }),
+                ],
+            }],
+        };
+        assert_eq!(parse_value(&[calc_mod_zero]), None);
+
+        // 4. Mixed-type checking
+        // calc(1px + 2) is invalid because of mixing length and number
+        let calc_mixed_add = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                token(CssToken::Number(2.0)),
+            ],
+        };
+        assert_eq!(parse_value(&[calc_mixed_add]), None);
+
+        // calc(1px * 2px) is invalid because at least one operand must be a number
+        let calc_mixed_mul = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('*')),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 2.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(parse_value(&[calc_mixed_mul]), None);
+
+        // calc(1px / 2px) is invalid because divisor must be a number
+        let calc_mixed_div = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('/')),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 2.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(parse_value(&[calc_mixed_div]), None);
+
+        // 5. Math constants
+        // calc(pi * 10px) -> Length(31.4159, Px)
+        let calc_pi = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Ident("pi".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('*')),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        if let Some(CssValue::Length(v, LengthUnit::Px)) = parse_value(&[calc_pi]) {
+            assert!((v - 31.41592).abs() < 1e-3);
+        } else {
+            panic!("Expected Length with pi value");
+        }
+
+        // 6. Enhanced min() and max() unit regrouping/simplification
+        // min(10px, 20px, 5%) -> min(10px, 5%)
+        let min_mixed = ComponentValue::Function {
+            name: "min".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Percentage(5.0)),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[min_mixed]),
+            Some(CssValue::Keyword("min(10px,5%)".to_string()))
+        );
+
+        // min(10px, 20px) -> 10px
+        let min_same = ComponentValue::Function {
+            name: "min".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[min_same]),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
     }
 }
