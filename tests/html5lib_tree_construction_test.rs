@@ -373,6 +373,10 @@ fn test_html5lib_tree_construction_conformance() {
             if actual == case.expected_document {
                 passed += 1;
             } else {
+                eprintln!(
+                    "FAIL at {}:{} \nINPUT:\n{:?}\nEXPECTED:\n{}\nACTUAL:\n{}\n------------------",
+                    case.file_path, case.line_number, case.data, case.expected_document, actual
+                );
                 failed += 1;
             }
         }
