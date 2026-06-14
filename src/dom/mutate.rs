@@ -235,6 +235,20 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `name` content attribute of a valid element node.
+    /// Returns `None` if the node has no `name` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_name(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("name"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -652,6 +666,44 @@ mod tests {
             foreign_node = elem(&mut foreign_dom, "img");
         }
         assert_eq!(dom.get_alt(foreign_node), None);
+    }
+
+    #[test]
+    fn test_name_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element with name attribute -> returns Some(value)
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("name".to_string(), "username".to_string())],
+        });
+        assert_eq!(dom.get_name(input_id), Some("username"));
+
+        // 2. Element with case-insensitive name attribute (e.g., NAME) -> returns Some(value)
+        let button_id = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![("NAME".to_string(), "submit-btn".to_string())],
+        });
+        assert_eq!(dom.get_name(button_id), Some("submit-btn"));
+
+        // 3. Element without name attribute -> returns None
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_name(p_id), None);
+
+        // 4. Non-element node (e.g., Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_name(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "input");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "input");
+        }
+        assert_eq!(dom.get_name(foreign_node), None);
     }
 
     #[test]
