@@ -2111,6 +2111,18 @@ mod tests {
             resolve_string("6pc", 16.0, 1000.0, 800.0, &vars),
             Some(CssValue::Length(96.0, LengthUnit::Px))
         );
+
+        // em unit with explicit current_font_size
+        let ctx_with_fs = ResolveContext {
+            root_font_size: 16.0,
+            current_font_size: Some(24.0),
+            ..Default::default()
+        };
+        let em_comps = crate::css::parser::parse_component_values("2em");
+        assert_eq!(
+            resolve_value_with_context(&em_comps, &ctx_with_fs, &vars),
+            Some(CssValue::Length(48.0, LengthUnit::Px))
+        );
     }
 
     #[test]
