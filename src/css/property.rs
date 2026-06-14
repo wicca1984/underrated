@@ -348,6 +348,26 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "0",
     },
+    PropertyMetadata {
+        name: "writing-mode",
+        inherited: true,
+        initial: "horizontal-tb",
+    },
+    PropertyMetadata {
+        name: "text-orientation",
+        inherited: true,
+        initial: "mixed",
+    },
+    PropertyMetadata {
+        name: "math-shift",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "text-shadow",
+        inherited: true,
+        initial: "none",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1219,6 +1239,81 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "none",
     },
+    PropertyMetadata {
+        name: "anchor-scope",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "view-timeline-name",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "view-timeline-axis",
+        inherited: false,
+        initial: "block",
+    },
+    PropertyMetadata {
+        name: "view-timeline-inset",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "container-name",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "container-type",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "aspect-ratio",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "unicode-bidi",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "grid-template-columns",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "grid-template-rows",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "grid-template-areas",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "grid-auto-columns",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "grid-auto-rows",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "grid-auto-flow",
+        inherited: false,
+        initial: "row",
+    },
+    PropertyMetadata {
+        name: "box-shadow",
+        inherited: false,
+        initial: "none",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1335,6 +1430,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         longhands: &["contain-intrinsic-width", "contain-intrinsic-height"],
     },
     ShorthandExpansion {
+        name: "container",
+        longhands: &["container-name", "container-type"],
+    },
+    ShorthandExpansion {
         name: "flex",
         longhands: &["flex-grow", "flex-shrink", "flex-basis"],
     },
@@ -1373,6 +1472,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "grid-row",
         longhands: &["grid-row-start", "grid-row-end"],
+    },
+    ShorthandExpansion {
+        name: "grid-template",
+        longhands: &[
+            "grid-template-columns",
+            "grid-template-rows",
+            "grid-template-areas",
+        ],
     },
     ShorthandExpansion {
         name: "inset",
@@ -1460,6 +1567,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "transition-timing-function",
             "transition-delay",
         ],
+    },
+    ShorthandExpansion {
+        name: "view-timeline",
+        longhands: &["view-timeline-name", "view-timeline-axis"],
     },
 ];
 
@@ -2460,6 +2571,137 @@ mod tests {
         assert_eq!(
             position_try_shorthand.unwrap(),
             &["position-try-order", "position-try-fallbacks"][..]
+        );
+    }
+
+    #[test]
+    fn test_properties_t0779() {
+        // Inherited properties:
+        // writing-mode
+        let writing_mode = lookup("writing-mode").expect("writing-mode must be registered");
+        assert!(writing_mode.inherited);
+        assert_eq!(writing_mode.initial, "horizontal-tb");
+
+        // text-orientation
+        let text_orientation =
+            lookup("text-orientation").expect("text-orientation must be registered");
+        assert!(text_orientation.inherited);
+        assert_eq!(text_orientation.initial, "mixed");
+
+        // math-shift
+        let math_shift = lookup("math-shift").expect("math-shift must be registered");
+        assert!(math_shift.inherited);
+        assert_eq!(math_shift.initial, "normal");
+
+        // text-shadow
+        let text_shadow = lookup("text-shadow").expect("text-shadow must be registered");
+        assert!(text_shadow.inherited);
+        assert_eq!(text_shadow.initial, "none");
+
+        // Non-inherited properties:
+        // anchor-scope
+        let anchor_scope = lookup("anchor-scope").expect("anchor-scope must be registered");
+        assert!(!anchor_scope.inherited);
+        assert_eq!(anchor_scope.initial, "none");
+
+        // view-timeline-name
+        let view_timeline_name =
+            lookup("view-timeline-name").expect("view-timeline-name must be registered");
+        assert!(!view_timeline_name.inherited);
+        assert_eq!(view_timeline_name.initial, "none");
+
+        // view-timeline-axis
+        let view_timeline_axis =
+            lookup("view-timeline-axis").expect("view-timeline-axis must be registered");
+        assert!(!view_timeline_axis.inherited);
+        assert_eq!(view_timeline_axis.initial, "block");
+
+        // view-timeline-inset
+        let view_timeline_inset =
+            lookup("view-timeline-inset").expect("view-timeline-inset must be registered");
+        assert!(!view_timeline_inset.inherited);
+        assert_eq!(view_timeline_inset.initial, "auto");
+
+        // container-name
+        let container_name = lookup("container-name").expect("container-name must be registered");
+        assert!(!container_name.inherited);
+        assert_eq!(container_name.initial, "none");
+
+        // container-type
+        let container_type = lookup("container-type").expect("container-type must be registered");
+        assert!(!container_type.inherited);
+        assert_eq!(container_type.initial, "normal");
+
+        // aspect-ratio
+        let aspect_ratio = lookup("aspect-ratio").expect("aspect-ratio must be registered");
+        assert!(!aspect_ratio.inherited);
+        assert_eq!(aspect_ratio.initial, "auto");
+
+        // unicode-bidi
+        let unicode_bidi = lookup("unicode-bidi").expect("unicode-bidi must be registered");
+        assert!(!unicode_bidi.inherited);
+        assert_eq!(unicode_bidi.initial, "normal");
+
+        // grid-template-columns
+        let gtc =
+            lookup("grid-template-columns").expect("grid-template-columns must be registered");
+        assert!(!gtc.inherited);
+        assert_eq!(gtc.initial, "none");
+
+        // grid-template-rows
+        let gtr = lookup("grid-template-rows").expect("grid-template-rows must be registered");
+        assert!(!gtr.inherited);
+        assert_eq!(gtr.initial, "none");
+
+        // grid-template-areas
+        let gta = lookup("grid-template-areas").expect("grid-template-areas must be registered");
+        assert!(!gta.inherited);
+        assert_eq!(gta.initial, "none");
+
+        // grid-auto-columns
+        let gac = lookup("grid-auto-columns").expect("grid-auto-columns must be registered");
+        assert!(!gac.inherited);
+        assert_eq!(gac.initial, "auto");
+
+        // grid-auto-rows
+        let gar = lookup("grid-auto-rows").expect("grid-auto-rows must be registered");
+        assert!(!gar.inherited);
+        assert_eq!(gar.initial, "auto");
+
+        // grid-auto-flow
+        let gaf = lookup("grid-auto-flow").expect("grid-auto-flow must be registered");
+        assert!(!gaf.inherited);
+        assert_eq!(gaf.initial, "row");
+
+        // box-shadow
+        let box_shadow = lookup("box-shadow").expect("box-shadow must be registered");
+        assert!(!box_shadow.inherited);
+        assert_eq!(box_shadow.initial, "none");
+
+        // Shorthands:
+        // container
+        let container_lh =
+            shorthand_longhands("container").expect("container shorthand must be registered");
+        assert_eq!(container_lh, &["container-name", "container-type"][..]);
+
+        // grid-template
+        let grid_template_lh = shorthand_longhands("grid-template")
+            .expect("grid-template shorthand must be registered");
+        assert_eq!(
+            grid_template_lh,
+            &[
+                "grid-template-columns",
+                "grid-template-rows",
+                "grid-template-areas"
+            ][..]
+        );
+
+        // view-timeline
+        let view_timeline_lh = shorthand_longhands("view-timeline")
+            .expect("view-timeline shorthand must be registered");
+        assert_eq!(
+            view_timeline_lh,
+            &["view-timeline-name", "view-timeline-axis"][..]
         );
     }
 
