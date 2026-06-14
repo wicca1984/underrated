@@ -71,6 +71,11 @@ impl Class for FormData {
                 JsString::from("entries"),
                 0,
                 NativeFunction::from_fn_ptr(form_data_entries),
+            )
+            .method(
+                JsString::from("forEach"),
+                1,
+                NativeFunction::from_fn_ptr(form_data_for_each),
             );
 
         Ok(())
@@ -307,6 +312,44 @@ pub fn form_data_entries(
     Ok(JsValue::from(array))
 }
 
+pub fn form_data_for_each(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let form_data = obj.downcast_ref::<FormData>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-FormData object"))
+    })?;
+
+    let callback = args.first().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Missing callback argument"))
+    })?;
+    let callback_fn = callback.as_callable().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Callback must be a function"))
+    })?;
+
+    let this_arg = args.get(1).cloned().unwrap_or_default();
+
+    let entries = form_data.entries.borrow().clone();
+
+    for (k, v) in entries {
+        callback_fn.call(
+            &this_arg,
+            &[
+                JsValue::from(JsString::from(v)),
+                JsValue::from(JsString::from(k)),
+                this.clone(),
+            ],
+            context,
+        )?;
+    }
+
+    Ok(JsValue::undefined())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::BoaHost;
@@ -362,6 +405,44 @@ mod tests {
             fd.delete("age");
             if (fd.has("age") !== false) throw "delete(age) failed";
             if (fd.get("age") !== null) throw "get(age) after delete should be null";
+        }"#
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_formdata_foreach_t0804() {
+        let mut host = BoaHost::new();
+
+        host.eval(
+            r#"{
+            const fd2 = new FormData();
+            fd2.append("name", "Alice");
+            fd2.append("name", "Bob");
+            fd2.append("age", "30");
+
+            const visited = [];
+            const this_values = [];
+            const instances = [];
+
+            const myThisArg = { check: true };
+
+            fd2.forEach(function (value, key, parent) {
+                visited.push([key, value]);
+                this_values.push(this);
+                instances.push(parent === fd2);
+            }, myThisArg);
+
+            if (visited.length !== 3) throw "forEach should visit 3 entries";
+            if (visited[0][0] !== "name" || visited[0][1] !== "Alice") throw "First entry mismatch";
+            if (visited[1][0] !== "name" || visited[1][1] !== "Bob") throw "Second entry mismatch (duplicate keys in order)";
+            if (visited[2][0] !== "age" || visited[2][1] !== "30") throw "Third entry mismatch";
+
+            if (this_values[0] !== myThisArg || this_values[1] !== myThisArg || this_values[2] !== myThisArg) {
+                throw "thisArg not bound correctly";
+            }
+            if (instances[0] !== true || instances[1] !== true || instances[2] !== true) {
+                throw "parent instance mismatch";
+            }
         }"#
         ).unwrap();
     }
