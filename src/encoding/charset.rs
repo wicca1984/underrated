@@ -32,6 +32,7 @@ pub enum Charset {
     Iso8859_14,
     Koi8R,
     Koi8U,
+    Ibm866,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -134,6 +135,9 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "koi8-u" | "koi8_u" | "koi8-ru" => {
                 return Charset::Koi8U;
             }
+            "ibm866" | "cp866" | "866" | "csibm866" => {
+                return Charset::Ibm866;
+            }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
     }
@@ -220,6 +224,7 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 }
                 "koi8-r" => return Some(Charset::Koi8R),
                 "koi8-u" => return Some(Charset::Koi8U),
+                "ibm866" | "cp866" | "866" | "csibm866" => return Some(Charset::Ibm866),
                 _ => {}
             }
         }
@@ -258,6 +263,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Iso8859_14 => decode_iso8859_14(bytes),
         Charset::Koi8R => decode_koi8r(bytes),
         Charset::Koi8U => decode_koi8u(bytes),
+        Charset::Ibm866 => decode_ibm866(bytes),
     }
 }
 
@@ -3315,6 +3321,149 @@ fn decode_iso8859_14(bytes: &[u8]) -> String {
     result
 }
 
+const IBM866_MAP: [char; 128] = [
+    '\u{0410}', // 0x80
+    '\u{0411}', // 0x81
+    '\u{0412}', // 0x82
+    '\u{0413}', // 0x83
+    '\u{0414}', // 0x84
+    '\u{0415}', // 0x85
+    '\u{0416}', // 0x86
+    '\u{0417}', // 0x87
+    '\u{0418}', // 0x88
+    '\u{0419}', // 0x89
+    '\u{041A}', // 0x8A
+    '\u{041B}', // 0x8B
+    '\u{041C}', // 0x8C
+    '\u{041D}', // 0x8D
+    '\u{041E}', // 0x8E
+    '\u{041F}', // 0x8F
+    '\u{0420}', // 0x90
+    '\u{0421}', // 0x91
+    '\u{0422}', // 0x92
+    '\u{0423}', // 0x93
+    '\u{0424}', // 0x94
+    '\u{0425}', // 0x95
+    '\u{0426}', // 0x96
+    '\u{0427}', // 0x97
+    '\u{0428}', // 0x98
+    '\u{0429}', // 0x99
+    '\u{042A}', // 0x9A
+    '\u{042B}', // 0x9B
+    '\u{042C}', // 0x9C
+    '\u{042D}', // 0x9D
+    '\u{042E}', // 0x9E
+    '\u{042F}', // 0x9F
+    '\u{0430}', // 0xA0
+    '\u{0431}', // 0xA1
+    '\u{0432}', // 0xA2
+    '\u{0433}', // 0xA3
+    '\u{0434}', // 0xA4
+    '\u{0435}', // 0xA5
+    '\u{0436}', // 0xA6
+    '\u{0437}', // 0xA7
+    '\u{0438}', // 0xA8
+    '\u{0439}', // 0xA9
+    '\u{043A}', // 0xAA
+    '\u{043B}', // 0xAB
+    '\u{043C}', // 0xAC
+    '\u{043D}', // 0xAD
+    '\u{043E}', // 0xAE
+    '\u{043F}', // 0xAF
+    '\u{2591}', // 0xB0
+    '\u{2592}', // 0xB1
+    '\u{2593}', // 0xB2
+    '\u{2502}', // 0xB3
+    '\u{2524}', // 0xB4
+    '\u{2561}', // 0xB5
+    '\u{2562}', // 0xB6
+    '\u{2556}', // 0xB7
+    '\u{2555}', // 0xB8
+    '\u{2563}', // 0xB9
+    '\u{2551}', // 0xBA
+    '\u{2557}', // 0xBB
+    '\u{255D}', // 0xBC
+    '\u{255C}', // 0xBD
+    '\u{255B}', // 0xBE
+    '\u{2510}', // 0xBF
+    '\u{2514}', // 0xC0
+    '\u{2534}', // 0xC1
+    '\u{252C}', // 0xC2
+    '\u{251C}', // 0xC3
+    '\u{2500}', // 0xC4
+    '\u{253C}', // 0xC5
+    '\u{255E}', // 0xC6
+    '\u{255F}', // 0xC7
+    '\u{255A}', // 0xC8
+    '\u{2554}', // 0xC9
+    '\u{2569}', // 0xCA
+    '\u{2566}', // 0xCB
+    '\u{2560}', // 0xCC
+    '\u{2550}', // 0xCD
+    '\u{256C}', // 0xCE
+    '\u{2567}', // 0xCF
+    '\u{2568}', // 0xD0
+    '\u{2564}', // 0xD1
+    '\u{2565}', // 0xD2
+    '\u{2559}', // 0xD3
+    '\u{2558}', // 0xD4
+    '\u{2552}', // 0xD5
+    '\u{2553}', // 0xD6
+    '\u{256B}', // 0xD7
+    '\u{256A}', // 0xD8
+    '\u{2518}', // 0xD9
+    '\u{250C}', // 0xDA
+    '\u{2588}', // 0xDB
+    '\u{2584}', // 0xDC
+    '\u{258C}', // 0xDD
+    '\u{2590}', // 0xDE
+    '\u{2580}', // 0xDF
+    '\u{0440}', // 0xE0
+    '\u{0441}', // 0xE1
+    '\u{0442}', // 0xE2
+    '\u{0443}', // 0xE3
+    '\u{0444}', // 0xE4
+    '\u{0445}', // 0xE5
+    '\u{0446}', // 0xE6
+    '\u{0447}', // 0xE7
+    '\u{0448}', // 0xE8
+    '\u{0449}', // 0xE9
+    '\u{044A}', // 0xEA
+    '\u{044B}', // 0xEB
+    '\u{044C}', // 0xEC
+    '\u{044D}', // 0xED
+    '\u{044E}', // 0xEE
+    '\u{044F}', // 0xEF
+    '\u{0401}', // 0xF0
+    '\u{0451}', // 0xF1
+    '\u{0404}', // 0xF2
+    '\u{0454}', // 0xF3
+    '\u{0407}', // 0xF4
+    '\u{0457}', // 0xF5
+    '\u{040E}', // 0xF6
+    '\u{045E}', // 0xF7
+    '\u{00B0}', // 0xF8
+    '\u{2219}', // 0xF9
+    '\u{00B7}', // 0xFA
+    '\u{221A}', // 0xFB
+    '\u{2116}', // 0xFC
+    '\u{00A4}', // 0xFD
+    '\u{25A0}', // 0xFE
+    '\u{00A0}', // 0xFF
+];
+
+fn decode_ibm866(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(IBM866_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4542,5 +4691,41 @@ mod tests {
         // C1 control characters map to their identity code points (C1 range)
         assert_eq!(decode(&[0x80], Charset::Iso8859_14), "\u{0080}");
         assert_eq!(decode(&[0x9F], Charset::Iso8859_14), "\u{009F}");
+    }
+
+    #[test]
+    fn test_ibm866_sniff() {
+        assert_eq!(sniff_charset(b"abc", Some("ibm866")), Charset::Ibm866);
+        assert_eq!(sniff_charset(b"abc", Some("cp866")), Charset::Ibm866);
+        assert_eq!(sniff_charset(b"abc", Some("866")), Charset::Ibm866);
+        assert_eq!(sniff_charset(b"abc", Some("csibm866")), Charset::Ibm866);
+
+        // Case-insensitivity check
+        assert_eq!(sniff_charset(b"abc", Some("IBM866")), Charset::Ibm866);
+        assert_eq!(sniff_charset(b"abc", Some("CP866")), Charset::Ibm866);
+
+        // Meta prescan check
+        let html_meta = b"<html><head><meta charset=\"ibm866\"></head></html>";
+        assert_eq!(sniff_charset(html_meta, None), Charset::Ibm866);
+    }
+
+    #[test]
+    fn test_ibm866_decode() {
+        // Pure-ASCII round-trip
+        assert_eq!(decode(b"Hello 123", Charset::Ibm866), "Hello 123");
+
+        // Cyrillic specific bytes and other characters
+        assert_eq!(decode(&[0x80], Charset::Ibm866), "А"); // CYRILLIC CAPITAL LETTER A (U+0410)
+        assert_eq!(decode(&[0xA0], Charset::Ibm866), "а"); // CYRILLIC SMALL LETTER A (U+0430)
+        assert_eq!(decode(&[0xB3], Charset::Ibm866), "│"); // BOX DRAWINGS LIGHT VERTICAL (U+2502)
+        assert_eq!(decode(&[0xE0], Charset::Ibm866), "р"); // CYRILLIC SMALL LETTER ER (U+0440)
+        assert_eq!(decode(&[0xF0], Charset::Ibm866), "Ё"); // CYRILLIC CAPITAL LETTER IO (U+0401)
+        assert_eq!(decode(&[0xF1], Charset::Ibm866), "ё"); // CYRILLIC SMALL LETTER IO (U+0451)
+        assert_eq!(decode(&[0xFF], Charset::Ibm866), "\u{00A0}"); // NBSP (U+00A0)
+
+        // Word "Привет" in IBM866:
+        // П: 0x8F, р: 0xE0, и: 0xA8, в: 0xA2, е: 0xA5, т: 0xE2
+        let bytes = &[0x8F, 0xE0, 0xA8, 0xA2, 0xA5, 0xE2];
+        assert_eq!(decode(bytes, Charset::Ibm866), "Привет");
     }
 }
