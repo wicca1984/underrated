@@ -93,6 +93,36 @@ impl DomRect {
     }
 }
 
+/// `DomRectList` represents a list of `DomRect` objects, mirroring DOM's DOMRectList.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomRectList {
+    rects: Vec<DomRect>,
+}
+
+impl DomRectList {
+    /// Creates a new `DomRectList` with the given vector of rectangles.
+    pub fn new(rects: Vec<DomRect>) -> Self {
+        Self { rects }
+    }
+
+    /// Returns the number of rectangles in the list.
+    pub fn length(&self) -> usize {
+        self.rects.len()
+    }
+
+    /// Returns the `DomRect` at the specified index, or `None` if the index is out of range.
+    pub fn item(&self, index: usize) -> Option<DomRect> {
+        self.rects.get(index).copied()
+    }
+
+    /// Serializes this `DomRectList` to a JSON array of `DomRect` objects.
+    pub fn serialize(&self) -> serde_json::Value {
+        let serialized_rects: Vec<serde_json::Value> =
+            self.rects.iter().map(|r| r.serialize()).collect();
+        serde_json::Value::Array(serialized_rects)
+    }
+}
+
 impl Dom {
     /// Returns the bounding client rect of the element.
     ///
@@ -101,6 +131,20 @@ impl Dom {
     /// // a DOM-side preparation placeholder.
     pub fn get_bounding_client_rect(&self, _node: NodeId) -> DomRect {
         DomRect::new(0.0, 0.0, 0.0, 0.0)
+    }
+
+    /// Returns the list of client rectangles for an element.
+    ///
+    /// For a non-fragmented box this is a single-item list equal to the bounding rect;
+    /// returns an empty list for elements with no box or if the node is not an element.
+    pub fn get_client_rects(&self, node: NodeId) -> DomRectList {
+        use crate::dom::NodeData;
+        if let Some(NodeData::Element { .. }) = self.data(node) {
+            let rect = self.get_bounding_client_rect(node);
+            DomRectList::new(vec![rect])
+        } else {
+            DomRectList::new(Vec::new())
+        }
     }
 }
 
@@ -159,5 +203,44 @@ mod tests {
         assert_eq!(serialized["right"], 110.0);
         assert_eq!(serialized["bottom"], 70.0);
         assert_eq!(serialized["left"], 10.0);
+    }
+
+    #[test]
+    fn test_get_client_rects_basic() {
+        let mut dom = Dom::new();
+        use crate::dom::NodeData;
+        let elem_node = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![],
+        });
+
+        let rects = dom.get_client_rects(elem_node);
+        assert_eq!(rects.length(), 1);
+
+        let bound_rect = dom.get_bounding_client_rect(elem_node);
+        assert_eq!(rects.item(0), Some(bound_rect));
+        assert_eq!(rects.item(1), None);
+        assert_eq!(rects.item(999), None);
+
+        // Serialize check
+        let serialized_list = rects.serialize();
+        assert!(serialized_list.is_array());
+        assert_eq!(serialized_list.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_get_client_rects_non_element() {
+        let mut dom = Dom::new();
+        use crate::dom::NodeData;
+        let text_node = dom.create_node(NodeData::Text("hello".to_string()));
+
+        let rects = dom.get_client_rects(text_node);
+        assert_eq!(rects.length(), 0);
+        assert_eq!(rects.item(0), None);
+
+        // Serialize check
+        let serialized_list = rects.serialize();
+        assert!(serialized_list.is_array());
+        assert_eq!(serialized_list.as_array().unwrap().len(), 0);
     }
 }
