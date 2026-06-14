@@ -2662,6 +2662,368 @@ impl Dom {
         }
     }
 
+    /// Returns the value of the `slot` content attribute of a valid element node.
+    /// Returns `None` if the node has no `slot` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_slot(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("slot"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `slot` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_slot(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "slot", value);
+        }
+    }
+
+    /// Returns the value of the `nonce` content attribute of a valid element node.
+    /// Returns `None` if the node has no `nonce` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_nonce(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("nonce"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `nonce` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_nonce(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "nonce", value);
+        }
+    }
+
+    /// Returns the value of the `popover` content attribute of a valid element node.
+    /// Returns `None` if the node has no `popover` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_popover(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("popover"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `popover` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_popover(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "popover", value);
+        }
+    }
+
+    /// Returns the value of the `tabindex` content attribute of a valid element node.
+    /// Returns `None` if the node has no `tabindex` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_tabindex(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("tabindex"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `tabindex` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_tabindex(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "tabindex", value);
+        }
+    }
+
+    /// Returns whether the `hidden` content attribute is present on any valid element node.
+    /// Returns `None` if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn get_hidden(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("hidden")));
+        }
+        None
+    }
+
+    /// Sets or removes the `hidden` content attribute on any valid element node.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_hidden(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            if value {
+                self.set_attribute(node, "hidden", "");
+            } else {
+                self.remove_attribute(node, "hidden");
+            }
+        }
+    }
+
+    /// Returns whether the `inert` content attribute is present on any valid element node.
+    /// Returns `None` if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn get_inert(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("inert")));
+        }
+        None
+    }
+
+    /// Sets or removes the `inert` content attribute on any valid element node.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_inert(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            if value {
+                self.set_attribute(node, "inert", "");
+            } else {
+                self.remove_attribute(node, "inert");
+            }
+        }
+    }
+
+    /// Returns the value of the `autocapitalize` content attribute of a valid element node.
+    /// Returns `None` if the node has no `autocapitalize` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_autocapitalize(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("autocapitalize"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `autocapitalize` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_autocapitalize(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "autocapitalize", value);
+        }
+    }
+
+    /// Returns the value of the `accesskey` content attribute of a valid element node.
+    /// Returns `None` if the node has no `accesskey` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_accesskey(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("accesskey"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `accesskey` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_accesskey(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "accesskey", value);
+        }
+    }
+
+    /// Returns the value of the `spellcheck` content attribute of a valid element node.
+    /// Returns `None` if the node has no `spellcheck` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_spellcheck(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("spellcheck"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `spellcheck` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_spellcheck(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "spellcheck", value);
+        }
+    }
+
+    /// Returns the value of the `translate` content attribute of a valid element node.
+    /// Returns `None` if the node has no `translate` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_translate(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("translate"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `translate` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_translate(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "translate", value);
+        }
+    }
+
+    /// Returns the value of the `draggable` content attribute of a valid element node.
+    /// Returns `None` if the node has no `draggable` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_draggable(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("draggable"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `draggable` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_draggable(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "draggable", value);
+        }
+    }
+
+    /// Returns the value of the `contenteditable` content attribute of a valid element node.
+    /// Returns `None` if the node has no `contenteditable` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_content_editable(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("contenteditable"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `contenteditable` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_content_editable(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "contenteditable", value);
+        }
+    }
+
+    /// Returns the value of the `autocorrect` content attribute of a valid element node.
+    /// Returns `None` if the node has no `autocorrect` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_autocorrect(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("autocorrect"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `autocorrect` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_autocorrect(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "autocorrect", value);
+        }
+    }
+
+    /// Returns the value of the `writingsuggestions` content attribute of a valid element node.
+    /// Returns `None` if the node has no `writingsuggestions` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_writing_suggestions(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("writingsuggestions"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `writingsuggestions` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_writing_suggestions(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "writingsuggestions", value);
+        }
+    }
+
+    /// Returns the value of the `itemid` content attribute of a valid element node.
+    /// Returns `None` if the node has no `itemid` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_item_id(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("itemid"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `itemid` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_item_id(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "itemid", value);
+        }
+    }
+
     // TODO(spec): muted reflects defaultMuted
 }
 
@@ -5529,5 +5891,90 @@ mod tests {
         assert_eq!(dom.get_size(select_id), Some("4"));
         dom.set_size(div_id, "4"); // no-op
         assert_eq!(dom.get_size(div_id), None);
+    }
+
+    #[test]
+    fn test_reflected_attribute_accessors_t0848() {
+        let mut dom = Dom::new();
+        let div_id = elem(&mut dom, "div");
+
+        // 1. slot
+        assert_eq!(dom.get_slot(div_id), None);
+        dom.set_slot(div_id, "main-slot");
+        assert_eq!(dom.get_slot(div_id), Some("main-slot"));
+
+        // 2. nonce
+        assert_eq!(dom.get_nonce(div_id), None);
+        dom.set_nonce(div_id, "secret-nonce");
+        assert_eq!(dom.get_nonce(div_id), Some("secret-nonce"));
+
+        // 3. popover
+        assert_eq!(dom.get_popover(div_id), None);
+        dom.set_popover(div_id, "manual");
+        assert_eq!(dom.get_popover(div_id), Some("manual"));
+
+        // 4. tabindex
+        assert_eq!(dom.get_tabindex(div_id), None);
+        dom.set_tabindex(div_id, "3");
+        assert_eq!(dom.get_tabindex(div_id), Some("3"));
+
+        // 5. hidden (boolean)
+        assert_eq!(dom.get_hidden(div_id), Some(false));
+        dom.set_hidden(div_id, true);
+        assert_eq!(dom.get_hidden(div_id), Some(true));
+        dom.set_hidden(div_id, false);
+        assert_eq!(dom.get_hidden(div_id), Some(false));
+
+        // 6. inert (boolean)
+        assert_eq!(dom.get_inert(div_id), Some(false));
+        dom.set_inert(div_id, true);
+        assert_eq!(dom.get_inert(div_id), Some(true));
+        dom.set_inert(div_id, false);
+        assert_eq!(dom.get_inert(div_id), Some(false));
+
+        // 7. autocapitalize
+        assert_eq!(dom.get_autocapitalize(div_id), None);
+        dom.set_autocapitalize(div_id, "words");
+        assert_eq!(dom.get_autocapitalize(div_id), Some("words"));
+
+        // 8. accesskey
+        assert_eq!(dom.get_accesskey(div_id), None);
+        dom.set_accesskey(div_id, "k");
+        assert_eq!(dom.get_accesskey(div_id), Some("k"));
+
+        // 9. spellcheck
+        assert_eq!(dom.get_spellcheck(div_id), None);
+        dom.set_spellcheck(div_id, "true");
+        assert_eq!(dom.get_spellcheck(div_id), Some("true"));
+
+        // 10. translate
+        assert_eq!(dom.get_translate(div_id), None);
+        dom.set_translate(div_id, "no");
+        assert_eq!(dom.get_translate(div_id), Some("no"));
+
+        // 11. draggable
+        assert_eq!(dom.get_draggable(div_id), None);
+        dom.set_draggable(div_id, "true");
+        assert_eq!(dom.get_draggable(div_id), Some("true"));
+
+        // 12. contenteditable
+        assert_eq!(dom.get_content_editable(div_id), None);
+        dom.set_content_editable(div_id, "plaintext-only");
+        assert_eq!(dom.get_content_editable(div_id), Some("plaintext-only"));
+
+        // 13. autocorrect
+        assert_eq!(dom.get_autocorrect(div_id), None);
+        dom.set_autocorrect(div_id, "off");
+        assert_eq!(dom.get_autocorrect(div_id), Some("off"));
+
+        // 14. writingsuggestions
+        assert_eq!(dom.get_writing_suggestions(div_id), None);
+        dom.set_writing_suggestions(div_id, "true");
+        assert_eq!(dom.get_writing_suggestions(div_id), Some("true"));
+
+        // 15. itemid
+        assert_eq!(dom.get_item_id(div_id), None);
+        dom.set_item_id(div_id, "urn:isbn:096139210x");
+        assert_eq!(dom.get_item_id(div_id), Some("urn:isbn:096139210x"));
     }
 }
