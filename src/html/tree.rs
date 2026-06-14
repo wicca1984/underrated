@@ -319,10 +319,14 @@ fn adjust_svg_attributes(attrs: &mut [(String, String)]) {
     }
 }
 
-fn adjust_foreign_attributes(attrs: &mut [(String, String)]) {
+fn adjust_foreign_attributes(attrs: &mut [(String, String)], is_svg: bool) {
     for (name, _) in attrs.iter_mut() {
         match name.as_str() {
-            "definitionurl" => *name = "definitionURL".to_string(),
+            "definitionurl" => {
+                if !is_svg {
+                    *name = "definitionURL".to_string();
+                }
+            }
             "xlink:actuate" => *name = "xlink actuate".to_string(),
             "xlink:arcrole" => *name = "xlink arcrole".to_string(),
             "xlink:href" => *name = "xlink href".to_string(),
@@ -330,7 +334,6 @@ fn adjust_foreign_attributes(attrs: &mut [(String, String)]) {
             "xlink:show" => *name = "xlink show".to_string(),
             "xlink:title" => *name = "xlink title".to_string(),
             "xlink:type" => *name = "xlink type".to_string(),
-            "xml:base" => *name = "xml base".to_string(),
             "xml:lang" => *name = "xml lang".to_string(),
             "xml:space" => *name = "xml space".to_string(),
             "xmlns" => *name = "xmlns".to_string(),
@@ -672,11 +675,12 @@ impl TreeBuilder {
                     let ns = self.get_node_namespace(adjusted_current_node);
 
                     let mut adjusted_name = name;
-                    if ns == Namespace::Svg {
+                    let is_svg = ns == Namespace::Svg;
+                    if is_svg {
                         adjusted_name = adjust_svg_tag_name(&adjusted_name);
                         adjust_svg_attributes(&mut attrs);
                     }
-                    adjust_foreign_attributes(&mut attrs);
+                    adjust_foreign_attributes(&mut attrs, is_svg);
 
                     let node = self.create_and_insert_element(adjusted_name.clone(), attrs);
                     if self_closing {
@@ -1021,7 +1025,7 @@ impl TreeBuilder {
                 self.tokenizer.set_last_start_tag(&name);
                 self.insertion_mode = InsertionMode::Text;
             }
-            Token::StartTag { name, attrs, .. } if name == "style" => {
+            Token::StartTag { name, attrs, .. } if name == "style" || name == "noframes" => {
                 let node = self.create_and_insert_element(name.clone(), attrs);
                 self.open_elements_push(node);
                 self.tokenizer.set_initial_state("RAWTEXT state");
@@ -1526,6 +1530,13 @@ impl TreeBuilder {
                     self.push_formatting_element(node);
                     self.open_elements_push(node);
                 }
+                "applet" | "marquee" | "object" => {
+                    self.reconstruct_active_formatting_elements();
+                    let node = self.create_and_insert_element(name, attrs);
+                    self.open_elements_push(node);
+                    self.list_of_active_formatting_elements
+                        .push(FormattingElement::Marker);
+                }
                 "table" => {
                     if !matches!(self.quirks_mode, QuirksMode::Quirks) {
                         self.close_p_element_if_in_button_scope();
@@ -1550,6 +1561,17 @@ impl TreeBuilder {
                     self.tokenizer.set_initial_state("RCDATA state");
                     self.tokenizer.set_last_start_tag(&name);
                     self.ignore_next_lf = true;
+                    self.insertion_mode = InsertionMode::Text;
+                }
+                "iframe" | "noembed" | "xmp" => {
+                    if name == "xmp" {
+                        self.close_p_element_if_in_button_scope();
+                        self.reconstruct_active_formatting_elements();
+                    }
+                    let node = self.create_and_insert_element(name.clone(), attrs);
+                    self.open_elements_push(node);
+                    self.tokenizer.set_initial_state("RAWTEXT state");
+                    self.tokenizer.set_last_start_tag(&name);
                     self.insertion_mode = InsertionMode::Text;
                 }
                 "button" => {
@@ -1815,6 +1837,12 @@ impl TreeBuilder {
                         }
                         self.pop_until_heading();
                     }
+                } else if matches!(name.as_str(), "applet" | "marquee" | "object") {
+                    if self.is_in_scope(&name) {
+                        self.generate_implied_end_tags(None);
+                        self.pop_until(&name);
+                        self.clear_active_formatting_elements_to_marker();
+                    }
                 } else if self.is_special_element(&name) {
                     if self.is_in_scope(&name) {
                         self.pop_until(&name);
@@ -1897,6 +1925,9 @@ impl TreeBuilder {
             Token::Comment(data) => {
                 let node = self.dom.create_node(NodeData::Comment(data));
                 self.dom.append_child(self.dom.document(), node);
+            }
+            Token::Character(c) if is_html_whitespace(c) => {
+                self.handle_in_body(Token::Character(c));
             }
             Token::Doctype { .. }
             | Token::Character(_)
@@ -3057,7 +3088,7 @@ impl TreeBuilder {
             adjust_svg_attributes(&mut attrs);
         }
         if target_ns == Namespace::Svg || target_ns == Namespace::Mathml {
-            adjust_foreign_attributes(&mut attrs);
+            adjust_foreign_attributes(&mut attrs, target_ns == Namespace::Svg);
         }
 
         let node = self.dom.create_node(NodeData::Element { name, attrs });
