@@ -26,18 +26,19 @@ fn get_event_timestamp() -> f64 {
 /// Spec: <https://dom.spec.whatwg.org/#event>
 #[derive(Debug, Trace, Finalize, JsData)]
 pub struct Event {
-    pub(crate) r#type: String,
+    pub(crate) r#type: GcRefCell<String>,
     pub(crate) target: GcRefCell<Option<JsValue>>,
     pub(crate) current_target: GcRefCell<Option<JsValue>>,
     pub(crate) default_prevented: GcRefCell<bool>,
     pub(crate) propagation_stopped: GcRefCell<bool>,
     pub(crate) immediate_propagation_stopped: GcRefCell<bool>,
-    pub(crate) bubbles: bool,
-    pub(crate) cancelable: bool,
-    pub(crate) composed: bool,
+    pub(crate) bubbles: GcRefCell<bool>,
+    pub(crate) cancelable: GcRefCell<bool>,
+    pub(crate) composed: GcRefCell<bool>,
     pub(crate) is_trusted: bool,
     pub(crate) event_phase: GcRefCell<u16>,
     pub(crate) time_stamp: f64,
+    pub(crate) dispatch_flag: GcRefCell<bool>,
 }
 
 impl Class for Event {
@@ -80,18 +81,19 @@ impl Class for Event {
         }
 
         Ok(Event {
-            r#type: event_type,
+            r#type: GcRefCell::new(event_type),
             target: GcRefCell::new(None),
             current_target: GcRefCell::new(None),
             default_prevented: GcRefCell::new(false),
             propagation_stopped: GcRefCell::new(false),
             immediate_propagation_stopped: GcRefCell::new(false),
-            bubbles,
-            cancelable,
-            composed,
+            bubbles: GcRefCell::new(bubbles),
+            cancelable: GcRefCell::new(cancelable),
+            composed: GcRefCell::new(composed),
             is_trusted: false,
             event_phase: GcRefCell::new(0),
             time_stamp: get_event_timestamp(),
+            dispatch_flag: GcRefCell::new(false),
         })
     }
 
@@ -136,6 +138,26 @@ impl Class for Event {
         let get_time_stamp_fn =
             FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_time_stamp))
                 .name("get timeStamp")
+                .build();
+        let get_src_element_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_src_element))
+                .name("get srcElement")
+                .build();
+        let get_return_value_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_return_value))
+                .name("get returnValue")
+                .build();
+        let set_return_value_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(set_return_value))
+                .name("set returnValue")
+                .build();
+        let get_cancel_bubble_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_cancel_bubble))
+                .name("get cancelBubble")
+                .build();
+        let set_cancel_bubble_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(set_cancel_bubble))
+                .name("set cancelBubble")
                 .build();
 
         class
@@ -199,6 +221,24 @@ impl Class for Event {
                 None,
                 Attribute::all(),
             )
+            .accessor(
+                JsString::from("srcElement"),
+                Some(get_src_element_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("returnValue"),
+                Some(get_return_value_fn),
+                Some(set_return_value_fn),
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("cancelBubble"),
+                Some(get_cancel_bubble_fn),
+                Some(set_cancel_bubble_fn),
+                Attribute::all(),
+            )
             .method(
                 JsString::from("preventDefault"),
                 0,
@@ -218,6 +258,11 @@ impl Class for Event {
                 JsString::from("composedPath"),
                 0,
                 NativeFunction::from_fn_ptr(composed_path),
+            )
+            .method(
+                JsString::from("initEvent"),
+                1,
+                NativeFunction::from_fn_ptr(init_event),
             )
             .property(JsString::from("NONE"), 0, Attribute::ENUMERABLE)
             .property(JsString::from("CAPTURING_PHASE"), 1, Attribute::ENUMERABLE)
@@ -239,7 +284,7 @@ fn get_type(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResu
     let event = obj.downcast_ref::<Event>().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
     })?;
-    Ok(JsValue::from(JsString::from(event.r#type.clone())))
+    Ok(JsValue::from(JsString::from(event.r#type.borrow().clone())))
 }
 
 fn get_target(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
@@ -291,7 +336,7 @@ fn get_bubbles(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsR
     let event = obj.downcast_ref::<Event>().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
     })?;
-    Ok(JsValue::from(event.bubbles))
+    Ok(JsValue::from(*event.bubbles.borrow()))
 }
 
 fn get_cancelable(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
@@ -301,7 +346,7 @@ fn get_cancelable(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> 
     let event = obj.downcast_ref::<Event>().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
     })?;
-    Ok(JsValue::from(event.cancelable))
+    Ok(JsValue::from(*event.cancelable.borrow()))
 }
 
 fn get_composed(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
@@ -311,7 +356,7 @@ fn get_composed(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> Js
     let event = obj.downcast_ref::<Event>().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
     })?;
-    Ok(JsValue::from(event.composed))
+    Ok(JsValue::from(*event.composed.borrow()))
 }
 
 fn get_is_trusted(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
@@ -403,6 +448,103 @@ fn composed_path(this: &JsValue, _args: &[JsValue], context: &mut Context) -> Js
     })?;
     let array_val = array_obj.construct(&[], None, context)?;
     Ok(array_val.into())
+}
+
+fn get_src_element(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    get_target(this, args, context)
+}
+
+fn get_return_value(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(!*event.default_prevented.borrow()))
+}
+
+fn set_return_value(this: &JsValue, args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    let val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let boolean_val = val.to_boolean();
+    if !boolean_val {
+        *event.default_prevented.borrow_mut() = true;
+    }
+    Ok(JsValue::undefined())
+}
+
+fn get_cancel_bubble(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(*event.propagation_stopped.borrow()))
+}
+
+fn set_cancel_bubble(
+    this: &JsValue,
+    args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    let val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let boolean_val = val.to_boolean();
+    if boolean_val {
+        *event.propagation_stopped.borrow_mut() = true;
+    }
+    Ok(JsValue::undefined())
+}
+
+fn init_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+
+    if *event.dispatch_flag.borrow() {
+        return Ok(JsValue::undefined());
+    }
+
+    let event_type = args
+        .first()
+        .cloned()
+        .unwrap_or(JsValue::undefined())
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let bubbles = args.get(1).map(|v| v.to_boolean()).unwrap_or(false);
+
+    let cancelable = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
+
+    *event.r#type.borrow_mut() = event_type;
+    *event.bubbles.borrow_mut() = bubbles;
+    *event.cancelable.borrow_mut() = cancelable;
+
+    Ok(JsValue::undefined())
 }
 
 /// The `EventTarget` interface is implemented by objects that can receive events and may have listeners for them.
@@ -595,6 +737,16 @@ pub fn remove_event_listener(
     Ok(JsValue::undefined())
 }
 
+struct DispatchFlagGuard<'a> {
+    flag: &'a GcRefCell<bool>,
+}
+
+impl<'a> Drop for DispatchFlagGuard<'a> {
+    fn drop(&mut self) {
+        *self.flag.borrow_mut() = false;
+    }
+}
+
 pub fn dispatch_event(
     this: &JsValue,
     args: &[JsValue],
@@ -614,6 +766,12 @@ pub fn dispatch_event(
 
     // Try to downcast to our Event class
     if let Some(event) = event_obj.downcast_ref::<Event>() {
+        // Set dispatch flag
+        *event.dispatch_flag.borrow_mut() = true;
+        let _guard = DispatchFlagGuard {
+            flag: &event.dispatch_flag,
+        };
+
         // Set target and current_target
         *event.target.borrow_mut() = Some(this.clone());
         *event.current_target.borrow_mut() = Some(this.clone());
@@ -622,7 +780,8 @@ pub fn dispatch_event(
         let mut listeners_to_call = Vec::new();
         if let Some(event_target) = obj.downcast_ref::<EventTarget>() {
             let listeners = event_target.listeners.borrow();
-            if let Some(list) = listeners.get(&event.r#type) {
+            let event_type_ref = event.r#type.borrow();
+            if let Some(list) = listeners.get(&*event_type_ref) {
                 listeners_to_call = list.clone();
             }
         } else {
@@ -630,7 +789,8 @@ pub fn dispatch_event(
             let events_prop = JsString::from("__events__");
             let events_val = obj.get(events_prop.clone(), context)?;
             if let Some(events_obj) = events_val.as_object() {
-                let type_prop = JsString::from(event.r#type.as_str());
+                let event_type_ref = event.r#type.borrow();
+                let type_prop = JsString::from(event_type_ref.as_str());
                 let handlers_val = events_obj.get(type_prop.clone(), context)?;
                 if let Some(handlers_obj) = handlers_val.as_object() {
                     let length_val = handlers_obj.get(JsString::from("length"), context)?;
@@ -848,5 +1008,124 @@ mod tests {
         let arr = res.as_object().unwrap();
         assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true)); // called1 should be true
         assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(false)); // called2 should be false because of stopImmediatePropagation!
+    }
+
+    #[test]
+    fn test_extended_event_idl_properties() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        // 1. Check srcElement getter before, during, and after dispatch
+        let script = "{
+            let target = new EventTarget();
+            let ev = new Event('custom');
+            let initial_src = ev.srcElement; // null
+
+            let src_during = null;
+            target.addEventListener('custom', () => {
+                src_during = ev.srcElement;
+            });
+            target.dispatchEvent(ev);
+            let final_src = ev.srcElement; // target
+            [initial_src === null, src_during === target, final_src === target];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true));
+
+        // 2. Check returnValue getter/setter
+        let script = "{
+            let ev = new Event('custom');
+            let initial_ret = ev.returnValue; // true
+            ev.preventDefault();
+            let ret_after_prevent = ev.returnValue; // false
+
+            let ev2 = new Event('custom');
+            ev2.returnValue = false;
+            let prevent_after_ret = ev2.defaultPrevented; // true
+
+            let ev3 = new Event('custom');
+            ev3.returnValue = true; // should do nothing
+            let prevent_after_ret_true = ev3.defaultPrevented; // false
+            [initial_ret, ret_after_prevent, prevent_after_ret, prevent_after_ret_true];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(false));
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(3, &mut context).unwrap().as_boolean(), Some(false));
+
+        // 3. Check cancelBubble getter/setter
+        let script = "{
+            let ev = new Event('custom');
+            let initial_bubble = ev.cancelBubble; // false
+            ev.stopPropagation();
+            let bubble_after_stop = ev.cancelBubble; // true
+
+            let ev2 = new Event('custom');
+            ev2.cancelBubble = true;
+            let bubble_after_set = ev2.cancelBubble; // true
+
+            let ev3 = new Event('custom');
+            ev3.cancelBubble = false; // should do nothing
+            let bubble_after_set_false = ev3.cancelBubble; // false
+            [initial_bubble, bubble_after_stop, bubble_after_set, bubble_after_set_false];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(false));
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(3, &mut context).unwrap().as_boolean(), Some(false));
+
+        // 4. Check initEvent method
+        let script = "{
+            let ev = new Event('foo');
+            ev.initEvent('bar', true, true);
+            [ev.type, ev.bubbles, ev.cancelable];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(
+            arr.get(0, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap(),
+            "bar"
+        );
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true));
+
+        // 5. Check initEvent cannot be called during dispatch
+        let script = "{
+            let target = new EventTarget();
+            let ev = new Event('custom');
+            let init_attempt_failed = false;
+            target.addEventListener('custom', () => {
+                ev.initEvent('hacked', true, true);
+                if (ev.type !== 'custom') {
+                    init_attempt_failed = true;
+                }
+            });
+            target.dispatchEvent(ev);
+            [ev.type, init_attempt_failed];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(
+            arr.get(0, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap(),
+            "custom" // type should remain unchanged
+        );
     }
 }
