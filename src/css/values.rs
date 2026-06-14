@@ -47,6 +47,13 @@ pub enum ColumnSpanValue {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum ColumnFillValue {
+    Auto,
+    Balance,
+    BalanceAll,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum DisplayValue {
     Block,
     Inline,
@@ -1906,6 +1913,7 @@ pub enum CssValue {
     Overflow(OverflowValue),
     BoxSizing(BoxSizingValue),
     ColumnSpan(ColumnSpanValue),
+    ColumnFill(ColumnFillValue),
     Display(DisplayValue),
     FlexDirection(FlexDirectionValue),
     JustifyContent(JustifyContentValue),
@@ -2019,6 +2027,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "overflow-y"
             | "box-sizing"
             | "column-span"
+            | "column-fill"
             | "display"
             | "flex-direction"
             | "justify-content"
@@ -2281,6 +2290,16 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 matches!(kw.to_ascii_lowercase().as_str(), "none" | "all")
             }
             CssValue::ColumnSpan(_) => true,
+            _ => false,
+        },
+        "column-fill" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "balance" | "balance-all"
+                )
+            }
+            CssValue::ColumnFill(_) => true,
             _ => false,
         },
         "display" => match value {
@@ -3432,6 +3451,19 @@ pub fn parse_property_value(
                     _ => return None,
                 };
                 Some(CssValue::ColumnSpan(typed))
+            } else {
+                None
+            }
+        }
+        "column-fill" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "auto" => ColumnFillValue::Auto,
+                    "balance" => ColumnFillValue::Balance,
+                    "balance-all" => ColumnFillValue::BalanceAll,
+                    _ => return None,
+                };
+                Some(CssValue::ColumnFill(typed))
             } else {
                 None
             }
@@ -5213,6 +5245,63 @@ mod tests {
             parse_property_value(
                 "column-span",
                 &[token(CssToken::Ident("invalid-column-span".to_string()))]
+            ),
+            None
+        );
+
+        // Test column-fill
+        assert!(is_known_layout_property("column-fill"));
+        assert!(is_known_layout_property("Column-Fill"));
+        assert!(is_valid_property_value(
+            "column-fill",
+            &CssValue::ColumnFill(ColumnFillValue::Auto)
+        ));
+        assert!(is_valid_property_value(
+            "column-fill",
+            &CssValue::ColumnFill(ColumnFillValue::Balance)
+        ));
+        assert!(is_valid_property_value(
+            "column-fill",
+            &CssValue::ColumnFill(ColumnFillValue::BalanceAll)
+        ));
+        assert!(is_valid_property_value(
+            "column-fill",
+            &CssValue::Keyword("auto".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "column-fill",
+            &CssValue::Keyword("balance".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "column-fill",
+            &CssValue::Keyword("balance-all".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "column-fill",
+            &CssValue::Keyword("invalid-column-fill".to_string())
+        ));
+        assert_eq!(
+            parse_property_value("column-fill", &[token(CssToken::Ident("auto".to_string()))]),
+            Some(CssValue::ColumnFill(ColumnFillValue::Auto))
+        );
+        assert_eq!(
+            parse_property_value(
+                "column-fill",
+                &[token(CssToken::Ident("balance".to_string()))]
+            ),
+            Some(CssValue::ColumnFill(ColumnFillValue::Balance))
+        );
+        assert_eq!(
+            parse_property_value(
+                "column-fill",
+                &[token(CssToken::Ident("balance-all".to_string()))]
+            ),
+            Some(CssValue::ColumnFill(ColumnFillValue::BalanceAll))
+        );
+        assert_eq!(
+            parse_property_value(
+                "column-fill",
+                &[token(CssToken::Ident("invalid-column-fill".to_string()))]
             ),
             None
         );
