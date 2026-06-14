@@ -1119,4 +1119,189 @@ mod tests {
             Some("hello world".into())
         );
     }
+
+    #[test]
+    fn test_split_text_extreme_offsets() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(parent, text_node);
+
+        // Split at offset 0
+        let new_node_start = dom.split_text(text_node, 0).unwrap();
+        assert_eq!(dom.character_data(text_node), Some("".into()));
+        assert_eq!(dom.character_data(new_node_start), Some("hello".into()));
+        assert_eq!(dom.children(parent), vec![text_node, new_node_start]);
+
+        // Now split new_node_start ("hello") at offset 5 (end)
+        let new_node_end = dom.split_text(new_node_start, 5).unwrap();
+        assert_eq!(dom.character_data(new_node_start), Some("hello".into()));
+        assert_eq!(dom.character_data(new_node_end), Some("".into()));
+        assert_eq!(
+            dom.children(parent),
+            vec![text_node, new_node_start, new_node_end]
+        );
+
+        // Split with UTF-16 surrogate pair "a🦊b"
+        let foxy = dom.create_node(NodeData::Text("a🦊b".into()));
+        let p2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(p2, foxy);
+
+        // Split at offset 1 (before 🦊)
+        let foxy_right = dom.split_text(foxy, 1).unwrap();
+        assert_eq!(dom.character_data(foxy), Some("a".into()));
+        assert_eq!(dom.character_data(foxy_right), Some("🦊b".into()));
+
+        // Split at offset 3 (after 🦊, which is index 2 in foxy_right since 🦊 has length 2)
+        let b_node = dom.split_text(foxy_right, 2).unwrap();
+        assert_eq!(dom.character_data(foxy_right), Some("🦊".into()));
+        assert_eq!(dom.character_data(b_node), Some("b".into()));
+        assert_eq!(dom.children(p2), vec![foxy, foxy_right, b_node]);
+    }
+
+    #[test]
+    fn test_normalize_complex_trees() {
+        let mut dom = Dom::new();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        let span2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+
+        dom.append_child(div, span1);
+        dom.append_child(div, span2);
+
+        // Children of span1: empty, "hello", empty
+        let t1 = dom.create_node(NodeData::Text("".into()));
+        let t2 = dom.create_node(NodeData::Text("hello".into()));
+        let t3 = dom.create_node(NodeData::Text("".into()));
+        dom.append_child(span1, t1);
+        dom.append_child(span1, t2);
+        dom.append_child(span1, t3);
+
+        // Children of span2: empty, empty, empty, "world", "!", empty
+        let t4 = dom.create_node(NodeData::Text("".into()));
+        let t5 = dom.create_node(NodeData::Text("".into()));
+        let t6 = dom.create_node(NodeData::Text("".into()));
+        let t7 = dom.create_node(NodeData::Text("world".into()));
+        let t8 = dom.create_node(NodeData::Text("!".into()));
+        let t9 = dom.create_node(NodeData::Text("".into()));
+        dom.append_child(span2, t4);
+        dom.append_child(span2, t5);
+        dom.append_child(span2, t6);
+        dom.append_child(span2, t7);
+        dom.append_child(span2, t8);
+        dom.append_child(span2, t9);
+
+        // Normalize from div root
+        dom.normalize(div);
+
+        // span1 should have exactly one child: t2 with "hello"
+        let children1 = dom.children(span1);
+        assert_eq!(children1.len(), 1);
+        assert_eq!(children1[0], t2);
+        assert_eq!(dom.character_data(t2), Some("hello".into()));
+
+        // span2 should have exactly one child: t7 with "world!"
+        let children2 = dom.children(span2);
+        assert_eq!(children2.len(), 1);
+        assert_eq!(children2[0], t7);
+        assert_eq!(dom.character_data(t7), Some("world!".into()));
+
+        // Normalize of empty contiguous text nodes
+        let p3 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let e1 = dom.create_node(NodeData::Text("".into()));
+        let e2 = dom.create_node(NodeData::Text("".into()));
+        dom.append_child(p3, e1);
+        dom.append_child(p3, e2);
+        assert_eq!(dom.children(p3).len(), 2);
+        dom.normalize(p3);
+        assert_eq!(dom.children(p3).len(), 0);
+
+        // Normalize with Comment separator: [Text("hello"), Comment("foo"), Text("world")]
+        let p4 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        let text1 = dom.create_node(NodeData::Text("hello".into()));
+        let comment = dom.create_node(NodeData::Comment("foo".into()));
+        let text2 = dom.create_node(NodeData::Text("world".into()));
+        dom.append_child(p4, text1);
+        dom.append_child(p4, comment);
+        dom.append_child(p4, text2);
+        assert_eq!(dom.children(p4).len(), 3);
+        dom.normalize(p4);
+        // They should NOT merge because the Comment is in-between
+        assert_eq!(dom.children(p4).len(), 3);
+        assert_eq!(dom.character_data(text1), Some("hello".into()));
+        assert_eq!(dom.character_data(text2), Some("world".into()));
+    }
+
+    #[test]
+    fn test_replace_whole_text_with_separators() {
+        let mut dom = Dom::new();
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+
+        let t1 = dom.create_node(NodeData::Text("a".into()));
+        let c1 = dom.create_node(NodeData::Comment("comment".into()));
+        let t2 = dom.create_node(NodeData::Text("b".into()));
+
+        dom.append_child(parent, t1);
+        dom.append_child(parent, c1);
+        dom.append_child(parent, t2);
+
+        // Call replace_whole_text on t1
+        let res = dom.replace_whole_text(t1, "xyz").unwrap();
+        assert_eq!(res, Some(t1));
+        assert_eq!(dom.character_data(t1), Some("xyz".into()));
+
+        // Since c1 is a Comment, it is a non-Text boundary, so t2 should NOT be removed!
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 3);
+        assert_eq!(children[0], t1);
+        assert_eq!(children[1], c1);
+        assert_eq!(children[2], t2);
+    }
+
+    #[test]
+    fn test_character_data_extreme_clamping() {
+        let mut dom = Dom::new();
+        let text_node = dom.create_node(NodeData::Text("hello".into()));
+
+        // substring_data with count = usize::MAX
+        assert_eq!(
+            dom.substring_data(text_node, 2, usize::MAX),
+            Ok("llo".into())
+        );
+
+        // replace_data with count = usize::MAX
+        assert_eq!(
+            dom.replace_data(text_node, 1, usize::MAX, "ippopotamus"),
+            Ok(())
+        );
+        assert_eq!(dom.character_data(text_node), Some("hippopotamus".into()));
+
+        // delete_data with count = usize::MAX
+        assert_eq!(dom.delete_data(text_node, 1, usize::MAX), Ok(()));
+        assert_eq!(dom.character_data(text_node), Some("h".into()));
+    }
 }
