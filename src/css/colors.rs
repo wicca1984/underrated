@@ -256,10 +256,10 @@ pub fn parse_hsl(h: f32, s: f32, l: f32, a: f32) -> Color {
     };
 
     Color::Rgba(
-        (r * 255.0).round() as u8,
-        (g * 255.0).round() as u8,
-        (b * 255.0).round() as u8,
-        (a * 255.0).round() as u8,
+        (r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b * 255.0).round().clamp(0.0, 255.0) as u8,
+        (a * 255.0).round().clamp(0.0, 255.0) as u8,
     )
 }
 
@@ -664,7 +664,7 @@ pub fn color_to_oklch(color: Color) -> (f32, f32, f32, f32) {
 }
 
 /// Parses a CSS color string into a Color.
-/// Supports hex colors (#RGB, #RGBA, #RRGGBB, #RRGGBBAA) and named/system colors.
+/// Supports hex colors (#RGB, #RGBA, #RRGGBB, #RRGGBBAA), functional notations, and named/system colors.
 /// Spec: <https://www.w3.org/TR/css-color-4/#color-syntax>
 pub fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
@@ -710,7 +710,626 @@ pub fn parse_color(s: &str) -> Option<Color> {
             _ => None,
         }
     } else {
+        let s_lower = s.to_ascii_lowercase();
+        if s.ends_with(')') {
+            if s_lower.starts_with("rgb(") || s_lower.starts_with("rgba(") {
+                let start = if s_lower.starts_with("rgba(") { 5 } else { 4 };
+                let content = s[start..s.len() - 1].trim();
+                let content_clean = content.replace('/', " ");
+                let parts: Vec<&str> = if content_clean.contains(',') {
+                    content_clean.split(',').map(|p| p.trim()).collect()
+                } else {
+                    content_clean.split_whitespace().collect()
+                };
+                if parts.len() >= 3 {
+                    let r = parse_rgb_component(parts[0])?;
+                    let g = parse_rgb_component(parts[1])?;
+                    let b = parse_rgb_component(parts[2])?;
+                    let alpha = if parts.len() >= 4 {
+                        parse_alpha_component(parts[3])?
+                    } else {
+                        1.0
+                    };
+                    return Some(Color::Rgba(
+                        r.clamp(0.0, 255.0).round() as u8,
+                        g.clamp(0.0, 255.0).round() as u8,
+                        b.clamp(0.0, 255.0).round() as u8,
+                        (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    ));
+                }
+            } else if s_lower.starts_with("hsl(") || s_lower.starts_with("hsla(") {
+                let start = if s_lower.starts_with("hsla(") { 5 } else { 4 };
+                let content = s[start..s.len() - 1].trim();
+                let content_clean = content.replace('/', " ");
+                let parts: Vec<&str> = if content_clean.contains(',') {
+                    content_clean.split(',').map(|p| p.trim()).collect()
+                } else {
+                    content_clean.split_whitespace().collect()
+                };
+                if parts.len() >= 3 {
+                    let h = parse_hue_angle(parts[0])?;
+                    let s_val = parse_percentage_or_number(parts[1])?;
+                    let l = parse_percentage_or_number(parts[2])?;
+                    let alpha = if parts.len() >= 4 {
+                        parse_alpha_component(parts[3])?
+                    } else {
+                        1.0
+                    };
+                    return Some(parse_hsl(h, s_val, l, alpha));
+                }
+            } else if s_lower.starts_with("hwb(") {
+                let content = s[4..s.len() - 1].trim();
+                let content_clean = content.replace('/', " ");
+                let parts: Vec<&str> = if content_clean.contains(',') {
+                    content_clean.split(',').map(|p| p.trim()).collect()
+                } else {
+                    content_clean.split_whitespace().collect()
+                };
+                if parts.len() >= 3 {
+                    let h = parse_hue_angle(parts[0])?;
+                    let w = parse_percentage_or_number(parts[1])?;
+                    let b = parse_percentage_or_number(parts[2])?;
+                    let alpha = if parts.len() >= 4 {
+                        parse_alpha_component(parts[3])?
+                    } else {
+                        1.0
+                    };
+                    return Some(parse_hwb(h, w, b, alpha));
+                }
+            } else if s_lower.starts_with("lab(") {
+                let content = s[4..s.len() - 1].trim();
+                let content_clean = content.replace('/', " ");
+                let parts: Vec<&str> = if content_clean.contains(',') {
+                    content_clean.split(',').map(|p| p.trim()).collect()
+                } else {
+                    content_clean.split_whitespace().collect()
+                };
+                if parts.len() >= 3 {
+                    let l = parse_lab_lightness(parts[0])?;
+                    let a = parse_lab_ab(parts[1])?;
+                    let b = parse_lab_ab(parts[2])?;
+                    let alpha = if parts.len() >= 4 {
+                        parse_alpha_component(parts[3])?
+                    } else {
+                        1.0
+                    };
+                    return Some(parse_lab(l, a, b, alpha));
+                }
+            } else if s_lower.starts_with("lch(") {
+                let content = s[4..s.len() - 1].trim();
+                let content_clean = content.replace('/', " ");
+                let parts: Vec<&str> = if content_clean.contains(',') {
+                    content_clean.split(',').map(|p| p.trim()).collect()
+                } else {
+                    content_clean.split_whitespace().collect()
+                };
+                if parts.len() >= 3 {
+                    let l = parse_lab_lightness(parts[0])?;
+                    let c = parse_lch_chroma(parts[1])?;
+                    let h = parse_hue_angle(parts[2])?;
+                    let alpha = if parts.len() >= 4 {
+                        parse_alpha_component(parts[3])?
+                    } else {
+                        1.0
+                    };
+                    return Some(parse_lch(l, c, h, alpha));
+                }
+            } else if s_lower.starts_with("oklab(") {
+                let content = s[6..s.len() - 1].trim();
+                let content_clean = content.replace('/', " ");
+                let parts: Vec<&str> = if content_clean.contains(',') {
+                    content_clean.split(',').map(|p| p.trim()).collect()
+                } else {
+                    content_clean.split_whitespace().collect()
+                };
+                if parts.len() >= 3 {
+                    let l = parse_percentage_or_number(parts[0])?;
+                    let a = parse_oklab_ab(parts[1])?;
+                    let b = parse_oklab_ab(parts[2])?;
+                    let alpha = if parts.len() >= 4 {
+                        parse_alpha_component(parts[3])?
+                    } else {
+                        1.0
+                    };
+                    return Some(parse_oklab(l, a, b, alpha));
+                }
+            } else if s_lower.starts_with("oklch(") {
+                let content = s[6..s.len() - 1].trim();
+                let content_clean = content.replace('/', " ");
+                let parts: Vec<&str> = if content_clean.contains(',') {
+                    content_clean.split(',').map(|p| p.trim()).collect()
+                } else {
+                    content_clean.split_whitespace().collect()
+                };
+                if parts.len() >= 3 {
+                    let l = parse_percentage_or_number(parts[0])?;
+                    let c = parse_oklch_chroma(parts[1])?;
+                    let h = parse_hue_angle(parts[2])?;
+                    let alpha = if parts.len() >= 4 {
+                        parse_alpha_component(parts[3])?
+                    } else {
+                        1.0
+                    };
+                    return Some(parse_oklch(l, c, h, alpha));
+                }
+            }
+        }
         named_color(s)
+    }
+}
+
+fn parse_hue_angle(part: &str) -> Option<f32> {
+    let part = part.trim().to_ascii_lowercase();
+    if part == "none" {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix("deg") {
+        stripped.parse::<f32>().ok()
+    } else if let Some(stripped) = part.strip_suffix("rad") {
+        let rad = stripped.parse::<f32>().ok()?;
+        Some(rad.to_degrees())
+    } else if let Some(stripped) = part.strip_suffix("grad") {
+        let grad = stripped.parse::<f32>().ok()?;
+        Some(grad * 0.9)
+    } else if let Some(stripped) = part.strip_suffix("turn") {
+        let turn = stripped.parse::<f32>().ok()?;
+        Some(turn * 360.0)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_rgb_component(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        let p = stripped.parse::<f32>().ok()?;
+        Some((p / 100.0) * 255.0)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_alpha_component(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        let p = stripped.parse::<f32>().ok()?;
+        Some(p / 100.0)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_percentage_or_number(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        let p = stripped.parse::<f32>().ok()?;
+        Some(p / 100.0)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_lab_lightness(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        stripped.parse::<f32>().ok()
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_oklab_ab(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        let p = stripped.parse::<f32>().ok()?;
+        Some((p / 100.0) * 0.4)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_lab_ab(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        let p = stripped.parse::<f32>().ok()?;
+        Some((p / 100.0) * 125.0)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_lch_chroma(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        let p = stripped.parse::<f32>().ok()?;
+        Some((p / 100.0) * 150.0)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn parse_oklch_chroma(part: &str) -> Option<f32> {
+    let part = part.trim();
+    if part.eq_ignore_ascii_case("none") {
+        return Some(0.0);
+    }
+    if let Some(stripped) = part.strip_suffix('%') {
+        let p = stripped.parse::<f32>().ok()?;
+        Some((p / 100.0) * 0.4)
+    } else {
+        part.parse::<f32>().ok()
+    }
+}
+
+fn interpolate_hue(h1: f32, h2: f32, t: f32, method: &str) -> f32 {
+    let h1 = if h1.is_finite() { h1 } else { 0.0 };
+    let h2 = if h2.is_finite() { h2 } else { 0.0 };
+
+    let mut theta1 = h1 % 360.0;
+    if theta1 < 0.0 {
+        theta1 += 360.0;
+    }
+    let mut theta2 = h2 % 360.0;
+    if theta2 < 0.0 {
+        theta2 += 360.0;
+    }
+
+    match method.to_ascii_lowercase().as_str() {
+        "shorter" => {
+            let diff = theta2 - theta1;
+            if diff > 180.0 {
+                theta2 -= 360.0;
+            } else if diff < -180.0 {
+                theta2 += 360.0;
+            }
+        }
+        "longer" => {
+            let diff = theta2 - theta1;
+            if diff > 0.0 && diff < 180.0 {
+                theta2 -= 360.0;
+            } else if diff <= 0.0 && diff > -180.0 {
+                theta2 += 360.0;
+            }
+        }
+        "increasing" if theta2 < theta1 => {
+            theta2 += 360.0;
+        }
+        "decreasing" if theta2 > theta1 => {
+            theta2 -= 360.0;
+        }
+        _ => {} // "specified"
+    }
+
+    let mut h = theta1 * (1.0 - t) + theta2 * t;
+    h %= 360.0;
+    if h < 0.0 {
+        h += 360.0;
+    }
+    h
+}
+
+/// Interpolates between two colors in a given color space.
+/// weight is the weight of color2 in the range [0.0, 1.0].
+/// Spec: <https://www.w3.org/TR/css-color-4/#interpolation>
+pub fn mix_colors(
+    color1: Color,
+    color2: Color,
+    weight: f32,
+    colorspace: &str,
+    hue_method: Option<&str>,
+) -> Option<Color> {
+    let t = if weight.is_finite() { weight } else { 0.5 }.clamp(0.0, 1.0);
+    let hue_method = hue_method.unwrap_or("shorter");
+
+    match colorspace.to_ascii_lowercase().as_str() {
+        "srgb" => {
+            let Color::Rgba(r1, g1, b1, a1) = color1;
+            let Color::Rgba(r2, g2, b2, a2) = color2;
+
+            let r1 = r1 as f32 / 255.0;
+            let g1 = g1 as f32 / 255.0;
+            let b1 = b1 as f32 / 255.0;
+            let a1 = a1 as f32 / 255.0;
+
+            let r2 = r2 as f32 / 255.0;
+            let g2 = g2 as f32 / 255.0;
+            let b2 = b2 as f32 / 255.0;
+            let a2 = a2 as f32 / 255.0;
+
+            let pr1 = r1 * a1;
+            let pg1 = g1 * a1;
+            let pb1 = b1 * a1;
+
+            let pr2 = r2 * a2;
+            let pg2 = g2 * a2;
+            let pb2 = b2 * a2;
+
+            let a_mix = a1 * (1.0 - t) + a2 * t;
+
+            let pr_mix = pr1 * (1.0 - t) + pr2 * t;
+            let pg_mix = pg1 * (1.0 - t) + pg2 * t;
+            let pb_mix = pb1 * (1.0 - t) + pb2 * t;
+
+            let (r, g, b) = if a_mix > 0.0 {
+                (pr_mix / a_mix, pg_mix / a_mix, pb_mix / a_mix)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+            Some(Color::Rgba(
+                (r * 255.0).round().clamp(0.0, 255.0) as u8,
+                (g * 255.0).round().clamp(0.0, 255.0) as u8,
+                (b * 255.0).round().clamp(0.0, 255.0) as u8,
+                (a_mix * 255.0).round().clamp(0.0, 255.0) as u8,
+            ))
+        }
+        "srgb-linear" | "linear-srgb" => {
+            let Color::Rgba(r1, g1, b1, a1) = color1;
+            let Color::Rgba(r2, g2, b2, a2) = color2;
+
+            let r1 = srgb_to_linear(r1);
+            let g1 = srgb_to_linear(g1);
+            let b1 = srgb_to_linear(b1);
+            let a1 = a1 as f32 / 255.0;
+
+            let r2 = srgb_to_linear(r2);
+            let g2 = srgb_to_linear(g2);
+            let b2 = srgb_to_linear(b2);
+            let a2 = a2 as f32 / 255.0;
+
+            let pr1 = r1 * a1;
+            let pg1 = g1 * a1;
+            let pb1 = b1 * a1;
+
+            let pr2 = r2 * a2;
+            let pg2 = g2 * a2;
+            let pb2 = b2 * a2;
+
+            let a_mix = a1 * (1.0 - t) + a2 * t;
+
+            let pr_mix = pr1 * (1.0 - t) + pr2 * t;
+            let pg_mix = pg1 * (1.0 - t) + pg2 * t;
+            let pb_mix = pb1 * (1.0 - t) + pb2 * t;
+
+            let (r_lin, g_lin, b_lin) = if a_mix > 0.0 {
+                (pr_mix / a_mix, pg_mix / a_mix, pb_mix / a_mix)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+            Some(Color::Rgba(
+                linear_to_srgb(r_lin),
+                linear_to_srgb(g_lin),
+                linear_to_srgb(b_lin),
+                (a_mix * 255.0).round().clamp(0.0, 255.0) as u8,
+            ))
+        }
+        "lab" => {
+            let (l1, a1_val, b1_val, alpha1) = color_to_lab(color1);
+            let (l2, a2_val, b2_val, alpha2) = color_to_lab(color2);
+
+            let pl1 = l1 * alpha1;
+            let pa1 = a1_val * alpha1;
+            let pb1 = b1_val * alpha1;
+
+            let pl2 = l2 * alpha2;
+            let pa2 = a2_val * alpha2;
+            let pb2 = b2_val * alpha2;
+
+            let a_mix = alpha1 * (1.0 - t) + alpha2 * t;
+
+            let (l, a, b) = if a_mix > 0.0 {
+                (
+                    pl1 * (1.0 - t) + pl2 * t,
+                    pa1 * (1.0 - t) + pa2 * t,
+                    pb1 * (1.0 - t) + pb2 * t,
+                )
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+            let (l_unpre, a_unpre, b_unpre) = if a_mix > 0.0 {
+                (l / a_mix, a / a_mix, b / a_mix)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+            Some(parse_lab(l_unpre, a_unpre, b_unpre, a_mix))
+        }
+        "oklab" => {
+            let (l1, a1_val, b1_val, alpha1) = color_to_oklab(color1);
+            let (l2, a2_val, b2_val, alpha2) = color_to_oklab(color2);
+
+            let pl1 = l1 * alpha1;
+            let pa1 = a1_val * alpha1;
+            let pb1 = b1_val * alpha1;
+
+            let pl2 = l2 * alpha2;
+            let pa2 = a2_val * alpha2;
+            let pb2 = b2_val * alpha2;
+
+            let a_mix = alpha1 * (1.0 - t) + alpha2 * t;
+
+            let (l, a, b) = if a_mix > 0.0 {
+                (
+                    pl1 * (1.0 - t) + pl2 * t,
+                    pa1 * (1.0 - t) + pa2 * t,
+                    pb1 * (1.0 - t) + pb2 * t,
+                )
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+            let (l_unpre, a_unpre, b_unpre) = if a_mix > 0.0 {
+                (l / a_mix, a / a_mix, b / a_mix)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+            Some(parse_oklab(l_unpre, a_unpre, b_unpre, a_mix))
+        }
+        "lch" => {
+            let (l1, c1, mut h1, alpha1) = color_to_lch(color1);
+            let (l2, c2, mut h2, alpha2) = color_to_lch(color2);
+
+            if c1 < 0.0001 {
+                h1 = h2;
+            }
+            if c2 < 0.0001 {
+                h2 = h1;
+            }
+
+            let pl1 = l1 * alpha1;
+            let pc1 = c1 * alpha1;
+
+            let pl2 = l2 * alpha2;
+            let pc2 = c2 * alpha2;
+
+            let a_mix = alpha1 * (1.0 - t) + alpha2 * t;
+
+            let l_unpre = if a_mix > 0.0 {
+                (pl1 * (1.0 - t) + pl2 * t) / a_mix
+            } else {
+                l1 * (1.0 - t) + l2 * t
+            };
+
+            let c_unpre = if a_mix > 0.0 {
+                (pc1 * (1.0 - t) + pc2 * t) / a_mix
+            } else {
+                c1 * (1.0 - t) + c2 * t
+            };
+
+            let h_mix = interpolate_hue(h1, h2, t, hue_method);
+
+            Some(parse_lch(l_unpre, c_unpre, h_mix, a_mix))
+        }
+        "oklch" => {
+            let (l1, c1, mut h1, alpha1) = color_to_oklch(color1);
+            let (l2, c2, mut h2, alpha2) = color_to_oklch(color2);
+
+            if c1 < 0.0001 {
+                h1 = h2;
+            }
+            if c2 < 0.0001 {
+                h2 = h1;
+            }
+
+            let pl1 = l1 * alpha1;
+            let pc1 = c1 * alpha1;
+
+            let pl2 = l2 * alpha2;
+            let pc2 = c2 * alpha2;
+
+            let a_mix = alpha1 * (1.0 - t) + alpha2 * t;
+
+            let l_unpre = if a_mix > 0.0 {
+                (pl1 * (1.0 - t) + pl2 * t) / a_mix
+            } else {
+                l1 * (1.0 - t) + l2 * t
+            };
+
+            let c_unpre = if a_mix > 0.0 {
+                (pc1 * (1.0 - t) + pc2 * t) / a_mix
+            } else {
+                c1 * (1.0 - t) + c2 * t
+            };
+
+            let h_mix = interpolate_hue(h1, h2, t, hue_method);
+
+            Some(parse_oklch(l_unpre, c_unpre, h_mix, a_mix))
+        }
+        "hsl" => {
+            let (mut h1, s1, l1, alpha1) = color_to_hsl(color1);
+            let (mut h2, s2, l2, alpha2) = color_to_hsl(color2);
+
+            if s1 < 0.0001 {
+                h1 = h2;
+            }
+            if s2 < 0.0001 {
+                h2 = h1;
+            }
+
+            let ps1 = s1 * alpha1;
+            let pl1 = l1 * alpha1;
+
+            let ps2 = s2 * alpha2;
+            let pl2 = l2 * alpha2;
+
+            let a_mix = alpha1 * (1.0 - t) + alpha2 * t;
+
+            let s_unpre = if a_mix > 0.0 {
+                (ps1 * (1.0 - t) + ps2 * t) / a_mix
+            } else {
+                s1 * (1.0 - t) + s2 * t
+            };
+
+            let l_unpre = if a_mix > 0.0 {
+                (pl1 * (1.0 - t) + pl2 * t) / a_mix
+            } else {
+                l1 * (1.0 - t) + l2 * t
+            };
+
+            let h_mix = interpolate_hue(h1, h2, t, hue_method);
+
+            Some(parse_hsl(h_mix, s_unpre, l_unpre, a_mix))
+        }
+        "hwb" => {
+            let (mut h1, w1, b1, alpha1) = color_to_hwb(color1);
+            let (mut h2, w2, b2, alpha2) = color_to_hwb(color2);
+
+            if w1 + b1 >= 0.9999 {
+                h1 = h2;
+            }
+            if w2 + b2 >= 0.9999 {
+                h2 = h1;
+            }
+
+            let pw1 = w1 * alpha1;
+            let pb1 = b1 * alpha1;
+
+            let pw2 = w2 * alpha2;
+            let pb2 = b2 * alpha2;
+
+            let a_mix = alpha1 * (1.0 - t) + alpha2 * t;
+
+            let w_unpre = if a_mix > 0.0 {
+                (pw1 * (1.0 - t) + pw2 * t) / a_mix
+            } else {
+                w1 * (1.0 - t) + w2 * t
+            };
+
+            let b_unpre = if a_mix > 0.0 {
+                (pb1 * (1.0 - t) + pb2 * t) / a_mix
+            } else {
+                b1 * (1.0 - t) + b2 * t
+            };
+
+            let h_mix = interpolate_hue(h1, h2, t, hue_method);
+
+            Some(parse_hwb(h_mix, w_unpre, b_unpre, a_mix))
+        }
+        _ => None,
     }
 }
 
@@ -1053,5 +1672,125 @@ mod tests {
         assert_eq!(parse_color(""), None);
         assert_eq!(parse_color("   "), None);
         assert_eq!(parse_color("not-a-color"), None);
+    }
+
+    #[test]
+    fn test_parse_color_functional() {
+        // RGB & RGBA
+        assert_eq!(
+            parse_color("rgb(255, 0, 0)"),
+            Some(Color::Rgba(255, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("rgba(0 255 0 / 0.5)"),
+            Some(Color::Rgba(0, 255, 0, 128))
+        );
+        assert_eq!(
+            parse_color("rgb(100% 100% 100%)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("rgba(0, 0, 255, 20%)"),
+            Some(Color::Rgba(0, 0, 255, 51))
+        );
+
+        // HSL & HSLA
+        assert_eq!(
+            parse_color("hsl(0, 100%, 50%)"),
+            Some(Color::Rgba(255, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("hsl(120deg 100% 50% / 50%)"),
+            Some(Color::Rgba(0, 255, 0, 128))
+        );
+        assert_eq!(
+            parse_color("hsla(240, 100%, 50%, 0.2)"),
+            Some(Color::Rgba(0, 0, 255, 51))
+        );
+
+        // HWB
+        assert_eq!(
+            parse_color("hwb(0, 0%, 0%)"),
+            Some(Color::Rgba(255, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_color("hwb(120deg 0% 0% / 0.5)"),
+            Some(Color::Rgba(0, 255, 0, 128))
+        );
+
+        // LAB
+        assert_eq!(
+            parse_color("lab(100% 0 0)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(parse_color("lab(0, 0, 0)"), Some(Color::Rgba(0, 0, 0, 255)));
+
+        // LCH
+        assert_eq!(
+            parse_color("lch(100% 0 0)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(parse_color("lch(0, 0, 0)"), Some(Color::Rgba(0, 0, 0, 255)));
+
+        // OKLAB
+        assert_eq!(
+            parse_color("oklab(1 0 0)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(parse_color("oklab(0 0 0)"), Some(Color::Rgba(0, 0, 0, 255)));
+
+        // OKLCH
+        assert_eq!(
+            parse_color("oklch(1 0 0)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(parse_color("oklch(0 0 0)"), Some(Color::Rgba(0, 0, 0, 255)));
+
+        // none keyword handling
+        assert_eq!(
+            parse_color("rgb(none none none / none)"),
+            Some(Color::Rgba(0, 0, 0, 0))
+        );
+        assert_eq!(
+            parse_color("hsl(none none none / none)"),
+            Some(Color::Rgba(0, 0, 0, 0))
+        );
+        assert_eq!(
+            parse_color("hwb(none none none / none)"),
+            Some(Color::Rgba(255, 0, 0, 0))
+        );
+        assert_eq!(
+            parse_color("lab(none none none / none)"),
+            Some(Color::Rgba(0, 0, 0, 0))
+        );
+        assert_eq!(
+            parse_color("oklab(none none none / none)"),
+            Some(Color::Rgba(0, 0, 0, 0))
+        );
+    }
+
+    #[test]
+    fn test_mix_colors() {
+        let red = Color::Rgba(255, 0, 0, 255);
+        let blue = Color::Rgba(0, 0, 255, 255);
+
+        // sRGB mix at 50%
+        let mixed_srgb = mix_colors(red.clone(), blue.clone(), 0.5, "srgb", None).unwrap();
+        assert_eq!(mixed_srgb, Color::Rgba(128, 0, 128, 255));
+
+        // sRGB-linear mix
+        let mixed_lin = mix_colors(red.clone(), blue.clone(), 0.5, "srgb-linear", None).unwrap();
+        assert!(mixed_lin != mixed_srgb);
+
+        // Polar hue interpolation (shorter)
+        let mixed_hsl = mix_colors(red.clone(), blue.clone(), 0.5, "hsl", Some("shorter")).unwrap();
+        let (h, _, _, _) = color_to_hsl(mixed_hsl);
+        assert!((h - 300.0).abs() < 1.0 || (h - 60.0).abs() < 1.0);
+
+        // Longer arc
+        let mixed_hsl_longer =
+            mix_colors(red.clone(), blue.clone(), 0.5, "hsl", Some("longer")).unwrap();
+        let (h_longer, _, _, _) = color_to_hsl(mixed_hsl_longer);
+        assert!((h_longer - 120.0).abs() < 1.0);
     }
 }
