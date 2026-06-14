@@ -1098,6 +1098,125 @@ impl Dom {
         }
         None
     }
+
+    /// Returns whether the `controls` content attribute is present on a valid media element
+    /// (audio, video).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_controls(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("controls")),
+            );
+        }
+        None
+    }
+
+    /// Sets or removes the `controls` content attribute on a valid media element (audio, video).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_controls(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            if value {
+                self.set_attribute(node, "controls", "");
+            } else {
+                self.remove_attribute(node, "controls");
+            }
+        }
+    }
+
+    /// Returns whether the `loop` content attribute is present on a valid media element
+    /// (audio, video).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_loop(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            return Some(attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("loop")));
+        }
+        None
+    }
+
+    /// Sets or removes the `loop` content attribute on a valid media element (audio, video).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_loop(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            if value {
+                self.set_attribute(node, "loop", "");
+            } else {
+                self.remove_attribute(node, "loop");
+            }
+        }
+    }
+
+    /// Returns the value of the `preload` content attribute of a valid media element
+    /// (audio, video).
+    /// Returns `None` if the node has no `preload` attribute, is not a media element,
+    /// or if the `NodeId` is invalid.
+    pub fn get_preload(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("preload"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `preload` content attribute on a valid media element (audio, video).
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_preload(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("audio") || name.eq_ignore_ascii_case("video"))
+        {
+            self.set_attribute(node, "preload", value);
+        }
+    }
+
+    /// Returns the value of the `poster` content attribute of a valid video element.
+    /// Returns `None` if the node has no `poster` attribute, is not a `<video>` element,
+    /// or if the `NodeId` is invalid.
+    pub fn get_poster(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("video")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("poster"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `poster` content attribute on a valid video element.
+    /// No-op if the node is not a `<video>` element, or if the `NodeId` is invalid.
+    pub fn set_poster(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("video")
+        {
+            self.set_attribute(node, "poster", value);
+        }
+    }
+
+    // TODO(spec): muted reflects defaultMuted
 }
 
 #[cfg(test)]
@@ -2876,5 +2995,91 @@ mod tests {
         assert_eq!(foreign_dom.get_textarea_value(foreign_node), None);
         assert_eq!(foreign_dom.get_button_value(foreign_node), None);
         assert_eq!(foreign_dom.get_option_value(foreign_node), None);
+    }
+
+    #[test]
+    fn test_media_element_accessors() {
+        let mut dom = Dom::new();
+
+        let audio = elem(&mut dom, "audio");
+        let video = elem(&mut dom, "video");
+        let div = elem(&mut dom, "div");
+
+        // 1. controls
+        assert_eq!(dom.get_controls(audio), Some(false));
+        assert_eq!(dom.get_controls(video), Some(false));
+        assert_eq!(dom.get_controls(div), None);
+
+        dom.set_controls(audio, true);
+        assert_eq!(dom.get_controls(audio), Some(true));
+        assert_eq!(dom.get_attribute(audio, "controls"), Some(""));
+
+        dom.set_controls(audio, false);
+        assert_eq!(dom.get_controls(audio), Some(false));
+        assert_eq!(dom.get_attribute(audio, "controls"), None);
+
+        dom.set_controls(div, true);
+        assert_eq!(dom.get_controls(div), None);
+        assert_eq!(dom.get_attribute(div, "controls"), None);
+
+        // 2. loop
+        assert_eq!(dom.get_loop(audio), Some(false));
+        assert_eq!(dom.get_loop(video), Some(false));
+        assert_eq!(dom.get_loop(div), None);
+
+        dom.set_loop(video, true);
+        assert_eq!(dom.get_loop(video), Some(true));
+        assert_eq!(dom.get_attribute(video, "loop"), Some(""));
+
+        dom.set_loop(video, false);
+        assert_eq!(dom.get_loop(video), Some(false));
+        assert_eq!(dom.get_attribute(video, "loop"), None);
+
+        dom.set_loop(div, true);
+        assert_eq!(dom.get_loop(div), None);
+        assert_eq!(dom.get_attribute(div, "loop"), None);
+
+        // 3. preload
+        assert_eq!(dom.get_preload(audio), None);
+        assert_eq!(dom.get_preload(video), None);
+        assert_eq!(dom.get_preload(div), None);
+
+        dom.set_preload(audio, "metadata");
+        assert_eq!(dom.get_preload(audio), Some("metadata"));
+        assert_eq!(dom.get_attribute(audio, "preload"), Some("metadata"));
+
+        dom.set_preload(div, "metadata");
+        assert_eq!(dom.get_preload(div), None);
+        assert_eq!(dom.get_attribute(div, "preload"), None);
+
+        // 4. poster
+        assert_eq!(dom.get_poster(video), None);
+        assert_eq!(dom.get_poster(audio), None);
+        assert_eq!(dom.get_poster(div), None);
+
+        dom.set_poster(video, "https://example.com/poster.png");
+        assert_eq!(
+            dom.get_poster(video),
+            Some("https://example.com/poster.png")
+        );
+        assert_eq!(
+            dom.get_attribute(video, "poster"),
+            Some("https://example.com/poster.png")
+        );
+
+        dom.set_poster(audio, "https://example.com/poster.png");
+        assert_eq!(dom.get_poster(audio), None);
+        assert_eq!(dom.get_attribute(audio, "poster"), None);
+
+        dom.set_poster(div, "https://example.com/poster.png");
+        assert_eq!(dom.get_poster(div), None);
+        assert_eq!(dom.get_attribute(div, "poster"), None);
+
+        let foreign_dom = Dom::new();
+        let foreign_node = dom.create_node(NodeData::Text("hi".to_string()));
+        assert_eq!(foreign_dom.get_controls(foreign_node), None);
+        assert_eq!(foreign_dom.get_loop(foreign_node), None);
+        assert_eq!(foreign_dom.get_preload(foreign_node), None);
+        assert_eq!(foreign_dom.get_poster(foreign_node), None);
     }
 }
