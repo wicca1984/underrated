@@ -72,64 +72,65 @@ pub fn setup_storage(context: &mut Context) {
         (function() {
             const bridge = window.__storage_bridge__;
             const initToken = Symbol('StorageInitToken');
+            const typeSymbol = Symbol('StorageType');
 
             class Storage {
                 constructor(token, type) {
                     if (token !== initToken) {
                         throw new TypeError("Illegal constructor");
                     }
-                    this.__type__ = type;
+                    this[typeSymbol] = type;
                 }
 
                 getItem(key) {
-                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                    if (!(this instanceof Storage) || (this[typeSymbol] !== 'local' && this[typeSymbol] !== 'session')) {
                         throw new TypeError("Failed to execute 'getItem' on 'Storage': Value of 'this' is not a Storage object.");
                     }
                     if (arguments.length < 1) {
                         throw new TypeError("Failed to execute 'getItem' on 'Storage': 1 argument required, but only 0 present.");
                     }
-                    return bridge.getItem(this.__type__, String(key));
+                    return bridge.getItem(this[typeSymbol], String(key));
                 }
 
                 setItem(key, value) {
-                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                    if (!(this instanceof Storage) || (this[typeSymbol] !== 'local' && this[typeSymbol] !== 'session')) {
                         throw new TypeError("Failed to execute 'setItem' on 'Storage': Value of 'this' is not a Storage object.");
                     }
                     if (arguments.length < 2) {
                         throw new TypeError("Failed to execute 'setItem' on 'Storage': 2 arguments required, but only " + arguments.length + " present.");
                     }
-                    bridge.setItem(this.__type__, String(key), String(value));
+                    bridge.setItem(this[typeSymbol], String(key), String(value));
                 }
 
                 removeItem(key) {
-                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                    if (!(this instanceof Storage) || (this[typeSymbol] !== 'local' && this[typeSymbol] !== 'session')) {
                         throw new TypeError("Failed to execute 'removeItem' on 'Storage': Value of 'this' is not a Storage object.");
                     }
                     if (arguments.length < 1) {
                         throw new TypeError("Failed to execute 'removeItem' on 'Storage': 1 argument required, but only 0 present.");
                     }
-                    bridge.removeItem(this.__type__, String(key));
+                    bridge.removeItem(this[typeSymbol], String(key));
                 }
 
                 clear() {
-                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                    if (!(this instanceof Storage) || (this[typeSymbol] !== 'local' && this[typeSymbol] !== 'session')) {
                         throw new TypeError("Failed to execute 'clear' on 'Storage': Value of 'this' is not a Storage object.");
                     }
-                    bridge.clear(this.__type__);
+                    bridge.clear(this[typeSymbol]);
                 }
 
                 key(index) {
-                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                    if (!(this instanceof Storage) || (this[typeSymbol] !== 'local' && this[typeSymbol] !== 'session')) {
                         throw new TypeError("Failed to execute 'key' on 'Storage': Value of 'this' is not a Storage object.");
                     }
-                    return bridge.getKey(this.__type__, Number(index));
+                    return bridge.getKey(this[typeSymbol], Number(index));
                 }
 
                 get length() {
-                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                    if (!(this instanceof Storage) || (this[typeSymbol] !== 'local' && this[typeSymbol] !== 'session')) {
                         throw new TypeError("Failed to execute 'length' on 'Storage': Value of 'this' is not a Storage object.");
                     }
-                    return bridge.getLength(this.__type__);
+                    return bridge.getLength(this[typeSymbol]);
                 }
             }
 
@@ -166,6 +167,22 @@ pub fn setup_storage(context: &mut Context) {
                         }
                         target.setItem(prop, value);
                         return true;
+                    },
+                    has(target, prop) {
+                        if (prop in target || typeof prop === 'symbol') {
+                            return true;
+                        }
+                        return target.getItem(prop) !== null;
+                    },
+                    defineProperty(target, prop, descriptor) {
+                        if (prop in target || typeof prop === 'symbol') {
+                            return Reflect.defineProperty(target, prop, descriptor);
+                        }
+                        if (descriptor.value !== undefined) {
+                            target.setItem(prop, String(descriptor.value));
+                            return true;
+                        }
+                        return false;
                     },
                     deleteProperty(target, prop) {
                         if (prop in target || typeof prop === 'symbol') {
@@ -227,6 +244,32 @@ pub fn setup_storage(context: &mut Context) {
                 enumerable: false,
                 configurable: true
             });
+
+            // Register global StorageEvent class if Event is available
+            if (typeof window.Event === 'function') {
+                class StorageEvent extends window.Event {
+                    constructor(type, eventInitDict = {}) {
+                        super(type, eventInitDict);
+                        this.key = eventInitDict.key !== undefined ? eventInitDict.key : null;
+                        this.oldValue = eventInitDict.oldValue !== undefined ? eventInitDict.oldValue : null;
+                        this.newValue = eventInitDict.newValue !== undefined ? eventInitDict.newValue : null;
+                        this.url = eventInitDict.url !== undefined ? String(eventInitDict.url) : "";
+                        this.storageArea = eventInitDict.storageArea !== undefined ? eventInitDict.storageArea : null;
+                    }
+                }
+
+                Object.defineProperty(StorageEvent.prototype, Symbol.toStringTag, {
+                    value: 'StorageEvent',
+                    configurable: true
+                });
+
+                Object.defineProperty(window, 'StorageEvent', {
+                    value: StorageEvent,
+                    writable: true,
+                    enumerable: false,
+                    configurable: true
+                });
+            }
         })();
     "#;
 
@@ -682,5 +725,170 @@ mod tests {
                 }
             })()
         "#).is_ok());
+    }
+
+    #[test]
+    fn test_storage_proxy_has_trap() {
+        let mut host = new_host();
+
+        // 1. Initially, a key should not be 'in' localStorage
+        assert!(
+            host.eval("if ('foo' in localStorage) throw 'error1';")
+                .is_ok()
+        );
+
+        // 2. Set the key, and it should now be 'in' localStorage
+        assert!(host.eval("localStorage.setItem('foo', 'bar')").is_ok());
+        assert!(
+            host.eval("if (!('foo' in localStorage)) throw 'error2';")
+                .is_ok()
+        );
+
+        // 3. Remove the key, and it should no longer be 'in' localStorage
+        assert!(host.eval("localStorage.removeItem('foo')").is_ok());
+        assert!(
+            host.eval("if ('foo' in localStorage) throw 'error3';")
+                .is_ok()
+        );
+
+        // 4. Built-in methods and properties should always be 'in' localStorage
+        assert!(
+            host.eval("if (!('getItem' in localStorage)) throw 'error4';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (!('setItem' in localStorage)) throw 'error5';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (!('removeItem' in localStorage)) throw 'error6';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (!('clear' in localStorage)) throw 'error7';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (!('key' in localStorage)) throw 'error8';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (!('length' in localStorage)) throw 'error9';")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_storage_proxy_define_property_trap() {
+        let mut host = new_host();
+
+        // 1. Defining a property via Object.defineProperty should set the key in Web Storage
+        assert!(host.eval("Object.defineProperty(localStorage, 'greeting', { value: 'hello', enumerable: true, configurable: true, writable: true })").is_ok());
+        assert_eq!(
+            host.context
+                .eval(boa_engine::Source::from_bytes(
+                    b"localStorage.getItem('greeting')"
+                ))
+                .and_then(|v| v.to_string(&mut host.context))
+                .map(|js_str| js_str.to_std_string().unwrap_or_default()),
+            Ok("hello".to_string())
+        );
+
+        // 2. The defined property should also be accessible via dynamic lookup
+        assert_eq!(
+            host.context
+                .eval(boa_engine::Source::from_bytes(b"localStorage.greeting"))
+                .and_then(|v| v.to_string(&mut host.context))
+                .map(|js_str| js_str.to_std_string().unwrap_or_default()),
+            Ok("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_storage_symbol_encapsulation() {
+        let mut host = new_host();
+
+        // 1. Check that '__type__' is no longer present as a property on localStorage target
+        assert!(
+            host.eval("if ('__type__' in localStorage) throw 'error1';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (localStorage.__type__ !== undefined) throw 'error2';")
+                .is_ok()
+        );
+
+        // 2. Check that Object.getOwnPropertyNames does not contain '__type__'
+        assert!(host.eval("const names = Object.getOwnPropertyNames(localStorage); if (names.indexOf('__type__') !== -1) throw 'error3';").is_ok());
+    }
+
+    #[test]
+    fn test_storage_event_class() {
+        let mut host = new_host();
+
+        // 1. Verify StorageEvent exists on window
+        assert!(
+            host.eval("if (typeof StorageEvent !== 'function') throw 'error1';")
+                .is_ok()
+        );
+
+        // 2. Verify StorageEvent can be constructed and has correct properties
+        assert!(host.eval("const ev = new StorageEvent('storage');").is_ok());
+        assert!(
+            host.eval("if (!(ev instanceof Event)) throw 'error2';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (!(ev instanceof StorageEvent)) throw 'error3';")
+                .is_ok()
+        );
+
+        // 3. Verify standard defaults
+        assert!(host.eval("if (ev.key !== null) throw 'error4';").is_ok());
+        assert!(
+            host.eval("if (ev.oldValue !== null) throw 'error5';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (ev.newValue !== null) throw 'error6';")
+                .is_ok()
+        );
+        assert!(host.eval("if (ev.url !== '') throw 'error7';").is_ok());
+        assert!(
+            host.eval("if (ev.storageArea !== null) throw 'error8';")
+                .is_ok()
+        );
+
+        // 4. Verify Symbol.toStringTag
+        assert_eq!(
+            host.context
+                .eval(boa_engine::Source::from_bytes(
+                    b"Object.prototype.toString.call(ev)"
+                ))
+                .and_then(|v| v.to_string(&mut host.context))
+                .map(|js_str| js_str.to_std_string().unwrap_or_default()),
+            Ok("[object StorageEvent]".to_string())
+        );
+
+        // 5. Verify custom eventInitDict values
+        assert!(
+            host.eval(
+                r#"
+            const ev2 = new StorageEvent('storage', {
+                key: 'user',
+                oldValue: 'alice',
+                newValue: 'bob',
+                url: 'http://example.com/',
+                storageArea: localStorage
+            });
+            if (ev2.key !== 'user') throw 'error9';
+            if (ev2.oldValue !== 'alice') throw 'error10';
+            if (ev2.newValue !== 'bob') throw 'error11';
+            if (ev2.url !== 'http://example.com/') throw 'error12';
+            if (ev2.storageArea !== localStorage) throw 'error13';
+        "#
+            )
+            .is_ok()
+        );
     }
 }
