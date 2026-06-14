@@ -191,6 +191,7 @@ pub struct TreeBuilder {
     tokenizer: Tokenizer,
     insertion_mode: InsertionMode,
     stack_of_open_elements: Vec<NodeId>,
+    namespace_stack: Vec<Namespace>,
     list_of_active_formatting_elements: Vec<FormattingElement>,
     head_element_pointer: Option<NodeId>,
     template_insertion_modes: Vec<InsertionMode>,
@@ -414,6 +415,7 @@ impl TreeBuilder {
             tokenizer: Tokenizer::new(input),
             insertion_mode: InsertionMode::Initial,
             stack_of_open_elements: Vec::new(),
+            namespace_stack: Vec::new(),
             list_of_active_formatting_elements: Vec::new(),
             head_element_pointer: None,
             template_insertion_modes: Vec::new(),
@@ -437,36 +439,56 @@ impl TreeBuilder {
     }
 
     fn get_node_namespace(&self, node_id: NodeId) -> Namespace {
+        if self.stack_of_open_elements.last().copied() == Some(node_id) {
+            return self
+                .namespace_stack
+                .last()
+                .copied()
+                .unwrap_or(Namespace::Html);
+        }
         if let Some(pos) = self
             .stack_of_open_elements
             .iter()
             .position(|&x| x == node_id)
         {
-            self.get_namespace_at_index(pos)
+            self.namespace_stack[pos]
         } else {
             Namespace::Html
         }
     }
 
     fn get_namespace_at_index(&self, idx: usize) -> Namespace {
+        self.namespace_stack[idx]
+    }
+
+    fn compute_namespace_at_index(&self, idx: usize, node_id: NodeId) -> Namespace {
         if idx == 0 {
             return Namespace::Html;
         }
-        let mut current_ns = Namespace::Html;
-        for i in 1..=idx {
-            let parent_id = self.stack_of_open_elements[i - 1];
-            let parent_name = match self.dom.data(parent_id) {
-                Some(NodeData::Element { name, .. }) => name.as_str(),
-                _ => "",
-            };
-            let node_id = self.stack_of_open_elements[i];
-            let name = match self.dom.data(node_id) {
-                Some(NodeData::Element { name, .. }) => name.as_str(),
-                _ => "",
-            };
+        let parent_id = self.stack_of_open_elements[idx - 1];
+        let parent_name = match self.dom.data(parent_id) {
+            Some(NodeData::Element { name, .. }) => name.as_str(),
+            _ => "",
+        };
+        let parent_ns = self.namespace_stack[idx - 1];
+        let name = match self.dom.data(node_id) {
+            Some(NodeData::Element { name, .. }) => name.as_str(),
+            _ => "",
+        };
 
-            current_ns = match current_ns {
-                Namespace::Html => {
+        match parent_ns {
+            Namespace::Html => {
+                if name == "svg" {
+                    Namespace::Svg
+                } else if name == "math" {
+                    Namespace::Mathml
+                } else {
+                    Namespace::Html
+                }
+            }
+            Namespace::Svg => {
+                let is_html_integration = matches!(parent_name, "foreignObject" | "desc" | "title");
+                if is_html_integration {
                     if name == "svg" {
                         Namespace::Svg
                     } else if name == "math" {
@@ -474,11 +496,33 @@ impl TreeBuilder {
                     } else {
                         Namespace::Html
                     }
+                } else {
+                    Namespace::Svg
                 }
-                Namespace::Svg => {
-                    let is_html_integration =
-                        matches!(parent_name, "foreignObject" | "desc" | "title");
-                    if is_html_integration {
+            }
+            Namespace::Mathml => {
+                if parent_name == "annotation-xml" && name == "svg" {
+                    Namespace::Svg
+                } else {
+                    let is_mathml_text_integration =
+                        matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
+                    let is_annotation_xml_integration = if parent_name == "annotation-xml" {
+                        if let Some(NodeData::Element { attrs, .. }) = self.dom.data(parent_id) {
+                            attrs.iter().any(|(k, v)| {
+                                k.eq_ignore_ascii_case("encoding")
+                                    && (v.eq_ignore_ascii_case("text/html")
+                                        || v.eq_ignore_ascii_case("application/xhtml+xml"))
+                            })
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_mathml_text_integration && (name == "mglyph" || name == "malignmark") {
+                        Namespace::Mathml
+                    } else if is_mathml_text_integration || is_annotation_xml_integration {
                         if name == "svg" {
                             Namespace::Svg
                         } else if name == "math" {
@@ -487,49 +531,49 @@ impl TreeBuilder {
                             Namespace::Html
                         }
                     } else {
-                        Namespace::Svg
+                        Namespace::Mathml
                     }
                 }
-                Namespace::Mathml => {
-                    if parent_name == "annotation-xml" && name == "svg" {
-                        Namespace::Svg
-                    } else {
-                        let is_mathml_text_integration =
-                            matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
-                        let is_annotation_xml_integration = if parent_name == "annotation-xml" {
-                            if let Some(NodeData::Element { attrs, .. }) = self.dom.data(parent_id)
-                            {
-                                attrs.iter().any(|(k, v)| {
-                                    k.eq_ignore_ascii_case("encoding")
-                                        && (v.eq_ignore_ascii_case("text/html")
-                                            || v.eq_ignore_ascii_case("application/xhtml+xml"))
-                                })
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        if is_mathml_text_integration && (name == "mglyph" || name == "malignmark")
-                        {
-                            Namespace::Mathml
-                        } else if is_mathml_text_integration || is_annotation_xml_integration {
-                            if name == "svg" {
-                                Namespace::Svg
-                            } else if name == "math" {
-                                Namespace::Mathml
-                            } else {
-                                Namespace::Html
-                            }
-                        } else {
-                            Namespace::Mathml
-                        }
-                    }
-                }
-            };
+            }
         }
-        current_ns
+    }
+
+    fn open_elements_push(&mut self, node: NodeId) {
+        let idx = self.stack_of_open_elements.len();
+        let ns = self.compute_namespace_at_index(idx, node);
+        self.stack_of_open_elements.push(node);
+        self.namespace_stack.push(ns);
+    }
+
+    fn open_elements_pop(&mut self) -> Option<NodeId> {
+        self.namespace_stack.pop();
+        self.stack_of_open_elements.pop()
+    }
+
+    fn open_elements_remove(&mut self, idx: usize) -> NodeId {
+        self.namespace_stack.remove(idx);
+        self.stack_of_open_elements.remove(idx)
+    }
+
+    fn open_elements_retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(NodeId) -> bool,
+    {
+        let mut i = 0;
+        while i < self.stack_of_open_elements.len() {
+            if f(self.stack_of_open_elements[i]) {
+                i += 1;
+            } else {
+                self.stack_of_open_elements.remove(i);
+                self.namespace_stack.remove(i);
+            }
+        }
+    }
+
+    fn open_elements_replace(&mut self, idx: usize, node: NodeId) {
+        self.stack_of_open_elements[idx] = node;
+        let ns = self.compute_namespace_at_index(idx, node);
+        self.namespace_stack[idx] = ns;
     }
 
     fn handle_foreign_content(&mut self, token: Token) {
@@ -605,7 +649,7 @@ impl TreeBuilder {
                         if is_integration {
                             break;
                         }
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                     self.process_token_in_current_mode(Token::StartTag {
                         name,
@@ -627,13 +671,13 @@ impl TreeBuilder {
                     let node = self.create_and_insert_element(adjusted_name.clone(), attrs);
                     if self_closing {
                         if adjusted_name != "script" {
-                            self.stack_of_open_elements.push(node);
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_push(node);
+                            self.open_elements_pop();
                         } else {
-                            self.stack_of_open_elements.push(node);
+                            self.open_elements_push(node);
                         }
                     } else {
-                        self.stack_of_open_elements.push(node);
+                        self.open_elements_push(node);
                     }
                 }
             }
@@ -652,7 +696,7 @@ impl TreeBuilder {
 
                 if let Some(idx) = found_idx {
                     while self.stack_of_open_elements.len() > idx {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                 }
             }
@@ -836,7 +880,7 @@ impl TreeBuilder {
             }
             Token::StartTag { name, attrs, .. } if name == "html" => {
                 let node = self.create_and_insert_element(name, attrs);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::BeforeHead;
             }
             Token::EndTag { ref name, .. }
@@ -846,7 +890,7 @@ impl TreeBuilder {
             }
             _ => {
                 let node = self.create_and_insert_element("html".to_string(), Vec::new());
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::BeforeHead;
                 self.process_token(token);
             }
@@ -882,7 +926,7 @@ impl TreeBuilder {
             Token::StartTag { name, attrs, .. } if name == "head" => {
                 let node = self.create_and_insert_element(name, attrs);
                 self.head_element_pointer = Some(node);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::InHead;
             }
             Token::EndTag { ref name, .. }
@@ -893,7 +937,7 @@ impl TreeBuilder {
             _ => {
                 let node = self.create_and_insert_element("head".to_string(), Vec::new());
                 self.head_element_pointer = Some(node);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::InHead;
                 self.process_token(token);
             }
@@ -936,33 +980,33 @@ impl TreeBuilder {
             }
             Token::StartTag { name, attrs, .. } if name == "title" => {
                 let node = self.create_and_insert_element(name.clone(), attrs);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.tokenizer.set_initial_state("RCDATA state");
                 self.tokenizer.set_last_start_tag(&name);
                 self.insertion_mode = InsertionMode::Text;
             }
             Token::StartTag { name, attrs, .. } if name == "style" => {
                 let node = self.create_and_insert_element(name.clone(), attrs);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.tokenizer.set_initial_state("RAWTEXT state");
                 self.tokenizer.set_last_start_tag(&name);
                 self.insertion_mode = InsertionMode::Text;
             }
             Token::StartTag { name, attrs, .. } if name == "noscript" => {
                 let node = self.create_and_insert_element(name, attrs);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::InHeadNoscript;
             }
             Token::StartTag { name, attrs, .. } if name == "script" => {
                 let node = self.create_and_insert_element(name.clone(), attrs);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.tokenizer.set_initial_state("Script data state");
                 self.tokenizer.set_last_start_tag(&name);
                 self.insertion_mode = InsertionMode::Text;
             }
             Token::StartTag { name, attrs, .. } if name == "template" => {
                 let node = self.create_and_insert_element(name, attrs);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.list_of_active_formatting_elements
                     .push(FormattingElement::Marker);
                 // TODO(spec): frameset-ok = false
@@ -983,14 +1027,14 @@ impl TreeBuilder {
                 self.reset_insertion_mode_appropriately();
             }
             Token::EndTag { ref name, .. } if name == "head" => {
-                self.stack_of_open_elements.pop();
+                self.open_elements_pop();
                 self.insertion_mode = InsertionMode::AfterHead;
             }
             Token::EndTag { ref name, .. } if name != "body" && name != "html" && name != "br" => {
                 // Parse error. Ignore the token.
             }
             _ => {
-                self.stack_of_open_elements.pop();
+                self.open_elements_pop();
                 self.insertion_mode = InsertionMode::AfterHead;
                 self.process_token(token);
             }
@@ -1015,7 +1059,7 @@ impl TreeBuilder {
                 });
             }
             Token::EndTag { ref name, .. } if name == "noscript" => {
-                self.stack_of_open_elements.pop();
+                self.open_elements_pop();
                 self.insertion_mode = InsertionMode::InHead;
             }
             Token::Character(c) if is_html_whitespace(c) => {
@@ -1066,7 +1110,7 @@ impl TreeBuilder {
 
     fn handle_in_head_noscript_anything_else(&mut self, token: Token) {
         // Parse error.
-        self.stack_of_open_elements.pop();
+        self.open_elements_pop();
         self.insertion_mode = InsertionMode::InHead;
         self.process_token(token);
     }
@@ -1098,19 +1142,19 @@ impl TreeBuilder {
             }
             Token::StartTag { name, attrs, .. } if name == "body" => {
                 let node = self.create_and_insert_element(name, attrs);
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 // TODO(spec): frameset-ok flag
                 self.insertion_mode = InsertionMode::InBody;
             }
             Token::StartTag { name, attrs, .. } if name == "template" => {
                 if let Some(head_id) = self.head_element_pointer {
-                    self.stack_of_open_elements.push(head_id);
+                    self.open_elements_push(head_id);
                     self.handle_in_head(Token::StartTag {
                         name,
                         attrs,
                         self_closing: false,
                     });
-                    self.stack_of_open_elements.retain(|&id| id != head_id);
+                    self.open_elements_retain(|id| id != head_id);
                 }
             }
             Token::StartTag {
@@ -1128,7 +1172,7 @@ impl TreeBuilder {
                 || name == "title" =>
             {
                 if let Some(head_id) = self.head_element_pointer {
-                    self.stack_of_open_elements.push(head_id);
+                    self.open_elements_push(head_id);
                     let old_mode = self.insertion_mode;
                     self.insertion_mode = InsertionMode::InHead;
                     self.process_token(Token::StartTag {
@@ -1136,7 +1180,7 @@ impl TreeBuilder {
                         attrs,
                         self_closing,
                     });
-                    self.stack_of_open_elements.retain(|&id| id != head_id);
+                    self.open_elements_retain(|id| id != head_id);
                     if self.insertion_mode == InsertionMode::InHead {
                         self.insertion_mode = old_mode;
                     }
@@ -1147,7 +1191,7 @@ impl TreeBuilder {
             }
             _ => {
                 let node = self.create_and_insert_element("body".to_string(), Vec::new());
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::InBody;
                 self.process_token(token);
             }
@@ -1166,12 +1210,12 @@ impl TreeBuilder {
             }
             Token::Eof => {
                 // Parse error.
-                self.stack_of_open_elements.pop();
+                self.open_elements_pop();
                 self.reset_insertion_mode_appropriately();
                 self.process_token(token);
             }
             Token::EndTag { .. } => {
-                self.stack_of_open_elements.pop();
+                self.open_elements_pop();
                 self.reset_insertion_mode_appropriately();
             }
             _ => {}
@@ -1248,14 +1292,14 @@ impl TreeBuilder {
                         self.reconstruct_active_formatting_elements();
                         let node = self.create_and_insert_element(name.clone(), attrs);
                         if !self.is_void_element(&name) {
-                            self.stack_of_open_elements.push(node);
+                            self.open_elements_push(node);
                         }
                     }
                 }
                 "p" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                     self.close_p_element_if_in_button_scope();
@@ -1267,11 +1311,11 @@ impl TreeBuilder {
                         );
                         if is_heading {
                             // Parse error.
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_pop();
                         }
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "address" | "article" | "aside" | "blockquote" | "center" | "details"
                 | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure"
@@ -1279,7 +1323,7 @@ impl TreeBuilder {
                 | "listing" | "search" | "section" | "summary" | "ul" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name.clone(), attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                     if name == "pre" || name == "listing" {
                         self.ignore_next_lf = true;
                     }
@@ -1291,7 +1335,7 @@ impl TreeBuilder {
                     if !has_form {
                         self.close_p_element_if_in_button_scope();
                         let node = self.create_and_insert_element(name.clone(), attrs);
-                        self.stack_of_open_elements.push(node);
+                        self.open_elements_push(node);
                     }
                 }
                 "rb" | "rtc" => {
@@ -1304,11 +1348,11 @@ impl TreeBuilder {
                             {
                                 break;
                             }
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_pop();
                         }
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "rp" | "rt" => {
                     if self.is_in_scope("ruby") {
@@ -1320,11 +1364,11 @@ impl TreeBuilder {
                             {
                                 break;
                             }
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_pop();
                         }
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "li" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1345,7 +1389,7 @@ impl TreeBuilder {
                     }
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "dd" | "dt" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1367,7 +1411,7 @@ impl TreeBuilder {
                     }
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "option" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1377,7 +1421,7 @@ impl TreeBuilder {
                         self.pop_until("option");
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "optgroup" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1392,12 +1436,12 @@ impl TreeBuilder {
                         self.pop_until("optgroup");
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "select" => {
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                     // TODO(spec): set frameset-ok to not ok
                     if matches!(
                         self.insertion_mode,
@@ -1428,7 +1472,7 @@ impl TreeBuilder {
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.push_formatting_element(node);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "nobr" => {
                     self.reconstruct_active_formatting_elements();
@@ -1439,21 +1483,21 @@ impl TreeBuilder {
                     }
                     let node = self.create_and_insert_element(name, attrs);
                     self.push_formatting_element(node);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "b" | "big" | "code" | "em" | "font" | "i" | "s" | "small" | "strike"
                 | "strong" | "tt" | "u" => {
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.push_formatting_element(node);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "table" => {
                     if !matches!(self.quirks_mode, QuirksMode::Quirks) {
                         self.close_p_element_if_in_button_scope();
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                     self.insertion_mode = InsertionMode::InTable;
                 }
                 "area" | "br" | "embed" | "img" | "keygen" | "wbr" => {
@@ -1468,7 +1512,7 @@ impl TreeBuilder {
                 }
                 "textarea" => {
                     let node = self.create_and_insert_element(name.clone(), attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                     self.tokenizer.set_initial_state("RCDATA state");
                     self.tokenizer.set_last_start_tag(&name);
                     self.ignore_next_lf = true;
@@ -1480,7 +1524,7 @@ impl TreeBuilder {
                     }
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "param" | "source" | "track" => {
                     self.create_and_insert_element(name, attrs);
@@ -1506,11 +1550,11 @@ impl TreeBuilder {
                         }
 
                         while self.stack_of_open_elements.len() > 1 {
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_pop();
                         }
 
                         let node = self.create_and_insert_element(name, attrs);
-                        self.stack_of_open_elements.push(node);
+                        self.open_elements_push(node);
 
                         self.insertion_mode = InsertionMode::InFrameset;
                     }
@@ -1533,7 +1577,7 @@ impl TreeBuilder {
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name.clone(), attrs);
                     if !self.is_void_element(&name) {
-                        self.stack_of_open_elements.push(node);
+                        self.open_elements_push(node);
                     }
                 }
             },
@@ -1561,7 +1605,7 @@ impl TreeBuilder {
                     if !self.is_in_button_scope("p") {
                         // Parse error.
                         let node = self.create_and_insert_element("p".to_string(), Vec::new());
-                        self.stack_of_open_elements.push(node);
+                        self.open_elements_push(node);
                     }
                     self.pop_until("p");
                 } else if name == "form" {
@@ -1577,7 +1621,7 @@ impl TreeBuilder {
                         && self.is_in_scope("form")
                     {
                         self.generate_implied_end_tags(None);
-                        self.stack_of_open_elements.remove(idx);
+                        self.open_elements_remove(idx);
                     }
                 } else if name == "br" {
                     self.reconstruct_active_formatting_elements();
@@ -1627,7 +1671,7 @@ impl TreeBuilder {
                                         | "rt"
                                         | "rtc"
                                 ) {
-                                    self.stack_of_open_elements.pop();
+                                    self.open_elements_pop();
                                     continue;
                                 }
                             }
@@ -1694,7 +1738,7 @@ impl TreeBuilder {
                     if let Some(idx) = found_node_idx {
                         self.generate_implied_end_tags(Some(&name));
                         while self.stack_of_open_elements.len() > idx {
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_pop();
                         }
                     }
                 }
@@ -1794,12 +1838,12 @@ impl TreeBuilder {
                 }
                 "frameset" => {
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "frame" => {
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_push(node);
+                    self.open_elements_pop();
                 }
                 "noframes" => {
                     self.handle_in_head(Token::StartTag {
@@ -1823,7 +1867,7 @@ impl TreeBuilder {
                     if is_root_html {
                         // Parse error. Ignore.
                     } else {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                         // TODO(spec): fragment case
                         let is_frameset = if let Some(&top_id) = self.stack_of_open_elements.last()
                         {
@@ -1972,8 +2016,8 @@ impl TreeBuilder {
                 }
                 "col" => {
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_push(node);
+                    self.open_elements_pop();
                 }
                 "template" => {
                     self.handle_in_head(Token::StartTag {
@@ -2004,7 +2048,7 @@ impl TreeBuilder {
                     if !is_colgroup {
                         // Parse error. Ignore.
                     } else {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                         self.insertion_mode = InsertionMode::InTable;
                     }
                 }
@@ -2044,7 +2088,7 @@ impl TreeBuilder {
         if !is_colgroup {
             // Parse error. Ignore.
         } else {
-            self.stack_of_open_elements.pop();
+            self.open_elements_pop();
             self.insertion_mode = InsertionMode::InTable;
             self.process_token(token);
         }
@@ -2063,13 +2107,13 @@ impl TreeBuilder {
                     self.list_of_active_formatting_elements
                         .push(FormattingElement::Marker);
                     let node = self.create_and_insert_element(name.clone(), attrs.clone());
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                     self.insertion_mode = InsertionMode::InCaption;
                 }
                 "colgroup" => {
                     self.clear_stack_back_to_table_context();
                     let node = self.create_and_insert_element(name.clone(), attrs.clone());
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                     self.insertion_mode = InsertionMode::InColumnGroup;
                 }
                 "col" => {
@@ -2083,7 +2127,7 @@ impl TreeBuilder {
                 "tbody" | "tfoot" | "thead" => {
                     self.clear_stack_back_to_table_context();
                     let node = self.create_and_insert_element(name.clone(), attrs.clone());
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                     self.insertion_mode = InsertionMode::InTableBody;
                 }
                 "td" | "th" | "tr" => {
@@ -2260,7 +2304,7 @@ impl TreeBuilder {
             } if name == "tr" => {
                 self.clear_stack_back_to_table_body_context();
                 let node = self.create_and_insert_element(name.clone(), attrs.clone());
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::InRow;
             }
             Token::StartTag { ref name, .. } if name == "th" || name == "td" => {
@@ -2276,7 +2320,7 @@ impl TreeBuilder {
             {
                 if self.is_in_table_scope(name) {
                     self.clear_stack_back_to_table_body_context();
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_pop();
                     self.insertion_mode = InsertionMode::InTable;
                 }
             }
@@ -2291,7 +2335,7 @@ impl TreeBuilder {
                     || self.is_in_table_scope("tfoot")
                 {
                     self.clear_stack_back_to_table_body_context();
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_pop();
                     self.insertion_mode = InsertionMode::InTable;
                     self.process_token(token);
                 }
@@ -2302,7 +2346,7 @@ impl TreeBuilder {
                     || self.is_in_table_scope("tfoot")
                 {
                     self.clear_stack_back_to_table_body_context();
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_pop();
                     self.insertion_mode = InsertionMode::InTable;
                     self.process_token(token);
                 }
@@ -2321,7 +2365,7 @@ impl TreeBuilder {
             } if name == "th" || name == "td" => {
                 self.clear_stack_back_to_table_row_context();
                 let node = self.create_and_insert_element(name.clone(), attrs.clone());
-                self.stack_of_open_elements.push(node);
+                self.open_elements_push(node);
                 self.insertion_mode = InsertionMode::InCell;
                 self.list_of_active_formatting_elements
                     .push(FormattingElement::Marker);
@@ -2329,7 +2373,7 @@ impl TreeBuilder {
             Token::EndTag { ref name, .. } if name == "tr" => {
                 if self.is_in_table_scope("tr") {
                     self.clear_stack_back_to_table_row_context();
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_pop();
                     self.insertion_mode = InsertionMode::InTableBody;
                 }
             }
@@ -2341,7 +2385,7 @@ impl TreeBuilder {
             {
                 if self.is_in_table_scope("tr") {
                     self.clear_stack_back_to_table_row_context();
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_pop();
                     self.insertion_mode = InsertionMode::InTableBody;
                     self.process_token(token);
                 }
@@ -2349,7 +2393,7 @@ impl TreeBuilder {
             Token::EndTag { ref name, .. } if name == "table" => {
                 if self.is_in_table_scope("tr") {
                     self.clear_stack_back_to_table_row_context();
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_pop();
                     self.insertion_mode = InsertionMode::InTableBody;
                     self.process_token(token);
                 }
@@ -2499,34 +2543,34 @@ impl TreeBuilder {
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
                     }) {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "optgroup" => {
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
                     }) {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "optgroup")
                     }) {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "menuitem" => {
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "menuitem")
                     }) {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
-                    self.stack_of_open_elements.push(node);
+                    self.open_elements_push(node);
                 }
                 "select" if self.is_in_select_scope("select") => {
                     self.pop_until("select");
@@ -2558,7 +2602,7 @@ impl TreeBuilder {
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
                     }) {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                 }
                 "optgroup" => {
@@ -2567,20 +2611,20 @@ impl TreeBuilder {
                         let is_top_option = matches!(self.dom.data(self.stack_of_open_elements[len - 1]), Some(NodeData::Element { name, .. }) if name == "option");
                         let is_prev_optgroup = matches!(self.dom.data(self.stack_of_open_elements[len - 2]), Some(NodeData::Element { name, .. }) if name == "optgroup");
                         if is_top_option && is_prev_optgroup {
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_pop();
                         }
                     }
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "optgroup")
                     }) {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                 }
                 "menuitem" => {
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
                         matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "menuitem")
                     }) {
-                        self.stack_of_open_elements.pop();
+                        self.open_elements_pop();
                     }
                 }
                 "select" if self.is_in_select_scope("select") => {
@@ -2756,10 +2800,10 @@ impl TreeBuilder {
                 _ => false,
             };
             if is_match {
-                self.stack_of_open_elements.pop();
+                self.open_elements_pop();
                 break;
             }
-            self.stack_of_open_elements.pop();
+            self.open_elements_pop();
         }
     }
 
@@ -2896,7 +2940,7 @@ impl TreeBuilder {
                     name.as_str(),
                     "dd" | "dt" | "li" | "optgroup" | "option" | "p" | "rb" | "rp" | "rt" | "rtc"
                 ) {
-                    self.stack_of_open_elements.pop();
+                    self.open_elements_pop();
                     continue;
                 }
             }
@@ -2926,7 +2970,7 @@ impl TreeBuilder {
             && el_name == subject
             && !is_in_active_formatting_elements
         {
-            self.stack_of_open_elements.pop();
+            self.open_elements_pop();
             return;
         }
 
@@ -2974,7 +3018,7 @@ impl TreeBuilder {
                     if let Some(idx) = found_node_idx {
                         self.generate_implied_end_tags(Some(subject));
                         while self.stack_of_open_elements.len() > idx {
-                            self.stack_of_open_elements.pop();
+                            self.open_elements_pop();
                         }
                     }
                     return;
@@ -3027,7 +3071,7 @@ impl TreeBuilder {
                 match (furthest_block, furthest_block_stack_idx) {
                     (Some(fb), Some(fb_idx)) => (fb, fb_idx),
                     _ => {
-                        while let Some(top_id) = self.stack_of_open_elements.pop() {
+                        while let Some(top_id) = self.open_elements_pop() {
                             if top_id == formatting_element {
                                 break;
                             }
@@ -3093,7 +3137,7 @@ impl TreeBuilder {
                 let f_idx = match in_formatting_idx {
                     Some(idx) => idx,
                     None => {
-                        self.stack_of_open_elements.remove(node_stack_idx);
+                        self.open_elements_remove(node_stack_idx);
                         continue;
                     }
                 };
@@ -3113,7 +3157,7 @@ impl TreeBuilder {
                     FormattingElement::Node(clone_node);
 
                 // Replace the entry for node in the stack of open elements with clone_node.
-                self.stack_of_open_elements[node_stack_idx] = clone_node;
+                self.open_elements_replace(node_stack_idx, clone_node);
 
                 // Let node be clone_node.
                 node = clone_node;
@@ -3218,7 +3262,7 @@ impl TreeBuilder {
                 self.stack_of_open_elements
                     .insert(idx + 1, clone_formatting_element);
             } else {
-                self.stack_of_open_elements.push(clone_formatting_element);
+                self.open_elements_push(clone_formatting_element);
             }
         }
     }
@@ -3553,7 +3597,7 @@ impl TreeBuilder {
             };
 
             let clone_node = self.create_and_insert_element(name, attrs);
-            self.stack_of_open_elements.push(clone_node);
+            self.open_elements_push(clone_node);
 
             self.list_of_active_formatting_elements[entry_idx] =
                 FormattingElement::Node(clone_node);
@@ -3703,7 +3747,7 @@ impl TreeBuilder {
             {
                 break;
             }
-            self.stack_of_open_elements.pop();
+            self.open_elements_pop();
         }
     }
 
@@ -3713,7 +3757,7 @@ impl TreeBuilder {
             {
                 break;
             }
-            self.stack_of_open_elements.pop();
+            self.open_elements_pop();
         }
     }
 
@@ -3723,7 +3767,7 @@ impl TreeBuilder {
             {
                 break;
             }
-            self.stack_of_open_elements.pop();
+            self.open_elements_pop();
         }
     }
 }
