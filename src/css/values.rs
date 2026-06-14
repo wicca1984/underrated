@@ -18289,4 +18289,176 @@ mod tests {
             Some(CssValue::Length(10.0, LengthUnit::Px))
         );
     }
+
+    #[test]
+    fn test_t1055_extended_math_and_var_fallbacks() {
+        // 1. Complex nesting: calc(1px + calc(2px * 3 + min(10px, 5px))) -> 12px
+        let comp_complex_nesting = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 2.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('*')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Number(3.0)),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('+')),
+                        token(CssToken::Whitespace),
+                        ComponentValue::Function {
+                            name: "min".to_string(),
+                            value: vec![
+                                token(CssToken::Dimension {
+                                    value: 10.0,
+                                    unit: "px".to_string(),
+                                }),
+                                token(CssToken::Comma),
+                                token(CssToken::Dimension {
+                                    value: 5.0,
+                                    unit: "px".to_string(),
+                                }),
+                            ],
+                        },
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[comp_complex_nesting]),
+            Some(CssValue::Length(12.0, LengthUnit::Px))
+        );
+
+        // 2. clamp() with nested min and max
+        let comp_clamp_nested = ComponentValue::Function {
+            name: "clamp".to_string(),
+            value: vec![
+                ComponentValue::Function {
+                    name: "min".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 5.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Comma),
+                        token(CssToken::Dimension {
+                            value: 10.0,
+                            unit: "px".to_string(),
+                        }),
+                    ],
+                },
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 15.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                ComponentValue::Function {
+                    name: "max".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 20.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Comma),
+                        token(CssToken::Dimension {
+                            value: 30.0,
+                            unit: "px".to_string(),
+                        }),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[comp_clamp_nested]),
+            Some(CssValue::Length(15.0, LengthUnit::Px))
+        );
+
+        // 3. Incompatible types inside nested min()
+        let comp_incompatible_nested = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "min".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 5.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Comma),
+                        token(CssToken::Number(2.0)),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(parse_value(&[comp_incompatible_nested]), None);
+
+        // 4. Nested var() fallbacks inside calc
+        let comp_nested_var_calc = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                ComponentValue::Function {
+                    name: "var".to_string(),
+                    value: vec![
+                        token(CssToken::Ident("--a".to_string())),
+                        token(CssToken::Comma),
+                        ComponentValue::Function {
+                            name: "var".to_string(),
+                            value: vec![
+                                token(CssToken::Ident("--b".to_string())),
+                                token(CssToken::Comma),
+                                ComponentValue::Function {
+                                    name: "calc".to_string(),
+                                    value: vec![
+                                        token(CssToken::Dimension {
+                                            value: 10.0,
+                                            unit: "px".to_string(),
+                                        }),
+                                        token(CssToken::Whitespace),
+                                        token(CssToken::Delim('+')),
+                                        token(CssToken::Whitespace),
+                                        token(CssToken::Dimension {
+                                            value: 5.0,
+                                            unit: "px".to_string(),
+                                        }),
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                token(CssToken::Dimension {
+                    value: 5.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[comp_nested_var_calc]),
+            Some(CssValue::Keyword(
+                "calc(5px + var(--a,var(--b,calc(10px + 5px))))".to_string()
+            ))
+        );
+    }
 }
