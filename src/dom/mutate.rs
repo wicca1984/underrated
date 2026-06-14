@@ -85,6 +85,16 @@ impl Dom {
     /// `reference` is `None`). `child` is first detached from any old parent.
     // spec: https://dom.spec.whatwg.org/#dom-node-insertbefore
     pub fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: Option<NodeId>) {
+        // Prevent hierarchy cycles / loops (spec: ensures pre-insertion validity).
+        // A node cannot be inserted as a child of its own descendant or itself.
+        if child == parent {
+            return;
+        }
+        // Only run the expensive contains check if child actually has children.
+        if !self.children(child).is_empty() && self.contains(child, parent) {
+            return;
+        }
+
         // Detach from the previous parent, if any.
         if let Some(old) = self.parent(child)
             && let Some(op) = self.arena.get_mut(old)
@@ -3679,6 +3689,170 @@ impl Dom {
     pub fn set_default_selected(&mut self, node: NodeId, value: bool) {
         self.set_selected(node, value);
     }
+
+    /// Returns whether the `novalidate` content attribute is present on a valid `<form>` element.
+    /// Returns `None` if the node is not a `<form>` element, or if the `NodeId` is invalid.
+    pub fn get_no_validate(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("novalidate")),
+            );
+        }
+        None
+    }
+
+    /// Sets or removes the `novalidate` content attribute on a valid `<form>` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not a `<form>` element, or if the `NodeId` is invalid.
+    pub fn set_no_validate(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("form")
+        {
+            if value {
+                self.set_attribute(node, "novalidate", "");
+            } else {
+                self.remove_attribute(node, "novalidate");
+            }
+        }
+    }
+
+    /// Replaces the children of `parent` with a new list of `nodes`.
+    /// Each node in `nodes` is first detached from its previous parent.
+    /// Any existing children of `parent` are removed and their parent link is cleared.
+    // spec: https://dom.spec.whatwg.org/#dom-parentnode-replacechildren
+    pub fn replace_children(&mut self, parent: NodeId, nodes: &[NodeId]) {
+        if self.arena.get(parent).is_none() {
+            return;
+        }
+
+        // Validate nodes to ensure no cycles are introduced.
+        for &node in nodes {
+            if node == parent {
+                return;
+            }
+            if !self.children(node).is_empty() && self.contains(node, parent) {
+                return;
+            }
+        }
+
+        let old_children = if let Some(p) = self.arena.get_mut(parent) {
+            std::mem::take(&mut p.children)
+        } else {
+            Vec::new()
+        };
+        for child in old_children {
+            if let Some(c) = self.arena.get_mut(child) {
+                c.parent = None;
+            }
+        }
+
+        let mut new_children = Vec::with_capacity(nodes.len());
+        for &child in nodes {
+            if let Some(old) = self.parent(child)
+                && old != parent
+                && let Some(op) = self.arena.get_mut(old)
+            {
+                op.children.retain(|&c| c != child);
+                self.mark_dirty(old);
+            }
+            if let Some(c) = self.arena.get_mut(child) {
+                c.parent = Some(parent);
+                new_children.push(child);
+            }
+        }
+
+        if let Some(p) = self.arena.get_mut(parent) {
+            p.children = new_children;
+        }
+        self.mark_dirty(parent);
+    }
+
+    /// Prepends `child` as the first child of `parent`.
+    /// `child` is first detached from any old parent.
+    // spec: https://dom.spec.whatwg.org/#dom-parentnode-prepend
+    pub fn prepend_child(&mut self, parent: NodeId, child: NodeId) {
+        let first_child = self.children(parent).first().copied();
+        self.insert_before(parent, child, first_child);
+    }
+
+    /// Inserts a given element node at the specified position relative to the reference node.
+    /// Positions:
+    /// - "beforebegin": Before the reference node itself.
+    /// - "afterbegin": Before the first child of the reference node.
+    /// - "beforeend": After the last child of the reference node.
+    /// - "afterend": After the reference node itself.
+    ///
+    /// Returns the inserted `NodeId` if successful, or `None` on failure.
+    // spec: https://dom.spec.whatwg.org/#dom-element-insertadjacentelement
+    pub fn insert_adjacent_element(
+        &mut self,
+        ref_id: NodeId,
+        position: &str,
+        elem_id: NodeId,
+    ) -> Option<NodeId> {
+        let pos = position.trim().to_lowercase();
+        match pos.as_str() {
+            "beforebegin" => {
+                let parent_id = self.parent(ref_id)?;
+                self.insert_before(parent_id, elem_id, Some(ref_id));
+                Some(elem_id)
+            }
+            "afterbegin" => {
+                let first_child = self.children(ref_id).first().copied();
+                self.insert_before(ref_id, elem_id, first_child);
+                Some(elem_id)
+            }
+            "beforeend" => {
+                self.insert_before(ref_id, elem_id, None);
+                Some(elem_id)
+            }
+            "afterend" => {
+                let parent_id = self.parent(ref_id)?;
+                let parent_children = self.children(parent_id);
+                let next_sibling =
+                    if let Some(pos) = parent_children.iter().position(|&c| c == ref_id) {
+                        parent_children.get(pos + 1).copied()
+                    } else {
+                        None
+                    };
+                self.insert_before(parent_id, elem_id, next_sibling);
+                Some(elem_id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Inserts a given text at the specified position relative to the reference node by creating a new `Text` node.
+    /// Positions:
+    /// - "beforebegin": Before the reference node itself.
+    /// - "afterbegin": Before the first child of the reference node.
+    /// - "beforeend": After the last child of the reference node.
+    /// - "afterend": After the reference node itself.
+    ///
+    /// Returns the inserted `NodeId` of the newly created text node if successful, or `None` on failure.
+    // spec: https://dom.spec.whatwg.org/#dom-element-insertadjacenttext
+    pub fn insert_adjacent_text(
+        &mut self,
+        ref_id: NodeId,
+        position: &str,
+        text: &str,
+    ) -> Option<NodeId> {
+        let text_node_id = self.create_node(NodeData::Text(text.to_string()));
+        if self
+            .insert_adjacent_element(ref_id, position, text_node_id)
+            .is_some()
+        {
+            Some(text_node_id)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -6981,5 +7155,102 @@ mod tests {
         assert_eq!(dom.get_default_selected(div_id), None);
         dom.set_default_selected(option_id, false);
         assert_eq!(dom.get_default_selected(option_id), Some(false));
+    }
+
+    #[test]
+    fn test_cycle_prevention_in_insert_before() {
+        let mut dom = Dom::new();
+        let p = elem(&mut dom, "p");
+        let c = elem(&mut dom, "c");
+        dom.append_child(p, c);
+
+        // Attempting to insert p (parent) as a child of c (its own child) should be a graceful no-op.
+        dom.insert_before(c, p, None);
+        assert_eq!(dom.parent(p), None);
+        assert_eq!(dom.children(c), &[] as &[NodeId]);
+
+        // Same with child being equal to parent.
+        dom.insert_before(p, p, None);
+        assert_eq!(dom.parent(p), None);
+    }
+
+    #[test]
+    fn test_replace_children() {
+        let mut dom = Dom::new();
+        let p = elem(&mut dom, "p");
+        let c1 = elem(&mut dom, "c1");
+        dom.append_child(p, c1);
+        assert_eq!(dom.children(p), &[c1]);
+
+        let n1 = elem(&mut dom, "n1");
+        let n2 = elem(&mut dom, "n2");
+        dom.replace_children(p, &[n1, n2]);
+        assert_eq!(dom.children(p), &[n1, n2]);
+        assert_eq!(dom.parent(n1), Some(p));
+        assert_eq!(dom.parent(n2), Some(p));
+        assert_eq!(dom.parent(c1), None); // old child cleared
+    }
+
+    #[test]
+    fn test_prepend_child() {
+        let mut dom = Dom::new();
+        let p = elem(&mut dom, "p");
+        let c1 = elem(&mut dom, "c1");
+        let c2 = elem(&mut dom, "c2");
+        dom.append_child(p, c2);
+        dom.prepend_child(p, c1);
+        assert_eq!(dom.children(p), &[c1, c2]);
+    }
+
+    #[test]
+    fn test_insert_adjacent_element_and_text() {
+        let mut dom = Dom::new();
+        let p = elem(&mut dom, "p");
+        let ref_node = elem(&mut dom, "ref");
+        dom.append_child(p, ref_node);
+
+        let elem_before = elem(&mut dom, "before");
+        let r1 = dom.insert_adjacent_element(ref_node, "beforebegin", elem_before);
+        assert_eq!(r1, Some(elem_before));
+        assert_eq!(dom.children(p), &[elem_before, ref_node]);
+
+        let elem_inside_start = elem(&mut dom, "inside-start");
+        let r2 = dom.insert_adjacent_element(ref_node, "afterbegin", elem_inside_start);
+        assert_eq!(r2, Some(elem_inside_start));
+        assert_eq!(dom.children(ref_node), &[elem_inside_start]);
+
+        let elem_inside_end = elem(&mut dom, "inside-end");
+        let r3 = dom.insert_adjacent_element(ref_node, "beforeend", elem_inside_end);
+        assert_eq!(r3, Some(elem_inside_end));
+        assert_eq!(
+            dom.children(ref_node),
+            &[elem_inside_start, elem_inside_end]
+        );
+
+        let elem_after = elem(&mut dom, "after");
+        let r4 = dom.insert_adjacent_element(ref_node, "afterend", elem_after);
+        assert_eq!(r4, Some(elem_after));
+        assert_eq!(dom.children(p), &[elem_before, ref_node, elem_after]);
+
+        // Test insert_adjacent_text
+        let text_id = dom.insert_adjacent_text(ref_node, "afterbegin", "hello");
+        assert!(text_id.is_some());
+        assert_eq!(dom.children(ref_node).len(), 3);
+        assert_eq!(dom.children(ref_node)[0], text_id.unwrap());
+    }
+
+    #[test]
+    fn test_new_reflected_attributes() {
+        let mut dom = Dom::new();
+        let form_id = elem(&mut dom, "form");
+        let div_id = elem(&mut dom, "div");
+
+        // 1. novalidate (form)
+        assert_eq!(dom.get_no_validate(form_id), Some(false));
+        assert_eq!(dom.get_no_validate(div_id), None);
+        dom.set_no_validate(form_id, true);
+        dom.set_no_validate(div_id, true); // no-op
+        assert_eq!(dom.get_no_validate(form_id), Some(true));
+        assert_eq!(dom.get_no_validate(div_id), None);
     }
 }
