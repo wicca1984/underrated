@@ -485,6 +485,7 @@ fn matches_component_with_scope(
             .iter()
             .any(|sel| matches_complex_with_scope(sel, dom, node, scope)),
         selector::Component::Has(list) => matches_has_with_scope(list, dom, node),
+        selector::Component::PseudoElement(_) => false, // Pseudo-elements do not match DOM element nodes under querySelector or matches()
         _ => {
             // For all other components, match using standard selector::matches_complex
             let temp_compound = selector::CompoundSelector {
@@ -498,6 +499,15 @@ fn matches_component_with_scope(
     }
 }
 
+fn has_sibling_combinator(parts: &[(selector::Combinator, selector::CompoundSelector)]) -> bool {
+    parts.iter().any(|(comb, _)| {
+        matches!(
+            comb,
+            selector::Combinator::NextSibling | selector::Combinator::SubsequentSibling
+        )
+    })
+}
+
 fn matches_has_with_scope(list: &selector::SelectorList, dom: &Dom, node: NodeId) -> bool {
     list.0.iter().any(|sel| {
         if sel.parts.is_empty() {
@@ -505,49 +515,66 @@ fn matches_has_with_scope(list: &selector::SelectorList, dom: &Dom, node: NodeId
         }
 
         let first_comb = sel.parts[0].0;
-        match first_comb {
-            selector::Combinator::Child => {
-                if sel.parts.len() == 1 {
-                    let children = dom.children(node);
-                    children.iter().any(|&child| {
-                        matches_compound_with_scope(&sel.parts[0].1, dom, child, node)
-                    })
-                } else {
-                    let children = dom.children(node);
-                    children
-                        .iter()
-                        .any(|&child| matches_complex_with_scope(sel, dom, child, node))
-                }
-            }
+        let first_compound = &sel.parts[0].1;
+
+        // Get starting nodes based on first_comb
+        let starting_nodes: Vec<NodeId> = match first_comb {
+            selector::Combinator::Child => dom.children(node).to_vec(),
             selector::Combinator::NextSibling => {
-                if let Some(sibling) = dom.next_element_sibling(node) {
-                    if sel.parts.len() == 1 {
-                        matches_compound_with_scope(&sel.parts[0].1, dom, sibling, node)
-                    } else {
-                        matches_complex_with_scope(sel, dom, sibling, node)
-                    }
-                } else {
-                    false
-                }
+                dom.next_element_sibling(node).into_iter().collect()
             }
             selector::Combinator::SubsequentSibling => {
+                let mut siblings = Vec::new();
                 let mut current = dom.next_element_sibling(node);
                 while let Some(sibling) = current {
-                    if sel.parts.len() == 1 {
-                        if matches_compound_with_scope(&sel.parts[0].1, dom, sibling, node) {
-                            return true;
-                        }
-                    } else {
-                        if matches_complex_with_scope(sel, dom, sibling, node) {
-                            return true;
-                        }
-                    }
+                    siblings.push(sibling);
                     current = dom.next_element_sibling(sibling);
                 }
-                false
+                siblings
             }
-            _ => any_descendant_matches_with_scope(sel, dom, node, node),
+            _ => {
+                // Descendant
+                dom.descendants_iter(node).collect()
+            }
+        };
+
+        // Filter starting nodes that match first_compound
+        let matched_starts: Vec<NodeId> = starting_nodes
+            .into_iter()
+            .filter(|&start| matches_compound_with_scope(first_compound, dom, start, node))
+            .collect();
+
+        if matched_starts.is_empty() {
+            return false;
         }
+
+        if sel.parts.len() == 1 {
+            // If len is 1, we just needed to find at least one starting node that matches first_compound
+            return true;
+        }
+
+        // For len > 1, check if there is a descendant or sibling matching the rest of the selector,
+        // with the starting node matching the first part (enforced via :scope).
+        let mut modified_parts = sel.parts.clone();
+        modified_parts[0].1 = selector::CompoundSelector {
+            components: vec![selector::Component::PseudoClass("scope".to_string())],
+        };
+        let modified_sel = selector::ComplexSelector {
+            parts: modified_parts,
+        };
+
+        let has_sibling_comb = has_sibling_combinator(&sel.parts[1..]);
+
+        matched_starts.into_iter().any(|start_node| {
+            if has_sibling_comb {
+                let root = dom.get_root_node(start_node);
+                dom.descendants_iter(root)
+                    .any(|desc| matches_complex_with_scope(&modified_sel, dom, desc, start_node))
+            } else {
+                dom.descendants_iter(start_node)
+                    .any(|desc| matches_complex_with_scope(&modified_sel, dom, desc, start_node))
+            }
+        })
     })
 }
 
@@ -1191,5 +1218,75 @@ mod tests {
         );
         // banana has previous sibling apple (banana is subsequent to apple)
         assert_eq!(dom.query_selector("span:has(~ span)"), Some(apple));
+    }
+
+    #[test]
+    fn test_t0867_query_selector_completeness() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Let's build a tree:
+        // <div id="host">
+        //   <div id="first-child" class="child-div">
+        //     <span class="deep-span">Hello</span>
+        //   </div>
+        //   <p id="sibling-p">
+        //     <span class="nested-p-span">World</span>
+        //   </p>
+        // </div>
+        let host = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "host".into())],
+        });
+        dom.append_child(doc, host);
+
+        let first_child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![
+                ("id".into(), "first-child".into()),
+                ("class".into(), "child-div".into()),
+            ],
+        });
+        dom.append_child(host, first_child);
+
+        let deep_span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "deep-span".into())],
+        });
+        dom.append_child(first_child, deep_span);
+
+        let sibling_p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "sibling-p".into())],
+        });
+        dom.append_child(host, sibling_p);
+
+        let nested_p_span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "nested-p-span".into())],
+        });
+        dom.append_child(sibling_p, nested_p_span);
+
+        // 1. Pseudo-elements match nothing (return None)
+        assert_eq!(dom.query_selector("div::after"), None);
+        assert_eq!(dom.query_selector("span::before"), None);
+        assert!(!dom.matches(host, "div::after"));
+
+        // 2. Multi-stage relative selectors in :has() with direct child + descendant
+        // matches because host has a direct child div that has descendant span
+        assert_eq!(dom.query_selector("div:has(> div span)"), Some(host));
+        assert!(dom.matches(host, "div:has(> div span)"));
+
+        // Does NOT match host because first_child does NOT have a direct child div with descendant span
+        assert!(!dom.matches(first_child, "div:has(> div span)"));
+
+        // 3. Sibling relative selector in :has() with subsequent sibling + descendant
+        // first_child has subsequent sibling p, which has descendant span
+        assert_eq!(dom.query_selector("div:has(~ p span)"), Some(first_child));
+        assert!(dom.matches(first_child, "div:has(~ p span)"));
+
+        // 4. NextSibling relative selector in :has() with next sibling + descendant
+        assert_eq!(dom.query_selector("div:has(+ p span)"), Some(first_child));
+        assert!(dom.matches(first_child, "div:has(+ p span)"));
     }
 }
