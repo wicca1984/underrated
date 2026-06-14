@@ -4784,6 +4784,40 @@ fn parse_env_function(components: &[ComponentValue]) -> Option<CssValue> {
     Some(CssValue::Keyword(serialized))
 }
 
+fn parse_var_function(components: &[ComponentValue]) -> Option<CssValue> {
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    if non_ws.is_empty() {
+        return None;
+    }
+
+    let prop_name = match non_ws[0] {
+        ComponentValue::Token(CssToken::Ident(s)) => s,
+        _ => return None,
+    };
+
+    if !prop_name.starts_with("--") {
+        return None;
+    }
+
+    if non_ws.len() > 1 {
+        match non_ws[1] {
+            ComponentValue::Token(CssToken::Comma) => {}
+            _ => return None,
+        }
+    }
+
+    let mut serialized = "var(".to_string();
+    for comp in components {
+        serialized.push_str(&serialize_component_value(comp));
+    }
+    serialized.push(')');
+    Some(CssValue::Keyword(serialized))
+}
+
 fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
     if components.len() != 1 {
         // TODO(spec): Support complex single values (e.g. 1px/2px)
@@ -4984,6 +5018,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             }
             if name.eq_ignore_ascii_case("env") {
                 return parse_env_function(value);
+            }
+            if name.eq_ignore_ascii_case("var") {
+                return parse_var_function(value);
             }
             if name.eq_ignore_ascii_case("calc")
                 || name.eq_ignore_ascii_case("min")
@@ -16085,5 +16122,70 @@ mod tests {
             ],
         };
         assert_eq!(parse_value(&[nested_calc_invalid]), None);
+    }
+
+    #[test]
+    fn test_t0963_css_values_additions() {
+        // 1. Valid var with no fallback
+        let var_no_fallback = ComponentValue::Function {
+            name: "var".to_string(),
+            value: vec![token(CssToken::Ident("--my-color".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[var_no_fallback]),
+            Some(CssValue::Keyword("var(--my-color)".to_string()))
+        );
+
+        // 2. Valid var with fallback
+        let var_with_fallback = ComponentValue::Function {
+            name: "var".to_string(),
+            value: vec![
+                token(CssToken::Ident("--my-color".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Ident("red".to_string())),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[var_with_fallback]),
+            Some(CssValue::Keyword("var(--my-color,red)".to_string()))
+        );
+
+        // 3. Valid var with empty fallback
+        let var_empty_fallback = ComponentValue::Function {
+            name: "var".to_string(),
+            value: vec![
+                token(CssToken::Ident("--my-color".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Whitespace),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[var_empty_fallback]),
+            Some(CssValue::Keyword("var(--my-color, )".to_string()))
+        );
+
+        // 4. Invalid var: empty
+        let var_empty = ComponentValue::Function {
+            name: "var".to_string(),
+            value: vec![],
+        };
+        assert_eq!(parse_value(&[var_empty]), None);
+
+        // 5. Invalid var: not starting with --
+        let var_invalid_name = ComponentValue::Function {
+            name: "var".to_string(),
+            value: vec![token(CssToken::Ident("my-color".to_string()))],
+        };
+        assert_eq!(parse_value(&[var_invalid_name]), None);
+
+        // 6. Invalid var: missing comma before fallback
+        let var_missing_comma = ComponentValue::Function {
+            name: "var".to_string(),
+            value: vec![
+                token(CssToken::Ident("--my-color".to_string())),
+                token(CssToken::Ident("red".to_string())),
+            ],
+        };
+        assert_eq!(parse_value(&[var_missing_comma]), None);
     }
 }
