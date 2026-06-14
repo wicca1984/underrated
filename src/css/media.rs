@@ -75,6 +75,21 @@ pub enum Scripting {
     Enabled,
 }
 
+/// Represents whether the primary input mechanism can hover over elements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hover {
+    None,
+    Hover,
+}
+
+/// Represents the accuracy of the primary pointing device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pointer {
+    None,
+    Coarse,
+    Fine,
+}
+
 thread_local! {
     static PREFERRED_COLOR_SCHEME: Cell<ColorScheme> = const { Cell::new(ColorScheme::Light) };
     static PREFERS_REDUCED_MOTION: Cell<PrefersReducedMotion> = const { Cell::new(PrefersReducedMotion::NoPreference) };
@@ -85,6 +100,10 @@ thread_local! {
     static INVERTED_COLORS: Cell<InvertedColors> = const { Cell::new(InvertedColors::None) };
     static UPDATE_MODE: Cell<UpdateMode> = const { Cell::new(UpdateMode::Fast) };
     static SCRIPTING: Cell<Scripting> = const { Cell::new(Scripting::Enabled) };
+    static HOVER: Cell<Hover> = const { Cell::new(Hover::Hover) };
+    static ANY_HOVER: Cell<Hover> = const { Cell::new(Hover::Hover) };
+    static POINTER: Cell<Pointer> = const { Cell::new(Pointer::Fine) };
+    static ANY_POINTER: Cell<Pointer> = const { Cell::new(Pointer::Fine) };
 }
 
 /// Sets the preferred color scheme for the current thread.
@@ -175,6 +194,46 @@ pub fn set_scripting(val: Scripting) {
 /// Gets the scripting setting for the current thread.
 pub fn scripting() -> Scripting {
     SCRIPTING.with(|c| c.get())
+}
+
+/// Sets the hover setting for the current thread.
+pub fn set_hover(val: Hover) {
+    HOVER.with(|c| c.set(val));
+}
+
+/// Gets the hover setting for the current thread.
+pub fn hover() -> Hover {
+    HOVER.with(|c| c.get())
+}
+
+/// Sets the any-hover setting for the current thread.
+pub fn set_any_hover(val: Hover) {
+    ANY_HOVER.with(|c| c.set(val));
+}
+
+/// Gets the any-hover setting for the current thread.
+pub fn any_hover() -> Hover {
+    ANY_HOVER.with(|c| c.get())
+}
+
+/// Sets the pointer setting for the current thread.
+pub fn set_pointer(val: Pointer) {
+    POINTER.with(|c| c.set(val));
+}
+
+/// Gets the pointer setting for the current thread.
+pub fn pointer() -> Pointer {
+    POINTER.with(|c| c.get())
+}
+
+/// Sets the any-pointer setting for the current thread.
+pub fn set_any_pointer(val: Pointer) {
+    ANY_POINTER.with(|c| c.set(val));
+}
+
+/// Gets the any-pointer setting for the current thread.
+pub fn any_pointer() -> Pointer {
+    ANY_POINTER.with(|c| c.get())
 }
 
 /// Serializes component values back to a CSS string.
@@ -408,6 +467,10 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "inverted-colors" => return inverted_colors() != InvertedColors::None,
             "update" => return update_mode() != UpdateMode::None,
             "scripting" => return scripting() != Scripting::None,
+            "hover" => return hover() != Hover::None,
+            "any-hover" => return any_hover() != Hover::None,
+            "pointer" => return pointer() != Pointer::None,
+            "any-pointer" => return any_pointer() != Pointer::None,
             _ => return false,
         }
     }
@@ -535,6 +598,60 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
                 (Scripting::None, "none") => return true,
                 (Scripting::InitialOnly, "initial-only") => return true,
                 (Scripting::Enabled, "enabled") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "hover" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = hover();
+            match (current, val_lower.as_str()) {
+                (Hover::None, "none") => return true,
+                (Hover::Hover, "hover") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "any-hover" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = any_hover();
+            match (current, val_lower.as_str()) {
+                (Hover::None, "none") => return true,
+                (Hover::Hover, "hover") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "pointer" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = pointer();
+            match (current, val_lower.as_str()) {
+                (Pointer::None, "none") => return true,
+                (Pointer::Coarse, "coarse") => return true,
+                (Pointer::Fine, "fine") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "any-pointer" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = any_pointer();
+            match (current, val_lower.as_str()) {
+                (Pointer::None, "none") => return true,
+                (Pointer::Coarse, "coarse") => return true,
+                (Pointer::Fine, "fine") => return true,
                 _ => return false,
             }
         }
@@ -1403,5 +1520,113 @@ mod tests {
         let matched4 = extract_matched_rules(&stylesheet4, 1000.0);
         assert_eq!(matched4.len(), 1);
         assert_eq!(serialize_component_values(&matched4[0].prelude), "p ");
+    }
+
+    #[test]
+    fn test_hover_feature() {
+        // Default: Hover
+        assert!(media_matches("(hover: hover)", 1000.0));
+        assert!(!media_matches("(hover: none)", 1000.0));
+        // Boolean context: should be true for hover != None
+        assert!(media_matches("(hover)", 1000.0));
+
+        // Configure: None
+        set_hover(Hover::None);
+        assert!(!media_matches("(hover: hover)", 1000.0));
+        assert!(media_matches("(hover: none)", 1000.0));
+        assert!(!media_matches("(hover)", 1000.0));
+
+        // Case insensitivity
+        set_hover(Hover::Hover);
+        assert!(media_matches("(HOVER: HoVeR)", 1000.0));
+
+        // Unknown value
+        assert!(!media_matches("(hover: unknown)", 1000.0));
+
+        // Reset
+        set_hover(Hover::Hover);
+    }
+
+    #[test]
+    fn test_any_hover_feature() {
+        // Default: Hover
+        assert!(media_matches("(any-hover: hover)", 1000.0));
+        assert!(!media_matches("(any-hover: none)", 1000.0));
+        // Boolean context: true for any_hover != None
+        assert!(media_matches("(any-hover)", 1000.0));
+
+        // Configure: None
+        set_any_hover(Hover::None);
+        assert!(!media_matches("(any-hover: hover)", 1000.0));
+        assert!(media_matches("(any-hover: none)", 1000.0));
+        assert!(!media_matches("(any-hover)", 1000.0));
+
+        // Case insensitivity
+        set_any_hover(Hover::Hover);
+        assert!(media_matches("(ANY-HOVER: HoVeR)", 1000.0));
+
+        // Reset
+        set_any_hover(Hover::Hover);
+    }
+
+    #[test]
+    fn test_pointer_feature() {
+        // Default: Fine
+        assert!(media_matches("(pointer: fine)", 1000.0));
+        assert!(!media_matches("(pointer: coarse)", 1000.0));
+        assert!(!media_matches("(pointer: none)", 1000.0));
+        // Boolean context: true for pointer != None
+        assert!(media_matches("(pointer)", 1000.0));
+
+        // Configure: Coarse
+        set_pointer(Pointer::Coarse);
+        assert!(!media_matches("(pointer: fine)", 1000.0));
+        assert!(media_matches("(pointer: coarse)", 1000.0));
+        assert!(!media_matches("(pointer: none)", 1000.0));
+        assert!(media_matches("(pointer)", 1000.0));
+
+        // Configure: None
+        set_pointer(Pointer::None);
+        assert!(!media_matches("(pointer: fine)", 1000.0));
+        assert!(!media_matches("(pointer: coarse)", 1000.0));
+        assert!(media_matches("(pointer: none)", 1000.0));
+        assert!(!media_matches("(pointer)", 1000.0));
+
+        // Case insensitivity
+        set_pointer(Pointer::Fine);
+        assert!(media_matches("(POINTER: FiNe)", 1000.0));
+
+        // Unknown value
+        assert!(!media_matches("(pointer: unknown)", 1000.0));
+
+        // Reset
+        set_pointer(Pointer::Fine);
+    }
+
+    #[test]
+    fn test_any_pointer_feature() {
+        // Default: Fine
+        assert!(media_matches("(any-pointer: fine)", 1000.0));
+        assert!(!media_matches("(any-pointer: coarse)", 1000.0));
+        assert!(!media_matches("(any-pointer: none)", 1000.0));
+        // Boolean context: true for any_pointer != None
+        assert!(media_matches("(any-pointer)", 1000.0));
+
+        // Configure: Coarse
+        set_any_pointer(Pointer::Coarse);
+        assert!(!media_matches("(any-pointer: fine)", 1000.0));
+        assert!(media_matches("(any-pointer: coarse)", 1000.0));
+        assert!(!media_matches("(any-pointer: none)", 1000.0));
+        assert!(media_matches("(any-pointer)", 1000.0));
+
+        // Configure: None
+        set_any_pointer(Pointer::None);
+        assert!(!media_matches("(any-pointer: fine)", 1000.0));
+        assert!(!media_matches("(any-pointer: coarse)", 1000.0));
+        assert!(media_matches("(any-pointer: none)", 1000.0));
+        assert!(!media_matches("(any-pointer)", 1000.0));
+
+        // Reset
+        set_any_pointer(Pointer::Fine);
     }
 }
