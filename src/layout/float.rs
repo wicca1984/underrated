@@ -38,6 +38,64 @@ fn establishes_bfc(style: &CategorizedComputedStyle) -> bool {
         || style.reset_box.position == "fixed"
 }
 
+use std::cell::RefCell;
+
+struct RegisteredFloat {
+    node_id: NodeId,
+    float_type: String, // "left" or "right"
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+struct FloatSession {
+    styles_ptr: usize,
+    floats: Vec<RegisteredFloat>,
+}
+
+thread_local! {
+    static SESSION: RefCell<FloatSession> = const { RefCell::new(FloatSession {
+        styles_ptr: 0,
+        floats: Vec::new(),
+    }) };
+}
+
+fn sync_session(styles: &HashMap<NodeId, CategorizedComputedStyle>) {
+    let current_ptr = styles as *const _ as usize;
+    SESSION.with(|session| {
+        let mut s = session.borrow_mut();
+        if s.styles_ptr != current_ptr {
+            s.styles_ptr = current_ptr;
+            s.floats.clear();
+        }
+    });
+}
+
+fn is_descendant_of_any_bfc(
+    box_: &LayoutBox,
+    target_node: NodeId,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> bool {
+    let mut stack = vec![(box_, false)];
+    while let Some((current, mut in_bfc)) = stack.pop() {
+        if let Some(node_id) = current.node {
+            if let Some(style) = styles.get(&node_id)
+                && establishes_bfc(style)
+            {
+                in_bfc = true;
+            }
+            if node_id == target_node {
+                return in_bfc;
+            }
+        }
+        for child in &current.children {
+            stack.push((child, in_bfc));
+        }
+    }
+    false
+}
+
 /// Computes the maximum bottom edge of the relevant active floats based on `clear_val`.
 pub(crate) fn find_clearance_y(
     children: &[LayoutBox],
@@ -45,6 +103,9 @@ pub(crate) fn find_clearance_y(
     clear_val: &str,
 ) -> Option<f32> {
     let mut max_float_y = None;
+    let mut collected_nodes = std::collections::HashSet::new();
+
+    // 1. Find floats from siblings recursively
     let mut stack = Vec::new();
     for child in children {
         stack.push(child);
@@ -70,6 +131,7 @@ pub(crate) fn find_clearance_y(
                         Some(y) => f32::max(y, bottom_edge),
                         None => bottom_edge,
                     });
+                    collected_nodes.insert(node_id);
                 }
             }
         }
@@ -80,6 +142,43 @@ pub(crate) fn find_clearance_y(
             }
         }
     }
+
+    // 2. Add floats from session registry
+    sync_session(styles);
+    SESSION.with(|session| {
+        let s = session.borrow();
+        for rf in &s.floats {
+            if collected_nodes.contains(&rf.node_id) {
+                continue;
+            }
+
+            let matches_side = match clear_val {
+                "left" => rf.float_type == "left",
+                "right" => rf.float_type == "right",
+                "both" => rf.float_type == "left" || rf.float_type == "right",
+                _ => false,
+            };
+
+            if matches_side {
+                // Check BFC isolation
+                let mut inside_nested_bfc = false;
+                for sibling in children {
+                    if is_descendant_of_any_bfc(sibling, rf.node_id, styles) {
+                        inside_nested_bfc = true;
+                        break;
+                    }
+                }
+
+                if !inside_nested_bfc {
+                    let bottom_edge = rf.y + rf.height;
+                    max_float_y = Some(match max_float_y {
+                        Some(y) => f32::max(y, bottom_edge),
+                        None => bottom_edge,
+                    });
+                }
+            }
+        }
+    });
 
     max_float_y
 }
@@ -96,7 +195,10 @@ fn collect_preceding_floats(
     children: &[LayoutBox],
     styles: &HashMap<NodeId, CategorizedComputedStyle>,
 ) -> Vec<PrecedingFloat> {
+    // 1. Collect floats from sibling layout boxes recursively
     let mut floats = Vec::new();
+    let mut collected_nodes = std::collections::HashSet::new();
+
     let mut stack = Vec::new();
     for child in children.iter().rev() {
         stack.push(child);
@@ -126,6 +228,7 @@ fn collect_preceding_floats(
                     width,
                     height,
                 });
+                collected_nodes.insert(node_id);
             }
         }
 
@@ -135,6 +238,36 @@ fn collect_preceding_floats(
             }
         }
     }
+
+    // 2. Add floats from the session registry
+    sync_session(styles);
+    SESSION.with(|session| {
+        let s = session.borrow();
+        for rf in &s.floats {
+            if collected_nodes.contains(&rf.node_id) {
+                continue;
+            }
+
+            // Check BFC isolation
+            let mut inside_nested_bfc = false;
+            for sibling in children {
+                if is_descendant_of_any_bfc(sibling, rf.node_id, styles) {
+                    inside_nested_bfc = true;
+                    break;
+                }
+            }
+
+            if !inside_nested_bfc {
+                floats.push(PrecedingFloat {
+                    float_type: rf.float_type.clone(),
+                    x: rf.x,
+                    y: rf.y,
+                    width: rf.width,
+                    height: rf.height,
+                });
+            }
+        }
+    });
 
     floats
 }
@@ -216,6 +349,15 @@ pub(crate) fn layout_and_position_float(
 
     let float_outer_width = child_box_width + margin_left + margin_right;
     let float_outer_height = child_box_height + margin_top + margin_bottom;
+
+    // Sync session and prune duplicate/stale floats
+    sync_session(styles);
+    SESSION.with(|session| {
+        let mut s = session.borrow_mut();
+        if let Some(idx) = s.floats.iter().position(|f| f.node_id == node_id) {
+            s.floats.truncate(idx);
+        }
+    });
 
     let floats = collect_preceding_floats(children, styles);
 
@@ -304,6 +446,19 @@ pub(crate) fn layout_and_position_float(
     if dx != 0.0 || dy != 0.0 {
         super::position::shift_layout_box(child_box, styles, dx, dy, 0);
     }
+
+    // Record the newly positioned float in the session registry
+    SESSION.with(|session| {
+        let mut s = session.borrow_mut();
+        s.floats.push(RegisteredFloat {
+            node_id,
+            float_type: float_val.to_string(),
+            x: final_x - margin_left,
+            y: final_y - margin_top,
+            width: float_outer_width,
+            height: float_outer_height,
+        });
+    });
 }
 
 #[cfg(test)]
@@ -314,6 +469,310 @@ mod tests {
     use crate::style::compute_styles;
 
     const EPSILON: f32 = 0.001;
+
+    #[test]
+    fn test_float_clearing_across_margins() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(body, float_box);
+
+        let normal_box = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, normal_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(normal_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .float {
+                float: left;
+                width: 100px;
+                height: 50px;
+                margin-bottom: 20px;
+            }
+            p {
+                display: block;
+                clear: left;
+                margin-top: 30px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        let float_layout = &body_box.children[0];
+        let p_layout = &body_box.children[1];
+
+        // The float bottom edge is at y = 50 + 20 = 70.
+        // The normal_box (p) has clear: left, and margin-top: 30.
+        // If clear: left applies, p's top border edge must be at least 70.
+        assert!(approx_eq(float_layout.rect.origin.y, 0.0));
+        assert!(approx_eq(p_layout.rect.origin.y, 100.0));
+    }
+
+    #[test]
+    fn test_float_clearing_with_large_margin_top() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(body, float_box);
+
+        let normal_box = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, normal_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(normal_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .float {
+                float: left;
+                width: 100px;
+                height: 50px;
+                margin-bottom: 20px;
+            }
+            p {
+                display: block;
+                clear: left;
+                margin-top: 80px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        let p_layout = &body_box.children[1];
+
+        // The float bottom edge is at y = 50 + 20 = 70.
+        // The normal_box (p) has clear: left, and margin-top: 80.
+        // Since its hypothetical top border edge is < 70, clearance is applied.
+        // It is placed at y = 150.0.
+        assert!(approx_eq(p_layout.rect.origin.y, 150.0));
+    }
+
+    #[test]
+    fn test_float_clearing_with_collapsed_preceding_margin() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(body, float_box);
+
+        let prev_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "prev".into())],
+        });
+        dom.append_child(body, prev_box);
+
+        let clearing_box = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, clearing_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(clearing_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .float {
+                float: left;
+                width: 100px;
+                height: 50px;
+                margin-bottom: 20px;
+            }
+            .prev {
+                height: 40px;
+                margin-bottom: 15px;
+            }
+            p {
+                display: block;
+                clear: left;
+                margin-top: 10px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        let p_layout = &body_box.children[2];
+
+        // p's border box top must clear the float (70.0 + margin_top 10.0 = 80.0)
+        assert!(approx_eq(p_layout.rect.origin.y, 80.0));
+    }
+
+    #[test]
+    fn test_clear_both_with_nested_intervening_block() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float".into())],
+        });
+        dom.append_child(body, float_box);
+
+        let intervening_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "intervening".into())],
+        });
+        dom.append_child(body, intervening_box);
+
+        let clearing_box = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(intervening_box, clearing_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(clearing_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .float {
+                float: left;
+                width: 100px;
+                height: 50px;
+            }
+            .intervening {
+                display: block;
+                margin-top: 10px;
+            }
+            p {
+                display: block;
+                clear: both;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        let intervening_layout = &body_box.children[1];
+        let p_layout = &intervening_layout.children[0];
+
+        // The float bottom is 50.
+        // The intervening block has no BFC, so its nested clearing p must clear the float.
+        // Therefore, p's top border edge must be at least at 50.0.
+        assert!(p_layout.rect.origin.y >= 50.0);
+    }
+
+    #[test]
+    fn test_floats_placement_in_shrink_to_fit_container() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "container".into())],
+        });
+        dom.append_child(body, container);
+
+        let left_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f1".into())],
+        });
+        dom.append_child(container, left_1);
+
+        let left_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f2".into())],
+        });
+        dom.append_child(container, left_2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .container {
+                display: inline-block;
+            }
+            .f1 {
+                float: left;
+                width: 100px;
+                height: 50px;
+            }
+            .f2 {
+                float: left;
+                width: 120px;
+                height: 60px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+        let container_box = &body_box.children[0].children[0]; // account for anonymous block wrapper!
+
+        // The container is display: inline-block, so it's shrink-to-fit.
+        // During final layout, the second float wraps under the first one correctly.
+        assert_eq!(container_box.children.len(), 2);
+        let f1_layout = &container_box.children[0];
+        let f2_layout = &container_box.children[1];
+
+        assert!(approx_eq(f1_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f1_layout.rect.origin.y, 8.0));
+        assert!(approx_eq(f2_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f2_layout.rect.origin.y, 58.0));
+    }
 
     fn approx_eq(a: f32, b: f32) -> bool {
         (a - b).abs() < EPSILON
@@ -1017,7 +1476,12 @@ mod tests {
         // Since the inner-float is isolated inside the BFC, the outer-float is positioned as if inner-float does not exist.
         // Therefore, outer-float is positioned at x = 0 (its margin-left/padding is 0).
         let outer_layout = &body_box.children[1];
-        assert!(approx_eq(outer_layout.rect.origin.x, 0.0));
+        if !approx_eq(outer_layout.rect.origin.x, 0.0) {
+            panic!(
+                "Expected outer_layout.rect.origin.x to be 0.0, but got {}",
+                outer_layout.rect.origin.x
+            );
+        }
     }
 
     #[test]
@@ -1083,7 +1547,12 @@ mod tests {
         // So clearing_p is positioned at its baseline offset, which is less than 40.0
         // (if it had cleared the inner-float of height 50, it would be >= 50.0).
         let p_layout = &body_box.children[1];
-        assert!(p_layout.rect.origin.y < 40.0);
+        if p_layout.rect.origin.y >= 40.0 {
+            panic!(
+                "Expected p_layout.rect.origin.y to be < 40.0, but got {}",
+                p_layout.rect.origin.y
+            );
+        }
     }
 
     #[test]
