@@ -902,20 +902,30 @@ enum FeatureValue {
     Resolution(f32),
 }
 
-fn parse_length_val(tokens: &[CssToken]) -> Option<f32> {
+fn resolve_length_unit(value: f32, unit: &str, viewport_w: f32) -> Option<f32> {
+    let unit_lower = unit.to_ascii_lowercase();
+    match unit_lower.as_str() {
+        "px" => Some(value),
+        "em" | "rem" => Some(value * 16.0),
+        "in" => Some(value * 96.0),
+        "cm" => Some(value * (96.0 / 2.54)),
+        "mm" => Some(value * (9.6 / 2.54)),
+        "pt" => Some(value * (96.0 / 72.0)),
+        "pc" => Some(value * 16.0),
+        "vw" => Some(value * viewport_w / 100.0),
+        "vh" => Some(value * viewport_h() / 100.0),
+        "vmin" => Some(value * f32::min(viewport_w, viewport_h()) / 100.0),
+        "vmax" => Some(value * f32::max(viewport_w, viewport_h()) / 100.0),
+        _ => None,
+    }
+}
+
+fn parse_length_val(tokens: &[CssToken], viewport_w: f32) -> Option<f32> {
     if tokens.len() != 1 {
         return None;
     }
     match &tokens[0] {
-        CssToken::Dimension { value, unit } => {
-            if unit.eq_ignore_ascii_case("px") {
-                Some(*value as f32)
-            } else if unit.eq_ignore_ascii_case("em") || unit.eq_ignore_ascii_case("rem") {
-                Some((*value * 16.0) as f32)
-            } else {
-                None
-            }
-        }
+        CssToken::Dimension { value, unit } => resolve_length_unit(*value as f32, unit, viewport_w),
         CssToken::Number(value) => Some(*value as f32),
         _ => None,
     }
@@ -945,9 +955,13 @@ fn parse_resolution_val(tokens: &[CssToken]) -> Option<f32> {
     None
 }
 
-fn parse_feature_value(kind: &FeatureValue, tokens: &[CssToken]) -> Option<FeatureValue> {
+fn parse_feature_value(
+    kind: &FeatureValue,
+    tokens: &[CssToken],
+    viewport_w: f32,
+) -> Option<FeatureValue> {
     match kind {
-        FeatureValue::Length(_) => parse_length_val(tokens).map(FeatureValue::Length),
+        FeatureValue::Length(_) => parse_length_val(tokens, viewport_w).map(FeatureValue::Length),
         FeatureValue::Ratio(_) => parse_ratio(tokens).map(FeatureValue::Ratio),
         FeatureValue::Number(_) => parse_number_val(tokens).map(FeatureValue::Number),
         FeatureValue::Resolution(_) => parse_resolution_val(tokens).map(FeatureValue::Resolution),
@@ -1045,7 +1059,7 @@ fn evaluate_range_query(ops: &[(Op, usize, usize)], tokens: &[CssToken], viewpor
             let feature_name = name.to_ascii_lowercase();
             let value_tokens = &tokens[op_idx + op_len..];
             if let Some(kind) = get_range_feature_value(&feature_name, viewport_w)
-                && let Some(target_val) = parse_feature_value(&kind, value_tokens)
+                && let Some(target_val) = parse_feature_value(&kind, value_tokens, viewport_w)
             {
                 return compare_values(kind, op, target_val);
             }
@@ -1058,7 +1072,7 @@ fn evaluate_range_query(ops: &[(Op, usize, usize)], tokens: &[CssToken], viewpor
             let feature_name = name.to_ascii_lowercase();
             let value_tokens = &tokens[0..op_idx];
             if let Some(kind) = get_range_feature_value(&feature_name, viewport_w)
-                && let Some(target_val) = parse_feature_value(&kind, value_tokens)
+                && let Some(target_val) = parse_feature_value(&kind, value_tokens, viewport_w)
             {
                 return compare_values(target_val, op, kind);
             }
@@ -1082,8 +1096,8 @@ fn evaluate_range_query(ops: &[(Op, usize, usize)], tokens: &[CssToken], viewpor
                 None
             };
             if let Some(kind) = kind_opt {
-                let val1 = parse_feature_value(&kind, value1_tokens);
-                let val2 = parse_feature_value(&kind, value2_tokens);
+                let val1 = parse_feature_value(&kind, value1_tokens, viewport_w);
+                let val2 = parse_feature_value(&kind, value2_tokens, viewport_w);
                 if let (Some(v1), Some(v2)) = (val1, val2) {
                     return compare_values(v1, op1, kind.clone()) && compare_values(kind, op2, v2);
                 }
@@ -1737,15 +1751,7 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
     }
 
     let value_px = match &tokens[2] {
-        CssToken::Dimension { value, unit } => {
-            if unit.eq_ignore_ascii_case("px") {
-                Some(*value as f32)
-            } else if unit.eq_ignore_ascii_case("em") || unit.eq_ignore_ascii_case("rem") {
-                Some((*value * 16.0) as f32)
-            } else {
-                None
-            }
-        }
+        CssToken::Dimension { value, unit } => resolve_length_unit(*value as f32, unit, viewport_w),
         CssToken::Number(value) => Some(*value as f32),
         _ => None,
     };
@@ -3340,5 +3346,61 @@ mod tests {
 
         set_overflow_inline(OverflowInline::Scroll);
         assert!(media_matches("(overflow-inline: scroll)", 1000.0));
+    }
+
+    #[test]
+    fn test_absolute_physical_and_viewport_units() {
+        // --- 1. Absolute Physical Units ---
+        // 1in = 96px. If viewport_w is 96px, it should match (width: 1in).
+        assert!(media_matches("(width: 1in)", 96.0));
+        assert!(media_matches("(min-width: 0.5in)", 96.0));
+        assert!(!media_matches("(width: 2in)", 96.0));
+
+        // 1cm = 96 / 2.54 px = 37.795px. Use inequalities for safety.
+        assert!(media_matches("(min-width: 1cm)", 38.0));
+        assert!(!media_matches("(min-width: 1cm)", 37.0));
+        assert!(media_matches("(max-width: 1cm)", 37.0));
+        assert!(!media_matches("(max-width: 1cm)", 38.0));
+        assert!(media_matches("(min-width: 5mm)", 20.0)); // 5mm = 18.89px
+
+        // 1pt = 96 / 72 px = 1.33333px. Use inequalities for safety.
+        assert!(media_matches("(min-width: 100pt)", 134.0));
+        assert!(!media_matches("(min-width: 100pt)", 133.0));
+        assert!(media_matches("(max-width: 100pt)", 133.0));
+        assert!(!media_matches("(max-width: 100pt)", 134.0));
+
+        // 1pc = 16px. If viewport_w is 16px, it should match (width: 1pc).
+        assert!(media_matches("(width: 1pc)", 16.0));
+        assert!(media_matches("(width: 10pc)", 160.0));
+
+        // --- 2. Viewport-Relative Units ---
+        // viewport_w = 800px, viewport_h() = 600px
+        set_viewport_h(600.0);
+
+        // 100vw = 800px
+        assert!(media_matches("(width: 100vw)", 800.0));
+        assert!(media_matches("(min-width: 10vw)", 800.0));
+        assert!(!media_matches("(width: 10vw)", 800.0));
+        assert!(!media_matches("(max-width: 20vw)", 800.0));
+        assert!(media_matches("(max-width: 120vw)", 800.0));
+
+        // 50vh = 300px
+        assert!(media_matches("(width: 50vh)", 300.0)); // 50vh of 600px = 300px, so width: 300px matches when viewport_w is 300.0!
+        assert!(media_matches("(min-width: 20vh)", 800.0)); // 20vh of 600px = 120px, 800 >= 120 is true!
+
+        // vmin = min(vw, vh).
+        // If viewport_w = 800, viewport_h = 600, then min(800, 600) = 600.
+        // So 50vmin = 50% of 600 = 300px.
+        assert!(media_matches("(min-width: 50vmin)", 800.0)); // 800 >= 300 is true!
+
+        // vmax = max(vw, vh).
+        // If viewport_w = 800, viewport_h = 600, then max(800, 600) = 800.
+        // So 50vmax = 50% of 800 = 400px.
+        assert!(media_matches("(min-width: 50vmax)", 800.0)); // 800 >= 400 is true!
+
+        // --- 3. Range queries with new units ---
+        assert!(media_matches("(2vw <= width <= 200vw)", 800.0));
+
+        set_viewport_h(1024.0); // Reset
     }
 }
