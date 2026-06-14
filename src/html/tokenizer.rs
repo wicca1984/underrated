@@ -1099,6 +1099,44 @@ impl Tokenizer {
                                 self.state = State::BogusComment;
                             }
                         }
+                        Some('[') => {
+                            let mut matched = true;
+                            let mut consumed = String::new();
+                            let expected = ['C', 'D', 'A', 'T', 'A', '['];
+                            let mut last_char = None;
+                            for &k in &expected {
+                                if let Some(in_c) = self.input.next() {
+                                    if in_c == k {
+                                        consumed.push(in_c);
+                                    } else {
+                                        matched = false;
+                                        last_char = Some(in_c);
+                                        break;
+                                    }
+                                } else {
+                                    matched = false;
+                                    break;
+                                }
+                            }
+                            if matched {
+                                if self.is_xml {
+                                    self.state = State::CdataSection;
+                                } else {
+                                    self.emit_error("cdata-in-html-content");
+                                    self.current_token =
+                                        Some(Token::Comment("[CDATA[".to_string()));
+                                    self.state = State::BogusComment;
+                                }
+                            } else {
+                                self.emit_error("mismatched-markup-declaration-open");
+                                let comment_str = format!("[{}", consumed);
+                                self.current_token = Some(Token::Comment(comment_str));
+                                self.state = State::BogusComment;
+                                if last_char.is_some() {
+                                    self.input.reconsume();
+                                }
+                            }
+                        }
                         _ => {
                             self.emit_error("mismatched-markup-declaration-open");
                             self.current_token = Some(Token::Comment(String::new()));
@@ -5258,6 +5296,62 @@ mod tests {
                 }
             }
             assert_eq!(decoded, expected, "Failed for {}", input);
+        }
+    }
+
+    #[test]
+    fn test_cdata_parsing_t0893() {
+        // XML / Foreign mode: <![CDATA[hello]]> parsed as characters
+        {
+            let stream = InputStream::from_utf8(b"<![CDATA[hello]]>");
+            let mut t = Tokenizer::new(stream);
+            t.set_xml_mode(true);
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token in XML CDATA: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "hello");
+        }
+
+        // HTML mode: <![CDATA[hello]]> parsed as bogus comment with cdata-in-html-content parse error
+        {
+            let stream = InputStream::from_utf8(b"<![CDATA[hello]]>");
+            let mut t = Tokenizer::new(stream);
+            t.set_xml_mode(false);
+            let tok = t.next_token();
+            assert!(
+                matches!(tok, Token::Comment(ref s) if s == "[CDATA[hello]]"),
+                "Expected comment [CDATA[hello]], got {:?}",
+                tok
+            );
+            let errors = t.take_errors();
+            assert!(
+                errors.iter().any(|e| e.code == "cdata-in-html-content"),
+                "Expected cdata-in-html-content parse error"
+            );
+        }
+
+        // Mismatched markup: <![CDX]> parsed as bogus comment with mismatched-markup-declaration-open parse error
+        {
+            let stream = InputStream::from_utf8(b"<![CDX]>");
+            let mut t = Tokenizer::new(stream);
+            let tok = t.next_token();
+            assert!(
+                matches!(tok, Token::Comment(ref s) if s == "[CDX]"),
+                "Expected comment [CDX], got {:?}",
+                tok
+            );
+            let errors = t.take_errors();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.code == "mismatched-markup-declaration-open"),
+                "Expected mismatched-markup-declaration-open parse error"
+            );
         }
     }
 }
