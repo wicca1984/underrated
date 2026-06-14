@@ -221,6 +221,20 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `alt` content attribute of a valid element node.
+    /// Returns `None` if the node has no `alt` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_alt(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("alt"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -600,6 +614,44 @@ mod tests {
             foreign_node = elem(&mut foreign_dom, "div");
         }
         assert_eq!(dom.get_id(foreign_node), None);
+    }
+
+    #[test]
+    fn test_alt_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element with alt attribute -> returns Some(value)
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![("alt".to_string(), "A cute puppy".to_string())],
+        });
+        assert_eq!(dom.get_alt(img_id), Some("A cute puppy"));
+
+        // 2. Element with case-insensitive alt attribute (e.g., ALT) -> returns Some(value)
+        let area_id = dom.create_node(NodeData::Element {
+            name: "area".to_string(),
+            attrs: vec![("ALT".to_string(), "Clickable region".to_string())],
+        });
+        assert_eq!(dom.get_alt(area_id), Some("Clickable region"));
+
+        // 3. Element without alt attribute -> returns None
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_alt(p_id), None);
+
+        // 4. Non-element node (e.g., Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_alt(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "img");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "img");
+        }
+        assert_eq!(dom.get_alt(foreign_node), None);
     }
 
     #[test]
