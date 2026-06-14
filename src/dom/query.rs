@@ -484,6 +484,7 @@ fn matches_component_with_scope(
             .0
             .iter()
             .any(|sel| matches_complex_with_scope(sel, dom, node, scope)),
+        selector::Component::Has(list) => matches_has_with_scope(list, dom, node),
         _ => {
             // For all other components, match using standard selector::matches_complex
             let temp_compound = selector::CompoundSelector {
@@ -495,6 +496,77 @@ fn matches_component_with_scope(
             selector::matches_complex(&temp_sel, dom, node)
         }
     }
+}
+
+fn matches_has_with_scope(list: &selector::SelectorList, dom: &Dom, node: NodeId) -> bool {
+    list.0.iter().any(|sel| {
+        if sel.parts.is_empty() {
+            return false;
+        }
+
+        let first_comb = sel.parts[0].0;
+        match first_comb {
+            selector::Combinator::Child => {
+                if sel.parts.len() == 1 {
+                    let children = dom.children(node);
+                    children.iter().any(|&child| {
+                        matches_compound_with_scope(&sel.parts[0].1, dom, child, node)
+                    })
+                } else {
+                    let children = dom.children(node);
+                    children
+                        .iter()
+                        .any(|&child| matches_complex_with_scope(sel, dom, child, node))
+                }
+            }
+            selector::Combinator::NextSibling => {
+                if let Some(sibling) = dom.next_element_sibling(node) {
+                    if sel.parts.len() == 1 {
+                        matches_compound_with_scope(&sel.parts[0].1, dom, sibling, node)
+                    } else {
+                        matches_complex_with_scope(sel, dom, sibling, node)
+                    }
+                } else {
+                    false
+                }
+            }
+            selector::Combinator::SubsequentSibling => {
+                let mut current = dom.next_element_sibling(node);
+                while let Some(sibling) = current {
+                    if sel.parts.len() == 1 {
+                        if matches_compound_with_scope(&sel.parts[0].1, dom, sibling, node) {
+                            return true;
+                        }
+                    } else {
+                        if matches_complex_with_scope(sel, dom, sibling, node) {
+                            return true;
+                        }
+                    }
+                    current = dom.next_element_sibling(sibling);
+                }
+                false
+            }
+            _ => any_descendant_matches_with_scope(sel, dom, node, node),
+        }
+    })
+}
+
+fn any_descendant_matches_with_scope(
+    sel: &selector::ComplexSelector,
+    dom: &Dom,
+    node: NodeId,
+    scope: NodeId,
+) -> bool {
+    let children = dom.children(node);
+    for &child in children {
+        if matches_complex_with_scope(sel, dom, child, scope) {
+            return true;
+        }
+        if any_descendant_matches_with_scope(sel, dom, child, scope) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1009,5 +1081,115 @@ mod tests {
         // Multi-part lists
         let matched_list = dom.query_selector_all_from(parent_div, "> span, > p");
         assert_eq!(matched_list, vec![child_span, sibling_p]);
+    }
+
+    #[test]
+    fn test_t0847_extended_completeness() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Let's build a rich tree to test our features:
+        // <div class="main" data-role="container" id="host">
+        //   <span class="prefix-apple-suffix" data-type="apple-fruit">Apple</span>
+        //   <span class="prefix-banana-suffix" data-type="banana-fruit">Banana</span>
+        //   <div class="nested-box">
+        //     <p class="inner-text" data-title="hello-world">Paragraph</p>
+        //   </div>
+        // </div>
+        let host = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![
+                ("class".into(), "main".into()),
+                ("data-role".into(), "container".into()),
+                ("id".into(), "host".into()),
+            ],
+        });
+        dom.append_child(doc, host);
+
+        let apple = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![
+                ("class".into(), "prefix-apple-suffix".into()),
+                ("data-type".into(), "apple-fruit".into()),
+            ],
+        });
+        dom.append_child(host, apple);
+
+        let banana = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![
+                ("class".into(), "prefix-banana-suffix".into()),
+                ("data-type".into(), "banana-fruit".into()),
+            ],
+        });
+        dom.append_child(host, banana);
+
+        let nested_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "nested-box".into())],
+        });
+        dom.append_child(host, nested_box);
+
+        let p_text = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![
+                ("class".into(), "inner-text".into()),
+                ("data-title".into(), "hello-world".into()),
+            ],
+        });
+        dom.append_child(nested_box, p_text);
+
+        // --- 1. Attribute operators ^= $= *= ---
+        // Prefix operator ^=
+        assert_eq!(dom.query_selector("[data-type^=\"apple\"]"), Some(apple));
+        assert_eq!(
+            dom.query_selector("[class^=\"prefix-banana\"]"),
+            Some(banana)
+        );
+
+        // Suffix operator $=
+        assert_eq!(dom.query_selector("[data-type$=\"fruit\"]"), Some(apple)); // Find first matching
+        let fruit_list = dom.query_selector_all("[data-type$=\"fruit\"]");
+        assert_eq!(fruit_list, vec![apple, banana]);
+
+        // Substring operator *=
+        assert_eq!(dom.query_selector("[data-title*=\"lo-wo\"]"), Some(p_text));
+        assert_eq!(dom.query_selector("[class*=\"banana\"]"), Some(banana));
+
+        // --- 2. :not ---
+        // Span elements that do NOT have data-type starting with "apple"
+        let not_apple = dom.query_selector_all("span:not([data-type^=\"apple\"])");
+        assert_eq!(not_apple, vec![banana]);
+
+        // Elements under host that are NOT div
+        let not_div = dom.query_selector_all_from(host, ":not(div)");
+        assert_eq!(not_div, vec![apple, banana, p_text]);
+
+        // --- 3. descendant/child combinators ---
+        assert_eq!(dom.query_selector("div > span"), Some(apple));
+        assert_eq!(dom.query_selector_all("div span"), vec![apple, banana]);
+        assert_eq!(dom.query_selector_from(host, "> span"), Some(apple));
+        assert_eq!(dom.query_selector_from(host, "div > p"), Some(p_text));
+
+        // --- 4. :has with scope/relative selectors ---
+        // Matches host because it has a child with class prefix-banana-suffix
+        assert_eq!(
+            dom.query_selector("div:has(> .prefix-banana-suffix)"),
+            Some(host)
+        );
+
+        // Matches nested-box because it has a descendant p
+        assert_eq!(dom.query_selector("div:has(p)"), Some(host));
+        let has_divs = dom.query_selector_all("div:has(p)");
+        assert_eq!(has_divs, vec![host, nested_box]);
+
+        // matches_has sibling relative matching
+        // apple has next sibling banana
+        assert_eq!(
+            dom.query_selector("span:has(+ [data-type^=\"banana\"])"),
+            Some(apple)
+        );
+        // banana has previous sibling apple (banana is subsequent to apple)
+        assert_eq!(dom.query_selector("span:has(~ span)"), Some(apple));
     }
 }
