@@ -1016,6 +1016,49 @@ impl TryFrom<&CssValue> for UserSelectValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum TransformStyleValue {
+    #[default]
+    Flat,
+    Preserve3d,
+}
+
+impl TransformStyleValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "flat" => Some(Self::Flat),
+            "preserve-3d" => Some(Self::Preserve3d),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Flat => "flat",
+            Self::Preserve3d => "preserve-3d",
+        }
+    }
+}
+
+impl std::str::FromStr for TransformStyleValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for TransformStyleValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum BreakInsideValue {
     #[default]
     Auto,
@@ -6267,6 +6310,60 @@ mod tests {
 
         // Test Default implementation
         assert_eq!(UserSelectValue::default(), UserSelectValue::Auto);
+    }
+
+    #[test]
+    fn test_transform_style_value() {
+        // Test parsing keyword strings to TransformStyleValue
+        assert_eq!(
+            TransformStyleValue::parse("flat"),
+            Some(TransformStyleValue::Flat)
+        );
+        assert_eq!(
+            TransformStyleValue::parse("preserve-3d"),
+            Some(TransformStyleValue::Preserve3d)
+        );
+        assert_eq!(
+            TransformStyleValue::parse("FLAT"),
+            Some(TransformStyleValue::Flat)
+        );
+        assert_eq!(
+            TransformStyleValue::parse("pReSeRvE-3d"),
+            Some(TransformStyleValue::Preserve3d)
+        );
+        assert_eq!(TransformStyleValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "flat".parse::<TransformStyleValue>(),
+            Ok(TransformStyleValue::Flat)
+        );
+        assert_eq!(
+            "preserve-3d".parse::<TransformStyleValue>(),
+            Ok(TransformStyleValue::Preserve3d)
+        );
+        assert_eq!("BOGUS".parse::<TransformStyleValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(TransformStyleValue::Flat.as_str(), "flat");
+        assert_eq!(TransformStyleValue::Preserve3d.as_str(), "preserve-3d");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            TransformStyleValue::try_from(&CssValue::Keyword("flat".to_string())),
+            Ok(TransformStyleValue::Flat)
+        );
+        assert_eq!(
+            TransformStyleValue::try_from(&CssValue::Keyword("preserve-3d".to_string())),
+            Ok(TransformStyleValue::Preserve3d)
+        );
+        assert_eq!(
+            TransformStyleValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+
+        // Test Default implementation
+        assert_eq!(TransformStyleValue::default(), TransformStyleValue::Flat);
     }
 
     #[test]
