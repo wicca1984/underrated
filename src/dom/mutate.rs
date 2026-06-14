@@ -1733,6 +1733,343 @@ impl Dom {
         }
     }
 
+    /// Sets the `media` content attribute on a valid `<link>`, `<style>`, or `<source>` element.
+    /// No-op if the node is not a matching element, or if the `NodeId` is invalid.
+    pub fn set_media(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("style")
+                || name.eq_ignore_ascii_case("source"))
+        {
+            self.set_attribute(node, "media", value);
+        }
+    }
+
+    /// Sets the `hreflang` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_hreflang(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "hreflang", value);
+        }
+    }
+
+    /// Sets the `type` content attribute on a valid element node (button, input, embed, object, ol, script, source, style, link, menu, command).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_type(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+        {
+            let is_defined = name.eq_ignore_ascii_case("button")
+                || name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("embed")
+                || name.eq_ignore_ascii_case("object")
+                || name.eq_ignore_ascii_case("ol")
+                || name.eq_ignore_ascii_case("script")
+                || name.eq_ignore_ascii_case("source")
+                || name.eq_ignore_ascii_case("style")
+                || name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("menu")
+                || name.eq_ignore_ascii_case("command");
+            if is_defined {
+                self.set_attribute(node, "type", value);
+            }
+        }
+    }
+
+    /// Sets the `referrerpolicy` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_referrer_policy(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "referrerpolicy", value);
+        }
+    }
+
+    /// Sets the `for` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_for(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "for", value);
+        }
+    }
+
+    /// Sets the `colspan` content attribute on a valid table cell element (`<td>` or `<th>`).
+    /// No-op if the node is not a table cell element, or if the `NodeId` is invalid.
+    pub fn set_colspan(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th"))
+        {
+            self.set_attribute(node, "colspan", value);
+        }
+    }
+
+    /// Sets the `rowspan` content attribute on a valid table cell element (`<td>` or `<th>`).
+    /// No-op if the node is not a table cell element, or if the `NodeId` is invalid.
+    pub fn set_rowspan(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th"))
+        {
+            self.set_attribute(node, "rowspan", value);
+        }
+    }
+
+    /// Sets the `headers` content attribute on a valid table cell element (`<td>` or `<th>`).
+    /// No-op if the node is not a table cell element, or if the `NodeId` is invalid.
+    pub fn set_headers(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th"))
+        {
+            self.set_attribute(node, "headers", value);
+        }
+    }
+
+    /// Sets the `scope` content attribute on a valid `<th>` element.
+    /// No-op if the node is not a `<th>` element, or if the `NodeId` is invalid.
+    pub fn set_scope(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("th")
+        {
+            self.set_attribute(node, "scope", value);
+        }
+    }
+
+    /// Sets the `abbr` content attribute on a valid `<th>` element.
+    /// No-op if the node is not a `<th>` element, or if the `NodeId` is invalid.
+    pub fn set_abbr(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("th")
+        {
+            self.set_attribute(node, "abbr", value);
+        }
+    }
+
+    /// Sets the `cite` content attribute on a valid `blockquote`, `q`, `ins`, or `del` element.
+    /// No-op if the node is not a matching element, or if the `NodeId` is invalid.
+    pub fn set_cite(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("blockquote")
+                || name.eq_ignore_ascii_case("q")
+                || name.eq_ignore_ascii_case("ins")
+                || name.eq_ignore_ascii_case("del"))
+        {
+            self.set_attribute(node, "cite", value);
+        }
+    }
+
+    /// Sets the `datetime` content attribute on a valid `<time>`, `<ins>`, or `<del>` element.
+    /// No-op if the node is not a matching element, or if the `NodeId` is invalid.
+    pub fn set_datetime(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("time")
+                || name.eq_ignore_ascii_case("ins")
+                || name.eq_ignore_ascii_case("del"))
+        {
+            self.set_attribute(node, "datetime", value);
+        }
+    }
+
+    /// Sets the `crossorigin` content attribute on a valid element node (img, script, link, audio, video).
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_cross_origin(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("img")
+                || name.eq_ignore_ascii_case("script")
+                || name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("audio")
+                || name.eq_ignore_ascii_case("video"))
+        {
+            self.set_attribute(node, "crossorigin", value);
+        }
+    }
+
+    /// Returns the value of the `span` content attribute of a valid `<col>` or `<colgroup>` element.
+    /// Returns `None` if the node is not a `<col>` or `<colgroup>` element, has no `span` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_span(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("col") || name.eq_ignore_ascii_case("colgroup"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("span"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `span` content attribute on a valid `<col>` or `<colgroup>` element.
+    /// No-op if the node is not a `<col>` or `<colgroup>` element, or if the `NodeId` is invalid.
+    pub fn set_span(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("col") || name.eq_ignore_ascii_case("colgroup"))
+        {
+            self.set_attribute(node, "span", value);
+        }
+    }
+
+    /// Returns the value of the `integrity` content attribute of a valid `<link>` or `<script>` element.
+    /// Returns `None` if the node is not one of these elements, has no `integrity` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_integrity(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("link") || name.eq_ignore_ascii_case("script"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("integrity"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Sets the `integrity` content attribute on a valid `<link>` or `<script>` element.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_integrity(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("link") || name.eq_ignore_ascii_case("script"))
+        {
+            self.set_attribute(node, "integrity", value);
+        }
+    }
+
+    /// Sets or removes the `disabled` content attribute on a valid element node
+    /// (input, button, select, textarea, option, optgroup, fieldset).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_disabled(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("button")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea")
+                || name.eq_ignore_ascii_case("option")
+                || name.eq_ignore_ascii_case("optgroup")
+                || name.eq_ignore_ascii_case("fieldset"))
+        {
+            if value {
+                self.set_attribute(node, "disabled", "");
+            } else {
+                self.remove_attribute(node, "disabled");
+            }
+        }
+    }
+
+    /// Sets or removes the `required` content attribute on a valid element node (input, select, textarea).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_required(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("textarea"))
+        {
+            if value {
+                self.set_attribute(node, "required", "");
+            } else {
+                self.remove_attribute(node, "required");
+            }
+        }
+    }
+
+    /// Sets or removes the `readonly` content attribute on a valid element node (input, textarea).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_readonly(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            if value {
+                self.set_attribute(node, "readonly", "");
+            } else {
+                self.remove_attribute(node, "readonly");
+            }
+        }
+    }
+
+    /// Sets or removes the `autofocus` content attribute on any valid element node.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_autofocus(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            if value {
+                self.set_attribute(node, "autofocus", "");
+            } else {
+                self.remove_attribute(node, "autofocus");
+            }
+        }
+    }
+
+    /// Sets or removes the `multiple` content attribute on a valid element node (input, select).
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_multiple(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("select"))
+        {
+            if value {
+                self.set_attribute(node, "multiple", "");
+            } else {
+                self.remove_attribute(node, "multiple");
+            }
+        }
+    }
+
+    /// Sets or removes the `checked` content attribute on a valid `<input>` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
+    pub fn set_checked(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("input")
+        {
+            if value {
+                self.set_attribute(node, "checked", "");
+            } else {
+                self.remove_attribute(node, "checked");
+            }
+        }
+    }
+
+    /// Sets or removes the `selected` content attribute on a valid `<option>` element.
+    /// If `value` is true, sets the attribute to `""`. If `value` is false, removes the attribute.
+    /// No-op if the node is not an `<option>` element, or if the `NodeId` is invalid.
+    pub fn set_selected(&mut self, node: NodeId, value: bool) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && name.eq_ignore_ascii_case("option")
+        {
+            if value {
+                self.set_attribute(node, "selected", "");
+            } else {
+                self.remove_attribute(node, "selected");
+            }
+        }
+    }
+
     // TODO(spec): muted reflects defaultMuted
 }
 
@@ -4028,5 +4365,200 @@ mod tests {
         assert_eq!(dom.get_as(foreign_node), None);
         assert_eq!(dom.get_image_srcset(foreign_node), None);
         assert_eq!(dom.get_image_sizes(foreign_node), None);
+    }
+
+    #[test]
+    fn test_reflected_content_attribute_accessors_t0790() {
+        let mut dom = Dom::new();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![],
+        });
+
+        // 1. span (col, colgroup)
+        let col_id = dom.create_node(NodeData::Element {
+            name: "col".to_string(),
+            attrs: vec![],
+        });
+        let colgroup_id = dom.create_node(NodeData::Element {
+            name: "colgroup".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_span(col_id), None);
+        dom.set_span(col_id, "2");
+        assert_eq!(dom.get_span(col_id), Some("2"));
+        dom.set_span(colgroup_id, "3");
+        assert_eq!(dom.get_span(colgroup_id), Some("3"));
+        dom.set_span(div_id, "4");
+        assert_eq!(dom.get_span(div_id), None);
+
+        // 2. integrity (link, script)
+        let link_id = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![],
+        });
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_integrity(link_id), None);
+        dom.set_integrity(link_id, "sha256-abc");
+        assert_eq!(dom.get_integrity(link_id), Some("sha256-abc"));
+        dom.set_integrity(script_id, "sha256-def");
+        assert_eq!(dom.get_integrity(script_id), Some("sha256-def"));
+        dom.set_integrity(div_id, "sha256-xyz");
+        assert_eq!(dom.get_integrity(div_id), None);
+
+        // 3. media (link, style, source)
+        dom.set_media(link_id, "screen");
+        assert_eq!(dom.get_media(link_id), Some("screen"));
+        let style_id = dom.create_node(NodeData::Element {
+            name: "style".to_string(),
+            attrs: vec![],
+        });
+        dom.set_media(style_id, "print");
+        assert_eq!(dom.get_media(style_id), Some("print"));
+        dom.set_media(div_id, "all");
+        assert_eq!(dom.get_media(div_id), None);
+
+        // 4. hreflang (generic)
+        let a_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![],
+        });
+        dom.set_hreflang(a_id, "en");
+        assert_eq!(dom.get_hreflang(a_id), Some("en"));
+
+        // 5. type (button, input, etc.)
+        let button_id = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![],
+        });
+        dom.set_type(button_id, "submit");
+        assert_eq!(dom.get_type(button_id), Some("submit"));
+        dom.set_type(div_id, "submit");
+        assert_eq!(dom.get_type(div_id), None);
+
+        // 6. referrerpolicy (generic)
+        dom.set_referrer_policy(a_id, "no-referrer");
+        assert_eq!(dom.get_referrer_policy(a_id), Some("no-referrer"));
+
+        // 7. for (generic)
+        let label_id = dom.create_node(NodeData::Element {
+            name: "label".to_string(),
+            attrs: vec![],
+        });
+        dom.set_for(label_id, "my-input");
+        assert_eq!(dom.get_for(label_id), Some("my-input"));
+
+        // 8. colspan, rowspan, headers (td, th)
+        let td_id = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: vec![],
+        });
+        dom.set_colspan(td_id, "4");
+        dom.set_rowspan(td_id, "2");
+        dom.set_headers(td_id, "h1");
+        assert_eq!(dom.get_colspan(td_id), Some("4"));
+        assert_eq!(dom.get_rowspan(td_id), Some("2"));
+        assert_eq!(dom.get_headers(td_id), Some("h1"));
+
+        dom.set_colspan(div_id, "4");
+        assert_eq!(dom.get_colspan(div_id), None);
+
+        // 9. scope, abbr (th)
+        let th_id = dom.create_node(NodeData::Element {
+            name: "th".to_string(),
+            attrs: vec![],
+        });
+        dom.set_scope(th_id, "col");
+        dom.set_abbr(th_id, "Abbreviation");
+        assert_eq!(dom.get_scope(th_id), Some("col"));
+        assert_eq!(dom.get_abbr(th_id), Some("Abbreviation"));
+
+        dom.set_scope(div_id, "row");
+        assert_eq!(dom.get_scope(div_id), None);
+
+        // 10. cite (blockquote, q, ins, del)
+        let bq_id = dom.create_node(NodeData::Element {
+            name: "blockquote".to_string(),
+            attrs: vec![],
+        });
+        dom.set_cite(bq_id, "http://example.com");
+        assert_eq!(dom.get_cite(bq_id), Some("http://example.com"));
+        dom.set_cite(div_id, "http://example.com");
+        assert_eq!(dom.get_cite(div_id), None);
+
+        // 11. datetime (time, ins, del)
+        let time_id = dom.create_node(NodeData::Element {
+            name: "time".to_string(),
+            attrs: vec![],
+        });
+        dom.set_datetime(time_id, "2026-06-14");
+        assert_eq!(dom.get_datetime(time_id), Some("2026-06-14"));
+        dom.set_datetime(div_id, "2026-06-14");
+        assert_eq!(dom.get_datetime(div_id), None);
+
+        // 12. crossorigin (img, script, link, audio, video)
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![],
+        });
+        dom.set_cross_origin(img_id, "anonymous");
+        assert_eq!(dom.get_cross_origin(img_id), Some("anonymous"));
+        dom.set_cross_origin(div_id, "use-credentials");
+        assert_eq!(dom.get_cross_origin(div_id), None);
+
+        // 13. Boolean setters (disabled, required, readonly, autofocus, multiple, checked, selected)
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_disabled(input_id), Some(false));
+        dom.set_disabled(input_id, true);
+        assert_eq!(dom.get_disabled(input_id), Some(true));
+        dom.set_disabled(input_id, false);
+        assert_eq!(dom.get_disabled(input_id), Some(false));
+
+        assert_eq!(dom.get_required(input_id), Some(false));
+        dom.set_required(input_id, true);
+        assert_eq!(dom.get_required(input_id), Some(true));
+        dom.set_required(input_id, false);
+        assert_eq!(dom.get_required(input_id), Some(false));
+
+        assert_eq!(dom.get_readonly(input_id), Some(false));
+        dom.set_readonly(input_id, true);
+        assert_eq!(dom.get_readonly(input_id), Some(true));
+        dom.set_readonly(input_id, false);
+        assert_eq!(dom.get_readonly(input_id), Some(false));
+
+        assert_eq!(dom.get_autofocus(input_id), Some(false));
+        dom.set_autofocus(input_id, true);
+        assert_eq!(dom.get_autofocus(input_id), Some(true));
+        dom.set_autofocus(input_id, false);
+        assert_eq!(dom.get_autofocus(input_id), Some(false));
+
+        assert_eq!(dom.get_multiple(input_id), Some(false));
+        dom.set_multiple(input_id, true);
+        assert_eq!(dom.get_multiple(input_id), Some(true));
+        dom.set_multiple(input_id, false);
+        assert_eq!(dom.get_multiple(input_id), Some(false));
+
+        assert_eq!(dom.get_checked(input_id), Some(false));
+        dom.set_checked(input_id, true);
+        assert_eq!(dom.get_checked(input_id), Some(true));
+        dom.set_checked(input_id, false);
+        assert_eq!(dom.get_checked(input_id), Some(false));
+
+        let option_id = dom.create_node(NodeData::Element {
+            name: "option".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_selected(option_id), Some(false));
+        dom.set_selected(option_id, true);
+        assert_eq!(dom.get_selected(option_id), Some(true));
+        dom.set_selected(option_id, false);
+        assert_eq!(dom.get_selected(option_id), Some(false));
     }
 }
