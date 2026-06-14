@@ -330,14 +330,6 @@ pub(crate) fn layout_node(
             let float_val = child_style.and_then(get_float_value);
 
             if let Some(fv) = float_val {
-                let mut float_offset_y = child_cursor_y;
-                if let Some(clearance_y) = child_style
-                    .and_then(get_clear_value)
-                    .and_then(|cv| find_clearance_y(&children, styles, cv))
-                    .filter(|&cy| float_offset_y < cy)
-                {
-                    float_offset_y = clearance_y;
-                }
                 let containing_content_left = border_box_x + border_left + padding_left;
 
                 if let Some(mut child_box) = layout_node(
@@ -346,22 +338,20 @@ pub(crate) fn layout_node(
                     child,
                     content_width,
                     containing_content_left,
-                    float_offset_y,
+                    child_cursor_y,
                     depth + 1,
                 ) {
-                    if fv == "right" {
-                        let child_margin_left = child_style
-                            .map(|s| get_px(s, "margin-left", 0.0))
-                            .unwrap_or(0.0);
-                        let child_margin_right = child_style
-                            .map(|s| get_px(s, "margin-right", 0.0))
-                            .unwrap_or(0.0);
-                        let shift_dx = content_width
-                            - child_box.rect.size.width
-                            - child_margin_right
-                            - child_margin_left;
-                        position::shift_layout_box(&mut child_box, styles, shift_dx, 0.0, 0);
-                    }
+                    let clear_val = child_style.and_then(get_clear_value);
+                    float::layout_and_position_float(
+                        &mut child_box,
+                        &children,
+                        styles,
+                        fv,
+                        clear_val,
+                        containing_content_left,
+                        content_width,
+                        child_cursor_y,
+                    );
                     children.push(child_box);
                 }
             } else {
@@ -762,14 +752,6 @@ fn layout_mixed_children(
             let float_val = child_style.and_then(get_float_value);
 
             if let Some(fv) = float_val {
-                let mut float_offset_y = child_cursor_y;
-                if let Some(clearance_y) = child_style
-                    .and_then(get_clear_value)
-                    .and_then(|cv| find_clearance_y(&children, styles, cv))
-                    .filter(|&cy| float_offset_y < cy)
-                {
-                    float_offset_y = clearance_y;
-                }
                 let containing_content_left = content_x;
 
                 if let Some(mut child_box) = layout_node(
@@ -778,22 +760,20 @@ fn layout_mixed_children(
                     child,
                     content_width,
                     containing_content_left,
-                    float_offset_y,
+                    child_cursor_y,
                     depth + 1,
                 ) {
-                    if fv == "right" {
-                        let child_margin_left = child_style
-                            .map(|s| get_px(s, "margin-left", 0.0))
-                            .unwrap_or(0.0);
-                        let child_margin_right = child_style
-                            .map(|s| get_px(s, "margin-right", 0.0))
-                            .unwrap_or(0.0);
-                        let shift_dx = content_width
-                            - child_box.rect.size.width
-                            - child_margin_right
-                            - child_margin_left;
-                        position::shift_layout_box(&mut child_box, styles, shift_dx, 0.0, 0);
-                    }
+                    let clear_val = child_style.and_then(get_clear_value);
+                    float::layout_and_position_float(
+                        &mut child_box,
+                        &children,
+                        styles,
+                        fv,
+                        clear_val,
+                        containing_content_left,
+                        content_width,
+                        child_cursor_y,
+                    );
                     children.push(child_box);
                 }
             } else {
@@ -1024,14 +1004,6 @@ fn relayout_block_children(
         let float_val = child_style.and_then(get_float_value);
 
         if let Some(fv) = float_val {
-            let mut float_offset_y = child_cursor_y;
-            if let Some(clearance_y) = child_style
-                .and_then(get_clear_value)
-                .and_then(|cv| find_clearance_y(children, styles, cv))
-                .filter(|&cy| float_offset_y < cy)
-            {
-                float_offset_y = clearance_y;
-            }
             let containing_content_left = border_box_x + border_left + padding_left;
 
             if let Some(mut child_box) = layout_node(
@@ -1040,22 +1012,20 @@ fn relayout_block_children(
                 child,
                 content_width,
                 containing_content_left,
-                float_offset_y,
+                child_cursor_y,
                 depth + 1,
             ) {
-                if fv == "right" {
-                    let child_margin_left = child_style
-                        .map(|s| get_px(s, "margin-left", 0.0))
-                        .unwrap_or(0.0);
-                    let child_margin_right = child_style
-                        .map(|s| get_px(s, "margin-right", 0.0))
-                        .unwrap_or(0.0);
-                    let shift_dx = content_width
-                        - child_box.rect.size.width
-                        - child_margin_right
-                        - child_margin_left;
-                    position::shift_layout_box(&mut child_box, styles, shift_dx, 0.0, 0);
-                }
+                let clear_val = child_style.and_then(get_clear_value);
+                float::layout_and_position_float(
+                    &mut child_box,
+                    children,
+                    styles,
+                    fv,
+                    clear_val,
+                    containing_content_left,
+                    content_width,
+                    child_cursor_y,
+                );
                 children.push(child_box);
             }
         } else {
