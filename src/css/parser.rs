@@ -435,45 +435,54 @@ impl<'a> Parser<'a> {
                         self.reconsume_token(token);
                     }
                     let at_rule = self.consume_at_rule();
-                    if !parent_prelude.is_empty() {
-                        if let Some(block_vals) = at_rule.block {
-                            let block_css = serialize_component_values(&block_vals);
-                            let mut sub_tokenizer = CssTokenizer::new(&block_css);
-                            let mut sub_parser = Parser::new(&mut sub_tokenizer);
-                            let sub_decls = sub_parser.consume_list_of_declarations(parent_prelude);
+                    let name_lc = at_rule.name.to_lowercase();
+                    if name_lc == "media" || name_lc == "supports" {
+                        if !parent_prelude.is_empty() {
+                            if let Some(block_vals) = at_rule.block {
+                                let block_css = serialize_component_values(&block_vals);
+                                let mut sub_tokenizer = CssTokenizer::new(&block_css);
+                                let mut sub_parser = Parser::new(&mut sub_tokenizer);
+                                let sub_decls =
+                                    sub_parser.consume_list_of_declarations(parent_prelude);
 
-                            let mut nested_css = String::new();
-                            if !sub_decls.is_empty() {
-                                let nested_qual = QualifiedRule {
-                                    prelude: parent_prelude.to_vec(),
-                                    declarations: sub_decls,
-                                };
-                                nested_css.push_str(&serialize_rule(&Rule::Qualified(nested_qual)));
-                            }
-                            for nested_rule in &sub_parser.nested_rules {
-                                nested_css.push_str(&serialize_rule(nested_rule));
-                            }
-
-                            let mut token_stream = CssTokenizer::new(&nested_css);
-                            let mut parser = Parser::new(&mut token_stream);
-                            let mut block_cvs = Vec::new();
-                            loop {
-                                let cv = parser.consume_component_value();
-                                if let ComponentValue::Token(CssToken::Eof) = cv {
-                                    break;
+                                let mut nested_css = String::new();
+                                if !sub_decls.is_empty() {
+                                    let nested_qual = QualifiedRule {
+                                        prelude: parent_prelude.to_vec(),
+                                        declarations: sub_decls,
+                                    };
+                                    nested_css
+                                        .push_str(&serialize_rule(&Rule::Qualified(nested_qual)));
                                 }
-                                block_cvs.push(cv);
+                                for nested_rule in &sub_parser.nested_rules {
+                                    nested_css.push_str(&serialize_rule(nested_rule));
+                                }
+
+                                let mut token_stream = CssTokenizer::new(&nested_css);
+                                let mut parser = Parser::new(&mut token_stream);
+                                let mut block_cvs = Vec::new();
+                                loop {
+                                    let cv = parser.consume_component_value();
+                                    if let ComponentValue::Token(CssToken::Eof) = cv {
+                                        break;
+                                    }
+                                    block_cvs.push(cv);
+                                }
+                                let nested_at = AtRule {
+                                    name: at_rule.name,
+                                    prelude: at_rule.prelude,
+                                    block: Some(block_cvs),
+                                };
+                                self.nested_rules.push(Rule::At(nested_at));
+                            } else {
+                                self.nested_rules.push(Rule::At(at_rule));
                             }
-                            let nested_at = AtRule {
-                                name: at_rule.name,
-                                prelude: at_rule.prelude,
-                                block: Some(block_cvs),
-                            };
-                            self.nested_rules.push(Rule::At(nested_at));
                         } else {
                             self.nested_rules.push(Rule::At(at_rule));
                         }
                     } else {
+                        // Unknown nested at-rule ignored gracefully. We still retain it in nested_rules,
+                        // but skip processing its block as standard parent nested rules.
                         self.nested_rules.push(Rule::At(at_rule));
                     }
                 }
@@ -702,6 +711,13 @@ impl<'a> Parser<'a> {
             if token == CssToken::Eof {
                 return value;
             }
+            // Robust error recovery: recover at semicolon or block boundary for '(' and '['
+            if (associated == '(' || associated == '[')
+                && (token == CssToken::Semicolon || token == CssToken::RightBrace)
+            {
+                self.reconsume_token(token);
+                return value;
+            }
             // anything else: Reconsume the current input token.
             // Consume a component value and append it to the value of the block.
             self.reconsume_token(token);
@@ -720,6 +736,11 @@ impl<'a> Parser<'a> {
             }
             // <EOF-token>: This is a parse error. Return the function.
             if token == CssToken::Eof {
+                return value;
+            }
+            // Robust error recovery: recover at semicolon or block boundary for functions (which are like '(' blocks)
+            if token == CssToken::Semicolon || token == CssToken::RightBrace {
+                self.reconsume_token(token);
                 return value;
             }
             // anything else: Reconsume the current input token.
@@ -1919,6 +1940,126 @@ mod tests {
             assert_eq!(rule.declarations[0].name, "--mismatched");
             assert_eq!(rule.declarations[1].name, "--another");
             assert_eq!(rule.declarations[2].name, "color");
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_unbalanced_recovery_semicolon_boundary() {
+        let input = "
+            div {
+                color: red (;
+                background: blue;
+                border: 1px solid [;
+                padding: 10px;
+                margin: rgb(1, 2, 3;
+                display: flex;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            // "color" has unbalanced '(', "border" has unbalanced '[', and "margin" has unbalanced '('.
+            // They should recover at the next semicolon, preserving adjacent valid declarations:
+            // "background", "padding", and "display"!
+            assert_eq!(rule.declarations.len(), 6);
+
+            // Let's check that adjacent valid declarations are parsed perfectly
+            let background_decl = rule
+                .declarations
+                .iter()
+                .find(|d| d.name == "background")
+                .unwrap();
+            assert_eq!(
+                serialize_component_values(&background_decl.value).trim(),
+                "blue"
+            );
+
+            let padding_decl = rule
+                .declarations
+                .iter()
+                .find(|d| d.name == "padding")
+                .unwrap();
+            assert_eq!(
+                serialize_component_values(&padding_decl.value).trim(),
+                "10px"
+            );
+
+            let display_decl = rule
+                .declarations
+                .iter()
+                .find(|d| d.name == "display")
+                .unwrap();
+            assert_eq!(
+                serialize_component_values(&display_decl.value).trim(),
+                "flex"
+            );
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_unbalanced_recovery_block_boundary() {
+        let input = "
+            div {
+                color: red (
+            }
+            p {
+                color: blue;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 2);
+        if let Rule::Qualified(rule1) = &stylesheet.rules[0] {
+            assert_eq!(rule1.declarations.len(), 1);
+            assert_eq!(rule1.declarations[0].name, "color");
+        } else {
+            panic!("Expected qualified rule 1");
+        }
+        if let Rule::Qualified(rule2) = &stylesheet.rules[1] {
+            assert_eq!(rule2.declarations.len(), 1);
+            assert_eq!(rule2.declarations[0].name, "color");
+            assert_eq!(
+                serialize_component_values(&rule2.declarations[0].value).trim(),
+                "blue"
+            );
+        } else {
+            panic!("Expected qualified rule 2");
+        }
+    }
+
+    #[test]
+    fn test_graceful_ignore_unknown_at_rules() {
+        let input = "
+            @unknown-at-rule prelude {
+                color: red;
+            }
+            div {
+                @unknown-nested {
+                    font-size: 14px;
+                }
+                color: blue;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        // The unknown top-level at-rule and the nested at-rule are parsed, total rules is 3 due to flattening
+        assert_eq!(stylesheet.rules.len(), 3);
+        if let Rule::At(rule) = &stylesheet.rules[0] {
+            assert_eq!(rule.name, "unknown-at-rule");
+        } else {
+            panic!("Expected at-rule");
+        }
+
+        if let Rule::Qualified(rule) = &stylesheet.rules[1] {
+            // Inside div, "color" is valid. The nested @unknown-nested is ignored gracefully (retained as Rule::At in parser's nested_rules, but doesn't corrupt declarations)
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "color");
+            assert_eq!(
+                serialize_component_values(&rule.declarations[0].value).trim(),
+                "blue"
+            );
         } else {
             panic!("Expected qualified rule");
         }
