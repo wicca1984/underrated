@@ -48,7 +48,10 @@ fn test_named_entities() {
         ("&quot;", '"'),
         ("&quot", '"'),
         ("&apos;", '\''),
-        ("&apos", '\''),
+        // `apos`/`trade` are NOT in the legacy no-semicolon entity set, so without a
+        // trailing `;` they are emitted literally (html5lib namedEntities.test:
+        // "Bad named entity: apos without a semi-colon"). The no-semicolon literal
+        // forms are covered by test_no_semicolon_literal below.
         ("&nbsp;", '\u{00A0}'),
         ("&nbsp", '\u{00A0}'),
         ("&copy;", '©'),
@@ -56,7 +59,6 @@ fn test_named_entities() {
         ("&reg;", '®'),
         ("&reg", '®'),
         ("&trade;", '™'),
-        ("&trade", '™'),
         ("&deg;", '°'),
         ("&deg", '°'),
         ("&plusmn;", '±'),
@@ -71,6 +73,27 @@ fn test_named_entities() {
             "Failed for {}",
             input
         );
+    }
+}
+
+#[test]
+fn test_no_semicolon_literal() {
+    // Non-legacy named references without a trailing `;` are not decoded; they are
+    // emitted literally (html5lib namedEntities.test "Bad named entity ... without a
+    // semi-colon"). This is the spec-correct counterpart to the legacy cases above.
+    let inputs = [("&apos", "&apos"), ("&trade", "&trade")];
+    for (input, expected) in inputs {
+        let stream = InputStream::from_utf8(input.as_bytes());
+        let mut tokenizer = Tokenizer::new(stream);
+        let mut actual = String::new();
+        loop {
+            match tokenizer.next_token() {
+                Token::Character(c) => actual.push(c),
+                Token::Eof => break,
+                other => panic!("Unexpected token {:?} for {}", other, input),
+            }
+        }
+        assert_eq!(actual, expected, "Failed for {}", input);
     }
 }
 
