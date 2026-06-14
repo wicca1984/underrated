@@ -663,6 +663,57 @@ pub fn color_to_oklch(color: Color) -> (f32, f32, f32, f32) {
     (l, c, h, alpha)
 }
 
+/// Parses a CSS color string into a Color.
+/// Supports hex colors (#RGB, #RGBA, #RRGGBB, #RRGGBBAA) and named/system colors.
+/// Spec: <https://www.w3.org/TR/css-color-4/#color-syntax>
+pub fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        // A hex color is ASCII only; bail before any byte slicing so that a
+        // non-ASCII character cannot panic on a char boundary (I-6).
+        if !hex.is_ascii() {
+            return None;
+        }
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        match hex.len() {
+            3 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+                Some(Color::Rgba(r * 17, g * 17, b * 17, 255))
+            }
+            4 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+                let a = u8::from_str_radix(&hex[3..4], 16).ok()?;
+                Some(Color::Rgba(r * 17, g * 17, b * 17, a * 17))
+            }
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                Some(Color::Rgba(r, g, b, 255))
+            }
+            8 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+                Some(Color::Rgba(r, g, b, a))
+            }
+            _ => None,
+        }
+    } else {
+        named_color(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,5 +1015,43 @@ mod tests {
         assert!((128 - g as i32).abs() <= 1);
         assert!((128 - b_val as i32).abs() <= 1);
         assert_eq!(a_val, 255);
+    }
+
+    #[test]
+    fn test_parse_color() {
+        // Hex colors without alpha
+        assert_eq!(parse_color("#fff"), Some(Color::Rgba(255, 255, 255, 255)));
+        assert_eq!(parse_color("#ff0000"), Some(Color::Rgba(255, 0, 0, 255)));
+
+        // Hex colors with alpha (#RGBA, #RRGGBBAA)
+        assert_eq!(parse_color("#0000"), Some(Color::Rgba(0, 0, 0, 0)));
+        assert_eq!(parse_color("#ff000080"), Some(Color::Rgba(255, 0, 0, 128)));
+        assert_eq!(
+            parse_color("#ffffff1a"),
+            Some(Color::Rgba(255, 255, 255, 26))
+        );
+
+        // Invalid hex colors
+        assert_eq!(parse_color("#fffg"), None);
+        assert_eq!(parse_color("#ff00000"), None);
+        assert_eq!(parse_color("#"), None);
+        assert_eq!(parse_color("#🌍"), None);
+
+        // Named colors
+        assert_eq!(parse_color("red"), Some(Color::Rgba(255, 0, 0, 255)));
+        assert_eq!(
+            parse_color("ReBeCcApUrPlE"),
+            Some(Color::Rgba(102, 51, 153, 255))
+        );
+        assert_eq!(parse_color("transparent"), Some(Color::Rgba(0, 0, 0, 0)));
+
+        // System colors
+        assert_eq!(parse_color("Canvas"), Some(Color::Rgba(255, 255, 255, 255)));
+        assert_eq!(parse_color("canvastext"), Some(Color::Rgba(0, 0, 0, 255)));
+
+        // Invalid inputs
+        assert_eq!(parse_color(""), None);
+        assert_eq!(parse_color("   "), None);
+        assert_eq!(parse_color("not-a-color"), None);
     }
 }
