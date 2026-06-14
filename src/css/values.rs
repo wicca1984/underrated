@@ -4266,6 +4266,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("hsl") || name.eq_ignore_ascii_case("hsla") {
                 return parse_hsl_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("hwb") {
+                return parse_hwb_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -4432,6 +4435,87 @@ fn parse_hsl_function(components: &[ComponentValue]) -> Option<Color> {
     let r = ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
     let g = ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
     let b = ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+
+    Some(Color::Rgba(r, g, b, alpha))
+}
+
+fn parse_hwb_function(components: &[ComponentValue]) -> Option<Color> {
+    enum HwbArg {
+        Number(f64),
+        Percentage(f64),
+    }
+
+    let mut args = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(HwbArg::Number(*v)),
+            ComponentValue::Token(CssToken::Percentage(v)) => args.push(HwbArg::Percentage(*v)),
+            _ => return None,
+        }
+    }
+
+    if args.len() != 3 && args.len() != 4 {
+        return None;
+    }
+
+    // Parse Hue
+    let h_val = match args[0] {
+        HwbArg::Number(v) => v,
+        _ => return None,
+    };
+    let h = ((h_val % 360.0) + 360.0) % 360.0;
+
+    // Parse Whiteness
+    let w_val = match args[1] {
+        HwbArg::Percentage(v) => v,
+        _ => return None,
+    };
+    let w = (w_val / 100.0).clamp(0.0, 1.0);
+
+    // Parse Blackness
+    let b_val = match args[2] {
+        HwbArg::Percentage(v) => v,
+        _ => return None,
+    };
+    let b = (b_val / 100.0).clamp(0.0, 1.0);
+
+    // Parse Alpha
+    let alpha = if args.len() == 4 {
+        let a_val = match args[3] {
+            HwbArg::Number(v) => v,
+            HwbArg::Percentage(v) => v / 100.0,
+        };
+        (a_val.clamp(0.0, 1.0) * 255.0) as u8
+    } else {
+        255
+    };
+
+    let c = 1.0;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x), // covers hp in [5,6)
+    };
+
+    let (r_chan, g_chan, b_chan) = if w + b >= 1.0 {
+        let gray = w / (w + b);
+        (gray, gray, gray)
+    } else {
+        let factor = 1.0 - w - b;
+        (r1 * factor + w, g1 * factor + w, b1 * factor + w)
+    };
+
+    let r = (r_chan * 255.0).round().clamp(0.0, 255.0) as u8;
+    let g = (g_chan * 255.0).round().clamp(0.0, 255.0) as u8;
+    let b = (b_chan * 255.0).round().clamp(0.0, 255.0) as u8;
 
     Some(Color::Rgba(r, g, b, alpha))
 }
@@ -5278,6 +5362,111 @@ mod tests {
 
         // Rejecting invalid arguments count: hsl(0, 100%) -> None
         assert_eq!(parse("hsl(0, 100%)"), None);
+    }
+
+    #[test]
+    fn test_parse_color_hwb() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // hwb(0 0% 0%) -> red
+        assert_eq!(
+            parse("hwb(0 0% 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // HWB(0 0% 0%) -> case-insensitivity
+        assert_eq!(
+            parse("HWB(0 0% 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // hwb(0 100% 0%) -> white
+        assert_eq!(
+            parse("hwb(0 100% 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // hwb(0 0% 100%) -> black
+        assert_eq!(
+            parse("hwb(0 0% 100%)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // hwb(120 0% 0%) -> green
+        assert_eq!(
+            parse("hwb(120 0% 0%)"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+
+        // hwb(0 50% 50%) -> gray (approx 128, 128, 128)
+        let gray_color = parse("hwb(0 50% 50%)");
+        match gray_color {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert!((r as i32 - 128).abs() <= 1);
+                assert!((g as i32 - 128).abs() <= 1);
+                assert!((b as i32 - 128).abs() <= 1);
+                assert_eq!(alpha, 255);
+            }
+            _ => panic!("Expected hwb(0 50% 50%) to parse as gray"),
+        }
+
+        // hwb(0 0% 0% / 0.5) -> alpha approx 128
+        let alpha_color = parse("hwb(0 0% 0% / 0.5)");
+        match alpha_color {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 0);
+                assert_eq!(b, 0);
+                assert!((alpha as i32 - 127).abs() <= 1);
+            }
+            _ => panic!("Expected hwb(0 0% 0% / 0.5) to parse as alpha color"),
+        }
+
+        // hwb(0 0% 0% / 50%) -> percentage alpha
+        let alpha_pct = parse("hwb(0 0% 0% / 50%)");
+        match alpha_pct {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 0);
+                assert_eq!(b, 0);
+                assert!((alpha as i32 - 127).abs() <= 1);
+            }
+            _ => panic!("Expected hwb(0 0% 0% / 50%) to parse as percentage alpha"),
+        }
+
+        // Negative hues wrapping: hwb(-240 0% 0%) wraps to 120 (green)
+        assert_eq!(
+            parse("hwb(-240 0% 0%)"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+
+        // Clamp behavior: white + black >= 100% (e.g. hwb(0 40% 70%)) -> 40/110 white
+        let clamp_color = parse("hwb(0 40% 70%)");
+        match clamp_color {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                let expected = (0.4_f64 / 1.1_f64 * 255.0_f64).round() as i32; // ~93
+                assert!((r as i32 - expected).abs() <= 1);
+                assert!((g as i32 - expected).abs() <= 1);
+                assert!((b as i32 - expected).abs() <= 1);
+                assert_eq!(alpha, 255);
+            }
+            _ => panic!("Expected clamp_color to parse"),
+        }
+
+        // Comma-separated: hwb(0, 0%, 0%) -> red
+        assert_eq!(
+            parse("hwb(0, 0%, 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // Rejecting bare numbers for W/B: hwb(0 0 0) -> None
+        assert_eq!(parse("hwb(0 0 0)"), None);
+
+        // Rejecting invalid argument counts: hwb(0 0%) -> None
+        assert_eq!(parse("hwb(0 0%)"), None);
     }
 
     #[test]
