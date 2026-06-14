@@ -3448,7 +3448,7 @@ pub fn decode_pfm(bytes: &[u8]) -> Option<DecodedImage> {
     })
 }
 
-/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, TIFF, or XBM) into a DecodedImage by sniffing the format.
+/// Decodes an image byte stream (PNG, JPEG, GIF, BMP, WebP, SVG, ICO, QOI, PCX, TGA, TIFF, XBM, or PNM) into a DecodedImage by sniffing the format.
 pub fn decode_image(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         decode_png(bytes)
@@ -4529,6 +4529,48 @@ mod tests {
         assert!(decode_pnm(b"P6\n0 1\n255\n").is_none());
         assert!(decode_pnm(b"P6\n1 1\n0\n").is_none());
         assert!(decode_pnm(b"P6\n1 1\n65536\n").is_none());
+    }
+
+    #[test]
+    fn test_decode_pnm_specification_requirements() {
+        // 1. A tiny hand-written 2x2 P3 ASCII PPM with known RGB values, maxval 255
+        // Includes a '#' comment line in the header.
+        let p3_2x2 = b"P3\n# 2x2 test\n2 2\n255\n10 20 30  40 50 60\n70 80 90  100 110 120\n";
+        let img_p3 = decode_pnm(p3_2x2).expect("Should decode P3 2x2");
+        assert_eq!(img_p3.width, 2);
+        assert_eq!(img_p3.height, 2);
+        let expected_rgba = &[
+            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+        ];
+        assert_eq!(&img_p3.rgba, expected_rgba);
+
+        // 2. A P6 binary PPM with the same pixels decodes identically
+        let p6_2x2 =
+            b"P6\n# 2x2 test binary\n2 2\n255\n\x0a\x14\x1e\x28\x32\x3c\x46\x50\x5a\x64\x6e\x78";
+        let img_p6 = decode_pnm(p6_2x2).expect("Should decode P6 2x2");
+        assert_eq!(img_p6.width, 2);
+        assert_eq!(img_p6.height, 2);
+        assert_eq!(img_p6.rgba, img_p3.rgba);
+
+        // 3. A P2 PGM grayscale maps to R=G=B
+        let p2_gray = b"P2\n# 1x2 gray test\n1 2\n255\n128 64\n";
+        let img_p2 = decode_pnm(p2_gray).expect("Should decode P2 gray");
+        assert_eq!(img_p2.width, 1);
+        assert_eq!(img_p2.height, 2);
+        assert_eq!(&img_p2.rgba, &[128, 128, 128, 255, 64, 64, 64, 255]);
+
+        // 4. A P1 PBM bit pattern maps black/white correctly (1 = black, 0 = white)
+        let p1_bitmap = b"P1\n# 2x1 bitmap\n2 1\n1 0\n";
+        let img_p1 = decode_pnm(p1_bitmap).expect("Should decode P1 bitmap");
+        assert_eq!(img_p1.width, 2);
+        assert_eq!(img_p1.height, 1);
+        assert_eq!(&img_p1.rgba, &[0, 0, 0, 255, 255, 255, 255, 255]);
+
+        // 5. Malformed input (bad magic, truncated body, zero dimensions) returns None
+        assert!(decode_pnm(b"P8\n2 2\n255\n").is_none()); // bad magic
+        assert!(decode_pnm(b"P3\n2 2\n255\n10 20 30").is_none()); // truncated body
+        assert!(decode_pnm(b"P3\n0 2\n255\n10 20 30").is_none()); // zero width
+        assert!(decode_pnm(b"P3\n2 0\n255\n10 20 30").is_none()); // zero height
     }
 
     #[test]
