@@ -1462,7 +1462,8 @@ pub fn parse_color(s: &str) -> Option<Color> {
                     let origin_color = parse_color(origin_color_str)?;
 
                     let rest_clean = rest_str.replace(['/', ','], " ");
-                    let parts: Vec<&str> = rest_clean.split_whitespace().collect();
+                    let parts_vec = split_color_components(&rest_clean);
+                    let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
                     if parts.len() == 4 || parts.len() == 5 {
                         let colorspace = parts[0];
                         let is_xyz = colorspace.eq_ignore_ascii_case("xyz")
@@ -1504,7 +1505,8 @@ pub fn parse_color(s: &str) -> Option<Color> {
                     return None;
                 } else {
                     let content_clean = content.replace(['/', ','], " ");
-                    let parts: Vec<&str> = content_clean.split_whitespace().collect();
+                    let parts_vec = split_color_components(&content_clean);
+                    let parts: Vec<&str> = parts_vec.iter().map(|p| p.as_str()).collect();
                     if parts.len() == 4 || parts.len() == 5 {
                         let colorspace = parts[0];
                         let c1 = parse_percentage_or_number(parts[1])?;
@@ -1911,12 +1913,12 @@ fn parse_hue_angle(part: &str) -> Option<f32> {
         }
     } else if let Some(stripped) = part.strip_suffix("deg") {
         stripped.parse::<f32>().ok()
-    } else if let Some(stripped) = part.strip_suffix("rad") {
-        let rad = stripped.parse::<f32>().ok()?;
-        Some(rad.to_degrees())
     } else if let Some(stripped) = part.strip_suffix("grad") {
         let grad = stripped.parse::<f32>().ok()?;
         Some(grad * 0.9)
+    } else if let Some(stripped) = part.strip_suffix("rad") {
+        let rad = stripped.parse::<f32>().ok()?;
+        Some(rad.to_degrees())
     } else if let Some(stripped) = part.strip_suffix("turn") {
         let turn = stripped.parse::<f32>().ok()?;
         Some(turn * 360.0)
@@ -3308,6 +3310,70 @@ mod tests {
         assert_eq!(
             parse_color("rgb(from color-mix(in srgb, red, blue) r g b)"),
             Some(Color::Rgba(128, 0, 128, 255))
+        );
+    }
+
+    #[test]
+    fn test_hwb_ext_normalization_and_units() {
+        // HWB Normalization when w + b > 1.0 (70% + 80% = 150%)
+        // Should normalize to w = 7/15 (~0.467), b = 8/15 (~0.533)
+        // With sum = 1.0, color is achromatic. Gray level: w_norm / (w_norm + b_norm) is not used.
+        // Rather, factor = 1 - w - b = 0, so red/green/blue = r1 * 0 + w_norm = w_norm = 7/15 (~119/255)
+        assert_eq!(
+            parse_color("hwb(0 70% 80%)"),
+            Some(Color::Rgba(119, 119, 119, 255))
+        );
+
+        // HWB with different angle units
+        assert_eq!(
+            parse_color("hwb(2.0944rad 0% 0%)"), // 120 degrees
+            Some(Color::Rgba(0, 255, 0, 255))
+        );
+        assert_eq!(
+            parse_color("hwb(133.333grad 0% 0%)"), // 120 degrees
+            Some(Color::Rgba(0, 255, 0, 255))
+        );
+        assert_eq!(
+            parse_color("hwb(0.3333turn 0% 0%)"), // 120 degrees
+            Some(Color::Rgba(0, 255, 0, 255))
+        );
+    }
+
+    #[test]
+    fn test_color_predefined_complex_calc_and_relative() {
+        // Calculations in color() function
+        assert_eq!(
+            parse_color("color(srgb calc(1.0 - 0.5) calc(0.2 * 2) 0)"),
+            Some(Color::Rgba(128, 102, 0, 255))
+        );
+
+        // Relative predefined color space with calculations on components and alpha
+        let c = parse_color("color(from red display-p3 calc(r - 0.1) g b / calc(alpha - 0.2))")
+            .unwrap();
+        assert_eq!(c, Color::Rgba(250, 116, 97, 204));
+    }
+
+    #[test]
+    fn test_lab_lch_oklab_oklch_edge_cases() {
+        // Out of bounds and edge cases
+        // Lightness > 100% (or > 1.0 for oklab)
+        assert_eq!(
+            parse_color("lab(150% 10 10)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+        assert_eq!(
+            parse_color("oklab(1.5 0.1 -0.1)"),
+            Some(Color::Rgba(255, 255, 255, 255))
+        );
+
+        // Angle units in LCH and OKLCH
+        assert_eq!(
+            parse_color("lch(50 15 2.0944rad)"), // 120 deg
+            Some(parse_lch(50.0, 15.0, 120.0, 1.0))
+        );
+        assert_eq!(
+            parse_color("oklch(0.6 0.12 0.3333turn)"), // 120 deg
+            Some(parse_oklch(0.6, 0.12, 120.0, 1.0))
         );
     }
 }
