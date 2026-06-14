@@ -507,10 +507,14 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                 }
 
                 getResponseHeader(name) {
-                    const lowerName = String(name).toLowerCase();
                     if (this._readyState === 0 || this._readyState === 1) {
                         return null;
                     }
+                    const nameStr = String(name);
+                    if (!/^[!#$%&'*+\-.^_`|~a-zA-Z0-9]+$/.test(nameStr)) {
+                        return null;
+                    }
+                    const lowerName = nameStr.toLowerCase();
                     if (lowerName === "set-cookie" || lowerName === "set-cookie2") {
                         return null;
                     }
@@ -2213,6 +2217,105 @@ mod tests {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!(
                 "test_xhr_t1064_expanded_features JS assert failed: {}",
+                error_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_xhr_t1088_correctness_spec_compliance() {
+        use crate::script::{BoaHost, ScriptHost};
+        let mut host = BoaHost::new();
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Verify getResponseHeader validates input header name
+                const xhr1 = new XMLHttpRequest();
+                xhr1.open("GET", "https://example.com");
+                // Simulate receiving some headers
+                xhr1._parseResponseHeaders("Content-Type: text/plain\r\nX-Spec-Header: 1\r\n");
+                xhr1._status = 200;
+                xhr1._statusText = "OK";
+                xhr1._changeReadyState(2); // HEADERS_RECEIVED
+
+                if (xhr1.getResponseHeader("Content-Type") !== "text/plain") {
+                    throw new Error("Expected text/plain, got " + xhr1.getResponseHeader("Content-Type"));
+                }
+                if (xhr1.getResponseHeader("Content-Type: dummy") !== null) {
+                    throw new Error("getResponseHeader with colon in name should return null");
+                }
+                if (xhr1.getResponseHeader("X-Spec-Header ") !== null) {
+                    throw new Error("getResponseHeader with trailing space in name should return null");
+                }
+                if (xhr1.getResponseHeader("X-Spec@Header") !== null) {
+                    throw new Error("getResponseHeader with non-token characters should return null");
+                }
+
+                // 2. Verify setting responseType to invalid value is ignored
+                const xhr2 = new XMLHttpRequest();
+                xhr2.open("GET", "https://example.com");
+                xhr2.responseType = "json";
+                if (xhr2.responseType !== "json") {
+                    throw new Error("Expected responseType to be json");
+                }
+                xhr2.responseType = "super-invalid-format"; // should be ignored
+                if (xhr2.responseType !== "json") {
+                    throw new Error("Invalid responseType should be ignored, keeping previous: " + xhr2.responseType);
+                }
+
+                // 3. Verify setting responseType to json in DONE (4) state throws InvalidStateError
+                xhr2.send();
+                if (xhr2.readyState !== 4) {
+                    throw new Error("Expected readyState to be 4 (DONE)");
+                }
+                try {
+                    xhr2.responseType = "text";
+                    throw new Error("Setting responseType in DONE state should have thrown InvalidStateError");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") {
+                        throw new Error("Expected InvalidStateError, got: " + e.name);
+                    }
+                }
+
+                // 4. Verify synchronous readyState transitions only fire readystatechange on state 4 (DONE)
+                const xhr3 = new XMLHttpRequest();
+                let syncStates = [];
+                xhr3.onreadystatechange = () => {
+                    syncStates.push(xhr3.readyState);
+                };
+                // Open synchronous request (async = false)
+                xhr3.open("GET", "https://example.com", false);
+                if (syncStates.length !== 0) {
+                    throw new Error("Sync XHR open() should not fire readystatechange events");
+                }
+
+                xhr3.send();
+                if (xhr3.readyState !== 4) {
+                    throw new Error("Expected sync XHR to be in state 4 (DONE) after send()");
+                }
+                if (syncStates.length !== 1 || syncStates[0] !== 4) {
+                    throw new Error("Sync XHR should only fire a single readystatechange event for state 4 (DONE), got: " + JSON.stringify(syncStates));
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        host.eval(script).expect("Execution failed");
+
+        let error_val = host
+            .context
+            .eval(boa_engine::Source::from_bytes(
+                "globalThis.test_error".as_bytes(),
+            ))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!(
+                "test_xhr_t1088_correctness_spec_compliance JS assert failed: {}",
                 error_str
             );
         }
