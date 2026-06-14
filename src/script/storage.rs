@@ -5,21 +5,28 @@
 
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{Context, JsError, JsString, JsValue, NativeFunction};
+use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue, NativeFunction};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 thread_local! {
     static LOCAL_STORAGE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     static SESSION_STORAGE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static STORAGE_QUOTA: RefCell<usize> = const { RefCell::new(5_000_000) };
 }
 
-/// Clears both local and session storage.
+/// Sets the storage quota limit (in characters) for testing.
+pub fn set_storage_quota(quota: usize) {
+    STORAGE_QUOTA.with(|q| *q.borrow_mut() = quota);
+}
+
+/// Clears both local and session storage and resets the quota limit.
 ///
 /// This is particularly useful for resetting state between test cases.
 pub fn clear_storages() {
     LOCAL_STORAGE.with(|store| store.borrow_mut().clear());
     SESSION_STORAGE.with(|store| store.borrow_mut().clear());
+    STORAGE_QUOTA.with(|q| *q.borrow_mut() = 5_000_000);
 }
 
 /// Sets up the Storage bindings in the provided Boa context.
@@ -279,6 +286,33 @@ pub fn setup_storage(context: &mut Context) {
     }
 }
 
+fn throw_dom_exception(name: &str, message: &str, context: &mut Context) -> JsError {
+    let dom_exception_constructor = context
+        .global_object()
+        .get(JsString::from("DOMException"), context);
+    if let Some(constructor_obj) = dom_exception_constructor
+        .ok()
+        .as_ref()
+        .and_then(|val| val.as_object())
+    {
+        let args = [
+            JsValue::from(JsString::from(message)),
+            JsValue::from(JsString::from(name)),
+        ];
+        if let Ok(exception_obj) = constructor_obj.construct(&args, None, context) {
+            return JsError::from_opaque(JsValue::from(exception_obj));
+        }
+    }
+    JsError::from(JsNativeError::typ().with_message(format!("{}: {}", name, message)))
+}
+
+fn get_storage_size(store: &HashMap<String, String>) -> usize {
+    store
+        .iter()
+        .map(|(k, v)| k.chars().count() + v.chars().count())
+        .sum()
+}
+
 fn storage_set_item(
     _this: &JsValue,
     args: &[JsValue],
@@ -302,14 +336,47 @@ fn storage_set_item(
         return Ok(JsValue::undefined());
     };
 
+    let quota = STORAGE_QUOTA.with(|q| *q.borrow());
+    let mut quota_exceeded = false;
+
     if storage_type == "local" {
         LOCAL_STORAGE.with(|store| {
-            store.borrow_mut().insert(key, value);
+            let mut s = store.borrow_mut();
+            let current_size = get_storage_size(&s);
+            let old_size = s
+                .get(&key)
+                .map(|v| key.chars().count() + v.chars().count())
+                .unwrap_or(0);
+            let new_size = key.chars().count() + value.chars().count();
+            if current_size - old_size + new_size > quota {
+                quota_exceeded = true;
+            } else {
+                s.insert(key, value);
+            }
         });
     } else if storage_type == "session" {
         SESSION_STORAGE.with(|store| {
-            store.borrow_mut().insert(key, value);
+            let mut s = store.borrow_mut();
+            let current_size = get_storage_size(&s);
+            let old_size = s
+                .get(&key)
+                .map(|v| key.chars().count() + v.chars().count())
+                .unwrap_or(0);
+            let new_size = key.chars().count() + value.chars().count();
+            if current_size - old_size + new_size > quota {
+                quota_exceeded = true;
+            } else {
+                s.insert(key, value);
+            }
         });
+    }
+
+    if quota_exceeded {
+        return Err(throw_dom_exception(
+            "QuotaExceededError",
+            "The storage quota has been exceeded.",
+            context,
+        ));
     }
 
     Ok(JsValue::undefined())
@@ -482,6 +549,66 @@ mod tests {
     fn new_host() -> BoaHost {
         clear_storages();
         BoaHost::new()
+    }
+
+    #[test]
+    fn test_storage_quota_limit() {
+        let mut host = new_host();
+
+        // Set quota limit to small value (10 chars total)
+        set_storage_quota(10);
+
+        // This fits (4 + 5 = 9 chars)
+        assert!(host.eval("localStorage.setItem('abcd', '12345')").is_ok());
+        assert_eq!(
+            host.context
+                .eval(boa_engine::Source::from_bytes(
+                    b"localStorage.getItem('abcd')"
+                ))
+                .and_then(|v| v.to_string(&mut host.context))
+                .map(|js_str| js_str.to_std_string().unwrap_or_default()),
+            Ok("12345".to_string())
+        );
+
+        // Setting a larger value under the same key that still fits (4 + 6 = 10 chars)
+        assert!(host.eval("localStorage.setItem('abcd', '123456')").is_ok());
+
+        // This should fail (4 + 7 = 11 chars > 10 quota limit)
+        // It must throw QuotaExceededError DOMException
+        assert!(
+            host.eval(
+                r#"
+            let threwQuota = false;
+            try {
+                localStorage.setItem('abcd', '1234567');
+            } catch (e) {
+                if (e instanceof DOMException && e.name === "QuotaExceededError") {
+                    threwQuota = true;
+                }
+            }
+            if (!threwQuota) throw new Error("Expected QuotaExceededError");
+        "#
+            )
+            .is_ok()
+        );
+
+        // Also check that a different key failing quota works correctly
+        assert!(
+            host.eval(
+                r#"
+            let threwQuota2 = false;
+            try {
+                localStorage.setItem('e', '123456789');
+            } catch (e) {
+                if (e instanceof DOMException && e.name === "QuotaExceededError") {
+                    threwQuota2 = true;
+                }
+            }
+            if (!threwQuota2) throw new Error("Expected QuotaExceededError for new key");
+        "#
+            )
+            .is_ok()
+        );
     }
 
     #[test]
