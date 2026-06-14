@@ -35,6 +35,7 @@ pub enum Charset {
     Ibm866,
     Macintosh,
     XMacCyrillic,
+    XUserDefined,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -146,6 +147,9 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "x-mac-cyrillic" | "x-mac-ukrainian" => {
                 return Charset::XMacCyrillic;
             }
+            "x-user-defined" => {
+                return Charset::XUserDefined;
+            }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
     }
@@ -239,6 +243,9 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "x-mac-cyrillic" | "x-mac-ukrainian" => {
                     return Some(Charset::XMacCyrillic);
                 }
+                "x-user-defined" => {
+                    return Some(Charset::XUserDefined);
+                }
                 _ => {}
             }
         }
@@ -280,6 +287,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Ibm866 => decode_ibm866(bytes),
         Charset::Macintosh => decode_macintosh(bytes),
         Charset::XMacCyrillic => decode_x_mac_cyrillic(bytes),
+        Charset::XUserDefined => decode_x_user_defined(bytes),
     }
 }
 
@@ -3766,6 +3774,23 @@ fn decode_x_mac_cyrillic(bytes: &[u8]) -> String {
     result
 }
 
+fn decode_x_user_defined(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            let code_point = 0xF780 + (b as u32 - 0x80);
+            if let Some(c) = std::char::from_u32(code_point) {
+                result.push(c);
+            } else {
+                result.push('\u{FFFD}');
+            }
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5120,5 +5145,44 @@ mod tests {
         assert_eq!(decode(&[0xA0], Charset::XMacCyrillic), "†"); // DAGGER (U+2020)
         assert_eq!(decode(&[0xCA], Charset::XMacCyrillic), "\u{00A0}"); // NBSP (U+00A0)
         assert_eq!(decode(&[0xFF], Charset::XMacCyrillic), "€"); // EURO SIGN (U+20AC)
+    }
+
+    #[test]
+    fn test_x_user_defined_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("x-user-defined")),
+            Charset::XUserDefined
+        );
+
+        // Case-insensitivity check
+        assert_eq!(
+            sniff_charset(b"abc", Some("X-USER-DEFINED")),
+            Charset::XUserDefined
+        );
+
+        // Meta prescan check
+        let html_meta_user_defined = b"<html><head><meta charset=\"x-user-defined\"></head></html>";
+        assert_eq!(
+            sniff_charset(html_meta_user_defined, None),
+            Charset::XUserDefined
+        );
+    }
+
+    #[test]
+    fn test_x_user_defined_decode() {
+        // Pure-ASCII round-trip
+        assert_eq!(decode(b"Hello 123", Charset::XUserDefined), "Hello 123");
+
+        // x-user-defined specific mappings (high bytes map to Private Use Area U+F780..U+F7FF)
+        assert_eq!(decode(&[0x80], Charset::XUserDefined), "\u{F780}");
+        assert_eq!(decode(&[0x81], Charset::XUserDefined), "\u{F781}");
+        assert_eq!(decode(&[0xFE], Charset::XUserDefined), "\u{F7FE}");
+        assert_eq!(decode(&[0xFF], Charset::XUserDefined), "\u{F7FF}");
+
+        // Multi-byte mixed buffer
+        assert_eq!(
+            decode(&[b'a', 0x80, b'z', 0xFF], Charset::XUserDefined),
+            "a\u{F780}z\u{F7FF}"
+        );
     }
 }
