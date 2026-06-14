@@ -150,10 +150,53 @@ fn create_line_box_adjusted(
         }
     }
 
-    let base_align = match text_align {
-        "start" => "left",
-        "end" => "right",
-        other => other,
+    let is_center_element = block_container
+        .and_then(|id| dom.data(id))
+        .is_some_and(|data| matches!(data, NodeData::Element { name, .. } if name == "center"));
+
+    let (style_text_align, direction) = if is_center_element {
+        ("center", "ltr")
+    } else if let Some(bc_id) = block_container
+        && let Some(style) = styles.get(&bc_id)
+    {
+        (
+            style.inherited_text.text_align.as_str(),
+            style.inherited_text.direction.as_str(),
+        )
+    } else {
+        (text_align, "ltr")
+    };
+
+    let is_rtl = direction == "rtl";
+
+    if is_rtl {
+        for child in &mut children {
+            let old_x = child.rect.origin.x;
+            let new_x = 2.0 * offset_x + width - old_x - child.rect.size.width;
+            let delta = new_x - old_x;
+            if delta != 0.0 {
+                shift_x(child, delta);
+            }
+        }
+        children.reverse();
+    }
+
+    let base_align = match style_text_align {
+        "start" => {
+            if is_rtl {
+                "right"
+            } else {
+                "left"
+            }
+        }
+        "end" => {
+            if is_rtl {
+                "left"
+            } else {
+                "right"
+            }
+        }
+        _ => text_align,
     };
 
     let resolved_align = if is_last_line {
@@ -163,14 +206,26 @@ fn create_line_box_adjusted(
             .unwrap_or("auto");
 
         let last_align = match raw_last_align {
-            "start" => "left",
-            "end" => "right",
+            "start" => {
+                if is_rtl {
+                    "right"
+                } else {
+                    "left"
+                }
+            }
+            "end" => {
+                if is_rtl {
+                    "left"
+                } else {
+                    "right"
+                }
+            }
             other => other,
         };
 
         if last_align == "auto" {
             if base_align == "justify" {
-                "left"
+                if is_rtl { "right" } else { "left" }
             } else {
                 base_align
             }
@@ -181,8 +236,26 @@ fn create_line_box_adjusted(
         base_align
     };
 
+    let final_align = match resolved_align {
+        "start" => {
+            if is_rtl {
+                "right"
+            } else {
+                "left"
+            }
+        }
+        "end" => {
+            if is_rtl {
+                "left"
+            } else {
+                "right"
+            }
+        }
+        other => other,
+    };
+
     // Adjust X positions based on text-align centering/right alignment
-    let delta_x = match resolved_align {
+    let delta_x = match final_align {
         "center" => ((containing_width - width) / 2.0).max(0.0),
         "right" => (containing_width - width).max(0.0),
         _ => 0.0,
@@ -2602,5 +2675,128 @@ mod tests {
         // Under break-spaces, whitespace is preserved (collapse is false, preserve_newlines is true, allow_wrap is true).
         // Since collapse is false, we expect consecutive spaces to be preserved!
         assert!(leaf_texts.contains(&"  ".to_string()) || leaf_texts.contains(&" ".to_string()));
+    }
+
+    #[test]
+    fn test_rtl_layout_horizontal_reversal() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        // We have multiple child elements to check their ordering
+        let t1 = dom.create_node(NodeData::Text("one ".into()));
+        dom.append_child(div, t1);
+        let t2 = dom.create_node(NodeData::Text("two".into()));
+        dom.append_child(div, t2);
+
+        // Under RTL, the horizontal positions are reversed.
+        // Let's set direction: rtl.
+        let stylesheet = parse_stylesheet("div { direction: rtl; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 500.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line_box = &line_boxes[0];
+
+        // Let's collect texts of child fragments in left-to-right visual layout order.
+        // Since we reversed the vector in create_line_box_adjusted, the left-to-right order (indexes 0 and 1) should be "two" and then "one ".
+        let leaf_texts = collect_leaf_texts(line_box);
+        assert_eq!(leaf_texts, vec!["two", "one "]);
+
+        // "two" should be on the left (x = 0), and "one " should be to its right.
+        let child_0 = &line_box.children[0];
+        let child_1 = &line_box.children[1];
+        assert_eq!(child_0.rect.origin.x, 0.0);
+        assert!(child_1.rect.origin.x > child_0.rect.origin.x);
+    }
+
+    #[test]
+    fn test_rtl_alignment_default() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(div, t);
+
+        // Default text-align (start) on direction: rtl should align text to the right.
+        let stylesheet = parse_stylesheet("div { direction: rtl; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Container width is 200px.
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 200.0, 0.0, 0.0, 0, "start", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line_box = &line_boxes[0];
+        let child = &line_box.children[0];
+
+        // The right edge of the text should align with the right edge of the container (200px).
+        let right_edge = child.rect.origin.x + child.rect.size.width;
+        assert_eq!(right_edge, 200.0);
+    }
+
+    #[test]
+    fn test_rtl_text_align_start_end() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(div, t);
+
+        // 1. text-align: end on direction: rtl should align text to the left (origin.x = 0).
+        let stylesheet_end = parse_stylesheet("div { direction: rtl; text-align: end; }");
+        let styles_end = compute_styles(&dom, &stylesheet_end);
+        let children_end = dom.children(div);
+        let (line_boxes_end, _) = layout_inline_run(
+            &dom,
+            &styles_end,
+            children_end,
+            200.0,
+            0.0,
+            0.0,
+            0,
+            "end",
+            0.0,
+            0.0,
+        );
+        assert_eq!(line_boxes_end[0].children[0].rect.origin.x, 0.0);
+
+        // 2. text-align: left on direction: rtl should align text to the left (origin.x = 0).
+        let stylesheet_left = parse_stylesheet("div { direction: rtl; text-align: left; }");
+        let styles_left = compute_styles(&dom, &stylesheet_left);
+        let children_left = dom.children(div);
+        let (line_boxes_left, _) = layout_inline_run(
+            &dom,
+            &styles_left,
+            children_left,
+            200.0,
+            0.0,
+            0.0,
+            0,
+            "left",
+            0.0,
+            0.0,
+        );
+        assert_eq!(line_boxes_left[0].children[0].rect.origin.x, 0.0);
     }
 }
