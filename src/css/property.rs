@@ -378,6 +378,66 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "font-kerning",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "font-optical-sizing",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "font-palette",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-variant-caps",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-variant-ligatures",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-variant-numeric",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-variant-position",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-variant-east-asian",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-variant-alternates",
+        inherited: true,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "font-synthesis-weight",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "font-synthesis-style",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "font-synthesis-small-caps",
+        inherited: true,
+        initial: "auto",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1484,6 +1544,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "leading",
     },
+    PropertyMetadata {
+        name: "will-change",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "touch-action",
+        inherited: false,
+        initial: "auto",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1797,6 +1867,8 @@ mod tests {
         assert!(!is_inherited("max-width"));
         assert!(is_inherited("text-wrap"));
         assert!(is_inherited("TEXT-WRAP"));
+        assert!(is_inherited("font-kerning"));
+        assert!(!is_inherited("will-change"));
     }
 
     #[test]
@@ -1809,6 +1881,8 @@ mod tests {
         assert_eq!(initial_value("border-collapse"), Some("separate"));
         assert_eq!(initial_value("color-interpolation"), Some("sRGB"));
         assert_eq!(initial_value("background-repeat"), Some("repeat"));
+        assert_eq!(initial_value("font-optical-sizing"), Some("auto"));
+        assert_eq!(initial_value("will-change"), Some("auto"));
         assert_eq!(initial_value("text-wrap"), Some("wrap"));
     }
 
@@ -3205,5 +3279,98 @@ mod tests {
         assert_eq!(line_fit.name, "line-fit-edge");
         assert!(!line_fit.inherited);
         assert_eq!(line_fit.initial, "leading");
+    }
+
+    #[test]
+    fn test_additive_properties_t0819() {
+        // font-kerning (inherited; initial "auto")
+        let fk = lookup("font-kerning").expect("font-kerning must be registered");
+        assert_eq!(fk.name, "font-kerning");
+        assert!(fk.inherited);
+        assert_eq!(fk.initial, "auto");
+
+        // font-optical-sizing (inherited; initial "auto")
+        let fos = lookup("font-optical-sizing").expect("font-optical-sizing must be registered");
+        assert_eq!(fos.name, "font-optical-sizing");
+        assert!(fos.inherited);
+        assert_eq!(fos.initial, "auto");
+
+        // font-palette (inherited; initial "normal")
+        let fp = lookup("font-palette").expect("font-palette must be registered");
+        assert_eq!(fp.name, "font-palette");
+        assert!(fp.inherited);
+        assert_eq!(fp.initial, "normal");
+
+        // font-variant-caps (inherited; initial "normal")
+        let fvc = lookup("font-variant-caps").expect("font-variant-caps must be registered");
+        assert_eq!(fvc.name, "font-variant-caps");
+        assert!(fvc.inherited);
+        assert_eq!(fvc.initial, "normal");
+
+        // font-variant-ligatures (inherited; initial "normal")
+        let fvl =
+            lookup("font-variant-ligatures").expect("font-variant-ligatures must be registered");
+        assert_eq!(fvl.name, "font-variant-ligatures");
+        assert!(fvl.inherited);
+        assert_eq!(fvl.initial, "normal");
+
+        // font-variant-numeric (inherited; initial "normal")
+        let fvn = lookup("font-variant-numeric").expect("font-variant-numeric must be registered");
+        assert_eq!(fvn.name, "font-variant-numeric");
+        assert!(fvn.inherited);
+        assert_eq!(fvn.initial, "normal");
+
+        // font-variant-position (inherited; initial "normal")
+        let fvp =
+            lookup("font-variant-position").expect("font-variant-position must be registered");
+        assert_eq!(fvp.name, "font-variant-position");
+        assert!(fvp.inherited);
+        assert_eq!(fvp.initial, "normal");
+
+        // font-variant-east-asian (inherited; initial "normal")
+        let fvea =
+            lookup("font-variant-east-asian").expect("font-variant-east-asian must be registered");
+        assert_eq!(fvea.name, "font-variant-east-asian");
+        assert!(fvea.inherited);
+        assert_eq!(fvea.initial, "normal");
+
+        // font-variant-alternates (inherited; initial "normal")
+        let fva =
+            lookup("font-variant-alternates").expect("font-variant-alternates must be registered");
+        assert_eq!(fva.name, "font-variant-alternates");
+        assert!(fva.inherited);
+        assert_eq!(fva.initial, "normal");
+
+        // font-synthesis-weight (inherited; initial "auto")
+        let fsw =
+            lookup("font-synthesis-weight").expect("font-synthesis-weight must be registered");
+        assert_eq!(fsw.name, "font-synthesis-weight");
+        assert!(fsw.inherited);
+        assert_eq!(fsw.initial, "auto");
+
+        // font-synthesis-style (inherited; initial "auto")
+        let fss = lookup("font-synthesis-style").expect("font-synthesis-style must be registered");
+        assert_eq!(fss.name, "font-synthesis-style");
+        assert!(fss.inherited);
+        assert_eq!(fss.initial, "auto");
+
+        // font-synthesis-small-caps (inherited; initial "auto")
+        let fssc = lookup("font-synthesis-small-caps")
+            .expect("font-synthesis-small-caps must be registered");
+        assert_eq!(fssc.name, "font-synthesis-small-caps");
+        assert!(fssc.inherited);
+        assert_eq!(fssc.initial, "auto");
+
+        // will-change (not inherited; initial "auto")
+        let wc = lookup("will-change").expect("will-change must be registered");
+        assert_eq!(wc.name, "will-change");
+        assert!(!wc.inherited);
+        assert_eq!(wc.initial, "auto");
+
+        // touch-action (not inherited; initial "auto")
+        let ta = lookup("touch-action").expect("touch-action must be registered");
+        assert_eq!(ta.name, "touch-action");
+        assert!(!ta.inherited);
+        assert_eq!(ta.initial, "auto");
     }
 }
