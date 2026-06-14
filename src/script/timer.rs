@@ -12,6 +12,26 @@ pub struct Timer {
     pub nesting_level: u32,
 }
 
+impl PartialEq for Timer {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Timer {}
+
+impl PartialOrd for Timer {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Timer {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AnimationFrame {
     pub id: i32,
@@ -74,6 +94,15 @@ pub fn get_timer(id: i32) -> Option<Timer> {
 /// Get the count of active registered timers.
 pub fn get_timer_count() -> usize {
     TIMERS.with(|cell| cell.borrow().len())
+}
+
+/// Get the list of all active registered timers, sorted by their ID (handle).
+pub fn get_active_timers_sorted() -> Vec<Timer> {
+    TIMERS.with(|cell| {
+        let mut timers: Vec<Timer> = cell.borrow().values().cloned().collect();
+        timers.sort();
+        timers
+    })
 }
 
 /// Get the count of active registered animation frames.
@@ -553,7 +582,7 @@ pub fn set_timeout(
         0
     };
 
-    if current_level > 5 && delay < 4 {
+    if new_level > 5 && delay < 4 {
         delay = 4;
     }
 
@@ -641,7 +670,7 @@ pub fn set_interval(
         0
     };
 
-    if current_level > 5 && delay < 4 {
+    if new_level > 5 && delay < 4 {
         delay = 4;
     }
 
@@ -1377,14 +1406,14 @@ mod tests {
 
         // Trigger 5th
         trigger_timer(5, &mut context).unwrap();
-        // Now id6 should be registered (ID 6), with delay 0, nesting level 6 (since current_level is 5, which is not > 5)
+        // Now id6 should be registered (ID 6). Since its nesting level is 6 (which is > 5), delay must be clamped to 4!
         let t6 = get_timer(6).unwrap();
-        assert_eq!(t6.delay, 0);
+        assert_eq!(t6.delay, 4);
         assert_eq!(t6.nesting_level, 6);
 
         // Trigger 6th
         trigger_timer(6, &mut context).unwrap();
-        // Now id7 should be registered (ID 7). Since current_level is 6 (which is > 5), delay must be clamped to 4!
+        // Now id7 should be registered (ID 7). Since its nesting level is 7 (which is > 5), delay must be clamped to 4!
         let t7 = get_timer(7).unwrap();
         assert_eq!(t7.delay, 4);
         assert_eq!(t7.nesting_level, 7);
@@ -1739,5 +1768,171 @@ mod tests {
 
         assert_eq!(ts1, 54321.0);
         assert_eq!(ts2, 54321.0);
+    }
+
+    #[test]
+    fn test_clear_timeout_interval_idempotency_t1012() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. Call clearTimeout with non-existent IDs and invalid inputs - must be safe and not throw
+        let res1 = context.eval(Source::from_bytes("clearTimeout(999)"));
+        assert!(res1.is_ok());
+        let res2 = context.eval(Source::from_bytes("clearInterval(999)"));
+        assert!(res2.is_ok());
+        let res3 = context.eval(Source::from_bytes("clearTimeout(null)"));
+        assert!(res3.is_ok());
+        let res4 = context.eval(Source::from_bytes("clearTimeout(undefined)"));
+        assert!(res4.is_ok());
+        let res5 = context.eval(Source::from_bytes("clearTimeout('non-numeric')"));
+        assert!(res5.is_ok());
+
+        // 2. Set timeout, clear it multiple times
+        context
+            .eval(Source::from_bytes(
+                r#"
+            var tId = setTimeout(() => {}, 100);
+            "#,
+            ))
+            .unwrap();
+        let t_id = context
+            .eval(Source::from_bytes("tId"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        assert_eq!(get_timer_count(), 1);
+
+        // First clear
+        context
+            .eval(Source::from_bytes(&format!("clearTimeout({})", t_id)))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+
+        // Second clear (idempotent call)
+        let double_clear_res = context.eval(Source::from_bytes(&format!("clearTimeout({})", t_id)));
+        assert!(double_clear_res.is_ok());
+        assert_eq!(get_timer_count(), 0);
+
+        // 3. Set interval, clear it multiple times
+        context
+            .eval(Source::from_bytes(
+                r#"
+            var intId = setInterval(() => {}, 100);
+            "#,
+            ))
+            .unwrap();
+        let int_id = context
+            .eval(Source::from_bytes("intId"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        assert_eq!(get_timer_count(), 1);
+
+        // First clear
+        context
+            .eval(Source::from_bytes(&format!("clearInterval({})", int_id)))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+
+        // Second clear (idempotent call)
+        let double_clear_int =
+            context.eval(Source::from_bytes(&format!("clearInterval({})", int_id)));
+        assert!(double_clear_int.is_ok());
+        assert_eq!(get_timer_count(), 0);
+    }
+
+    #[test]
+    fn test_timer_argument_passing_t1012() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.__args_received = null;
+            var tId = setTimeout((a, b, c, d) => {
+                globalThis.__args_received = [a, b, c, d];
+            }, 100, "hello", 42, { x: 1 }, [2, 3]);
+            "#,
+            ))
+            .unwrap();
+
+        let t_id = context
+            .eval(Source::from_bytes("tId"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        trigger_timer(t_id, &mut context).unwrap();
+
+        let args_val = context
+            .eval(Source::from_bytes("globalThis.__args_received"))
+            .unwrap();
+        let args_obj = args_val.as_object().unwrap();
+
+        let arg0 = args_obj
+            .get(0, &mut context)
+            .unwrap()
+            .to_string(&mut context)
+            .unwrap()
+            .to_std_string()
+            .unwrap();
+        let arg1 = args_obj.get(1, &mut context).unwrap().as_number().unwrap() as i32;
+        let arg2_obj = args_obj
+            .get(2, &mut context)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        let arg2_x = arg2_obj
+            .get(JsString::from("x"), &mut context)
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+
+        assert_eq!(arg0, "hello");
+        assert_eq!(arg1, 42);
+        assert_eq!(arg2_x, 1);
+    }
+
+    #[test]
+    fn test_timer_ordering_by_handle_t1012() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. Register multiple timers with various delays.
+        // Handles/IDs are sequentially assigned starting at 1.
+        context
+            .eval(Source::from_bytes("setTimeout(() => {}, 50)"))
+            .unwrap(); // ID 1
+        context
+            .eval(Source::from_bytes("setTimeout(() => {}, 10)"))
+            .unwrap(); // ID 2
+        context
+            .eval(Source::from_bytes("setTimeout(() => {}, 100)"))
+            .unwrap(); // ID 3
+        context
+            .eval(Source::from_bytes("setTimeout(() => {}, 0)"))
+            .unwrap(); // ID 4
+
+        let timers = get_active_timers_sorted();
+        assert_eq!(timers.len(), 4);
+
+        // Assert they are sorted in strictly ascending order by handle/ID
+        assert_eq!(timers[0].id, 1);
+        assert_eq!(timers[1].id, 2);
+        assert_eq!(timers[2].id, 3);
+        assert_eq!(timers[3].id, 4);
+
+        // Check our Ord/PartialOrd implementations
+        assert!(timers[0] < timers[1]);
+        assert!(timers[1] < timers[2]);
+        assert!(timers[2] < timers[3]);
+
+        assert_eq!(timers[0].cmp(&timers[1]), std::cmp::Ordering::Less);
+        assert_eq!(timers[3].cmp(&timers[2]), std::cmp::Ordering::Greater);
+        assert_eq!(timers[2].cmp(&timers[2]), std::cmp::Ordering::Equal);
     }
 }
