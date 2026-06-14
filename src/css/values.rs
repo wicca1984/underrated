@@ -4313,6 +4313,12 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("light-dark") {
                 return parse_light_dark_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("cross-fade") {
+                return parse_cross_fade_function(value);
+            }
+            if name.eq_ignore_ascii_case("color-contrast") {
+                return parse_color_contrast_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("url") {
                 let mut url_str = None;
                 for val in value {
@@ -6515,6 +6521,238 @@ fn parse_device_cmyk_function(components: &[ComponentValue]) -> Option<Color> {
     Some(Color::Rgba(r, g, b, alpha))
 }
 
+fn is_css_image(comp: &ComponentValue) -> bool {
+    match comp {
+        ComponentValue::Token(CssToken::Url(_)) | ComponentValue::Token(CssToken::String(_)) => {
+            true
+        }
+        ComponentValue::Function { name, .. } => {
+            let name_lower = name.to_ascii_lowercase();
+            name_lower == "url"
+                || name_lower == "image-set"
+                || name_lower == "-webkit-image-set"
+                || name_lower == "cross-fade"
+                || name_lower == "linear-gradient"
+                || name_lower == "radial-gradient"
+                || name_lower == "conic-gradient"
+                || name_lower == "repeating-linear-gradient"
+                || name_lower == "repeating-radial-gradient"
+                || name_lower == "repeating-conic-gradient"
+        }
+        _ => false,
+    }
+}
+
+fn parse_cross_fade_arg(components: &[&ComponentValue]) -> Option<String> {
+    if components.is_empty() || components.len() > 2 {
+        return None;
+    }
+    let mut has_image = false;
+    let mut has_percentage = false;
+    for comp in components {
+        match comp {
+            ComponentValue::Token(CssToken::Percentage(_)) => {
+                if has_percentage {
+                    return None;
+                }
+                has_percentage = true;
+            }
+            comp if is_css_image(comp) => {
+                if has_image {
+                    return None;
+                }
+                has_image = true;
+            }
+            _ => return None,
+        }
+    }
+    if !has_image && !has_percentage {
+        return None;
+    }
+    let mut s = String::new();
+    for (i, comp) in components.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        s.push_str(&serialize_component_value(comp));
+    }
+    Some(s)
+}
+
+fn parse_cross_fade_function(components: &[ComponentValue]) -> Option<CssValue> {
+    let args = split_by_comma(components);
+    if args.is_empty() {
+        return None;
+    }
+    let mut serialized_args = Vec::new();
+    for arg in args {
+        let non_ws: Vec<&ComponentValue> = arg
+            .iter()
+            .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+            .collect();
+        if non_ws.is_empty() {
+            return None;
+        }
+        let parsed_arg = parse_cross_fade_arg(&non_ws)?;
+        serialized_args.push(parsed_arg);
+    }
+    Some(CssValue::Keyword(format!(
+        "cross-fade({})",
+        serialized_args.join(", ")
+    )))
+}
+
+fn relative_luminance(color: &Color) -> f64 {
+    let Color::Rgba(r_u8, g_u8, b_u8, _) = color;
+    let r_srgb = *r_u8 as f64 / 255.0;
+    let g_srgb = *g_u8 as f64 / 255.0;
+    let b_srgb = *b_u8 as f64 / 255.0;
+
+    let r = if r_srgb <= 0.03928 {
+        r_srgb / 12.92
+    } else {
+        ((r_srgb + 0.055) / 1.055).powf(2.4)
+    };
+    let g = if g_srgb <= 0.03928 {
+        g_srgb / 12.92
+    } else {
+        ((g_srgb + 0.055) / 1.055).powf(2.4)
+    };
+    let b = if b_srgb <= 0.03928 {
+        b_srgb / 12.92
+    } else {
+        ((b_srgb + 0.055) / 1.055).powf(2.4)
+    };
+
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+fn contrast_ratio(lum1: f64, lum2: f64) -> f64 {
+    let l1 = lum1.max(lum2);
+    let l2 = lum1.min(lum2);
+    (l1 + 0.05) / (l2 + 0.05)
+}
+
+fn parse_color_contrast_function(components: &[ComponentValue]) -> Option<Color> {
+    let args = split_by_comma(components);
+    if args.is_empty() {
+        return None;
+    }
+
+    let first_arg_comps = args[0];
+    let vs_index = first_arg_comps.iter().position(|comp| {
+        if let ComponentValue::Token(CssToken::Ident(s)) = comp {
+            s.eq_ignore_ascii_case("vs")
+        } else {
+            false
+        }
+    })?;
+
+    let base_color_comps = &first_arg_comps[..vs_index];
+    let first_candidate_comps = &first_arg_comps[vs_index + 1..];
+
+    let base_color = parse_color_argument(base_color_comps)?;
+    let first_candidate = parse_color_argument(first_candidate_comps)?;
+
+    let mut candidates = vec![first_candidate];
+    let mut target_contrast: Option<String> = None;
+
+    let num_args = args.len();
+    for (i, arg_comps) in args.iter().skip(1).enumerate() {
+        let is_last = i + 2 == num_args;
+        if is_last {
+            let to_index = arg_comps.iter().position(|comp| {
+                if let ComponentValue::Token(CssToken::Ident(s)) = comp {
+                    s.eq_ignore_ascii_case("to")
+                } else {
+                    false
+                }
+            });
+
+            if let Some(to_idx) = to_index {
+                let candidate_comps = &arg_comps[..to_idx];
+                let target_comps = &arg_comps[to_idx + 1..];
+
+                let target_non_ws: Vec<&ComponentValue> = target_comps
+                    .iter()
+                    .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+                    .collect();
+
+                if target_non_ws.len() != 1 {
+                    return None;
+                }
+                match target_non_ws[0] {
+                    ComponentValue::Token(CssToken::Number(v)) => {
+                        target_contrast = Some(v.to_string());
+                    }
+                    ComponentValue::Token(CssToken::Ident(s)) => {
+                        let lower = s.to_ascii_lowercase();
+                        if lower == "aa"
+                            || lower == "aaa"
+                            || lower == "aalarge"
+                            || lower == "aaalarge"
+                        {
+                            target_contrast = Some(lower);
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                }
+
+                let candidate_color = parse_color_argument(candidate_comps)?;
+                candidates.push(candidate_color);
+            } else {
+                let candidate_color = parse_color_argument(arg_comps)?;
+                candidates.push(candidate_color);
+            }
+        } else {
+            let candidate_color = parse_color_argument(arg_comps)?;
+            candidates.push(candidate_color);
+        }
+    }
+
+    let target_val = target_contrast.as_ref().and_then(|t| {
+        if let Ok(num) = t.parse::<f64>() {
+            Some(num)
+        } else {
+            match t.as_str() {
+                "aa" => Some(4.5),
+                "aalarge" => Some(3.0),
+                "aaa" => Some(7.0),
+                "aaalarge" => Some(4.5),
+                _ => None,
+            }
+        }
+    });
+
+    let base_lum = relative_luminance(&base_color);
+
+    if let Some(target) = target_val {
+        for candidate in &candidates {
+            let cand_lum = relative_luminance(candidate);
+            let contrast = contrast_ratio(base_lum, cand_lum);
+            if contrast >= target {
+                return Some(candidate.clone());
+            }
+        }
+    }
+
+    let mut best_candidate = candidates[0].clone();
+    let mut max_contrast = -1.0;
+
+    for candidate in candidates {
+        let cand_lum = relative_luminance(&candidate);
+        let contrast = contrast_ratio(base_lum, cand_lum);
+        if contrast > max_contrast {
+            max_contrast = contrast;
+            best_candidate = candidate;
+        }
+    }
+
+    Some(best_candidate)
+}
+
 fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
     let mut args = Vec::new();
     let mut expect_comma = false;
@@ -8401,6 +8639,88 @@ mod tests {
             parse("LIGHT-DARK(White, Black)"),
             Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
         );
+    }
+
+    #[test]
+    fn test_parse_cross_fade() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // 1. Basic cross-fade with images
+        assert_eq!(
+            parse("cross-fade(url(\"a.png\"), url(\"b.png\"))"),
+            Some(CssValue::Keyword(
+                "cross-fade(url(\"a.png\"), url(\"b.png\"))".to_string()
+            ))
+        );
+
+        // 2. Cross-fade with percentages
+        assert_eq!(
+            parse("cross-fade(url(\"a.png\") 25%, url(\"b.png\") 75%)"),
+            Some(CssValue::Keyword(
+                "cross-fade(url(\"a.png\") 25%, url(\"b.png\") 75%)".to_string()
+            ))
+        );
+
+        // 3. Nested cross-fade and other image types (gradients)
+        assert_eq!(
+            parse("cross-fade(linear-gradient(red, blue), cross-fade(url(\"b.png\")))"),
+            Some(CssValue::Keyword(
+                "cross-fade(linear-gradient(red, blue), cross-fade(url(\"b.png\")))".to_string()
+            ))
+        );
+
+        // 4. Case insensitivity
+        assert_eq!(
+            parse("CROSS-FADE(url(\"a.png\"))"),
+            Some(CssValue::Keyword("cross-fade(url(\"a.png\"))".to_string()))
+        );
+
+        // 5. Malformed/invalid cases
+        assert_eq!(parse("cross-fade()"), None);
+        assert_eq!(parse("cross-fade(10px)"), None); // not an image or percentage
+    }
+
+    #[test]
+    fn test_parse_color_contrast() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // 1. Simple contrast matching: red vs black
+        assert_eq!(
+            parse("color-contrast(red vs black)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // 2. Select highest contrast candidate: white vs red, black
+        assert_eq!(
+            parse("color-contrast(white vs red, black)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // 3. Select first candidate meeting target contrast: white vs red, blue to AA
+        // AA is 4.5 contrast.
+        // Contrast of white vs red is 3.99 (< 4.5)
+        // Contrast of white vs blue is 8.59 (>= 4.5)
+        assert_eq!(
+            parse("color-contrast(white vs red, blue to AA)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 255, 255)))
+        );
+
+        // 4. Case insensitivity
+        assert_eq!(
+            parse("COLOR-CONTRAST(White VS Red, Blue to aa)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 255, 255)))
+        );
+
+        // 5. Malformed/invalid cases
+        assert_eq!(parse("color-contrast(white vs)"), None);
+        assert_eq!(parse("color-contrast(white)"), None);
+        assert_eq!(parse("color-contrast(white vs red to)"), None);
     }
 
     #[test]
