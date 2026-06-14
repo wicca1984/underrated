@@ -300,12 +300,29 @@ fn create_line_box_adjusted(
         base_align
     };
 
-    if resolved_align == "right" || resolved_align == "center" {
+    let target_trim_align = match resolved_align {
+        "start" => {
+            if is_rtl {
+                "right"
+            } else {
+                "left"
+            }
+        }
+        "end" => {
+            if is_rtl {
+                "left"
+            } else {
+                "right"
+            }
+        }
+        other => other,
+    };
+
+    if target_trim_align == "right" || target_trim_align == "center" {
         // Calculate trimmed width by ignoring trailing collapsible whitespace
-        let mut trimmed_width = 0.0f32;
         let mut last_non_space_index = None;
 
-        // Find the last child that is not a collapsible trailing space
+        // Find the last child that is not entirely collapsible/hanging space
         for (i, child) in children.iter().enumerate().rev() {
             if let Some(ref text) = child.text
                 && let Some(node_id) = child.node
@@ -319,7 +336,7 @@ fn create_line_box_adjusted(
                     matches!(style_ws, "nowrap" | "pre-line" | "normal" | "pre-wrap");
 
                 if collapse_or_hang {
-                    if text == " " {
+                    if text.chars().all(|c| c == ' ') {
                         // This is a collapsible space. Skip it!
                         continue;
                     } else if text.ends_with(' ') {
@@ -335,60 +352,65 @@ fn create_line_box_adjusted(
         }
 
         if let Some((idx, ends_with_space)) = last_non_space_index {
-            // The width of the line content up to the last non-space child (exclusive of the last child)
-            for child in children.iter().take(idx) {
+            // Trim the width of all children after idx to 0.0
+            for child in children.iter_mut().skip(idx + 1) {
+                child.rect.size.width = 0.0;
+            }
+
+            if ends_with_space {
+                let last_child = &children[idx];
+                if let Some(ref text) = last_child.text
+                    && let Some(node_id) = last_child.node
+                {
+                    let trimmed_text = text.trim_end_matches(' ').to_string();
+                    let letter_spacing = get_inherited_letter_spacing(node_id, dom, styles);
+                    let font = crate::font::BitmapFont::builtin();
+                    let char_count = trimmed_text.chars().count();
+                    let base_width = font.measure(&trimmed_text) as f32;
+                    let last_child_width = if char_count > 1 {
+                        base_width + (char_count - 1) as f32 * letter_spacing
+                    } else {
+                        base_width
+                    };
+                    children[idx].rect.size.width = last_child_width;
+                }
+            }
+
+            let mut trimmed_width = 0.0f32;
+            for child in children.iter().take(idx + 1) {
                 let right_edge = child.rect.origin.x + child.rect.size.width - offset_x;
                 if right_edge > trimmed_width {
                     trimmed_width = right_edge;
                 }
             }
-            // Plus the width of the last non-space child (potentially trimmed of its trailing spaces)
-            let last_child = &children[idx];
-            let mut last_child_width = last_child.rect.size.width;
-            if ends_with_space
-                && let Some(ref text) = last_child.text
-                && let Some(node_id) = last_child.node
-            {
-                let trimmed_text = text.trim_end_matches(' ').to_string();
-                let letter_spacing = get_inherited_letter_spacing(node_id, dom, styles);
-                let font = crate::font::BitmapFont::builtin();
-                let char_count = trimmed_text.chars().count();
-                let base_width = font.measure(&trimmed_text) as f32;
-                last_child_width = if char_count > 1 {
-                    base_width + (char_count - 1) as f32 * letter_spacing
-                } else {
-                    base_width
-                };
+            width = trimmed_width;
+        } else {
+            // All children are collapsible/hanging space
+            for child in &mut children {
+                child.rect.size.width = 0.0;
             }
-            let right_edge = last_child.rect.origin.x + last_child_width - offset_x;
-            if right_edge > trimmed_width {
-                trimmed_width = right_edge;
-            }
+            width = 0.0;
         }
-        width = trimmed_width;
     }
 
-    // For each child, adjust its Y position to align its bottom edge with the bottom of the line box.
+    // For each child, adjust its Y position based on its baseline.
     let line_box_bottom_y = offset_y + line_height;
 
     for child in &mut children {
         let mut target_y;
         let border_box_height = child.rect.size.height;
 
-        if let Some(style) = child
+        let margin_bottom = child
             .node
-            .filter(|&id| is_inline_block(styles, id))
             .and_then(|id| styles.get(&id))
-        {
-            let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
-            if let Some(abs_baseline_y) = find_last_fragment_baseline(child, styles, dom) {
-                let baseline_offset_from_top = abs_baseline_y - child.rect.origin.y;
-                target_y = line_box_bottom_y - baseline_offset_from_top;
-            } else {
-                target_y = line_box_bottom_y - margin_bottom - border_box_height;
-            }
+            .map(|style| crate::layout::get_px(style, "margin-bottom", 0.0))
+            .unwrap_or(0.0);
+
+        if let Some(abs_baseline_y) = find_last_fragment_baseline(child, styles, dom) {
+            let baseline_offset_from_top = abs_baseline_y - child.rect.origin.y;
+            target_y = line_box_bottom_y - baseline_offset_from_top;
         } else {
-            target_y = line_box_bottom_y - border_box_height;
+            target_y = line_box_bottom_y - margin_bottom - border_box_height;
         }
 
         // Apply vertical-align shift
@@ -3737,5 +3759,134 @@ mod tests {
         assert_eq!(line_boxes[0].children[0].text, Some("abc".to_string()));
         assert_eq!(line_boxes[1].children.len(), 1);
         assert_eq!(line_boxes[1].children[0].text, Some("def".to_string()));
+    }
+
+    #[test]
+    fn test_trimming_entirely_space_children() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t1 = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(div, t1);
+
+        let t2 = dom.create_node(NodeData::Text("   ".into()));
+        dom.append_child(div, t2);
+
+        let stylesheet = parse_stylesheet("div { text-align: right; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        // Container of width 100px.
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 100.0, 0.0, 0.0, 0, "right", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 2);
+
+        let box_text = &line.children[0];
+        let box_space = &line.children[1];
+
+        // "hello" has width 40.0.
+        // Entirely-space "   " box has width 0.0 after trimming.
+        assert_eq!(box_text.rect.size.width, 40.0);
+        assert_eq!(box_space.rect.size.width, 0.0);
+
+        // Aligning to the right of 100px.
+        // "hello" should start at 100 - 40 = 60.
+        assert_eq!(box_text.rect.origin.x, 60.0);
+    }
+
+    #[test]
+    fn test_t1051_unified_baseline_alignment() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t1 = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(div, t1);
+
+        let ib = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("class".into(), "ib-class".into())],
+        });
+        dom.append_child(div, ib);
+
+        let t_inner = dom.create_node(NodeData::Text("world".into()));
+        dom.append_child(ib, t_inner);
+
+        let stylesheet = parse_stylesheet(
+            "
+            .ib-class { display: inline-block; width: 50px; height: 30px; }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 2);
+
+        let box_text = &line.children[0];
+        let box_ib = &line.children[1];
+
+        // Both are aligned via their baselines to line_box_bottom_y.
+        // For text: baseline is bottom of text box, so baseline is box_text.rect.origin.y + 8.0.
+        // For inline-block: baseline is the baseline of its last line, which is at origin.y + 8.0.
+        // Therefore, their baseline Y coordinates must be perfectly equal.
+        let text_baseline = box_text.rect.origin.y + box_text.rect.size.height;
+        let ib_baseline = find_last_fragment_baseline(box_ib, &styles, &dom).unwrap();
+        assert_eq!(text_baseline, ib_baseline);
+    }
+
+    #[test]
+    fn test_right_align_multiple_spaces_trimming() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("hello   ".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-align: right; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 100.0, 0.0, 0.0, 0, "right", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        assert_eq!(line.children.len(), 1);
+
+        let child_box = &line.children[0];
+
+        // The text is preserved as "hello ".
+        assert_eq!(child_box.text, Some("hello ".to_string()));
+
+        // But its width must be trimmed to 40.0.
+        assert_eq!(child_box.rect.size.width, 40.0);
+
+        // So it starts at 100 - 40 = 60.
+        assert_eq!(child_box.rect.origin.x, 60.0);
     }
 }
