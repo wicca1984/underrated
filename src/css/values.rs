@@ -5428,11 +5428,23 @@ fn parse_hex_color(s: &str) -> Option<Color> {
         let g = u8::from_str_radix(&s[1..2], 16).ok()?;
         let b = u8::from_str_radix(&s[2..3], 16).ok()?;
         Some(Color::Rgba(r * 17, g * 17, b * 17, 255))
+    } else if s.len() == 4 {
+        let r = u8::from_str_radix(&s[0..1], 16).ok()?;
+        let g = u8::from_str_radix(&s[1..2], 16).ok()?;
+        let b = u8::from_str_radix(&s[2..3], 16).ok()?;
+        let a = u8::from_str_radix(&s[3..4], 16).ok()?;
+        Some(Color::Rgba(r * 17, g * 17, b * 17, a * 17))
     } else if s.len() == 6 {
         let r = u8::from_str_radix(&s[0..2], 16).ok()?;
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;
         let b = u8::from_str_radix(&s[4..6], 16).ok()?;
         Some(Color::Rgba(r, g, b, 255))
+    } else if s.len() == 8 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        let a = u8::from_str_radix(&s[6..8], 16).ok()?;
+        Some(Color::Rgba(r, g, b, a))
     } else {
         None
     }
@@ -8508,6 +8520,34 @@ mod tests {
         assert_eq!(
             parse_value(&components),
             Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // #f00f (4-digit hex: red, full alpha)
+        let components = [token(CssToken::Hash("f00f".to_string()))];
+        assert_eq!(
+            parse_value(&components),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // #f008 (4-digit hex: red, half alpha)
+        let components = [token(CssToken::Hash("f008".to_string()))];
+        assert_eq!(
+            parse_value(&components),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 136)))
+        );
+
+        // #ff0000ff (8-digit hex: red, full alpha)
+        let components = [token(CssToken::Hash("ff0000ff".to_string()))];
+        assert_eq!(
+            parse_value(&components),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // #ff000080 (8-digit hex: red, half alpha)
+        let components = [token(CssToken::Hash("ff000080".to_string()))];
+        assert_eq!(
+            parse_value(&components),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 128)))
         );
     }
 
