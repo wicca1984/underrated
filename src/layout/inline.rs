@@ -45,6 +45,23 @@ fn get_inherited_letter_spacing(
     0.0
 }
 
+fn get_inherited_word_spacing(
+    node: NodeId,
+    dom: &Dom,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> Option<f32> {
+    let mut current = Some(node);
+    while let Some(curr_node) = current {
+        if let Some(style) = styles.get(&curr_node)
+            && style.inherited_text.word_spacing != -1
+        {
+            return Some(style.inherited_text.word_spacing as f32);
+        }
+        current = dom.parent(curr_node);
+    }
+    None
+}
+
 fn get_font_size(style: &CategorizedComputedStyle) -> f32 {
     style.inherited_text.font_size as f32
 }
@@ -746,6 +763,8 @@ pub fn layout_inline_run(
                         }
                     }
                     let letter_spacing = get_inherited_letter_spacing(node, dom, styles);
+                    let node_word_spacing =
+                        get_inherited_word_spacing(node, dom, styles).unwrap_or(word_spacing);
                     current_line_height = current_line_height.max(node_line_height);
 
                     let measure_text = |s: &str| -> f32 {
@@ -879,7 +898,7 @@ pub fn layout_inline_run(
                                 });
                                 cursor_x += word_width;
                                 if word_stripped.ends_with(' ') {
-                                    cursor_x += word_spacing;
+                                    cursor_x += node_word_spacing;
                                 }
                             } else {
                                 let mut rem_word = word.to_string();
@@ -921,7 +940,7 @@ pub fn layout_inline_run(
                                             });
                                             cursor_x += rem_width;
                                             if rem_word.ends_with(' ') {
-                                                cursor_x += word_spacing;
+                                                cursor_x += node_word_spacing;
                                             }
                                         }
                                         break;
@@ -1083,7 +1102,7 @@ pub fn layout_inline_run(
                                             });
                                             cursor_x += last_valid_width;
                                             if prefix.ends_with(' ') {
-                                                cursor_x += word_spacing;
+                                                cursor_x += node_word_spacing;
                                             }
 
                                             let lh = push_line_box(
@@ -1116,7 +1135,7 @@ pub fn layout_inline_run(
                                             });
                                             cursor_x += rem_width;
                                             if rem_word.ends_with(' ') {
-                                                cursor_x += word_spacing;
+                                                cursor_x += node_word_spacing;
                                             }
                                             break;
                                         }
@@ -1900,14 +1919,22 @@ mod tests {
         let t = dom.create_node(NodeData::Text("hello world".into()));
         dom.append_child(div, t);
 
-        let stylesheet = parse_stylesheet("div { word-spacing: 10px; }");
-        let styles = compute_styles(&dom, &stylesheet);
-
+        let stylesheet_empty = parse_stylesheet("");
+        let styles_empty = compute_styles(&dom, &stylesheet_empty);
         let children = dom.children(div);
 
-        // 1. With word_spacing = 0.0
+        // 1. With empty stylesheet, and word_spacing parameter = 0.0
         let (line_boxes_0, _) = layout_inline_run(
-            &dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 0.0, 0.0,
+            &dom,
+            &styles_empty,
+            children,
+            800.0,
+            10.0,
+            20.0,
+            0,
+            "left",
+            0.0,
+            0.0,
         );
         assert!(!line_boxes_0.is_empty());
         let line_0 = &line_boxes_0[0];
@@ -1915,9 +1942,12 @@ mod tests {
         let first_word_0 = &line_0.children[0];
         let second_word_0 = &line_0.children[1];
 
-        // 2. With word_spacing = 10.0
+        // 2. With word-spacing in stylesheet, which is inherited by the text node!
+        let stylesheet_10 = parse_stylesheet("div { word-spacing: 10px; }");
+        let styles_10 = compute_styles(&dom, &stylesheet_10);
+
         let (line_boxes_10, _) = layout_inline_run(
-            &dom, &styles, children, 800.0, 10.0, 20.0, 0, "left", 0.0, 10.0,
+            &dom, &styles_10, children, 800.0, 10.0, 20.0, 0, "left", 0.0, 0.0,
         );
         assert!(!line_boxes_10.is_empty());
         let line_10 = &line_boxes_10[0];
@@ -1947,12 +1977,13 @@ mod tests {
         let t_single = dom_single.create_node(NodeData::Text("hello".into()));
         dom_single.append_child(div_single, t_single);
 
-        let styles_single = compute_styles(&dom_single, &stylesheet);
+        let styles_single_empty = compute_styles(&dom_single, &stylesheet_empty);
+        let styles_single_10 = compute_styles(&dom_single, &stylesheet_10);
         let children_single = dom_single.children(div_single);
 
         let (line_boxes_single_0, _) = layout_inline_run(
             &dom_single,
-            &styles_single,
+            &styles_single_empty,
             children_single,
             800.0,
             10.0,
@@ -1964,7 +1995,7 @@ mod tests {
         );
         let (line_boxes_single_10, _) = layout_inline_run(
             &dom_single,
-            &styles_single,
+            &styles_single_10,
             children_single,
             800.0,
             10.0,
@@ -1972,7 +2003,7 @@ mod tests {
             0,
             "left",
             0.0,
-            10.0,
+            0.0,
         );
 
         assert_eq!(line_boxes_single_0.len(), 1);
@@ -1985,6 +2016,73 @@ mod tests {
             line_boxes_single_0[0].children[0].rect.size.width,
             line_boxes_single_10[0].children[0].rect.size.width
         );
+    }
+
+    #[test]
+    fn test_nested_word_spacing_override() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t1 = dom.create_node(NodeData::Text("hello ".into()));
+        dom.append_child(div, t1);
+
+        let span = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(div, span);
+
+        let t2 = dom.create_node(NodeData::Text("nested words ".into()));
+        dom.append_child(span, t2);
+
+        let t3 = dom.create_node(NodeData::Text("world".into()));
+        dom.append_child(div, t3);
+
+        let stylesheet =
+            parse_stylesheet("div { word-spacing: 5px; } span { word-spacing: 25px; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Flatten inline children
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        assert_eq!(line_boxes.len(), 1);
+        let line = &line_boxes[0];
+        // Children should be:
+        // 1. "hello " (has space, word-spacing from div = 5)
+        // 2. "nested " (has space, word-spacing from span = 25)
+        // 3. "words " (has space, word-spacing from span = 25)
+        // 4. "world" (no trailing space, no extra word-spacing)
+        assert_eq!(line.children.len(), 4);
+
+        let word1 = &line.children[0];
+        let word2 = &line.children[1];
+        let word3 = &line.children[2];
+        let word4 = &line.children[3];
+
+        let font = crate::font::BitmapFont::builtin();
+        let w_hello = font.measure("hello ") as f32;
+        let w_nested = font.measure("nested ") as f32;
+        let w_words = font.measure("words ") as f32;
+
+        // Gap between word1 and word2 should be div's word-spacing = 5.0
+        let gap1 = word2.rect.origin.x - (word1.rect.origin.x + w_hello);
+        assert_eq!(gap1, 5.0);
+
+        // Gap between word2 and word3 should be span's word-spacing = 25.0
+        let gap2 = word3.rect.origin.x - (word2.rect.origin.x + w_nested);
+        assert_eq!(gap2, 25.0);
+
+        // Gap between word3 and word4 should be span's word-spacing = 25.0
+        let gap3 = word4.rect.origin.x - (word3.rect.origin.x + w_words);
+        assert_eq!(gap3, 25.0);
     }
 
     #[test]
