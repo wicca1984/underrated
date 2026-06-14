@@ -4,6 +4,109 @@ use crate::layout::{LayoutBox, layout_node};
 use crate::style::CategorizedComputedStyle;
 use std::collections::HashMap;
 
+fn find_layout_box(layout_box: &LayoutBox, node_id: NodeId, depth: usize) -> Option<&LayoutBox> {
+    if depth > crate::layout::MAX_DEPTH {
+        return None;
+    }
+    if layout_box.node == Some(node_id) {
+        return Some(layout_box);
+    }
+    for child in &layout_box.children {
+        if let Some(found) = find_layout_box(child, node_id, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_last_layout_box_rect(
+    layout_box: &LayoutBox,
+    node_id: NodeId,
+    depth: usize,
+) -> Option<crate::geom::Rect> {
+    if depth > crate::layout::MAX_DEPTH {
+        return None;
+    }
+    let mut best = None;
+    if layout_box.node == Some(node_id) {
+        best = Some(layout_box.rect);
+    }
+    for child in &layout_box.children {
+        if let Some(r) = find_last_layout_box_rect(child, node_id, depth + 1) {
+            best = Some(r);
+        }
+    }
+    best
+}
+
+fn get_static_position(
+    dom: &Dom,
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    root_box: &LayoutBox,
+    node: NodeId,
+) -> (f32, f32) {
+    let parent_id = match dom.parent(node) {
+        Some(p) => p,
+        None => return (0.0, 0.0),
+    };
+
+    let parent_box = match find_layout_box(root_box, parent_id, 0) {
+        Some(pb) => pb,
+        None => return (0.0, 0.0),
+    };
+
+    let children = dom.children(parent_id);
+    let node_idx = match children.iter().position(|&c| c == node) {
+        Some(idx) => idx,
+        None => return (0.0, 0.0),
+    };
+
+    let mut preceding_sibling = None;
+    for &child in children[..node_idx].iter().rev() {
+        if let Some(style) = styles.get(&child) {
+            if style.reset_box.display == "none" {
+                continue;
+            }
+            if is_absolute_or_fixed(styles, child) {
+                continue;
+            }
+        }
+        if find_last_layout_box_rect(root_box, child, 0).is_some() {
+            preceding_sibling = Some(child);
+            break;
+        }
+    }
+
+    let parent_style = styles.get(&parent_id);
+    let parent_border_left =
+        parent_style.map_or(0.0, |s| crate::layout::get_px(s, "border-left-width", 0.0));
+    let parent_border_top =
+        parent_style.map_or(0.0, |s| crate::layout::get_px(s, "border-top-width", 0.0));
+    let parent_padding_left =
+        parent_style.map_or(0.0, |s| crate::layout::get_px(s, "padding-left", 0.0));
+    let parent_padding_top =
+        parent_style.map_or(0.0, |s| crate::layout::get_px(s, "padding-top", 0.0));
+
+    let static_x = parent_box.rect.origin.x + parent_border_left + parent_padding_left;
+
+    if let Some(sibling_id) = preceding_sibling
+        && let Some(sibling_rect) = find_last_layout_box_rect(root_box, sibling_id, 0)
+    {
+        let self_style = styles.get(&node);
+        let self_margin_top =
+            self_style.map_or(0.0, |s| crate::layout::get_px(s, "margin-top", 0.0));
+        (static_x, sibling_rect.max_y() + self_margin_top)
+    } else {
+        let self_style = styles.get(&node);
+        let self_margin_top =
+            self_style.map_or(0.0, |s| crate::layout::get_px(s, "margin-top", 0.0));
+        (
+            static_x,
+            parent_box.rect.origin.y + parent_border_top + parent_padding_top + self_margin_top,
+        )
+    }
+}
+
 /// Helper to check if a node is absolutely or fixed positioned.
 /// spec: S-31
 pub fn is_absolute_or_fixed(
@@ -19,10 +122,6 @@ pub fn is_absolute_or_fixed(
             let has_explicit_right = style.reset_surround.right != -1;
             let has_explicit_bottom = style.reset_surround.bottom != -1;
 
-            // TODO(spec): True CSS static-position-for-out-of-flow semantics is deferred:
-            // we use an interim decision where if both top and left are unspecified (auto)
-            // (and we also check right here to avoid normal flow when right is specified),
-            // we keep the element in normal flow (as if position: static) to avoid collapsing to (0,0).
             has_explicit_top || has_explicit_left || has_explicit_right || has_explicit_bottom
         } else {
             false
@@ -329,55 +428,76 @@ pub fn layout_absolute_and_fixed_elements(
         let mut container_width = viewport_width;
         let mut container_height = root_box.rect.size.height;
 
+        let mut positioned_ancestor = None;
+
         if style.reset_box.position == "absolute" {
             let mut current = dom.parent(node);
-            let mut positioned_ancestor = None;
             while let Some(ancestor) = current {
                 if let Some(anc_style) = styles.get(&ancestor) {
                     let pos = &anc_style.reset_box.position;
-                    if pos == "relative" || pos == "absolute" || pos == "fixed" || pos == "sticky" {
+                    let has_transform = !anc_style.reset_effects.transform.is_empty();
+                    if pos == "relative"
+                        || pos == "absolute"
+                        || pos == "fixed"
+                        || pos == "sticky"
+                        || has_transform
+                    {
                         positioned_ancestor = Some(ancestor);
                         break;
                     }
                 }
                 current = dom.parent(ancestor);
             }
-
-            if let Some(ancestor_id) = positioned_ancestor
-                && let Some(ancestor_box) = find_layout_box_mut(root_box, ancestor_id, 0)
-            {
-                let mut border_left = 0.0;
-                let mut border_top = 0.0;
-                let mut border_right = 0.0;
-                let mut border_bottom = 0.0;
-                if let Some(anc_style) = styles.get(&ancestor_id) {
-                    border_left = crate::layout::get_px(anc_style, "border-left-width", 0.0);
-                    border_top = crate::layout::get_px(anc_style, "border-top-width", 0.0);
-                    border_right = crate::layout::get_px(anc_style, "border-right-width", 0.0);
-                    border_bottom = crate::layout::get_px(anc_style, "border-bottom-width", 0.0);
+        } else if style.reset_box.position == "fixed" {
+            let mut current = dom.parent(node);
+            while let Some(ancestor) = current {
+                if let Some(anc_style) = styles.get(&ancestor) {
+                    let has_transform = !anc_style.reset_effects.transform.is_empty();
+                    if has_transform {
+                        positioned_ancestor = Some(ancestor);
+                        break;
+                    }
                 }
-                ancestor_origin = (
-                    ancestor_box.rect.origin.x + border_left,
-                    ancestor_box.rect.origin.y + border_top,
-                );
-                container_width =
-                    (ancestor_box.rect.size.width - border_left - border_right).max(0.0);
-                container_height =
-                    (ancestor_box.rect.size.height - border_top - border_bottom).max(0.0);
+                current = dom.parent(ancestor);
             }
         }
 
+        if let Some(ancestor_id) = positioned_ancestor
+            && let Some(ancestor_box) = find_layout_box_mut(root_box, ancestor_id, 0)
+        {
+            let mut border_left = 0.0;
+            let mut border_top = 0.0;
+            let mut border_right = 0.0;
+            let mut border_bottom = 0.0;
+            if let Some(anc_style) = styles.get(&ancestor_id) {
+                border_left = crate::layout::get_px(anc_style, "border-left-width", 0.0);
+                border_top = crate::layout::get_px(anc_style, "border-top-width", 0.0);
+                border_right = crate::layout::get_px(anc_style, "border-right-width", 0.0);
+                border_bottom = crate::layout::get_px(anc_style, "border-bottom-width", 0.0);
+            }
+            ancestor_origin = (
+                ancestor_box.rect.origin.x + border_left,
+                ancestor_box.rect.origin.y + border_top,
+            );
+            container_width = (ancestor_box.rect.size.width - border_left - border_right).max(0.0);
+            container_height =
+                (ancestor_box.rect.size.height - border_top - border_bottom).max(0.0);
+        }
+
         // absolute/fixed position: top/left basic relative to containing block (viewport/root)
+        // or fallback to static position if unspecified
         // spec: S-31
+        let static_pos = get_static_position(dom, styles, root_box, node);
+
         let left = if style.reset_surround.left == -1 {
-            ancestor_origin.0
+            static_pos.0
         } else {
             ancestor_origin.0 + style.reset_surround.left as f32
         };
 
         // TODO(spec): bottom offset needs containing-block height (not threaded into this signature)
         let top = if style.reset_surround.top == -1 {
-            ancestor_origin.1
+            static_pos.1
         } else {
             ancestor_origin.1 + style.reset_surround.top as f32
         };
@@ -1714,5 +1834,219 @@ mod tests {
         assert_eq!(child_box.rect.origin.y, 25.0);
         assert_eq!(child_box.rect.size.width, 400.0);
         assert_eq!(child_box.rect.size.height, 300.0);
+    }
+
+    #[test]
+    fn test_absolute_positioned_ancestor_with_transform() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, parent);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(parent, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .parent {
+                display: block;
+                position: static; /* normal static block */
+                width: 300px;
+                height: 200px;
+                transform: translate(50px, 50px); /* has transform! */
+            }
+            .child {
+                display: block;
+                position: absolute;
+                left: 10px;
+                top: 20px;
+                width: 50px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut parent_box = None;
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(parent) {
+                parent_box = Some(current);
+            }
+            if current.node == Some(child) {
+                child_box = Some(current);
+            }
+            for child_elem in &current.children {
+                stack.push(child_elem);
+            }
+        }
+
+        let parent_box = parent_box.expect("Parent box not found");
+        let child_box = child_box.expect("Child box not found");
+
+        // The child should resolve its containing block to the parent (due to transform),
+        // so its origin should be offset from the parent's border-box origin (0, 0)
+        assert_eq!(parent_box.rect.origin.x, 0.0);
+        assert_eq!(parent_box.rect.origin.y, 0.0);
+        assert_eq!(child_box.rect.origin.x, 10.0);
+        assert_eq!(child_box.rect.origin.y, 20.0);
+    }
+
+    #[test]
+    fn test_fixed_positioned_ancestor_with_transform() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, parent);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(parent, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .parent {
+                display: block;
+                position: static;
+                margin-top: 100px;
+                margin-left: 100px;
+                width: 300px;
+                height: 200px;
+                transform: scale(1.1); /* has transform! */
+            }
+            .child {
+                display: block;
+                position: fixed; /* normally viewport, but parent has transform! */
+                left: 15px;
+                top: 25px;
+                width: 50px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut parent_box = None;
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(parent) {
+                parent_box = Some(current);
+            }
+            if current.node == Some(child) {
+                child_box = Some(current);
+            }
+            for child_elem in &current.children {
+                stack.push(child_elem);
+            }
+        }
+
+        let parent_box = parent_box.expect("Parent box not found");
+        let child_box = child_box.expect("Child box not found");
+
+        // The parent starts at (100, 100) due to margins.
+        // The fixed element's containing block is the parent box because of the transform,
+        // so its absolute origin should be parent_origin + (15, 25) = (115, 125).
+        assert_eq!(parent_box.rect.origin.x, 100.0);
+        assert_eq!(parent_box.rect.origin.y, 100.0);
+        assert_eq!(child_box.rect.origin.x, 115.0);
+        assert_eq!(child_box.rect.origin.y, 125.0);
+    }
+
+    #[test]
+    fn test_absolute_positioned_partial_auto_offset_static_fallback() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let sibling = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "sib".into())],
+        });
+        dom.append_child(body, sibling);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(body, child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .sib {
+                display: block;
+                height: 80px;
+            }
+            .child {
+                display: block;
+                position: absolute;
+                left: 15px;
+                top: auto; /* auto top! */
+                width: 50px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(child) {
+                child_box = Some(current);
+                break;
+            }
+            for child_elem in &current.children {
+                stack.push(child_elem);
+            }
+        }
+
+        let child_box = child_box.expect("Child box not found");
+
+        // Sibling is at y=0, height=80. Its bottom is y=80.
+        // The absolute child has left: 15px (so x=15), and top: auto,
+        // so its y-position should fallback to its static position, which is 80.0!
+        assert_eq!(child_box.rect.origin.x, 15.0);
+        assert_eq!(child_box.rect.origin.y, 80.0);
     }
 }
