@@ -44,6 +44,11 @@ pub fn match_media(
             JsString::from(query_str),
             Attribute::all(),
         )
+        .property(
+            JsString::from("onchange"),
+            JsValue::null(),
+            Attribute::all(),
+        )
         .function(
             NativeFunction::from_fn_ptr(noop_listener),
             JsString::from("addListener"),
@@ -67,4 +72,36 @@ pub fn match_media(
         .build();
 
     Ok(JsValue::from(mql))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::script::{BoaHost, ScriptHost};
+
+    #[test]
+    fn test_media_query_onchange() {
+        let mut host = BoaHost::new();
+
+        // 1. Verify onchange defaults to null
+        host.eval("if (matchMedia('(min-width: 1000px)').onchange !== null) throw 'onchange should default to null';").unwrap();
+
+        // 2. Verify we can assign a function and read it back
+        let assign_test = r#"{
+            const mql = matchMedia('(min-width: 1000px)');
+            const cb = () => {};
+            mql.onchange = cb;
+            if (mql.onchange !== cb) throw 'onchange setter/getter identity mismatch';
+            if (typeof mql.onchange !== 'function') throw 'onchange should be a function';
+        }"#;
+        host.eval(assign_test).unwrap();
+
+        // 3. Verify assigning null clears it
+        let clear_test = r#"{
+            const mql = matchMedia('(min-width: 1000px)');
+            mql.onchange = () => {};
+            mql.onchange = null;
+            if (mql.onchange !== null) throw 'onchange should be cleared to null';
+        }"#;
+        host.eval(clear_test).unwrap();
+    }
 }
