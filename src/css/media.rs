@@ -125,6 +125,50 @@ pub enum OverflowInline {
     Scroll,
 }
 
+/// Represents the dynamic range of the output device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicRange {
+    Standard,
+    High,
+}
+
+/// Represents the environment blending mode of the output device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentBlending {
+    Opaque,
+    Additive,
+    Subtractive,
+}
+
+/// Represents the ambient light level of the environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightLevel {
+    Dim,
+    Normal,
+    Washed,
+}
+
+/// Represents the posture of the device (for foldables).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevicePosture {
+    Continuous,
+    Folded,
+}
+
+/// Represents the navigation controls available on the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavControls {
+    None,
+    Back,
+}
+
+/// Represents the shape of the display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayShape {
+    Rect,
+    Round,
+}
+
 thread_local! {
     static PREFERRED_COLOR_SCHEME: Cell<ColorScheme> = const { Cell::new(ColorScheme::Light) };
     static PREFERS_REDUCED_MOTION: Cell<PrefersReducedMotion> = const { Cell::new(PrefersReducedMotion::NoPreference) };
@@ -140,6 +184,14 @@ thread_local! {
     static POINTER: Cell<Pointer> = const { Cell::new(Pointer::Fine) };
     static ANY_POINTER: Cell<Pointer> = const { Cell::new(Pointer::Fine) };
     static VIEWPORT_H: Cell<f32> = const { Cell::new(1024.0) };
+    static DYNAMIC_RANGE: Cell<DynamicRange> = const { Cell::new(DynamicRange::Standard) };
+    static VIDEO_DYNAMIC_RANGE: Cell<DynamicRange> = const { Cell::new(DynamicRange::Standard) };
+    static ENVIRONMENT_BLENDING: Cell<EnvironmentBlending> = const { Cell::new(EnvironmentBlending::Opaque) };
+    static LIGHT_LEVEL: Cell<LightLevel> = const { Cell::new(LightLevel::Normal) };
+    static DEVICE_POSTURE: Cell<DevicePosture> = const { Cell::new(DevicePosture::Continuous) };
+    static NAV_CONTROLS: Cell<NavControls> = const { Cell::new(NavControls::None) };
+    static VIDEO_COLOR_GAMUT: Cell<ColorGamut> = const { Cell::new(ColorGamut::Srgb) };
+    static DISPLAY_SHAPE: Cell<DisplayShape> = const { Cell::new(DisplayShape::Rect) };
 }
 
 /// Sets the viewport height for the current thread (default 1024.0 matching standard height).
@@ -280,6 +332,86 @@ pub fn set_any_pointer(val: Pointer) {
 /// Gets the any-pointer setting for the current thread.
 pub fn any_pointer() -> Pointer {
     ANY_POINTER.with(|c| c.get())
+}
+
+/// Sets the dynamic range setting for the current thread.
+pub fn set_dynamic_range(val: DynamicRange) {
+    DYNAMIC_RANGE.with(|c| c.set(val));
+}
+
+/// Gets the dynamic range setting for the current thread.
+pub fn dynamic_range() -> DynamicRange {
+    DYNAMIC_RANGE.with(|c| c.get())
+}
+
+/// Sets the video dynamic range setting for the current thread.
+pub fn set_video_dynamic_range(val: DynamicRange) {
+    VIDEO_DYNAMIC_RANGE.with(|c| c.set(val));
+}
+
+/// Gets the video dynamic range setting for the current thread.
+pub fn video_dynamic_range() -> DynamicRange {
+    VIDEO_DYNAMIC_RANGE.with(|c| c.get())
+}
+
+/// Sets the environment blending mode for the current thread.
+pub fn set_environment_blending(val: EnvironmentBlending) {
+    ENVIRONMENT_BLENDING.with(|c| c.set(val));
+}
+
+/// Gets the environment blending mode for the current thread.
+pub fn environment_blending() -> EnvironmentBlending {
+    ENVIRONMENT_BLENDING.with(|c| c.get())
+}
+
+/// Sets the ambient light level for the current thread.
+pub fn set_light_level(val: LightLevel) {
+    LIGHT_LEVEL.with(|c| c.set(val));
+}
+
+/// Gets the ambient light level for the current thread.
+pub fn light_level() -> LightLevel {
+    LIGHT_LEVEL.with(|c| c.get())
+}
+
+/// Sets the device posture for the current thread.
+pub fn set_device_posture(val: DevicePosture) {
+    DEVICE_POSTURE.with(|c| c.set(val));
+}
+
+/// Gets the device posture for the current thread.
+pub fn device_posture() -> DevicePosture {
+    DEVICE_POSTURE.with(|c| c.get())
+}
+
+/// Sets the navigation controls setting for the current thread.
+pub fn set_nav_controls(val: NavControls) {
+    NAV_CONTROLS.with(|c| c.set(val));
+}
+
+/// Gets the navigation controls setting for the current thread.
+pub fn nav_controls() -> NavControls {
+    NAV_CONTROLS.with(|c| c.get())
+}
+
+/// Sets the video color gamut setting for the current thread.
+pub fn set_video_color_gamut(val: ColorGamut) {
+    VIDEO_COLOR_GAMUT.with(|c| c.set(val));
+}
+
+/// Gets the video color gamut setting for the current thread.
+pub fn video_color_gamut() -> ColorGamut {
+    VIDEO_COLOR_GAMUT.with(|c| c.get())
+}
+
+/// Sets the display shape setting for the current thread.
+pub fn set_display_shape(val: DisplayShape) {
+    DISPLAY_SHAPE.with(|c| c.set(val));
+}
+
+/// Gets the display shape setting for the current thread.
+pub fn display_shape() -> DisplayShape {
+    DISPLAY_SHAPE.with(|c| c.get())
 }
 
 /// Gets the color gamut of the output device.
@@ -567,6 +699,14 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "display-mode" => return true,
             "overflow-block" => return true,
             "overflow-inline" => return true,
+            "dynamic-range" => return true,
+            "video-dynamic-range" => return true,
+            "environment-blending" => return true,
+            "light-level" => return true,
+            "device-posture" => return true,
+            "nav-controls" => return nav_controls() != NavControls::None,
+            "video-color-gamut" => return true,
+            "shape" => return true,
             "orientation" => return true,
             "monochrome" => return false,
             "grid" => return false,
@@ -826,6 +966,113 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             match (current, val_lower.as_str()) {
                 (OverflowInline::None, "none") => return true,
                 (OverflowInline::Scroll, "scroll") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "dynamic-range" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = dynamic_range();
+            match (current, val_lower.as_str()) {
+                (DynamicRange::Standard, "standard") => return true,
+                (DynamicRange::High, "high") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "video-dynamic-range" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = video_dynamic_range();
+            match (current, val_lower.as_str()) {
+                (DynamicRange::Standard, "standard") => return true,
+                (DynamicRange::High, "high") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "environment-blending" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = environment_blending();
+            match (current, val_lower.as_str()) {
+                (EnvironmentBlending::Opaque, "opaque") => return true,
+                (EnvironmentBlending::Additive, "additive") => return true,
+                (EnvironmentBlending::Subtractive, "subtractive") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "light-level" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = light_level();
+            match (current, val_lower.as_str()) {
+                (LightLevel::Dim, "dim") => return true,
+                (LightLevel::Normal, "normal") => return true,
+                (LightLevel::Washed, "washed") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "device-posture" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = device_posture();
+            match (current, val_lower.as_str()) {
+                (DevicePosture::Continuous, "continuous") => return true,
+                (DevicePosture::Folded, "folded") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "nav-controls" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = nav_controls();
+            match (current, val_lower.as_str()) {
+                (NavControls::None, "none") => return true,
+                (NavControls::Back, "back") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "video-color-gamut" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = video_color_gamut();
+            match (current, val_lower.as_str()) {
+                (ColorGamut::Srgb, "srgb") => return true,
+                (ColorGamut::P3, "p3") => return true,
+                (ColorGamut::Rec2020, "rec2020") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "shape" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = display_shape();
+            match (current, val_lower.as_str()) {
+                (DisplayShape::Rect, "rect") => return true,
+                (DisplayShape::Round, "round") => return true,
                 _ => return false,
             }
         }
@@ -2072,5 +2319,136 @@ mod tests {
         assert!(!media_matches("(min-color-index: 1)", 1000.0));
         assert!(media_matches("(max-color-index: 0)", 1000.0));
         assert!(media_matches("(max-color-index: 4)", 1000.0));
+    }
+
+    #[test]
+    fn test_dynamic_range_features() {
+        // Default dynamic-range: standard
+        assert!(media_matches("(dynamic-range: standard)", 1000.0));
+        assert!(!media_matches("(dynamic-range: high)", 1000.0));
+        assert!(media_matches("(dynamic-range)", 1000.0));
+
+        // Configure: High
+        set_dynamic_range(DynamicRange::High);
+        assert!(!media_matches("(dynamic-range: standard)", 1000.0));
+        assert!(media_matches("(dynamic-range: high)", 1000.0));
+
+        // Reset to standard
+        set_dynamic_range(DynamicRange::Standard);
+
+        // Default video-dynamic-range: standard
+        assert!(media_matches("(video-dynamic-range: standard)", 1000.0));
+        assert!(!media_matches("(video-dynamic-range: high)", 1000.0));
+        assert!(media_matches("(video-dynamic-range)", 1000.0));
+
+        // Configure: High
+        set_video_dynamic_range(DynamicRange::High);
+        assert!(!media_matches("(video-dynamic-range: standard)", 1000.0));
+        assert!(media_matches("(video-dynamic-range: high)", 1000.0));
+
+        // Reset to standard
+        set_video_dynamic_range(DynamicRange::Standard);
+    }
+
+    #[test]
+    fn test_environment_blending_feature() {
+        // Default environment-blending: opaque
+        assert!(media_matches("(environment-blending: opaque)", 1000.0));
+        assert!(!media_matches("(environment-blending: additive)", 1000.0));
+        assert!(!media_matches(
+            "(environment-blending: subtractive)",
+            1000.0
+        ));
+        assert!(media_matches("(environment-blending)", 1000.0));
+
+        // Configure: Additive
+        set_environment_blending(EnvironmentBlending::Additive);
+        assert!(media_matches("(environment-blending: additive)", 1000.0));
+        assert!(!media_matches("(environment-blending: opaque)", 1000.0));
+
+        // Reset
+        set_environment_blending(EnvironmentBlending::Opaque);
+    }
+
+    #[test]
+    fn test_light_level_feature() {
+        // Default light-level: normal
+        assert!(media_matches("(light-level: normal)", 1000.0));
+        assert!(!media_matches("(light-level: dim)", 1000.0));
+        assert!(!media_matches("(light-level: washed)", 1000.0));
+        assert!(media_matches("(light-level)", 1000.0));
+
+        // Configure: Dim
+        set_light_level(LightLevel::Dim);
+        assert!(media_matches("(light-level: dim)", 1000.0));
+        assert!(!media_matches("(light-level: normal)", 1000.0));
+
+        // Reset
+        set_light_level(LightLevel::Normal);
+    }
+
+    #[test]
+    fn test_device_posture_feature() {
+        // Default device-posture: continuous
+        assert!(media_matches("(device-posture: continuous)", 1000.0));
+        assert!(!media_matches("(device-posture: folded)", 1000.0));
+        assert!(media_matches("(device-posture)", 1000.0));
+
+        // Configure: Folded
+        set_device_posture(DevicePosture::Folded);
+        assert!(media_matches("(device-posture: folded)", 1000.0));
+        assert!(!media_matches("(device-posture: continuous)", 1000.0));
+
+        // Reset
+        set_device_posture(DevicePosture::Continuous);
+    }
+
+    #[test]
+    fn test_nav_controls_feature() {
+        // Default nav-controls: none
+        assert!(media_matches("(nav-controls: none)", 1000.0));
+        assert!(!media_matches("(nav-controls: back)", 1000.0));
+        assert!(!media_matches("(nav-controls)", 1000.0)); // none is falsy in boolean context
+
+        // Configure: Back
+        set_nav_controls(NavControls::Back);
+        assert!(media_matches("(nav-controls: back)", 1000.0));
+        assert!(!media_matches("(nav-controls: none)", 1000.0));
+        assert!(media_matches("(nav-controls)", 1000.0));
+
+        // Reset
+        set_nav_controls(NavControls::None);
+    }
+
+    #[test]
+    fn test_video_color_gamut_feature() {
+        // Default video-color-gamut: srgb
+        assert!(media_matches("(video-color-gamut: srgb)", 1000.0));
+        assert!(!media_matches("(video-color-gamut: p3)", 1000.0));
+        assert!(media_matches("(video-color-gamut)", 1000.0));
+
+        // Configure: P3
+        set_video_color_gamut(ColorGamut::P3);
+        assert!(media_matches("(video-color-gamut: p3)", 1000.0));
+        assert!(!media_matches("(video-color-gamut: srgb)", 1000.0));
+
+        // Reset
+        set_video_color_gamut(ColorGamut::Srgb);
+    }
+
+    #[test]
+    fn test_display_shape_feature() {
+        // Default shape: rect
+        assert!(media_matches("(shape: rect)", 1000.0));
+        assert!(!media_matches("(shape: round)", 1000.0));
+        assert!(media_matches("(shape)", 1000.0));
+
+        // Configure: Round
+        set_display_shape(DisplayShape::Round);
+        assert!(media_matches("(shape: round)", 1000.0));
+        assert!(!media_matches("(shape: rect)", 1000.0));
+
+        // Reset
+        set_display_shape(DisplayShape::Rect);
     }
 }
