@@ -20,6 +20,7 @@ pub struct AnimationFrame {
 #[derive(Clone, Debug)]
 pub struct IdleCallback {
     pub id: i32,
+    pub timeout: Option<u32>,
 }
 
 thread_local! {
@@ -212,24 +213,26 @@ pub fn trigger_timer(id: i32, context: &mut Context) -> Result<JsValue, JsError>
         }
     }
 
-    let _guard = CURRENT_NESTING_LEVEL.with(|cell| {
-        let mut borrow = cell.borrow_mut();
-        let old_level = *borrow;
-        *borrow = nesting_level;
-        NestingLevelGuard { old_level }
-    });
+    let res = {
+        let _guard = CURRENT_NESTING_LEVEL.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            let old_level = *borrow;
+            *borrow = nesting_level;
+            NestingLevelGuard { old_level }
+        });
 
-    let res = if let Some(callback_obj) = callback.as_object() {
-        let global_this = context.global_object().clone();
-        callback_obj.call(&JsValue::from(global_this), &callback_args, context)
-    } else if callback.is_string() {
-        let code_str = callback.to_string(context)?;
-        let std_str = code_str.to_std_string().unwrap_or_default();
-        let source = Source::from_bytes(std_str.as_bytes());
-        context.eval(source)
-    } else {
-        // No-op or ignore non-callable callbacks gracefully
-        Ok(JsValue::undefined())
+        if let Some(callback_obj) = callback.as_object() {
+            let global_this = context.global_object().clone();
+            callback_obj.call(&JsValue::from(global_this), &callback_args, context)
+        } else if callback.is_string() {
+            let code_str = callback.to_string(context)?;
+            let std_str = code_str.to_std_string().unwrap_or_default();
+            let source = Source::from_bytes(std_str.as_bytes());
+            context.eval(source)
+        } else {
+            // No-op or ignore non-callable callbacks gracefully
+            Ok(JsValue::undefined())
+        }
     }?;
 
     drain_microtasks(context)?;
@@ -267,10 +270,33 @@ pub fn trigger_animation_frame(id: i32, context: &mut Context) -> Result<JsValue
 
     let callback = frame_info_obj.get(JsString::from("callback"), context)?;
 
-    // Create a dummy timestamp of 16.0 for the callback.
-    let callback_args = vec![JsValue::from(16.0)];
+    // Get the timestamp from performance.now() if it exists in JS context, otherwise fall back to 16.0
+    let timestamp = if let Ok(perf_val) = context
+        .global_object()
+        .get(JsString::from("performance"), context)
+    {
+        if let Some(perf_obj) = perf_val.as_object() {
+            if let Ok(now_val) = perf_obj.get(JsString::from("now"), context) {
+                if let Some(now_fn) = now_val.as_object() {
+                    now_fn
+                        .call(&perf_val, &[], context)
+                        .unwrap_or_else(|_| JsValue::from(16.0))
+                } else {
+                    JsValue::from(16.0)
+                }
+            } else {
+                JsValue::from(16.0)
+            }
+        } else {
+            JsValue::from(16.0)
+        }
+    } else {
+        JsValue::from(16.0)
+    };
 
-    if let Some(callback_obj) = callback.as_object() {
+    let callback_args = vec![timestamp];
+
+    let res = if let Some(callback_obj) = callback.as_object() {
         let global_this = context.global_object().clone();
         callback_obj.call(&JsValue::from(global_this), &callback_args, context)
     } else if callback.is_string() {
@@ -281,7 +307,11 @@ pub fn trigger_animation_frame(id: i32, context: &mut Context) -> Result<JsValue
     } else {
         // No-op or ignore non-callable callbacks gracefully
         Ok(JsValue::undefined())
-    }
+    }?;
+
+    drain_microtasks(context)?;
+
+    Ok(res)
 }
 
 fn time_remaining_fixed(
@@ -338,7 +368,7 @@ pub fn trigger_idle_callback(id: i32, context: &mut Context) -> Result<JsValue, 
 
     let callback_args = vec![JsValue::from(deadline_obj)];
 
-    if let Some(callback_obj) = callback.as_object() {
+    let res = if let Some(callback_obj) = callback.as_object() {
         let global_this = context.global_object().clone();
         callback_obj.call(&JsValue::from(global_this), &callback_args, context)
     } else if callback.is_string() {
@@ -349,19 +379,19 @@ pub fn trigger_idle_callback(id: i32, context: &mut Context) -> Result<JsValue, 
     } else {
         // No-op or ignore non-callable callbacks gracefully
         Ok(JsValue::undefined())
-    }
+    }?;
+
+    drain_microtasks(context)?;
+
+    Ok(res)
 }
 
-fn js_value_to_i32(val: &JsValue, context: &mut Context) -> i32 {
-    if let Some(num) = val.as_number() {
-        num as i32
-    } else if let Ok(s) = val.to_string(context) {
-        s.to_std_string()
-            .unwrap_or_default()
-            .parse::<i32>()
-            .unwrap_or(0)
+fn js_value_to_i32(val: &JsValue, context: &mut Context) -> Result<i32, JsError> {
+    let num = val.to_number(context)?;
+    if num.is_nan() || num.is_infinite() {
+        Ok(0)
     } else {
-        0
+        Ok(num as i32)
     }
 }
 
@@ -375,7 +405,7 @@ pub fn set_timeout(
     let new_level = current_level + 1;
 
     let mut delay = if let Some(delay_val) = args.get(1) {
-        js_value_to_i32(delay_val, context).max(0)
+        js_value_to_i32(delay_val, context)?.max(0)
     } else {
         0
     };
@@ -446,7 +476,7 @@ pub fn clear_timeout(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context);
+        let id = js_value_to_i32(id_val, context)?;
         // Remove from Rust side
         TIMERS.with(|cell| {
             cell.borrow_mut().remove(&id);
@@ -469,7 +499,7 @@ pub fn set_interval(
     let new_level = current_level + 1;
 
     let mut delay = if let Some(delay_val) = args.get(1) {
-        js_value_to_i32(delay_val, context).max(0)
+        js_value_to_i32(delay_val, context)?.max(0)
     } else {
         0
     };
@@ -540,7 +570,7 @@ pub fn clear_interval(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context);
+        let id = js_value_to_i32(id_val, context)?;
         // Remove from Rust side
         TIMERS.with(|cell| {
             cell.borrow_mut().remove(&id);
@@ -591,7 +621,7 @@ pub fn cancel_animation_frame(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context);
+        let id = js_value_to_i32(id_val, context)?;
         // Remove from Rust side
         ANIMATION_FRAMES.with(|cell| {
             cell.borrow_mut().remove(&id);
@@ -611,6 +641,26 @@ pub fn request_idle_callback(
 ) -> Result<JsValue, JsError> {
     let callback = args.first().cloned().unwrap_or(JsValue::undefined());
 
+    let timeout = if let Some(options_val) = args.get(1) {
+        if let Some(options_obj) = options_val.as_object() {
+            let timeout_val = options_obj.get(JsString::from("timeout"), context)?;
+            if !timeout_val.is_undefined() && !timeout_val.is_null() {
+                let t_num = timeout_val.to_number(context)?;
+                if t_num >= 0.0 && t_num.is_finite() {
+                    Some(t_num as u32)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let id = NEXT_IDLE_ID.with(|cell| {
         let mut next_id = cell.borrow_mut();
         let cur = *next_id;
@@ -619,7 +669,7 @@ pub fn request_idle_callback(
     });
 
     // Store in Rust side
-    let idle = IdleCallback { id };
+    let idle = IdleCallback { id, timeout };
     IDLE_CALLBACKS.with(|cell| {
         cell.borrow_mut().insert(id, idle);
     });
@@ -627,9 +677,20 @@ pub fn request_idle_callback(
     // Store callback and args in JS side __idle_callbacks__ object
     let idle_obj = get_or_create_idle_callbacks_obj(context)?;
 
-    let timer_info = ObjectInitializer::new(context)
-        .property(JsString::from("callback"), callback, Attribute::all())
-        .build();
+    let timer_info = if let Some(t) = timeout {
+        ObjectInitializer::new(context)
+            .property(JsString::from("callback"), callback, Attribute::all())
+            .property(
+                JsString::from("timeout"),
+                JsValue::from(t),
+                Attribute::all(),
+            )
+            .build()
+    } else {
+        ObjectInitializer::new(context)
+            .property(JsString::from("callback"), callback, Attribute::all())
+            .build()
+    };
 
     idle_obj.set(id, JsValue::from(timer_info), false, context)?;
 
@@ -642,7 +703,7 @@ pub fn cancel_idle_callback(
     context: &mut Context,
 ) -> Result<JsValue, JsError> {
     if let Some(id_val) = args.first() {
-        let id = js_value_to_i32(id_val, context);
+        let id = js_value_to_i32(id_val, context)?;
         // Remove from Rust side
         IDLE_CALLBACKS.with(|cell| {
             cell.borrow_mut().remove(&id);
@@ -677,21 +738,29 @@ pub fn queue_microtask(
 
 // TODO(spec): microtask checkpoint should also run after top-level script evaluation (requires a drain call in src/script/mod.rs run loop) — out of scope for this single-module task.
 /// Drain the microtask queue FIFO, calling each callback with undefined `this` and no args.
-/// Per the WHATWG microtask checkpoint, callbacks enqueued during the drain must also run in the same drain.
+/// Per the WHATWG microtask checkpoint, callbacks enqueued during the drain must also run in the same drain,
+/// and even if a callback throws an exception, the draining continues.
 pub fn drain_microtasks(context: &mut Context) -> Result<(), JsError> {
+    let mut first_error = None;
     loop {
         let next_callback = MICROTASK_QUEUE.with(|cell| cell.borrow_mut().pop_front());
         match next_callback {
             Some(callback) => {
                 if let Some(callback_obj) = callback.as_object() {
                     let undefined_this = JsValue::undefined();
-                    callback_obj.call(&undefined_this, &[], context)?;
+                    if let Err(err) = callback_obj.call(&undefined_this, &[], context) {
+                        first_error.get_or_insert(err);
+                    }
                 }
             }
             None => break,
         }
     }
-    Ok(())
+    if let Some(err) = first_error {
+        Err(err)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn register_timer_builtins(context: &mut Context) -> Result<(), JsError> {
@@ -1213,5 +1282,144 @@ mod tests {
         let t = get_timer(id).unwrap();
         assert_eq!(t.delay, 4);
         assert_eq!(t.nesting_level, 5);
+    }
+
+    #[test]
+    fn test_timer_id_coercion() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // Register a timeout, which gets ID 1
+        let id_val = context
+            .eval(Source::from_bytes(r#"setTimeout(() => {}, 100)"#))
+            .unwrap();
+        let id = id_val.as_number().unwrap() as i32;
+        assert_eq!(id, 1);
+        assert_eq!(get_timer_count(), 1);
+
+        // Coerce ID to float or string to clear it
+        context
+            .eval(Source::from_bytes(r#"clearTimeout("1.8")"#))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+
+        // Register another timeout, gets ID 2
+        let id_val2 = context
+            .eval(Source::from_bytes(r#"setTimeout(() => {}, 100)"#))
+            .unwrap();
+        let id2 = id_val2.as_number().unwrap() as i32;
+        assert_eq!(id2, 2);
+        assert_eq!(get_timer_count(), 1);
+
+        // Coerce using a float value
+        context
+            .eval(Source::from_bytes(r#"clearTimeout(2.5)"#))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+    }
+
+    #[test]
+    fn test_drain_microtasks_with_exception() {
+        clear_all_microtasks();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.__ran_first = false;
+            globalThis.__ran_second = false;
+            queueMicrotask(() => {
+                globalThis.__ran_first = true;
+                throw new Error("microtask failed");
+            });
+            queueMicrotask(() => {
+                globalThis.__ran_second = true;
+            });
+            "#,
+            ))
+            .unwrap();
+
+        // drain_microtasks should return Err because the first microtask throws an error,
+        // but it MUST run the second microtask and empty the queue anyway!
+        let drain_res = drain_microtasks(&mut context);
+        assert!(drain_res.is_err());
+
+        // Check that BOTH ran!
+        let ran_first = context
+            .eval(Source::from_bytes("globalThis.__ran_first"))
+            .unwrap()
+            .as_boolean()
+            .unwrap();
+        let ran_second = context
+            .eval(Source::from_bytes("globalThis.__ran_second"))
+            .unwrap()
+            .as_boolean()
+            .unwrap();
+        assert!(ran_first);
+        assert!(ran_second);
+
+        // The queue is indeed empty
+        MICROTASK_QUEUE.with(|cell| {
+            assert_eq!(cell.borrow().len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_raf_perf_now_timestamp() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // Register a mock performance object with a now() function that returns 12345.0
+        context
+            .eval(Source::from_bytes(
+                r#"
+            globalThis.performance = {
+                now() { return 12345.0; }
+            };
+            globalThis.__received_timestamp = 0;
+            var rafId = requestAnimationFrame((ts) => {
+                globalThis.__received_timestamp = ts;
+            });
+            "#,
+            ))
+            .unwrap();
+
+        let raf_id = context
+            .eval(Source::from_bytes("rafId"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        trigger_animation_frame(raf_id, &mut context).unwrap();
+
+        let received_timestamp = context
+            .eval(Source::from_bytes("globalThis.__received_timestamp"))
+            .unwrap()
+            .as_number()
+            .unwrap();
+        assert_eq!(received_timestamp, 12345.0);
+    }
+
+    #[test]
+    fn test_request_idle_callback_options_timeout() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        let id_val = context
+            .eval(Source::from_bytes(
+                r#"
+            requestIdleCallback(() => {}, { timeout: 150 });
+            "#,
+            ))
+            .unwrap();
+        let id = id_val.as_number().unwrap() as i32;
+
+        let idle_opt = IDLE_CALLBACKS.with(|cell| cell.borrow().get(&id).cloned());
+        assert!(idle_opt.is_some());
+        let idle = idle_opt.unwrap();
+        assert_eq!(idle.timeout, Some(150));
     }
 }
