@@ -124,17 +124,17 @@ impl Dom {
         }
 
         // 2. If reference is Some, its parent must be parent.
-        if let Some(ref_id) = reference {
-            if self.parent(ref_id) != Some(parent) {
-                return false;
-            }
+        if let Some(ref_id) = reference
+            && self.parent(ref_id) != Some(parent)
+        {
+            return false;
         }
 
         // 3. If replacing_child is Some, its parent must be parent.
-        if let Some(rep_id) = replacing_child {
-            if self.parent(rep_id) != Some(parent) {
-                return false;
-            }
+        if let Some(rep_id) = replacing_child
+            && self.parent(rep_id) != Some(parent)
+        {
+            return false;
         }
 
         // 4. Cycles and ancestor checks
@@ -146,7 +146,8 @@ impl Dom {
                 if id == parent || self.contains(id, parent) {
                     return false;
                 }
-                let is_frag = matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
+                let is_frag =
+                    matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
                 if is_frag {
                     for &child in self.children(id) {
                         if child == parent || self.contains(child, parent) {
@@ -165,10 +166,8 @@ impl Dom {
             } else {
                 self.children(parent).to_vec()
             };
-            if !replacing_all {
-                if let Some(rep) = replacing_child {
-                    current_children.retain(|&c| c != rep);
-                }
+            if !replacing_all && let Some(rep) = replacing_child {
+                current_children.retain(|&c| c != rep);
             }
 
             // Find where the new nodes would be inserted
@@ -191,7 +190,8 @@ impl Dom {
                     }
                     NodeOrString::Node(id) => {
                         let id = *id;
-                        let is_frag = matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
+                        let is_frag = matches!(self.data(id), Some(NodeData::Document))
+                            && id != self.document();
                         if is_frag {
                             for &child in self.children(id) {
                                 if matches!(self.data(child), Some(NodeData::Text(_))) {
@@ -246,17 +246,18 @@ impl Dom {
                 return false;
             }
 
-            if let (Some(elem_idx), Some(doc_idx)) = (first_element_idx, last_doctype_idx) {
-                if doc_idx > elem_idx {
-                    return false; // Doctype must precede Element
-                }
+            if let (Some(elem_idx), Some(doc_idx)) = (first_element_idx, last_doctype_idx)
+                && doc_idx > elem_idx
+            {
+                return false; // Doctype must precede Element
             }
         } else {
             // If parent is not Document, then a Doctype is only allowed under a Document parent.
             // Let's check that no inserted node is a Doctype.
             for item in nodes {
                 if let NodeOrString::Node(id) = *item {
-                    let is_frag = matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
+                    let is_frag =
+                        matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
                     if is_frag {
                         for &child in self.children(id) {
                             if matches!(self.data(child), Some(NodeData::Doctype { .. })) {
@@ -275,7 +276,12 @@ impl Dom {
         true
     }
 
-    fn check_pre_insertion_validity(&self, parent: NodeId, child: NodeId, reference: Option<NodeId>) -> bool {
+    fn check_pre_insertion_validity(
+        &self,
+        parent: NodeId,
+        child: NodeId,
+        reference: Option<NodeId>,
+    ) -> bool {
         self.check_mutation_validity(parent, &[NodeOrString::Node(child)], reference, None, false)
     }
 
@@ -289,7 +295,13 @@ impl Dom {
         } else {
             None
         };
-        self.check_mutation_validity(parent, &[NodeOrString::Node(new_child)], reference_child, Some(old_child), false)
+        self.check_mutation_validity(
+            parent,
+            &[NodeOrString::Node(new_child)],
+            reference_child,
+            Some(old_child),
+            false,
+        )
     }
 
     /// Inserts `child` into `parent` before `reference` (or appends when
@@ -300,7 +312,8 @@ impl Dom {
             return;
         }
 
-        let is_frag = matches!(self.data(child), Some(NodeData::Document)) && child != self.document();
+        let is_frag =
+            matches!(self.data(child), Some(NodeData::Document)) && child != self.document();
         let nodes_to_insert = if is_frag {
             self.children(child).to_vec()
         } else {
@@ -392,7 +405,8 @@ impl Dom {
             reference_child = p_node.children.get(pos + 1).copied();
         }
 
-        let is_frag = matches!(self.data(new_child), Some(NodeData::Document)) && new_child != self.document();
+        let is_frag = matches!(self.data(new_child), Some(NodeData::Document))
+            && new_child != self.document();
         let nodes_to_insert = if is_frag {
             self.children(new_child).to_vec()
         } else {
@@ -4051,12 +4065,89 @@ impl Dom {
                         }
                         result.extend(frag_children);
                     } else {
+                        if let Some(old_parent) = self.parent(id) {
+                            if let Some(op) = self.arena.get_mut(old_parent) {
+                                op.children.retain(|&c| c != id);
+                            }
+                            self.mark_dirty(old_parent);
+                        }
+                        if let Some(c) = self.arena.get_mut(id) {
+                            c.parent = None;
+                        }
                         result.push(id);
                     }
                 }
             }
         }
         result
+    }
+
+    /// Converts a slice of `NodeOrString` into a single NodeId.
+    /// If the slice is empty, returns `None`.
+    /// If the slice has exactly one node, returns that node.
+    /// Otherwise, creates a temporary DocumentFragment (modelled as Document), appends everything, and returns it.
+    fn convert_nodes_or_strings_to_node(&mut self, nodes: &[NodeOrString]) -> Option<NodeId> {
+        if nodes.is_empty() {
+            return None;
+        }
+        if nodes.len() == 1 {
+            match &nodes[0] {
+                NodeOrString::String(s) => Some(self.create_node(NodeData::Text(s.clone()))),
+                NodeOrString::Node(id) => {
+                    let id = *id;
+                    if let Some(old_parent) = self.parent(id) {
+                        if let Some(op) = self.arena.get_mut(old_parent) {
+                            op.children.retain(|&c| c != id);
+                        }
+                        self.mark_dirty(old_parent);
+                    }
+                    if let Some(c) = self.arena.get_mut(id) {
+                        c.parent = None;
+                    }
+                    Some(id)
+                }
+            }
+        } else {
+            let frag = self.create_node(NodeData::Document);
+            for item in nodes {
+                match item {
+                    NodeOrString::String(s) => {
+                        let text = self.create_node(NodeData::Text(s.clone()));
+                        self.append_child(frag, text);
+                    }
+                    NodeOrString::Node(id) => {
+                        let id = *id;
+                        let is_frag = matches!(self.data(id), Some(NodeData::Document))
+                            && id != self.document();
+                        if is_frag {
+                            let children = self.children(id).to_vec();
+                            if let Some(frag_node) = self.arena.get_mut(id) {
+                                frag_node.children.clear();
+                            }
+                            self.mark_dirty(id);
+                            for child in children {
+                                if let Some(c_node) = self.arena.get_mut(child) {
+                                    c_node.parent = None;
+                                }
+                                self.append_child(frag, child);
+                            }
+                        } else {
+                            if let Some(old_parent) = self.parent(id) {
+                                if let Some(op) = self.arena.get_mut(old_parent) {
+                                    op.children.retain(|&c| c != id);
+                                }
+                                self.mark_dirty(old_parent);
+                            }
+                            if let Some(c) = self.arena.get_mut(id) {
+                                c.parent = None;
+                            }
+                            self.append_child(frag, id);
+                        }
+                    }
+                }
+            }
+            Some(frag)
+        }
     }
 
     /// Inserts nodes before the given node in its parent's children.
@@ -4068,7 +4159,19 @@ impl Dom {
             Some(p) => p,
             None => return,
         };
-        let converted = self.convert_nodes_or_strings(nodes);
+
+        let mut nodes_to_check = Vec::new();
+        for item in nodes {
+            if let NodeOrString::Node(id) = *item {
+                let is_frag =
+                    matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
+                if is_frag {
+                    nodes_to_check.extend(self.children(id).to_vec());
+                } else {
+                    nodes_to_check.push(id);
+                }
+            }
+        }
 
         // Find viable_previous_sibling
         let mut viable_previous_sibling = None;
@@ -4076,7 +4179,7 @@ impl Dom {
             && let Some(pos) = p_node.children.iter().position(|&c| c == node)
         {
             for sibling in p_node.children[..pos].iter().rev() {
-                if !converted.contains(sibling) {
+                if !nodes_to_check.contains(sibling) {
                     viable_previous_sibling = Some(*sibling);
                     break;
                 }
@@ -4092,10 +4195,11 @@ impl Dom {
             }
         };
 
-        for to_insert in converted {
-            if to_insert == parent || self.contains(to_insert, parent) {
-                continue;
-            }
+        if !self.check_mutation_validity(parent, nodes, reference_child, None, false) {
+            return;
+        }
+
+        if let Some(to_insert) = self.convert_nodes_or_strings_to_node(nodes) {
             self.insert_before(parent, to_insert, reference_child);
         }
     }
@@ -4109,7 +4213,19 @@ impl Dom {
             Some(p) => p,
             None => return,
         };
-        let converted = self.convert_nodes_or_strings(nodes);
+
+        let mut nodes_to_check = Vec::new();
+        for item in nodes {
+            if let NodeOrString::Node(id) = *item {
+                let is_frag =
+                    matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
+                if is_frag {
+                    nodes_to_check.extend(self.children(id).to_vec());
+                } else {
+                    nodes_to_check.push(id);
+                }
+            }
+        }
 
         // Find viable_next_sibling
         let mut viable_next_sibling = None;
@@ -4117,17 +4233,18 @@ impl Dom {
             && let Some(pos) = p_node.children.iter().position(|&c| c == node)
         {
             for sibling in &p_node.children[pos + 1..] {
-                if !converted.contains(sibling) {
+                if !nodes_to_check.contains(sibling) {
                     viable_next_sibling = Some(*sibling);
                     break;
                 }
             }
         }
 
-        for to_insert in converted {
-            if to_insert == parent || self.contains(to_insert, parent) {
-                continue;
-            }
+        if !self.check_mutation_validity(parent, nodes, viable_next_sibling, None, false) {
+            return;
+        }
+
+        if let Some(to_insert) = self.convert_nodes_or_strings_to_node(nodes) {
             self.insert_before(parent, to_insert, viable_next_sibling);
         }
     }
@@ -4141,7 +4258,19 @@ impl Dom {
             Some(p) => p,
             None => return,
         };
-        let converted = self.convert_nodes_or_strings(nodes);
+
+        let mut nodes_to_check = Vec::new();
+        for item in nodes {
+            if let NodeOrString::Node(id) = *item {
+                let is_frag =
+                    matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
+                if is_frag {
+                    nodes_to_check.extend(self.children(id).to_vec());
+                } else {
+                    nodes_to_check.push(id);
+                }
+            }
+        }
 
         // Find viable_next_sibling
         let mut viable_next_sibling = None;
@@ -4149,22 +4278,46 @@ impl Dom {
             && let Some(pos) = p_node.children.iter().position(|&c| c == node)
         {
             for sibling in &p_node.children[pos + 1..] {
-                if !converted.contains(sibling) {
+                if !nodes_to_check.contains(sibling) {
                     viable_next_sibling = Some(*sibling);
                     break;
                 }
             }
         }
 
-        for to_insert in converted {
-            if to_insert == parent || self.contains(to_insert, parent) {
-                continue;
-            }
-            self.insert_before(parent, to_insert, viable_next_sibling);
+        if !self.check_mutation_validity(parent, nodes, viable_next_sibling, Some(node), false) {
+            return;
         }
 
         if self.parent(node) == Some(parent) {
             self.remove_child(parent, node);
+        }
+
+        if let Some(to_insert) = self.convert_nodes_or_strings_to_node(nodes) {
+            self.insert_before(parent, to_insert, viable_next_sibling);
+        }
+    }
+
+    /// Inserts nodes after the last child of `parent`.
+    // spec: https://dom.spec.whatwg.org/#dom-parentnode-append
+    pub fn append(&mut self, parent: NodeId, nodes: &[NodeOrString]) {
+        if !self.check_mutation_validity(parent, nodes, None, None, false) {
+            return;
+        }
+        if let Some(node) = self.convert_nodes_or_strings_to_node(nodes) {
+            self.insert_before(parent, node, None);
+        }
+    }
+
+    /// Inserts nodes before the first child of `parent`.
+    // spec: https://dom.spec.whatwg.org/#dom-parentnode-prepend
+    pub fn prepend(&mut self, parent: NodeId, nodes: &[NodeOrString]) {
+        let first_child = self.children(parent).first().copied();
+        if !self.check_mutation_validity(parent, nodes, first_child, None, false) {
+            return;
+        }
+        if let Some(node) = self.convert_nodes_or_strings_to_node(nodes) {
+            self.insert_before(parent, node, first_child);
         }
     }
 
@@ -4173,20 +4326,8 @@ impl Dom {
     /// Any existing children of `parent` are removed and their parent link is cleared.
     // spec: https://dom.spec.whatwg.org/#dom-parentnode-replacechildren
     pub fn replace_children(&mut self, parent: NodeId, nodes: &[NodeOrString]) {
-        if self.arena.get(parent).is_none() {
+        if !self.check_mutation_validity(parent, nodes, None, None, true) {
             return;
-        }
-
-        let converted = self.convert_nodes_or_strings(nodes);
-
-        // Validate nodes to ensure no cycles are introduced.
-        for &node in &converted {
-            if node == parent {
-                return;
-            }
-            if !self.children(node).is_empty() && self.contains(node, parent) {
-                return;
-            }
         }
 
         let old_children = if let Some(p) = self.arena.get_mut(parent) {
@@ -4200,23 +4341,15 @@ impl Dom {
             }
         }
 
-        let mut new_children = Vec::with_capacity(converted.len());
-        for child in converted {
-            if let Some(old) = self.parent(child)
-                && old != parent
-                && let Some(op) = self.arena.get_mut(old)
-            {
-                op.children.retain(|&c| c != child);
-                self.mark_dirty(old);
-            }
+        let converted = self.convert_nodes_or_strings(nodes);
+        for &child in &converted {
             if let Some(c) = self.arena.get_mut(child) {
                 c.parent = Some(parent);
-                new_children.push(child);
             }
         }
 
         if let Some(p) = self.arena.get_mut(parent) {
-            p.children = new_children;
+            p.children = converted;
         }
         self.mark_dirty(parent);
     }
@@ -8048,5 +8181,103 @@ mod tests {
             Some("replaced_val".to_string())
         );
         assert_eq!(dom.parent(ref_node), None); // ref_node detached
+    }
+
+    #[test]
+    fn test_pre_insertion_validity_parent_constraints() {
+        let mut dom = Dom::new();
+        let text_parent = dom.create_node(NodeData::Text("parent".to_string()));
+        let child = elem(&mut dom, "child");
+
+        // Parent must be Document, DocumentFragment, or Element. Text parent is invalid.
+        dom.insert_before(text_parent, child, None);
+        assert_eq!(dom.children(text_parent), &[] as &[NodeId]);
+    }
+
+    #[test]
+    fn test_pre_insertion_validity_document_parent_constraints() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let text_child = dom.create_node(NodeData::Text("child".to_string()));
+
+        // Cannot insert Text node directly under Document parent.
+        dom.insert_before(doc, text_child, None);
+        assert_eq!(dom.parent(text_child), None);
+
+        // Cannot insert more than one Element under Document parent.
+        let el1 = elem(&mut dom, "html");
+        let el2 = elem(&mut dom, "div");
+        dom.insert_before(doc, el1, None);
+        assert_eq!(dom.parent(el1), Some(doc));
+
+        dom.insert_before(doc, el2, None);
+        assert_eq!(dom.parent(el2), None); // rejected!
+    }
+
+    #[test]
+    fn test_pre_insertion_validity_doctype_constraints() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let element_parent = elem(&mut dom, "div");
+        let doctype = dom.create_node(NodeData::Doctype {
+            name: "html".to_string(),
+            public_id: String::new(),
+            system_id: String::new(),
+        });
+
+        // Doctype can be inserted under Document parent.
+        dom.insert_before(doc, doctype, None);
+        assert_eq!(dom.parent(doctype), Some(doc));
+
+        let doctype2 = dom.create_node(NodeData::Doctype {
+            name: "html".to_string(),
+            public_id: String::new(),
+            system_id: String::new(),
+        });
+        // Doctype cannot be inserted under Element parent.
+        dom.insert_before(element_parent, doctype2, None);
+        assert_eq!(dom.parent(doctype2), None);
+    }
+
+    #[test]
+    fn test_append_and_prepend_compliance() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let p_node = elem(&mut dom, "p");
+
+        // Append elements and text strings
+        dom.append(
+            parent,
+            &[
+                NodeOrString::String("first".to_string()),
+                NodeOrString::Node(p_node),
+                NodeOrString::String("second".to_string()),
+            ],
+        );
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 3);
+        assert_eq!(dom.character_data(children[0]), Some("first".to_string()));
+        assert_eq!(dom.character_data(children[2]), Some("second".to_string()));
+
+        // Prepend elements and text strings
+        dom.prepend(parent, &[NodeOrString::String("prepended".to_string())]);
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 4);
+        assert_eq!(
+            dom.character_data(children[0]),
+            Some("prepended".to_string())
+        );
+    }
+
+    #[test]
+    fn test_insert_before_same_node() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let child = elem(&mut dom, "span");
+        dom.append_child(parent, child);
+
+        // Inserting a child before itself should advance reference to next sibling (i.e. do nothing / keep it there)
+        dom.insert_before(parent, child, Some(child));
+        assert_eq!(dom.children(parent), &[child]);
     }
 }
