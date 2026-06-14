@@ -388,33 +388,120 @@ pub fn layout_absolute_and_fixed_elements(
         if let Some(mut child_box) =
             layout_node(dom, styles, node, layout_containing_width, left, top, 0)
         {
-            // If left is auto (-1) and right is set (not -1), position from the right offset.
-            // Also, if both are set and direction is RTL, right wins over left.
-            let use_right_for_rtl = style.reset_surround.left != -1
-                && style.reset_surround.right != -1
-                && style.inherited_text.direction == "rtl";
+            let has_left = style.reset_surround.left != -1;
+            let has_right = style.reset_surround.right != -1;
 
-            if (style.reset_surround.left == -1 && style.reset_surround.right != -1)
-                || use_right_for_rtl
-            {
-                let right = style.reset_surround.right as f32;
-                let target_x = viewport_width - right - child_box.rect.size.width;
-                let shift_dx = target_x - child_box.rect.origin.x;
-                child_box.rect.origin.x += shift_dx;
-                for child in &mut child_box.children {
-                    shift_layout_box(child, styles, shift_dx, 0.0, 1);
+            if has_left && has_right && style.reset_box.width != -1 {
+                // If both left and right are specified, and width is specified (not auto),
+                // we check if we should perform margin-auto horizontal centering.
+                if style.reset_surround.margin_left == -1 && style.reset_surround.margin_right == -1
+                {
+                    let left_val = style.reset_surround.left as f32;
+                    let right_val = style.reset_surround.right as f32;
+                    let border_box_width = child_box.rect.size.width;
+                    let extra_space = viewport_width - left_val - right_val - border_box_width;
+                    let target_x = if extra_space >= 0.0 {
+                        left_val + (extra_space / 2.0)
+                    } else if style.inherited_text.direction == "rtl" {
+                        viewport_width - right_val - border_box_width
+                    } else {
+                        left_val
+                    };
+                    let shift_dx = target_x - child_box.rect.origin.x;
+                    if shift_dx != 0.0 {
+                        child_box.rect.origin.x += shift_dx;
+                        for child in &mut child_box.children {
+                            shift_layout_box(child, styles, shift_dx, 0.0, 1);
+                        }
+                    }
+                } else if style.inherited_text.direction == "rtl" {
+                    // Right wins over left
+                    let right = style.reset_surround.right as f32;
+                    let margin_right = if style.reset_surround.margin_right == -1 {
+                        0.0
+                    } else {
+                        style.reset_surround.margin_right as f32
+                    };
+                    let target_x =
+                        viewport_width - right - margin_right - child_box.rect.size.width;
+                    let shift_dx = target_x - child_box.rect.origin.x;
+                    if shift_dx != 0.0 {
+                        child_box.rect.origin.x += shift_dx;
+                        for child in &mut child_box.children {
+                            shift_layout_box(child, styles, shift_dx, 0.0, 1);
+                        }
+                    }
+                }
+            } else {
+                // If left is auto (-1) and right is set (not -1), position from the right offset.
+                // Also, if both are set and direction is RTL, right wins over left.
+                let use_right_for_rtl =
+                    has_left && has_right && style.inherited_text.direction == "rtl";
+
+                if (!has_left && has_right) || use_right_for_rtl {
+                    let right = style.reset_surround.right as f32;
+                    let margin_right = if style.reset_surround.margin_right == -1 {
+                        0.0
+                    } else {
+                        style.reset_surround.margin_right as f32
+                    };
+                    let target_x =
+                        viewport_width - right - margin_right - child_box.rect.size.width;
+                    let shift_dx = target_x - child_box.rect.origin.x;
+                    if shift_dx != 0.0 {
+                        child_box.rect.origin.x += shift_dx;
+                        for child in &mut child_box.children {
+                            shift_layout_box(child, styles, shift_dx, 0.0, 1);
+                        }
+                    }
                 }
             }
 
-            // If top is auto (-1) and bottom is set (not -1), position from the bottom offset.
-            if style.reset_surround.top == -1 && style.reset_surround.bottom != -1 {
-                let bottom = style.reset_surround.bottom as f32;
-                let container_height = root_box.rect.size.height;
-                let target_y = container_height - bottom - child_box.rect.size.height;
-                let shift_dy = target_y - child_box.rect.origin.y;
-                child_box.rect.origin.y += shift_dy;
-                for child in &mut child_box.children {
-                    shift_layout_box(child, styles, 0.0, shift_dy, 1);
+            let has_top = style.reset_surround.top != -1;
+            let has_bottom = style.reset_surround.bottom != -1;
+
+            if has_top && has_bottom && style.reset_box.height != -1 {
+                // If both top and bottom are specified, and height is specified (not auto),
+                // we check if we should perform margin-auto vertical centering.
+                if style.reset_surround.margin_top == -1 && style.reset_surround.margin_bottom == -1
+                {
+                    let top_val = style.reset_surround.top as f32;
+                    let bottom_val = style.reset_surround.bottom as f32;
+                    let border_box_height = child_box.rect.size.height;
+                    let container_height = root_box.rect.size.height;
+                    let extra_space = container_height - top_val - bottom_val - border_box_height;
+                    let target_y = if extra_space >= 0.0 {
+                        top_val + (extra_space / 2.0)
+                    } else {
+                        top_val
+                    };
+                    let shift_dy = target_y - child_box.rect.origin.y;
+                    if shift_dy != 0.0 {
+                        child_box.rect.origin.y += shift_dy;
+                        for child in &mut child_box.children {
+                            shift_layout_box(child, styles, 0.0, shift_dy, 1);
+                        }
+                    }
+                }
+            } else {
+                // If top is auto (-1) and bottom is set (not -1), position from the bottom offset.
+                if !has_top && has_bottom {
+                    let bottom = style.reset_surround.bottom as f32;
+                    let margin_bottom = if style.reset_surround.margin_bottom == -1 {
+                        0.0
+                    } else {
+                        style.reset_surround.margin_bottom as f32
+                    };
+                    let container_height = root_box.rect.size.height;
+                    let target_y =
+                        container_height - bottom - margin_bottom - child_box.rect.size.height;
+                    let shift_dy = target_y - child_box.rect.origin.y;
+                    if shift_dy != 0.0 {
+                        child_box.rect.origin.y += shift_dy;
+                        for child in &mut child_box.children {
+                            shift_layout_box(child, styles, 0.0, shift_dy, 1);
+                        }
+                    }
                 }
             }
 
@@ -1128,5 +1215,223 @@ mod tests {
         assert_eq!(div_box.rect.origin.y, 40.0);
         let expected_height = layout_tree.rect.size.height - 40.0 - 60.0;
         assert_eq!(div_box.rect.size.height, expected_height);
+    }
+
+    #[test]
+    fn test_absolute_position_right_margin_t0902() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(crate::dom::NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                right: 40px;
+                width: 100px;
+                height: 50px;
+                top: 10px;
+                margin-right: 20px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // viewport_width (800.0) - right (40.0) - margin_right (20.0) - width (100.0) = 640.0
+        assert_eq!(div_box.rect.origin.x, 640.0);
+    }
+
+    #[test]
+    fn test_absolute_position_bottom_margin_t0902() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(crate::dom::NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; height: 400px; }
+            div {
+                display: block;
+                position: absolute;
+                bottom: 50px;
+                width: 100px;
+                height: 80px;
+                left: 20px;
+                margin-bottom: 15px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // container_height (400.0 usually, let's use actual layout_tree height) - bottom (50.0) - margin_bottom (15.0) - height (80.0)
+        let expected_y = layout_tree.rect.size.height - 50.0 - 15.0 - 80.0;
+        assert_eq!(div_box.rect.origin.y, expected_y);
+    }
+
+    #[test]
+    fn test_absolute_position_horizontal_centering_auto_margins_t0902() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(crate::dom::NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            div {
+                display: block;
+                position: absolute;
+                left: 100px;
+                right: 100px;
+                width: 200px;
+                height: 50px;
+                top: 10px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // viewport_width (800.0) - left (100.0) - right (100.0) - width (200.0) = 400.0 extra space.
+        // split equally -> 200.0 each margin.
+        // target_x = left (100.0) + margin_left (200.0) = 300.0
+        assert_eq!(div_box.rect.origin.x, 300.0);
+    }
+
+    #[test]
+    fn test_absolute_position_vertical_centering_auto_margins_t0902() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(crate::dom::NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let div = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, div);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; height: 400px; }
+            div {
+                display: block;
+                position: absolute;
+                top: 50px;
+                bottom: 50px;
+                width: 100px;
+                height: 100px;
+                left: 20px;
+                margin-top: auto;
+                margin-bottom: auto;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut div_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(div) {
+                div_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let div_box = div_box.expect("Absolute div box not found");
+        // container_height (400.0 usually) - top (50.0) - bottom (50.0) - height (100.0) = 200.0 extra space.
+        // split equally -> 100.0 each margin.
+        // target_y = top (50.0) + margin_top (100.0) = 150.0
+        let expected_y = 50.0 + (layout_tree.rect.size.height - 50.0 - 50.0 - 100.0) / 2.0;
+        assert_eq!(div_box.rect.origin.y, expected_y);
     }
 }
