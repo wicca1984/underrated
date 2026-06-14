@@ -260,7 +260,13 @@ pub fn layout_inline_run(
                         false
                     };
 
-                    let preprocessed = preprocess_text(text, collapse, preserve_newlines);
+                    let tab_size = if let Some(style) = styles.get(&node) {
+                        style.inherited_text.tab_size as usize
+                    } else {
+                        8
+                    };
+
+                    let preprocessed = preprocess_text(text, collapse, preserve_newlines, tab_size);
 
                     let transformed = if let Some(style) = styles.get(&node) {
                         let text_transform = style.inherited_text.text_transform.as_str();
@@ -662,60 +668,60 @@ pub fn layout_inline(
     )
 }
 
-fn collapse_whitespace(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_was_whitespace = false;
-
-    for c in s.chars() {
-        if is_html_whitespace(c) {
-            if !last_was_whitespace {
-                result.push(' ');
-                last_was_whitespace = true;
-            }
-        } else {
-            result.push(c);
-            last_was_whitespace = false;
-        }
-    }
-
-    result
-}
-
-fn preprocess_text(text: &str, collapse: bool, preserve_newlines: bool) -> String {
-    if collapse && !preserve_newlines {
-        return collapse_whitespace(text);
-    }
-
+fn preprocess_text(text: &str, collapse: bool, preserve_newlines: bool, tab_size: usize) -> String {
     let mut result = String::with_capacity(text.len());
     let mut last_was_whitespace = false;
+    let mut col = 0;
 
     for c in text.chars() {
         if c == '\n' {
             if preserve_newlines {
                 result.push('\n');
                 last_was_whitespace = false;
+                col = 0;
             } else {
                 if collapse {
                     if !last_was_whitespace {
                         result.push(' ');
                         last_was_whitespace = true;
+                        col += 1;
                     }
                 } else {
                     result.push(' ');
+                    col += 1;
                 }
+            }
+        } else if c == '\t' {
+            if collapse {
+                if !last_was_whitespace {
+                    result.push(' ');
+                    last_was_whitespace = true;
+                    col += 1;
+                }
+            } else {
+                let spaces_to_add = tab_size - (col % tab_size);
+                for _ in 0..spaces_to_add {
+                    result.push(' ');
+                }
+                col += spaces_to_add;
+                last_was_whitespace = true;
             }
         } else if is_html_whitespace(c) {
             if collapse {
                 if !last_was_whitespace {
                     result.push(' ');
                     last_was_whitespace = true;
+                    col += 1;
                 }
             } else {
                 result.push(c);
+                col += 1;
+                last_was_whitespace = true;
             }
         } else {
             result.push(c);
             last_was_whitespace = false;
+            col += 1;
         }
     }
     result
@@ -2239,5 +2245,84 @@ mod tests {
         let line = &line_boxes[0];
         assert_eq!(line.rect.size.height, 40.0);
         assert_eq!(total_height, 40.0);
+    }
+
+    #[test]
+    fn test_white_space_pre_tab_expansion() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("a\tb\t\tc".into()));
+        dom.append_child(div, t);
+
+        // Default tab-size is 8
+        let stylesheet = parse_stylesheet("div { white-space: pre; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        // "a\tb\t\tc" with tab-size: 8:
+        // - 'a' (col 0): col becomes 1
+        // - '\t' (col 1): next multiple of 8 is 8, so we add 7 spaces. col becomes 8.
+        // - 'b' (col 8): col becomes 9
+        // - '\t' (col 9): next multiple of 8 is 16, so we add 7 spaces. col becomes 16.
+        // - '\t' (col 16): next multiple of 8 is 24, so we add 8 spaces. col becomes 24.
+        // - 'c' (col 24): col becomes 25
+        // Expected string is: "a" + " "*7 + "b" + " "*7 + " "*8 + "c"
+        let mut expected = vec!["a "];
+        expected.extend([" "; 6]);
+        expected.push("b ");
+        expected.extend([" "; 14]);
+        expected.push("c");
+
+        assert_eq!(leaf_texts, expected);
+    }
+
+    #[test]
+    fn test_white_space_pre_tab_size_custom() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("a\tb".into()));
+        dom.append_child(div, t);
+
+        // Custom tab-size is 4
+        let stylesheet = parse_stylesheet("div { white-space: pre; tab-size: 4; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        // "a\tb" with tab-size: 4:
+        // - 'a' (col 0): col becomes 1
+        // - '\t' (col 1): next multiple of 4 is 4, so we add 3 spaces. col becomes 4.
+        // - 'b' (col 4): col becomes 5
+        // Preprocessed: "a   b"
+        assert_eq!(leaf_texts, vec!["a ", " ", " ", "b"]);
     }
 }
