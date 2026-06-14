@@ -193,6 +193,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "nonzero",
     },
+    PropertyMetadata {
+        name: "scrollbar-width",
+        inherited: true,
+        initial: "auto",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "display",
@@ -1168,6 +1173,16 @@ mod tests {
         assert_eq!(scroll_behavior.name, "scroll-behavior");
         assert!(!scroll_behavior.inherited);
         assert_eq!(scroll_behavior.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0693() {
+        let scrollbar_width = lookup("scrollbar-width");
+        assert!(scrollbar_width.is_some());
+        let scrollbar_width = scrollbar_width.unwrap();
+        assert_eq!(scrollbar_width.name, "scrollbar-width");
+        assert!(scrollbar_width.inherited);
+        assert_eq!(scrollbar_width.initial, "auto");
     }
 
     #[test]
