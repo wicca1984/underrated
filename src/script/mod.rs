@@ -1851,6 +1851,18 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'download', {
+                        // download reflected IDL attribute (t0697)
+                        get() {
+                            return this.getAttribute('download') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('download', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'nonce', {
                         get() {
                             return this.getAttribute('nonce') || '';
@@ -13054,6 +13066,40 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|my-input|my-input|new-input|12345|12345".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_download() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. A freshly created element has download === '' by default when 'download' is absent.
+            let el = document.createElement('a');
+            let res1 = el.download;
+
+            // 2. Setting el.download = 'file.txt' via setter returns 'file.txt' via getter
+            el.download = 'file.txt';
+            let res2 = el.download;
+
+            // 3. Setter also writes the value to the underlying 'download' content attribute verbatim
+            let res3 = el.getAttribute('download');
+
+            // 4. Updating the 'download' content attribute via setAttribute is reflected by the getter
+            el.setAttribute('download', 'new-file.txt');
+            let res4 = el.download;
+
+            // 5. Test coercion to string (e.g. numeric value is coerced to string)
+            el.download = 98765;
+            let res5 = el.download;
+            let res6 = el.getAttribute('download');
+
+            [res1, res2, res3, res4, res5, res6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|file.txt|file.txt|new-file.txt|98765|98765".to_string())
         );
     }
 
