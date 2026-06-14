@@ -9,9 +9,28 @@ use boa_engine::{Context, JsError, JsNativeError, JsString, JsValue, NativeFunct
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+struct StorageStore {
+    map: HashMap<String, String>,
+    keys: Vec<String>,
+}
+
+impl StorageStore {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            keys: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.keys.clear();
+    }
+}
+
 thread_local! {
-    static LOCAL_STORAGE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    static SESSION_STORAGE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static LOCAL_STORAGE: RefCell<StorageStore> = RefCell::new(StorageStore::new());
+    static SESSION_STORAGE: RefCell<StorageStore> = RefCell::new(StorageStore::new());
     static STORAGE_QUOTA: RefCell<usize> = const { RefCell::new(5_000_000) };
 }
 
@@ -260,9 +279,9 @@ pub fn setup_storage(context: &mut Context) {
                             throw new TypeError("Failed to construct 'StorageEvent': 1 argument required, but only 0 present.");
                         }
                         super(type, eventInitDict);
-                        this._key = eventInitDict.key !== undefined ? eventInitDict.key : null;
-                        this._oldValue = eventInitDict.oldValue !== undefined ? eventInitDict.oldValue : null;
-                        this._newValue = eventInitDict.newValue !== undefined ? eventInitDict.newValue : null;
+                        this._key = (eventInitDict.key !== undefined && eventInitDict.key !== null) ? String(eventInitDict.key) : null;
+                        this._oldValue = (eventInitDict.oldValue !== undefined && eventInitDict.oldValue !== null) ? String(eventInitDict.oldValue) : null;
+                        this._newValue = (eventInitDict.newValue !== undefined && eventInitDict.newValue !== null) ? String(eventInitDict.newValue) : null;
                         this._url = eventInitDict.url !== undefined ? String(eventInitDict.url) : "";
                         this._storageArea = eventInitDict.storageArea !== undefined ? eventInitDict.storageArea : null;
                     }
@@ -306,9 +325,10 @@ pub fn setup_storage(context: &mut Context) {
                         if (!(this instanceof StorageEvent)) {
                             throw new TypeError("Failed to execute 'initStorageEvent' on 'StorageEvent': Receiver does not implement interface 'StorageEvent'.");
                         }
-                        this._key = key;
-                        this._oldValue = oldValue;
-                        this._newValue = newValue;
+                        this.initEvent(type, bubbles, cancelable);
+                        this._key = (key !== null && key !== undefined) ? String(key) : null;
+                        this._oldValue = (oldValue !== null && oldValue !== undefined) ? String(oldValue) : null;
+                        this._newValue = (newValue !== null && newValue !== undefined) ? String(newValue) : null;
                         this._url = String(url);
                         this._storageArea = storageArea;
                     }
@@ -355,8 +375,9 @@ fn throw_dom_exception(name: &str, message: &str, context: &mut Context) -> JsEr
     JsError::from(JsNativeError::typ().with_message(format!("{}: {}", name, message)))
 }
 
-fn get_storage_size(store: &HashMap<String, String>) -> usize {
+fn get_storage_size(store: &StorageStore) -> usize {
     store
+        .map
         .iter()
         .map(|(k, v)| {
             k.chars().map(|c| c.len_utf16()).sum::<usize>()
@@ -396,6 +417,7 @@ fn storage_set_item(
             let mut s = store.borrow_mut();
             let current_size = get_storage_size(&s);
             let old_size = s
+                .map
                 .get(&key)
                 .map(|v| {
                     key.chars().map(|c| c.len_utf16()).sum::<usize>()
@@ -404,10 +426,18 @@ fn storage_set_item(
                 .unwrap_or(0);
             let new_size = key.chars().map(|c| c.len_utf16()).sum::<usize>()
                 + value.chars().map(|c| c.len_utf16()).sum::<usize>();
-            if current_size - old_size + new_size > quota {
+
+            // Web Storage Quota check:
+            // 1. If new size is smaller than or equal to old size, we are not growing, so always allow.
+            // 2. Otherwise, check if the new total size exceeds the quota limit.
+            if new_size > old_size && current_size - old_size + new_size > quota {
                 quota_exceeded = true;
             } else {
-                s.insert(key, value);
+                let is_new = !s.map.contains_key(&key);
+                s.map.insert(key.clone(), value);
+                if is_new {
+                    s.keys.push(key);
+                }
             }
         });
     } else if storage_type == "session" {
@@ -415,6 +445,7 @@ fn storage_set_item(
             let mut s = store.borrow_mut();
             let current_size = get_storage_size(&s);
             let old_size = s
+                .map
                 .get(&key)
                 .map(|v| {
                     key.chars().map(|c| c.len_utf16()).sum::<usize>()
@@ -423,10 +454,18 @@ fn storage_set_item(
                 .unwrap_or(0);
             let new_size = key.chars().map(|c| c.len_utf16()).sum::<usize>()
                 + value.chars().map(|c| c.len_utf16()).sum::<usize>();
-            if current_size - old_size + new_size > quota {
+
+            // Web Storage Quota check:
+            // 1. If new size is smaller than or equal to old size, we are not growing, so always allow.
+            // 2. Otherwise, check if the new total size exceeds the quota limit.
+            if new_size > old_size && current_size - old_size + new_size > quota {
                 quota_exceeded = true;
             } else {
-                s.insert(key, value);
+                let is_new = !s.map.contains_key(&key);
+                s.map.insert(key.clone(), value);
+                if is_new {
+                    s.keys.push(key);
+                }
             }
         });
     }
@@ -460,9 +499,9 @@ fn storage_get_item(
     };
 
     let val_opt = if storage_type == "local" {
-        LOCAL_STORAGE.with(|store| store.borrow().get(&key).cloned())
+        LOCAL_STORAGE.with(|store| store.borrow().map.get(&key).cloned())
     } else if storage_type == "session" {
-        SESSION_STORAGE.with(|store| store.borrow().get(&key).cloned())
+        SESSION_STORAGE.with(|store| store.borrow().map.get(&key).cloned())
     } else {
         None
     };
@@ -493,11 +532,17 @@ fn storage_remove_item(
 
     if storage_type == "local" {
         LOCAL_STORAGE.with(|store| {
-            store.borrow_mut().remove(&key);
+            let mut s = store.borrow_mut();
+            if s.map.remove(&key).is_some() {
+                s.keys.retain(|k| k != &key);
+            }
         });
     } else if storage_type == "session" {
         SESSION_STORAGE.with(|store| {
-            store.borrow_mut().remove(&key);
+            let mut s = store.borrow_mut();
+            if s.map.remove(&key).is_some() {
+                s.keys.retain(|k| k != &key);
+            }
         });
     }
 
@@ -540,9 +585,9 @@ fn storage_get_length(
     };
 
     let len = if storage_type == "local" {
-        LOCAL_STORAGE.with(|store| store.borrow().len())
+        LOCAL_STORAGE.with(|store| store.borrow().map.len())
     } else if storage_type == "session" {
-        SESSION_STORAGE.with(|store| store.borrow().len())
+        SESSION_STORAGE.with(|store| store.borrow().map.len())
     } else {
         0
     };
@@ -579,16 +624,12 @@ fn storage_get_key(
     let key_opt = if storage_type == "local" {
         LOCAL_STORAGE.with(|store| {
             let s = store.borrow();
-            let mut keys: Vec<&String> = s.keys().collect();
-            keys.sort();
-            keys.get(index).map(|&k| k.clone())
+            s.keys.get(index).cloned()
         })
     } else if storage_type == "session" {
         SESSION_STORAGE.with(|store| {
             let s = store.borrow();
-            let mut keys: Vec<&String> = s.keys().collect();
-            keys.sort();
-            keys.get(index).map(|&k| k.clone())
+            s.keys.get(index).cloned()
         })
     } else {
         None
@@ -780,13 +821,13 @@ mod tests {
                 .is_ok()
         );
 
-        // Sorted keys should mean key(0) is 'k1', key(1) is 'k2'
+        // Insertion ordered keys (oldest first) should mean key(0) is 'k2', key(1) is 'k1'
         assert!(
-            host.eval("if (localStorage.key(0) !== 'k1') throw 'error';")
+            host.eval("if (localStorage.key(0) !== 'k2') throw 'error';")
                 .is_ok()
         );
         assert!(
-            host.eval("if (localStorage.key(1) !== 'k2') throw 'error';")
+            host.eval("if (localStorage.key(1) !== 'k1') throw 'error';")
                 .is_ok()
         );
         assert!(
@@ -794,8 +835,8 @@ mod tests {
                 .is_ok()
         );
 
-        // Object.keys(localStorage) should also work and be sorted
-        assert!(host.eval("const keys = Object.keys(localStorage); if (keys.length !== 2 || keys[0] !== 'k1' || keys[1] !== 'k2') throw 'error';").is_ok());
+        // Object.keys(localStorage) should also work and be insertion-ordered
+        assert!(host.eval("const keys = Object.keys(localStorage); if (keys.length !== 2 || keys[0] !== 'k2' || keys[1] !== 'k1') throw 'error';").is_ok());
 
         // Test WebIDL key index conversions & coercion
         // - negative indices should wrap or be invalid (returning null)
@@ -807,32 +848,32 @@ mod tests {
             host.eval("if (localStorage.key(-1.5) !== null) throw 'error2';")
                 .is_ok()
         );
-        // - floats should be truncated: key(1.5) should be key(1) which is 'k2'
+        // - floats should be truncated: key(1.5) should be key(1) which is 'k1'
         assert!(
-            host.eval("if (localStorage.key(1.5) !== 'k2') throw 'error3';")
+            host.eval("if (localStorage.key(1.5) !== 'k1') throw 'error3';")
                 .is_ok()
         );
-        // - wrap around: key(4294967297) should wrap to key(1) which is 'k2'
+        // - wrap around: key(4294967297) should wrap to key(1) which is 'k1'
         assert!(
-            host.eval("if (localStorage.key(4294967297) !== 'k2') throw 'error4';")
+            host.eval("if (localStorage.key(4294967297) !== 'k1') throw 'error4';")
                 .is_ok()
         );
-        // - wrap around: key(4294967296) should wrap to key(0) which is 'k1'
+        // - wrap around: key(4294967296) should wrap to key(0) which is 'k2'
         assert!(
-            host.eval("if (localStorage.key(4294967296) !== 'k1') throw 'error5';")
+            host.eval("if (localStorage.key(4294967296) !== 'k2') throw 'error5';")
                 .is_ok()
         );
-        // - NaN / missing / invalid: should convert to 0, returning 'k1'
+        // - NaN / missing / invalid: should convert to 0, returning 'k2'
         assert!(
-            host.eval("if (localStorage.key(NaN) !== 'k1') throw 'error6';")
-                .is_ok()
-        );
-        assert!(
-            host.eval("if (localStorage.key('abc') !== 'k1') throw 'error7';")
+            host.eval("if (localStorage.key(NaN) !== 'k2') throw 'error6';")
                 .is_ok()
         );
         assert!(
-            host.eval("if (localStorage.key() !== 'k1') throw 'error8';")
+            host.eval("if (localStorage.key('abc') !== 'k2') throw 'error7';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (localStorage.key() !== 'k2') throw 'error8';")
                 .is_ok()
         );
     }
@@ -1167,6 +1208,95 @@ mod tests {
                 }
             }
             if (!threwQuota) throw new Error("Expected QuotaExceededError because of surrogate pair UTF-16 length");
+        "#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_storage_quota_bypass_for_smaller_or_equal_size() {
+        let mut host = new_host();
+
+        // 1. Set storage quota to a very small limit (e.g. 10 chars)
+        set_storage_quota(10);
+
+        // This fits exactly (4 key + 6 value = 10 chars)
+        assert!(host.eval("localStorage.setItem('abcd', '123456')").is_ok());
+
+        // 2. Overwriting the value with something smaller should always be allowed
+        // even if the storage is already at its quota limit!
+        assert!(host.eval("localStorage.setItem('abcd', '123')").is_ok());
+        assert_eq!(
+            host.context
+                .eval(boa_engine::Source::from_bytes(
+                    b"localStorage.getItem('abcd')"
+                ))
+                .and_then(|v| v.to_string(&mut host.context))
+                .map(|js_str| js_str.to_std_string().unwrap_or_default()),
+            Ok("123".to_string())
+        );
+
+        // 3. Overwriting with the exact same size is also allowed
+        assert!(host.eval("localStorage.setItem('abcd', 'xyz')").is_ok());
+
+        // 4. Overwriting with something larger that exceeds quota should still fail
+        assert!(
+            host.eval(
+                r#"
+            let threw = false;
+            try {
+                localStorage.setItem('abcd', '1234567');
+            } catch (e) {
+                if (e instanceof DOMException && e.name === "QuotaExceededError") {
+                    threw = true;
+                }
+            }
+            if (!threw) throw new Error("Expected QuotaExceededError");
+        "#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_storage_event_init_coercions_and_init_event() {
+        let mut host = new_host();
+
+        assert!(
+            host.eval(
+                r#"
+            (function() {
+                // 1. Test constructor coercions for key, oldValue, newValue
+                const ev = new StorageEvent('storage', {
+                    key: 123,
+                    oldValue: true,
+                    newValue: { toString() { return 'custom'; } }
+                });
+
+                if (ev.key !== '123') throw new Error("Expected key to be coerced to '123'");
+                if (ev.oldValue !== 'true') throw new Error("Expected oldValue to be coerced to 'true'");
+                if (ev.newValue !== 'custom') throw new Error("Expected newValue to be coerced to 'custom'");
+
+                // Null and undefined should result in null
+                const ev2 = new StorageEvent('storage', {
+                    key: null,
+                    oldValue: undefined
+                });
+                if (ev2.key !== null) throw new Error("Expected null key to remain null");
+                if (ev2.oldValue !== null) throw new Error("Expected undefined oldValue to default to null");
+
+                // 2. Test initStorageEvent also coerces values and initializes Event properties
+                const evInit = new StorageEvent('temp');
+                evInit.initStorageEvent('storage', true, true, 456, false, 'abc', 'http://url', localStorage);
+
+                if (evInit.type !== 'storage') throw new Error("Expected type to be initialized to 'storage'");
+                if (evInit.bubbles !== true) throw new Error("Expected bubbles to be initialized to true");
+                if (evInit.cancelable !== true) throw new Error("Expected cancelable to be initialized to true");
+                if (evInit.key !== '456') throw new Error("Expected key to be coerced to '456'");
+                if (evInit.oldValue !== 'false') throw new Error("Expected oldValue to be coerced to 'false'");
+                if (evInit.newValue !== 'abc') throw new Error("Expected newValue to be 'abc'");
+            })()
         "#
             )
             .is_ok()
