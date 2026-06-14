@@ -88,22 +88,44 @@ impl Dom {
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-toggle
     pub fn toggle_class(&mut self, node: NodeId, name: &str) -> bool {
+        self.toggle_class_force(node, name, None)
+    }
+
+    /// Toggles the presence of class `name` in the element's `class` attribute with an optional force behavior.
+    ///
+    /// When force == None: behaves like the plain toggle (adds if absent and returns true; removes if present and returns false).
+    /// When force == Some(true): ensures the token is present (adds if absent, leaves if present) and returns true.
+    /// When force == Some(false): ensures the token is absent (removes if present, no-op if absent) and returns false.
+    ///
+    /// If the node is not an Element, or if `name` is empty, this is a no-op returning `false`.
+    /// The resulting `class` attribute is normalized to be space-separated.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-toggle
+    pub fn toggle_class_force(&mut self, node: NodeId, name: &str, force: Option<bool>) -> bool {
         if name.is_empty() {
             return false;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
             let classes = self.class_list(node);
-            if classes.contains(&name.to_string()) {
+            let is_present = classes.contains(&name.to_string());
+
+            let should_be_present = match force {
+                Some(f) => f,
+                None => !is_present,
+            };
+
+            if should_be_present {
+                let mut new_classes = classes;
+                if !is_present {
+                    new_classes.push(name.to_string());
+                }
+                let new_value = new_classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+                true
+            } else {
                 let new_classes: Vec<String> = classes.into_iter().filter(|c| c != name).collect();
                 let new_value = new_classes.join(" ");
                 self.set_attribute(node, "class", &new_value);
                 false
-            } else {
-                let mut new_classes = classes;
-                new_classes.push(name.to_string());
-                let new_value = new_classes.join(" ");
-                self.set_attribute(node, "class", &new_value);
-                true
             }
         } else {
             false
@@ -280,6 +302,56 @@ mod tests {
         // Toggle non-element -> returns false (no-op)
         let text = dom.create_node(NodeData::Text("hello".into()));
         assert!(!dom.toggle_class(text, "foo"));
+    }
+
+    #[test]
+    fn test_toggle_class_force() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. force = Some(true) on an absent token: adds it and returns true
+        assert!(dom.toggle_class_force(el, "foo", Some(true)));
+        assert_eq!(dom.class_list(el), vec!["foo"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo"));
+
+        // 2. force = Some(true) on a present token: no-op (no duplicate) and returns true
+        assert!(dom.toggle_class_force(el, "foo", Some(true)));
+        assert_eq!(dom.class_list(el), vec!["foo"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo"));
+
+        // Add a second class for further testing
+        dom.add_class(el, "bar");
+        assert_eq!(dom.class_list(el), vec!["foo", "bar"]);
+
+        // 3. force = Some(false) on a present token: removes it and returns false
+        assert!(!dom.toggle_class_force(el, "foo", Some(false)));
+        assert_eq!(dom.class_list(el), vec!["bar"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("bar"));
+
+        // 4. force = Some(false) on an absent token: no-op and returns false
+        assert!(!dom.toggle_class_force(el, "foo", Some(false)));
+        assert_eq!(dom.class_list(el), vec!["bar"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("bar"));
+
+        // 5. force = None on an absent token (matches existing toggle): adds it and returns true
+        assert!(dom.toggle_class_force(el, "foo", None));
+        assert_eq!(dom.class_list(el), vec!["bar", "foo"]);
+
+        // 6. force = None on a present token (matches existing toggle): removes it and returns false
+        assert!(!dom.toggle_class_force(el, "foo", None));
+        assert_eq!(dom.class_list(el), vec!["bar"]);
+
+        // 7. empty name: returns false (no-op)
+        assert!(!dom.toggle_class_force(el, "", Some(true)));
+        assert!(!dom.toggle_class_force(el, "", Some(false)));
+        assert!(!dom.toggle_class_force(el, "", None));
+        assert_eq!(dom.class_list(el), vec!["bar"]);
+
+        // 8. non-Element node: returns false (no-op)
+        let text = dom.create_node(NodeData::Text("hello".into()));
+        assert!(!dom.toggle_class_force(text, "baz", Some(true)));
+        assert!(!dom.toggle_class_force(text, "baz", Some(false)));
+        assert!(!dom.toggle_class_force(text, "baz", None));
     }
 
     #[test]
