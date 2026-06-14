@@ -1199,6 +1199,58 @@ impl TryFrom<&CssValue> for BackgroundAttachmentValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum TextWrapValue {
+    #[default]
+    Wrap,
+    Nowrap,
+    Balance,
+    Pretty,
+    Stable,
+}
+
+impl TextWrapValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "wrap" => Some(Self::Wrap),
+            "nowrap" => Some(Self::Nowrap),
+            "balance" => Some(Self::Balance),
+            "pretty" => Some(Self::Pretty),
+            "stable" => Some(Self::Stable),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wrap => "wrap",
+            Self::Nowrap => "nowrap",
+            Self::Balance => "balance",
+            Self::Pretty => "pretty",
+            Self::Stable => "stable",
+        }
+    }
+}
+
+impl std::str::FromStr for TextWrapValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for TextWrapValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum BorderCollapseValue {
     #[default]
     Separate,
@@ -6692,6 +6744,63 @@ mod tests {
             BackgroundAttachmentValue::default(),
             BackgroundAttachmentValue::Scroll
         );
+    }
+
+    #[test]
+    fn test_text_wrap_value() {
+        // Test parsing keyword strings to TextWrapValue
+        assert_eq!(TextWrapValue::parse("wrap"), Some(TextWrapValue::Wrap));
+        assert_eq!(TextWrapValue::parse("nowrap"), Some(TextWrapValue::Nowrap));
+        assert_eq!(
+            TextWrapValue::parse("balance"),
+            Some(TextWrapValue::Balance)
+        );
+        assert_eq!(TextWrapValue::parse("pretty"), Some(TextWrapValue::Pretty));
+        assert_eq!(TextWrapValue::parse("stable"), Some(TextWrapValue::Stable));
+
+        // Case insensitivity
+        assert_eq!(TextWrapValue::parse("WRAP"), Some(TextWrapValue::Wrap));
+        assert_eq!(TextWrapValue::parse("NoWrAp"), Some(TextWrapValue::Nowrap));
+        assert_eq!(
+            TextWrapValue::parse("Balance"),
+            Some(TextWrapValue::Balance)
+        );
+        assert_eq!(TextWrapValue::parse("PrEtTy"), Some(TextWrapValue::Pretty));
+        assert_eq!(TextWrapValue::parse("Stable"), Some(TextWrapValue::Stable));
+
+        assert_eq!(TextWrapValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!("wrap".parse::<TextWrapValue>(), Ok(TextWrapValue::Wrap));
+        assert_eq!("nowrap".parse::<TextWrapValue>(), Ok(TextWrapValue::Nowrap));
+        assert_eq!(
+            "balance".parse::<TextWrapValue>(),
+            Ok(TextWrapValue::Balance)
+        );
+        assert_eq!("pretty".parse::<TextWrapValue>(), Ok(TextWrapValue::Pretty));
+        assert_eq!("stable".parse::<TextWrapValue>(), Ok(TextWrapValue::Stable));
+        assert_eq!("BOGUS".parse::<TextWrapValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(TextWrapValue::Wrap.as_str(), "wrap");
+        assert_eq!(TextWrapValue::Nowrap.as_str(), "nowrap");
+        assert_eq!(TextWrapValue::Balance.as_str(), "balance");
+        assert_eq!(TextWrapValue::Pretty.as_str(), "pretty");
+        assert_eq!(TextWrapValue::Stable.as_str(), "stable");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            TextWrapValue::try_from(&CssValue::Keyword("wrap".to_string())),
+            Ok(TextWrapValue::Wrap)
+        );
+        assert_eq!(
+            TextWrapValue::try_from(&CssValue::Keyword("NOWRAP".to_string())),
+            Ok(TextWrapValue::Nowrap)
+        );
+        assert_eq!(TextWrapValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation (initial value is wrap)
+        assert_eq!(TextWrapValue::default(), TextWrapValue::Wrap);
     }
 
     #[test]
