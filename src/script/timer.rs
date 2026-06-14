@@ -506,7 +506,12 @@ fn js_value_to_i32(val: &JsValue, context: &mut Context) -> Result<i32, JsError>
     if num.is_nan() || num.is_infinite() {
         Ok(0)
     } else {
-        Ok(num as i32)
+        // Implement standard WebIDL 32-bit signed integer (long) wrapping/modulo conversion
+        let truncated = num.trunc();
+        let modulo_val = truncated % 4294967296.0;
+        let i64_val = modulo_val as i64;
+        let u32_val = i64_val as u32;
+        Ok(u32_val as i32)
     }
 }
 
@@ -1934,5 +1939,76 @@ mod tests {
         assert_eq!(timers[0].cmp(&timers[1]), std::cmp::Ordering::Less);
         assert_eq!(timers[3].cmp(&timers[2]), std::cmp::Ordering::Greater);
         assert_eq!(timers[2].cmp(&timers[2]), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_t1038_wrapping_clamping_clear() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. Verify delay wrapping and clamping in setTimeout:
+        // Delay 2147483648 (2^31) should wrap to -2147483648, which gets clamped to 0.
+        let id1_val = context
+            .eval(Source::from_bytes("setTimeout(() => {}, 2147483648)"))
+            .unwrap();
+        let id1 = id1_val.as_number().unwrap() as i32;
+        let timer1 = get_timer(id1).unwrap();
+        assert_eq!(timer1.delay, 0);
+
+        // Delay 4294967396 (2^32 + 100) should wrap to 100.
+        let id2_val = context
+            .eval(Source::from_bytes("setTimeout(() => {}, 4294967396)"))
+            .unwrap();
+        let id2 = id2_val.as_number().unwrap() as i32;
+        let timer2 = get_timer(id2).unwrap();
+        assert_eq!(timer2.delay, 100);
+
+        // 2. Verify WebIDL long wrapping inside clearTimeout:
+        // Timer registered above has ID equal to id1 or id2.
+        // Let's clear_all_timers and register a new one to get ID 1.
+        clear_all_timers();
+        let id3_val = context
+            .eval(Source::from_bytes("setTimeout(() => {}, 100)"))
+            .unwrap();
+        let id3 = id3_val.as_number().unwrap() as i32;
+        assert_eq!(id3, 1);
+        assert_eq!(get_timer_count(), 1);
+
+        // Clearing with 4294967297 (2^32 + 1) which wraps to 1, should successfully clear ID 1.
+        context
+            .eval(Source::from_bytes("clearTimeout(4294967297)"))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+
+        // 3. Interchangeability of clearTimeout and clearInterval:
+        // Register a timeout, clear with clearInterval
+        clear_all_timers();
+        let id_timeout_val = context
+            .eval(Source::from_bytes("setTimeout(() => {}, 100)"))
+            .unwrap();
+        let id_timeout = id_timeout_val.as_number().unwrap() as i32;
+        assert_eq!(get_timer_count(), 1);
+        context
+            .eval(Source::from_bytes(&format!(
+                "clearInterval({})",
+                id_timeout
+            )))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
+
+        // Register an interval, clear with clearTimeout
+        let id_interval_val = context
+            .eval(Source::from_bytes("setInterval(() => {}, 100)"))
+            .unwrap();
+        let id_interval = id_interval_val.as_number().unwrap() as i32;
+        assert_eq!(get_timer_count(), 1);
+        context
+            .eval(Source::from_bytes(&format!(
+                "clearTimeout({})",
+                id_interval
+            )))
+            .unwrap();
+        assert_eq!(get_timer_count(), 0);
     }
 }
