@@ -194,6 +194,142 @@ pub struct TreeBuilder {
     original_insertion_mode: Option<InsertionMode>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Namespace {
+    Html,
+    Svg,
+    Mathml,
+}
+
+fn adjust_svg_tag_name(name: &str) -> String {
+    match name {
+        "altglyph" => "altGlyph".to_string(),
+        "altglyphdef" => "altGlyphDef".to_string(),
+        "altglyphitem" => "altGlyphItem".to_string(),
+        "animatecolor" => "animateColor".to_string(),
+        "animatemotion" => "animateMotion".to_string(),
+        "animatetransform" => "animateTransform".to_string(),
+        "clippath" => "clipPath".to_string(),
+        "feblend" => "feBlend".to_string(),
+        "fecolormatrix" => "feColorMatrix".to_string(),
+        "fecomponenttransfer" => "feComponentTransfer".to_string(),
+        "fecomposite" => "feComposite".to_string(),
+        "feconvolvematrix" => "feConvolveMatrix".to_string(),
+        "fediffuselighting" => "feDiffuseLighting".to_string(),
+        "fedisplacementmap" => "feDisplacementMap".to_string(),
+        "fedistantlight" => "feDistantLight".to_string(),
+        "fedropshadow" => "feDropShadow".to_string(),
+        "feflood" => "feFlood".to_string(),
+        "fefunca" => "feFuncA".to_string(),
+        "fefuncb" => "feFuncB".to_string(),
+        "fefuncg" => "feFuncG".to_string(),
+        "fefuncr" => "feFuncR".to_string(),
+        "fegaussianblur" => "feGaussianBlur".to_string(),
+        "feimage" => "feImage".to_string(),
+        "femerge" => "feMerge".to_string(),
+        "femergenode" => "feMergeNode".to_string(),
+        "femorphology" => "feMorphology".to_string(),
+        "feoffset" => "feOffset".to_string(),
+        "fepointlight" => "fePointLight".to_string(),
+        "fespecularlighting" => "feSpecularLighting".to_string(),
+        "fespotlight" => "feSpotLight".to_string(),
+        "fetile" => "feTile".to_string(),
+        "feturbulence" => "feTurbulence".to_string(),
+        "foreignobject" => "foreignObject".to_string(),
+        "glyphref" => "glyphRef".to_string(),
+        "lineargradient" => "linearGradient".to_string(),
+        "radialgradient" => "radialGradient".to_string(),
+        "textpath" => "textPath".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn adjust_svg_attributes(attrs: &mut [(String, String)]) {
+    for (name, _) in attrs.iter_mut() {
+        match name.as_str() {
+            "attributename" => *name = "attributeName".to_string(),
+            "attributetype" => *name = "attributeType".to_string(),
+            "basefrequency" => *name = "baseFrequency".to_string(),
+            "baseprofile" => *name = "baseProfile".to_string(),
+            "calcmode" => *name = "calcMode".to_string(),
+            "clippathunits" => *name = "clipPathUnits".to_string(),
+            "diffuseconstant" => *name = "diffuseConstant".to_string(),
+            "edgemode" => *name = "edgeMode".to_string(),
+            "filterunits" => *name = "filterUnits".to_string(),
+            "glyphref" => *name = "glyphRef".to_string(),
+            "gradienttransform" => *name = "gradientTransform".to_string(),
+            "gradientunits" => *name = "gradientUnits".to_string(),
+            "kernelmatrix" => *name = "kernelMatrix".to_string(),
+            "kernelunitlength" => *name = "kernelUnitLength".to_string(),
+            "keypoints" => *name = "keyPoints".to_string(),
+            "keysplines" => *name = "keySplines".to_string(),
+            "keytimes" => *name = "keyTimes".to_string(),
+            "lengthadjust" => *name = "lengthAdjust".to_string(),
+            "limitingconeangle" => *name = "limitingConeAngle".to_string(),
+            "markerheight" => *name = "markerHeight".to_string(),
+            "markerunits" => *name = "markerUnits".to_string(),
+            "markerwidth" => *name = "markerWidth".to_string(),
+            "maskcontentunits" => *name = "maskContentUnits".to_string(),
+            "maskunits" => *name = "maskUnits".to_string(),
+            "numoctaves" => *name = "numOctaves".to_string(),
+            "pathlength" => *name = "pathLength".to_string(),
+            "patterncontentunits" => *name = "patternContentUnits".to_string(),
+            "patterntransform" => *name = "patternTransform".to_string(),
+            "patternunits" => *name = "patternUnits".to_string(),
+            "pointsatx" => *name = "pointsAtX".to_string(),
+            "pointsaty" => *name = "pointsAtY".to_string(),
+            "pointsatz" => *name = "pointsAtZ".to_string(),
+            "preservealpha" => *name = "preserveAlpha".to_string(),
+            "preserveaspectratio" => *name = "preserveAspectRatio".to_string(),
+            "primitiveunits" => *name = "primitiveUnits".to_string(),
+            "refx" => *name = "refX".to_string(),
+            "refy" => *name = "refY".to_string(),
+            "repeatcount" => *name = "repeatCount".to_string(),
+            "repeatdur" => *name = "repeatDur".to_string(),
+            "requiredextensions" => *name = "requiredExtensions".to_string(),
+            "requiredfeatures" => *name = "requiredFeatures".to_string(),
+            "specularconstant" => *name = "specularConstant".to_string(),
+            "specularexponent" => *name = "specularExponent".to_string(),
+            "spreadmethod" => *name = "spreadMethod".to_string(),
+            "startoffset" => *name = "startOffset".to_string(),
+            "stddeviation" => *name = "stdDeviation".to_string(),
+            "stitchtiles" => *name = "stitchTiles".to_string(),
+            "surfacescale" => *name = "surfaceScale".to_string(),
+            "systemlanguage" => *name = "systemLanguage".to_string(),
+            "tablevalues" => *name = "tableValues".to_string(),
+            "targetx" => *name = "targetX".to_string(),
+            "targety" => *name = "targetY".to_string(),
+            "textlength" => *name = "textLength".to_string(),
+            "viewbox" => *name = "viewBox".to_string(),
+            "viewtarget" => *name = "viewTarget".to_string(),
+            "xchannelselector" => *name = "xChannelSelector".to_string(),
+            "ychannelselector" => *name = "yChannelSelector".to_string(),
+            "zoomandpan" => *name = "zoomAndPan".to_string(),
+            _ => {}
+        }
+    }
+}
+
+fn adjust_foreign_attributes(attrs: &mut [(String, String)]) {
+    for (name, _) in attrs.iter_mut() {
+        match name.as_str() {
+            "xlink:actuate" => *name = "xlink actuate".to_string(),
+            "xlink:arcrole" => *name = "xlink arcrole".to_string(),
+            "xlink:href" => *name = "xlink href".to_string(),
+            "xlink:role" => *name = "xlink role".to_string(),
+            "xlink:show" => *name = "xlink show".to_string(),
+            "xlink:title" => *name = "xlink title".to_string(),
+            "xlink:type" => *name = "xlink type".to_string(),
+            "xml:base" => *name = "xml base".to_string(),
+            "xml:lang" => *name = "xml lang".to_string(),
+            "xml:space" => *name = "xml space".to_string(),
+            "xmlns" => *name = "xmlns".to_string(),
+            "xmlns:xlink" => *name = "xmlns xlink".to_string(),
+            _ => {}
+        }
+    }
+}
+
 impl TreeBuilder {
     fn new(input: InputStream) -> Self {
         Self {
@@ -222,7 +358,205 @@ impl TreeBuilder {
         }
     }
 
-    fn process_token(&mut self, token: Token) {
+    fn get_node_namespace(&self, node_id: NodeId) -> Namespace {
+        if let Some(pos) = self
+            .stack_of_open_elements
+            .iter()
+            .position(|&x| x == node_id)
+        {
+            self.get_namespace_at_index(pos)
+        } else {
+            Namespace::Html
+        }
+    }
+
+    fn get_namespace_at_index(&self, idx: usize) -> Namespace {
+        if idx == 0 {
+            return Namespace::Html;
+        }
+        let mut current_ns = Namespace::Html;
+        for i in 1..=idx {
+            let parent_id = self.stack_of_open_elements[i - 1];
+            let parent_name = match self.dom.data(parent_id) {
+                Some(NodeData::Element { name, .. }) => name.as_str(),
+                _ => "",
+            };
+            let node_id = self.stack_of_open_elements[i];
+            let name = match self.dom.data(node_id) {
+                Some(NodeData::Element { name, .. }) => name.as_str(),
+                _ => "",
+            };
+
+            current_ns = match current_ns {
+                Namespace::Html => {
+                    if name == "svg" {
+                        Namespace::Svg
+                    } else if name == "math" {
+                        Namespace::Mathml
+                    } else {
+                        Namespace::Html
+                    }
+                }
+                Namespace::Svg => {
+                    let is_html_integration =
+                        matches!(parent_name, "foreignObject" | "desc" | "title");
+                    if is_html_integration {
+                        if name == "svg" {
+                            Namespace::Svg
+                        } else if name == "math" {
+                            Namespace::Mathml
+                        } else {
+                            Namespace::Html
+                        }
+                    } else {
+                        Namespace::Svg
+                    }
+                }
+                Namespace::Mathml => {
+                    let is_mathml_text_integration =
+                        matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
+                    let is_annotation_xml_integration = if parent_name == "annotation-xml" {
+                        if let Some(NodeData::Element { attrs, .. }) = self.dom.data(parent_id) {
+                            attrs.iter().any(|(k, v)| {
+                                k.eq_ignore_ascii_case("encoding")
+                                    && (v.eq_ignore_ascii_case("text/html")
+                                        || v.eq_ignore_ascii_case("application/xhtml+xml"))
+                            })
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_mathml_text_integration || is_annotation_xml_integration {
+                        if name == "svg" {
+                            Namespace::Svg
+                        } else if name == "math" {
+                            Namespace::Mathml
+                        } else {
+                            Namespace::Html
+                        }
+                    } else {
+                        Namespace::Mathml
+                    }
+                }
+            };
+        }
+        current_ns
+    }
+
+    fn handle_foreign_content(&mut self, token: Token) {
+        match token {
+            Token::Character(c) => {
+                self.insert_character(c);
+            }
+            Token::Comment(data) => {
+                self.insert_comment(data);
+            }
+            Token::Doctype { .. } => {
+                // Parse error. Ignore.
+            }
+            Token::StartTag {
+                name,
+                mut attrs,
+                self_closing,
+            } => {
+                let is_html_breaking = match name.as_str() {
+                    "b" | "big" | "blockquote" | "body" | "br" | "center" | "code" | "dd"
+                    | "div" | "dl" | "dt" | "em" | "embed" | "h1" | "h2" | "h3" | "h4" | "h5"
+                    | "h6" | "head" | "hr" | "i" | "img" | "li" | "listing" | "menu" | "meta"
+                    | "nobr" | "ol" | "p" | "pre" | "ruby" | "s" | "small" | "span" | "strong"
+                    | "strike" | "sub" | "sup" | "table" | "tt" | "u" | "ul" | "var" => true,
+                    "font" => attrs
+                        .iter()
+                        .any(|(k, _)| k == "color" || k == "face" || k == "size"),
+                    _ => false,
+                };
+
+                if is_html_breaking {
+                    while let Some(&top_id) = self.stack_of_open_elements.last() {
+                        let top_name = match self.dom.data(top_id) {
+                            Some(NodeData::Element { name, .. }) => name.as_str(),
+                            _ => "",
+                        };
+                        let top_ns = self.get_node_namespace(top_id);
+                        let is_integration = top_ns == Namespace::Html
+                            || (top_ns == Namespace::Mathml
+                                && matches!(top_name, "mi" | "mo" | "mn" | "ms" | "mtext"))
+                            || (top_ns == Namespace::Mathml && top_name == "annotation-xml" && {
+                                if let Some(NodeData::Element { attrs, .. }) = self.dom.data(top_id)
+                                {
+                                    attrs.iter().any(|(k, v)| {
+                                        k.eq_ignore_ascii_case("encoding")
+                                            && (v.eq_ignore_ascii_case("text/html")
+                                                || v.eq_ignore_ascii_case("application/xhtml+xml"))
+                                    })
+                                } else {
+                                    false
+                                }
+                            })
+                            || (top_ns == Namespace::Svg
+                                && matches!(top_name, "foreignObject" | "desc" | "title"));
+                        if is_integration {
+                            break;
+                        }
+                        self.stack_of_open_elements.pop();
+                    }
+                    self.process_token_in_current_mode(Token::StartTag {
+                        name,
+                        attrs,
+                        self_closing,
+                    });
+                } else if let Some(adjusted_current_node) =
+                    self.stack_of_open_elements.last().copied()
+                {
+                    let ns = self.get_node_namespace(adjusted_current_node);
+
+                    let mut adjusted_name = name;
+                    if ns == Namespace::Svg {
+                        adjusted_name = adjust_svg_tag_name(&adjusted_name);
+                        adjust_svg_attributes(&mut attrs);
+                    }
+                    adjust_foreign_attributes(&mut attrs);
+
+                    let node = self.create_and_insert_element(adjusted_name.clone(), attrs);
+                    if self_closing {
+                        if adjusted_name != "script" {
+                            self.stack_of_open_elements.push(node);
+                            self.stack_of_open_elements.pop();
+                        } else {
+                            self.stack_of_open_elements.push(node);
+                        }
+                    } else {
+                        self.stack_of_open_elements.push(node);
+                    }
+                }
+            }
+            Token::EndTag { name, .. } => {
+                let mut found_idx = None;
+                for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+                    let node_name = match self.dom.data(node_id) {
+                        Some(NodeData::Element { name: n, .. }) => n.as_str(),
+                        _ => "",
+                    };
+                    if node_name.eq_ignore_ascii_case(&name) {
+                        found_idx = Some(idx);
+                        break;
+                    }
+                }
+
+                if let Some(idx) = found_idx {
+                    while self.stack_of_open_elements.len() > idx {
+                        self.stack_of_open_elements.pop();
+                    }
+                }
+            }
+            Token::Eof => {}
+        }
+    }
+
+    fn process_token_in_current_mode(&mut self, token: Token) {
         match self.insertion_mode {
             InsertionMode::Initial => self.handle_initial(token),
             InsertionMode::BeforeHtml => self.handle_before_html(token),
@@ -247,6 +581,68 @@ impl TreeBuilder {
             InsertionMode::AfterFrameset => self.handle_after_frameset(token),
             InsertionMode::AfterAfterBody => self.handle_after_after_body(token),
             InsertionMode::AfterAfterFrameset => self.handle_after_after_frameset(token),
+        }
+    }
+
+    fn process_token(&mut self, token: Token) {
+        let use_foreign_content = if let Some(adjusted_current_node) =
+            self.stack_of_open_elements.last().copied()
+        {
+            let name = match self.dom.data(adjusted_current_node) {
+                Some(NodeData::Element { name, .. }) => name.as_str(),
+                _ => "",
+            };
+            let ns = self.get_node_namespace(adjusted_current_node);
+
+            if ns == Namespace::Html {
+                false
+            } else {
+                let mut fallback_to_current = false;
+                if ns == Namespace::Mathml {
+                    let is_text_integration = matches!(name, "mi" | "mo" | "mn" | "ms" | "mtext");
+                    if is_text_integration {
+                        match &token {
+                            Token::StartTag { name: tag_name, .. } => {
+                                if tag_name != "mglyph" && tag_name != "malignmark" {
+                                    fallback_to_current = true;
+                                }
+                            }
+                            Token::Character(_) => {
+                                fallback_to_current = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if name == "annotation-xml"
+                        && let Token::StartTag { name: tag_name, .. } = &token
+                        && tag_name == "svg"
+                    {
+                        fallback_to_current = true;
+                    }
+                } else if ns == Namespace::Svg {
+                    let is_html_integration = matches!(name, "foreignObject" | "desc" | "title");
+                    if is_html_integration {
+                        match &token {
+                            Token::StartTag { .. } | Token::Character(_) => {
+                                fallback_to_current = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if matches!(token, Token::Eof) {
+                    fallback_to_current = true;
+                }
+                !fallback_to_current
+            }
+        } else {
+            false
+        };
+
+        if use_foreign_content {
+            self.handle_foreign_content(token);
+        } else {
+            self.process_token_in_current_mode(token);
         }
     }
 
