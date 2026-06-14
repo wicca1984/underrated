@@ -560,6 +560,14 @@ fn init_event(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResu
     *event.bubbles.borrow_mut() = bubbles;
     *event.cancelable.borrow_mut() = cancelable;
 
+    // According to DOM Spec, initializing resets the propagation and default-prevented flags, etc.
+    *event.propagation_stopped.borrow_mut() = false;
+    *event.immediate_propagation_stopped.borrow_mut() = false;
+    *event.default_prevented.borrow_mut() = false;
+    *event.event_phase.borrow_mut() = 0; // NONE
+    *event.target.borrow_mut() = None;
+    *event.current_target.borrow_mut() = None;
+
     Ok(JsValue::undefined())
 }
 
@@ -695,11 +703,12 @@ pub fn add_event_listener(
         if listener.is_callable() || listener.is_object() {
             let mut listeners = event_target.listeners.borrow_mut();
             let entry = listeners.entry(event_type).or_insert_with(Vec::new);
-            if let Some(existing) = entry.iter_mut().find(|existing| {
+            if entry.iter().any(|existing| {
                 existing.callback.strict_equals(&listener) && existing.capture == capture
             }) {
-                existing.once = once;
-                existing.passive = passive;
+                // Do nothing. According to DOM Spec, if an event listener with the same type,
+                // callback, and capture is added, then the new listener is ignored and its
+                // options (once, passive) are NOT updated.
             } else {
                 entry.push(EventListenerEntry {
                     callback: listener,
@@ -3038,6 +3047,88 @@ mod tests {
                 if (!normal_called) throw new Error("normal listener not called");
                 if (plain_normal_ev.defaultPrevented !== true) {
                     throw new Error("plain normal event should allow preventDefault");
+                }
+
+                return "OK";
+            } catch (err) {
+                return "ERROR: " + err.message + "\n" + err.stack;
+            }
+        })()"#;
+
+        match host.eval_with_dom(script, &mut dom) {
+            Ok(res) => {
+                println!("EVAL RES IS: {:?}", res);
+                assert_eq!(res, "OK");
+                set_max_script_length(5000);
+            }
+            Err(err) => {
+                set_max_script_length(5000);
+                panic!("Javascript execution failed: {:?}", err);
+            }
+        }
+    }
+
+    #[test]
+    fn test_t1093_expanded_dom_event_support() {
+        use crate::script::{BoaHost, set_max_script_length};
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        set_max_script_length(100000);
+
+        let script = r#"(function() {
+            try {
+                // 1. Verify addEventListener option preservation:
+                // If a listener with identical type, callback, and capture is added,
+                // the existing event listener's options are NOT updated.
+                const target = new EventTarget();
+                let callCount = 0;
+                const callback = () => {
+                    callCount++;
+                };
+
+                // Register with once: true
+                target.addEventListener('click', callback, { once: true });
+
+                // Try to register again with once: false (which should be ignored, preserving once: true)
+                target.addEventListener('click', callback, { once: false });
+
+                // Dispatch click once:
+                target.dispatchEvent(new Event('click'));
+                // Dispatch click again:
+                target.dispatchEvent(new Event('click'));
+
+                if (callCount !== 1) {
+                    throw new Error("addEventListener option preservation failed: expected callCount to be 1, got " + callCount);
+                }
+
+                // 2. Verify initEvent resets propagation and defaultPrevented flags
+                const ev = new Event('test', { cancelable: true });
+                target.addEventListener('test', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+
+                target.dispatchEvent(ev);
+
+                if (ev.defaultPrevented !== true) {
+                    throw new Error("Expected ev.defaultPrevented to be true");
+                }
+                if (ev.cancelBubble !== true) {
+                    throw new Error("Expected ev.cancelBubble to be true");
+                }
+
+                // Call initEvent: this should reset defaultPrevented and cancelBubble (propagationStopped)
+                ev.initEvent('test_reset', true, true);
+
+                if (ev.type !== 'test_reset') {
+                    throw new Error("Expected ev.type to be 'test_reset'");
+                }
+                if (ev.defaultPrevented !== false) {
+                    throw new Error("Expected ev.defaultPrevented to be reset to false");
+                }
+                if (ev.cancelBubble !== false) {
+                    throw new Error("Expected ev.cancelBubble to be reset to false");
                 }
 
                 return "OK";
