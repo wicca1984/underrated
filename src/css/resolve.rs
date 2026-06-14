@@ -1805,14 +1805,112 @@ impl CascadeDeclaration {
     }
 }
 
+fn compare_nested_layers(la: &str, lb: &str, layer_order: &[String]) -> std::cmp::Ordering {
+    if la == lb {
+        return std::cmp::Ordering::Equal;
+    }
+
+    let parts_a: Vec<&str> = la.split('.').collect();
+    let parts_b: Vec<&str> = lb.split('.').collect();
+
+    let min_len = std::cmp::min(parts_a.len(), parts_b.len());
+
+    for i in 0..min_len {
+        let seg_a = parts_a[i];
+        let seg_b = parts_b[i];
+        if seg_a != seg_b {
+            let full_a = parts_a[..=i].join(".");
+            let full_b = parts_b[..=i].join(".");
+            let pos_a = layer_order
+                .iter()
+                .position(|l| l == &full_a)
+                .unwrap_or(layer_order.len());
+            let pos_b = layer_order
+                .iter()
+                .position(|l| l == &full_b)
+                .unwrap_or(layer_order.len());
+            if pos_a != pos_b {
+                return pos_a.cmp(&pos_b);
+            } else {
+                return seg_a.cmp(seg_b);
+            }
+        }
+    }
+
+    parts_a.len().cmp(&parts_b.len())
+}
+
+pub fn compare_layer_groups(
+    a: &LayerGroup,
+    b: &LayerGroup,
+    layer_order: &[String],
+) -> std::cmp::Ordering {
+    let a_important = matches!(
+        a,
+        LayerGroup::ImportantUnlayered | LayerGroup::ImportantLayer(_)
+    );
+    let b_important = matches!(
+        b,
+        LayerGroup::ImportantUnlayered | LayerGroup::ImportantLayer(_)
+    );
+    if a_important != b_important {
+        return a_important.cmp(&b_important);
+    }
+
+    if a_important {
+        match (a, b) {
+            (LayerGroup::ImportantUnlayered, LayerGroup::ImportantUnlayered) => {
+                std::cmp::Ordering::Equal
+            }
+            (LayerGroup::ImportantUnlayered, LayerGroup::ImportantLayer(_)) => {
+                std::cmp::Ordering::Less
+            }
+            (LayerGroup::ImportantLayer(_), LayerGroup::ImportantUnlayered) => {
+                std::cmp::Ordering::Greater
+            }
+            (LayerGroup::ImportantLayer(la), LayerGroup::ImportantLayer(lb)) => {
+                if la == lb {
+                    std::cmp::Ordering::Equal
+                } else {
+                    let ord = compare_nested_layers(la, lb, layer_order);
+                    ord.reverse()
+                }
+            }
+            _ => unreachable!(),
+        }
+    } else {
+        match (a, b) {
+            (LayerGroup::NormalUnlayered, LayerGroup::NormalUnlayered) => std::cmp::Ordering::Equal,
+            (LayerGroup::NormalUnlayered, LayerGroup::NormalLayer(_)) => {
+                std::cmp::Ordering::Greater
+            }
+            (LayerGroup::NormalLayer(_), LayerGroup::NormalUnlayered) => std::cmp::Ordering::Less,
+            (LayerGroup::NormalLayer(la), LayerGroup::NormalLayer(lb)) => {
+                if la == lb {
+                    std::cmp::Ordering::Equal
+                } else {
+                    compare_nested_layers(la, lb, layer_order)
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 pub fn get_group_priority(group: &LayerGroup, layer_order: &[String]) -> usize {
     match group {
-        LayerGroup::NormalLayer(name) => layer_order.iter().position(|l| l == name).unwrap_or(0),
+        LayerGroup::NormalLayer(name) => layer_order
+            .iter()
+            .position(|l| l == name)
+            .unwrap_or(layer_order.len()),
         LayerGroup::NormalUnlayered => layer_order.len(),
         LayerGroup::ImportantUnlayered => layer_order.len() + 1,
         LayerGroup::ImportantLayer(name) => {
-            let idx = layer_order.iter().position(|l| l == name).unwrap_or(0);
-            layer_order.len() + 1 + (layer_order.len() - idx)
+            let idx = layer_order
+                .iter()
+                .position(|l| l == name)
+                .unwrap_or(layer_order.len());
+            layer_order.len() + 2 + (layer_order.len() - idx)
         }
     }
 }
@@ -1822,82 +1920,40 @@ pub fn compare_declarations(
     b: &CascadeDeclaration,
     layer_order: &[String],
 ) -> std::cmp::Ordering {
-    // 1. Importance
     if a.is_important != b.is_important {
         return a.is_important.cmp(&b.is_important);
     }
 
-    // 2. Layer priority
-    if a.is_important {
-        // Important: layered > unlayered. Earlier layer > later layer.
-        match (&a.layer, &b.layer) {
-            (None, None) => {} // Both unlayered, proceed to specificity
-            (None, Some(_)) => return std::cmp::Ordering::Less, // b is layered, so b > a
-            (Some(_), None) => return std::cmp::Ordering::Greater, // a is layered, so a > b
-            (Some(la), Some(lb)) => {
-                if la != lb {
-                    let idx_a = layer_order
-                        .iter()
-                        .position(|l| l == la)
-                        .unwrap_or(usize::MAX);
-                    let idx_b = layer_order
-                        .iter()
-                        .position(|l| l == lb)
-                        .unwrap_or(usize::MAX);
-                    // Earlier layer is higher priority for !important
-                    return idx_b.cmp(&idx_a);
-                }
-            }
-        }
-    } else {
-        // Normal: unlayered > layered. Later layer > earlier layer.
-        match (&a.layer, &b.layer) {
-            (None, None) => {} // Both unlayered, proceed to specificity
-            (None, Some(_)) => return std::cmp::Ordering::Greater, // a is unlayered, so b is lower
-            (Some(_), None) => return std::cmp::Ordering::Less, // b is unlayered, so b is higher
-            (Some(la), Some(lb)) => {
-                if la != lb {
-                    let idx_a = layer_order
-                        .iter()
-                        .position(|l| l == la)
-                        .unwrap_or(usize::MAX);
-                    let idx_b = layer_order
-                        .iter()
-                        .position(|l| l == lb)
-                        .unwrap_or(usize::MAX);
-                    // Later layer is higher priority for normal
-                    return idx_a.cmp(&idx_b);
-                }
-            }
-        }
+    let group_a = a.layer_group();
+    let group_b = b.layer_group();
+    let group_cmp = compare_layer_groups(&group_a, &group_b, layer_order);
+    if group_cmp != std::cmp::Ordering::Equal {
+        return group_cmp;
     }
 
-    // 3. Specificity
     if a.specificity != b.specificity {
         return a.specificity.cmp(&b.specificity);
     }
 
-    // 4. Source order
     a.source_order.cmp(&b.source_order)
 }
 
 fn resolve_cascade_under_priority(
-    max_priority: usize,
-    decls: &[CascadeDeclaration],
+    winning_group: &LayerGroup,
+    sorted_decls: &[CascadeDeclaration],
     layer_order: &[String],
     context: &ResolveContext,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
 ) -> Option<CssValue> {
-    for i in (0..decls.len()).rev() {
-        let decl = &decls[i];
+    for i in (0..sorted_decls.len()).rev() {
+        let decl = &sorted_decls[i];
         let group = decl.layer_group();
-        let prio = get_group_priority(&group, layer_order);
-        if prio < max_priority {
+        if compare_layer_groups(&group, winning_group, layer_order) == std::cmp::Ordering::Less {
             let mut sub_context = context.clone();
             sub_context.revert_value = context.revert_value.clone();
             sub_context.revert_layer_value = resolve_cascade_under_priority(
-                prio,
-                decls,
+                &group,
+                sorted_decls,
                 layer_order,
                 context,
                 custom_properties,
@@ -1930,12 +1986,11 @@ pub fn resolve_cascade(
     let last_idx = sorted_decls.len() - 1;
     let decl = &sorted_decls[last_idx];
     let group = decl.layer_group();
-    let prio = get_group_priority(&group, layer_order);
 
     let mut sub_context = context.clone();
     sub_context.revert_value = context.revert_value.clone();
     sub_context.revert_layer_value = resolve_cascade_under_priority(
-        prio,
+        &group,
         &sorted_decls,
         layer_order,
         context,
@@ -3821,6 +3876,186 @@ mod tests {
             Some(CssValue::Color(crate::css::values::Color::Rgba(
                 0, 0, 255, 255
             ))) // blue wins
+        );
+    }
+
+    #[test]
+    fn test_t1069_nested_and_unrecognized_cascade_layers() {
+        let layers = vec![
+            "A".to_string(),
+            "A.C".to_string(),
+            "A.B".to_string(),
+            "D".to_string(),
+        ];
+        let custom_props = HashMap::new();
+        let default_ctx = ResolveContext::default();
+
+        // 1. Nested layers comparison: Sub-layer vs Parent (normal)
+        // Normal: sub-layer (A.B) wins over parent layer (A)
+        let decl_parent = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: false,
+            layer: Some("A".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decl_sub = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: false,
+            layer: Some("A.B".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_parent, &decl_sub, &layers),
+            std::cmp::Ordering::Less
+        );
+
+        // 2. Nested layers comparison: Sub-layer vs Parent (important)
+        // Important: parent layer (A) wins over sub-layer (A.B)
+        let decl_parent_imp = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: true,
+            layer: Some("A".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decl_sub_imp = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: true,
+            layer: Some("A.B".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_parent_imp, &decl_sub_imp, &layers),
+            std::cmp::Ordering::Greater
+        );
+
+        // 3. Nested layers comparison: Sibling sub-layers
+        // Normal: A.B is later than A.C, so A.B wins over A.C
+        let decl_sibling_c = CascadeDeclaration {
+            value: "green".to_string(),
+            is_important: false,
+            layer: Some("A.C".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decl_sibling_b = CascadeDeclaration {
+            value: "yellow".to_string(),
+            is_important: false,
+            layer: Some("A.B".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_sibling_c, &decl_sibling_b, &layers),
+            std::cmp::Ordering::Less
+        );
+
+        // 4. Nested layers comparison: Sibling sub-layer vs another root layer
+        // Normal: D is later than A.B, so D wins over A.B
+        let decl_sibling_b_normal = CascadeDeclaration {
+            value: "yellow".to_string(),
+            is_important: false,
+            layer: Some("A.B".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decl_root_d = CascadeDeclaration {
+            value: "orange".to_string(),
+            is_important: false,
+            layer: Some("D".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_sibling_b_normal, &decl_root_d, &layers),
+            std::cmp::Ordering::Less
+        );
+
+        // 5. Unrecognized flat layer ordering vs recognized flat layer
+        // Normal: unrecognized layer "utility" wins over recognized layer "A"
+        let decl_unrecognized = CascadeDeclaration {
+            value: "pink".to_string(),
+            is_important: false,
+            layer: Some("utility".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decl_recognized = CascadeDeclaration {
+            value: "purple".to_string(),
+            is_important: false,
+            layer: Some("A".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_recognized, &decl_unrecognized, &layers),
+            std::cmp::Ordering::Less
+        );
+
+        // Important: recognized layer "A" wins over unrecognized layer "utility" (since A is earlier)
+        let decl_unrecognized_imp = CascadeDeclaration {
+            value: "pink".to_string(),
+            is_important: true,
+            layer: Some("utility".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decl_recognized_imp = CascadeDeclaration {
+            value: "purple".to_string(),
+            is_important: true,
+            layer: Some("A".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_recognized_imp, &decl_unrecognized_imp, &layers),
+            std::cmp::Ordering::Greater
+        );
+
+        // 6. Nested revert-layer rollback
+        // A.B reverts and rolls back to A.C
+        let decl_sub_revert = CascadeDeclaration {
+            value: "revert-layer".to_string(),
+            is_important: false,
+            layer: Some("A.B".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 3,
+        };
+        let decls_revert = vec![
+            decl_parent.clone(),     // A: "red"
+            decl_sibling_c.clone(),  // A.C: "green"
+            decl_sub_revert.clone(), // A.B: revert-layer
+        ];
+        let res = resolve_cascade(&decls_revert, &layers, &default_ctx, &custom_props);
+        assert_eq!(
+            res,
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 128, 0, 255
+            ))) // green wins from A.C
+        );
+
+        // If A.C also reverts, it rolls back to A
+        let decl_sibling_c_revert = CascadeDeclaration {
+            value: "revert-layer".to_string(),
+            is_important: false,
+            layer: Some("A.C".to_string()),
+            specificity: (0, 0, 1, 0),
+            source_order: 1,
+        };
+        let decls_chain_revert = vec![
+            decl_parent.clone(),           // A: "red"
+            decl_sibling_c_revert.clone(), // A.C: revert-layer
+            decl_sub_revert.clone(),       // A.B: revert-layer
+        ];
+        let res_chain = resolve_cascade(&decls_chain_revert, &layers, &default_ctx, &custom_props);
+        assert_eq!(
+            res_chain,
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255
+            ))) // red wins from A
         );
     }
 }
