@@ -319,6 +319,20 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `dir` content attribute of a valid element node.
+    /// Returns `None` if the node has no `dir` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_dir(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("dir"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Returns the value of the `target` content attribute of a valid element node,
     /// but only if `target` is a defined attribute for its element tag (a, area, base, form).
     /// Returns `None` if the node is not one of those element tags, has no `target` attribute,
@@ -990,6 +1004,50 @@ mod tests {
         }
         assert_eq!(dom.get_rel(foreign_node), None);
         assert_eq!(dom.get_for(foreign_node), None);
+    }
+
+    #[test]
+    fn test_dir_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element with dir attribute -> returns Some(value)
+        let div_rtl = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("dir".to_string(), "rtl".to_string())],
+        });
+        assert_eq!(dom.get_dir(div_rtl), Some("rtl"));
+
+        let div_ltr = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("dir".to_string(), "ltr".to_string())],
+        });
+        assert_eq!(dom.get_dir(div_ltr), Some("ltr"));
+
+        // 2. Element with case-insensitive dir attribute (e.g., DIR) -> returns Some(value)
+        let span_id = dom.create_node(NodeData::Element {
+            name: "span".to_string(),
+            attrs: vec![("DIR".to_string(), "rtl".to_string())],
+        });
+        assert_eq!(dom.get_dir(span_id), Some("rtl"));
+
+        // 3. Element without dir attribute -> returns None
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_dir(p_id), None);
+
+        // 4. Non-element node (e.g., Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_dir(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "div");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "div");
+        }
+        assert_eq!(dom.get_dir(foreign_node), None);
     }
 
     #[test]
