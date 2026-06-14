@@ -2107,6 +2107,11 @@ fn css_value_to_string(val: &crate::css::values::CssValue) -> String {
             crate::css::values::ColumnSpanValue::None => "none".to_string(),
             crate::css::values::ColumnSpanValue::All => "all".to_string(),
         },
+        CssValue::ColumnFill(cf) => match cf {
+            crate::css::values::ColumnFillValue::Auto => "auto".to_string(),
+            crate::css::values::ColumnFillValue::Balance => "balance".to_string(),
+            crate::css::values::ColumnFillValue::BalanceAll => "balance-all".to_string(),
+        },
     }
 }
 
@@ -2909,6 +2914,33 @@ mod tests {
         assert_eq!(
             css_value_to_string(&CssValue::MaskType(MaskTypeValue::Alpha)),
             "alpha".to_string()
+        );
+    }
+
+    #[test]
+    fn test_column_span_and_fill_serialization() {
+        use crate::css::values::{ColumnFillValue, ColumnSpanValue, CssValue};
+
+        assert_eq!(
+            css_value_to_string(&CssValue::ColumnSpan(ColumnSpanValue::None)),
+            "none".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::ColumnSpan(ColumnSpanValue::All)),
+            "all".to_string()
+        );
+
+        assert_eq!(
+            css_value_to_string(&CssValue::ColumnFill(ColumnFillValue::Auto)),
+            "auto".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::ColumnFill(ColumnFillValue::Balance)),
+            "balance".to_string()
+        );
+        assert_eq!(
+            css_value_to_string(&CssValue::ColumnFill(ColumnFillValue::BalanceAll)),
+            "balance-all".to_string()
         );
     }
 }
