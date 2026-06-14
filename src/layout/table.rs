@@ -484,6 +484,37 @@ pub fn layout_table_container(
             }
         };
 
+        let row_is_empty_or_hidden = |r: usize| -> bool {
+            if r >= rows.len() {
+                return true;
+            }
+            if r < row_is_hidden.len() && row_is_hidden[r] {
+                return true;
+            }
+            let mut has_cell = false;
+            for col in 0..num_cols {
+                if occupied.get(&(r, col)).copied().unwrap_or(false) {
+                    has_cell = true;
+                    break;
+                }
+            }
+            !has_cell
+        };
+
+        let col_is_empty = |c: usize| -> bool {
+            if c >= num_cols {
+                return true;
+            }
+            let mut has_cell = false;
+            for r in 0..rows.len() {
+                if occupied.get(&(r, c)).copied().unwrap_or(false) {
+                    has_cell = true;
+                    break;
+                }
+            }
+            !has_cell
+        };
+
         // Resolve borders for each cell
         for (&cell_node, placement) in &cell_placements {
             let info = if let Some(i) = cell_borders.get(&cell_node) {
@@ -523,44 +554,53 @@ pub fn layout_table_container(
                     });
                 }
             }
-            if row_idx == 0 {
+            let is_outer_top = (0..row_idx).all(&row_is_empty_or_hidden);
+            if is_outer_top {
                 top_conflicts.push(BorderConflict {
                     width: t_bt,
                     style: t_bt_style.clone(),
                     element_priority: 0,
                 });
-            }
-            if row_idx > 0 {
-                for (&other_node, other_p) in &cell_placements {
-                    if other_p.row_idx + other_p.rowspan == row_idx {
-                        let overlap = other_p.col_idx < col_idx + colspan
-                            && col_idx < other_p.col_idx + other_p.colspan;
-                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            top_conflicts.push(BorderConflict {
-                                width: other_info.bottom.0,
-                                style: other_info.bottom.1.clone(),
-                                element_priority: 5,
-                            });
-                        }
+            } else {
+                let mut prev_visible_row = None;
+                for r in (0..row_idx).rev() {
+                    if !row_is_empty_or_hidden(r) {
+                        prev_visible_row = Some(r);
+                        break;
                     }
                 }
-                if let Some(prev_row_node) = rows[row_idx - 1].node {
-                    let (row_bb, row_bb_style) = get_element_borders(styles, prev_row_node).1;
-                    top_conflicts.push(BorderConflict {
-                        width: row_bb,
-                        style: row_bb_style,
-                        element_priority: 4,
-                    });
-                }
-                if let Some(prev_rg_node) = get_row_group(row_idx - 1) {
-                    let is_last_row_of_prev_rg = get_row_group(row_idx) != Some(prev_rg_node);
-                    if is_last_row_of_prev_rg {
-                        let (rg_bb, rg_bb_style) = get_element_borders(styles, prev_rg_node).1;
+                if let Some(pr) = prev_visible_row {
+                    for (&other_node, other_p) in &cell_placements {
+                        if other_p.row_idx + other_p.rowspan == pr + 1 {
+                            let overlap = other_p.col_idx < col_idx + colspan
+                                && col_idx < other_p.col_idx + other_p.colspan;
+                            if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                                top_conflicts.push(BorderConflict {
+                                    width: other_info.bottom.0,
+                                    style: other_info.bottom.1.clone(),
+                                    element_priority: 5,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(prev_row_node) = rows[pr].node {
+                        let (row_bb, row_bb_style) = get_element_borders(styles, prev_row_node).1;
                         top_conflicts.push(BorderConflict {
-                            width: rg_bb,
-                            style: rg_bb_style,
-                            element_priority: 3,
+                            width: row_bb,
+                            style: row_bb_style,
+                            element_priority: 4,
                         });
+                    }
+                    if let Some(prev_rg_node) = get_row_group(pr) {
+                        let is_last_row_of_prev_rg = get_row_group(row_idx) != Some(prev_rg_node);
+                        if is_last_row_of_prev_rg {
+                            let (rg_bb, rg_bb_style) = get_element_borders(styles, prev_rg_node).1;
+                            top_conflicts.push(BorderConflict {
+                                width: rg_bb,
+                                style: rg_bb_style,
+                                element_priority: 3,
+                            });
+                        }
                     }
                 }
             }
@@ -592,45 +632,54 @@ pub fn layout_table_container(
                     });
                 }
             }
-            if row_idx + rowspan == rows.len() {
+            let is_outer_bottom = ((row_idx + rowspan)..rows.len()).all(&row_is_empty_or_hidden);
+            if is_outer_bottom {
                 bottom_conflicts.push(BorderConflict {
                     width: t_bb,
                     style: t_bb_style.clone(),
                     element_priority: 0,
                 });
-            }
-            if row_idx + rowspan < rows.len() {
-                for (&other_node, other_p) in &cell_placements {
-                    if other_p.row_idx == row_idx + rowspan {
-                        let overlap = other_p.col_idx < col_idx + colspan
-                            && col_idx < other_p.col_idx + other_p.colspan;
-                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            bottom_conflicts.push(BorderConflict {
-                                width: other_info.top.0,
-                                style: other_info.top.1.clone(),
-                                element_priority: 5,
-                            });
-                        }
+            } else {
+                let mut next_visible_row = None;
+                for r in (row_idx + rowspan)..rows.len() {
+                    if !row_is_empty_or_hidden(r) {
+                        next_visible_row = Some(r);
+                        break;
                     }
                 }
-                if let Some(next_row_node) = rows[row_idx + rowspan].node {
-                    let (row_bt, row_bt_style) = get_element_borders(styles, next_row_node).0;
-                    bottom_conflicts.push(BorderConflict {
-                        width: row_bt,
-                        style: row_bt_style,
-                        element_priority: 4,
-                    });
-                }
-                if let Some(next_rg_node) = get_row_group(row_idx + rowspan) {
-                    let is_first_row_of_next_rg =
-                        get_row_group(row_idx + rowspan - 1) != Some(next_rg_node);
-                    if is_first_row_of_next_rg {
-                        let (rg_bt, rg_bt_style) = get_element_borders(styles, next_rg_node).0;
+                if let Some(nr) = next_visible_row {
+                    for (&other_node, other_p) in &cell_placements {
+                        if other_p.row_idx == nr {
+                            let overlap = other_p.col_idx < col_idx + colspan
+                                && col_idx < other_p.col_idx + other_p.colspan;
+                            if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                                bottom_conflicts.push(BorderConflict {
+                                    width: other_info.top.0,
+                                    style: other_info.top.1.clone(),
+                                    element_priority: 5,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(next_row_node) = rows[nr].node {
+                        let (row_bt, row_bt_style) = get_element_borders(styles, next_row_node).0;
                         bottom_conflicts.push(BorderConflict {
-                            width: rg_bt,
-                            style: rg_bt_style,
-                            element_priority: 3,
+                            width: row_bt,
+                            style: row_bt_style,
+                            element_priority: 4,
                         });
+                    }
+                    if let Some(next_rg_node) = get_row_group(nr) {
+                        let is_first_row_of_next_rg =
+                            get_row_group(row_idx + rowspan - 1) != Some(next_rg_node);
+                        if is_first_row_of_next_rg {
+                            let (rg_bt, rg_bt_style) = get_element_borders(styles, next_rg_node).0;
+                            bottom_conflicts.push(BorderConflict {
+                                width: rg_bt,
+                                style: rg_bt_style,
+                                element_priority: 3,
+                            });
+                        }
                     }
                 }
             }
@@ -667,45 +716,54 @@ pub fn layout_table_container(
                     });
                 }
             }
-            if col_idx == 0 {
+            let is_outer_left = (0..col_idx).all(&col_is_empty);
+            if is_outer_left {
                 left_conflicts.push(BorderConflict {
                     width: t_bl,
                     style: t_bl_style.clone(),
                     element_priority: 0,
                 });
-            }
-            if col_idx > 0 {
-                for (&other_node, other_p) in &cell_placements {
-                    if other_p.col_idx + other_p.colspan == col_idx {
-                        let overlap = other_p.row_idx < row_idx + rowspan
-                            && row_idx < other_p.row_idx + other_p.rowspan;
-                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            left_conflicts.push(BorderConflict {
-                                width: other_info.right.0,
-                                style: other_info.right.1.clone(),
-                                element_priority: 5,
-                            });
-                        }
+            } else {
+                let mut prev_visible_col = None;
+                for c in (0..col_idx).rev() {
+                    if !col_is_empty(c) {
+                        prev_visible_col = Some(c);
+                        break;
                     }
                 }
-                if let Some(prev_col_node) = col_elements[col_idx - 1] {
-                    let (col_br, col_br_style) = get_element_borders(styles, prev_col_node).3;
-                    left_conflicts.push(BorderConflict {
-                        width: col_br,
-                        style: col_br_style,
-                        element_priority: 2,
-                    });
-                }
-                if let Some(prev_cg_node) = colgroup_elements[col_idx - 1] {
-                    let is_last_col_of_prev_cg =
-                        col_idx == num_cols || colgroup_elements[col_idx] != Some(prev_cg_node);
-                    if is_last_col_of_prev_cg {
-                        let (cg_br, cg_br_style) = get_element_borders(styles, prev_cg_node).3;
+                if let Some(pc) = prev_visible_col {
+                    for (&other_node, other_p) in &cell_placements {
+                        if other_p.col_idx + other_p.colspan == pc + 1 {
+                            let overlap = other_p.row_idx < row_idx + rowspan
+                                && row_idx < other_p.row_idx + other_p.rowspan;
+                            if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                                left_conflicts.push(BorderConflict {
+                                    width: other_info.right.0,
+                                    style: other_info.right.1.clone(),
+                                    element_priority: 5,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(prev_col_node) = col_elements[pc] {
+                        let (col_br, col_br_style) = get_element_borders(styles, prev_col_node).3;
                         left_conflicts.push(BorderConflict {
-                            width: cg_br,
-                            style: cg_br_style,
-                            element_priority: 1,
+                            width: col_br,
+                            style: col_br_style,
+                            element_priority: 2,
                         });
+                    }
+                    if let Some(prev_cg_node) = colgroup_elements[pc] {
+                        let is_last_col_of_prev_cg =
+                            col_idx == num_cols || colgroup_elements[col_idx] != Some(prev_cg_node);
+                        if is_last_col_of_prev_cg {
+                            let (cg_br, cg_br_style) = get_element_borders(styles, prev_cg_node).3;
+                            left_conflicts.push(BorderConflict {
+                                width: cg_br,
+                                style: cg_br_style,
+                                element_priority: 1,
+                            });
+                        }
                     }
                 }
             }
@@ -741,45 +799,54 @@ pub fn layout_table_container(
                     });
                 }
             }
-            if col_idx + colspan == num_cols {
+            let is_outer_right = ((col_idx + colspan)..num_cols).all(&col_is_empty);
+            if is_outer_right {
                 right_conflicts.push(BorderConflict {
                     width: t_br,
                     style: t_br_style.clone(),
                     element_priority: 0,
                 });
-            }
-            if col_idx + colspan < num_cols {
-                for (&other_node, other_p) in &cell_placements {
-                    if other_p.col_idx == col_idx + colspan {
-                        let overlap = other_p.row_idx < row_idx + rowspan
-                            && row_idx < other_p.row_idx + other_p.rowspan;
-                        if overlap && let Some(other_info) = cell_borders.get(&other_node) {
-                            right_conflicts.push(BorderConflict {
-                                width: other_info.left.0,
-                                style: other_info.left.1.clone(),
-                                element_priority: 5,
-                            });
-                        }
+            } else {
+                let mut next_visible_col = None;
+                for c in (col_idx + colspan)..num_cols {
+                    if !col_is_empty(c) {
+                        next_visible_col = Some(c);
+                        break;
                     }
                 }
-                if let Some(next_col_node) = col_elements[col_idx + colspan] {
-                    let (col_bl, col_bl_style) = get_element_borders(styles, next_col_node).2;
-                    right_conflicts.push(BorderConflict {
-                        width: col_bl,
-                        style: col_bl_style,
-                        element_priority: 2,
-                    });
-                }
-                if let Some(next_cg_node) = colgroup_elements[col_idx + colspan] {
-                    let is_first_col_of_next_cg =
-                        colgroup_elements[col_idx + colspan - 1] != Some(next_cg_node);
-                    if is_first_col_of_next_cg {
-                        let (cg_bl, cg_bl_style) = get_element_borders(styles, next_cg_node).2;
+                if let Some(nc) = next_visible_col {
+                    for (&other_node, other_p) in &cell_placements {
+                        if other_p.col_idx == nc {
+                            let overlap = other_p.row_idx < row_idx + rowspan
+                                && row_idx < other_p.row_idx + other_p.rowspan;
+                            if overlap && let Some(other_info) = cell_borders.get(&other_node) {
+                                right_conflicts.push(BorderConflict {
+                                    width: other_info.left.0,
+                                    style: other_info.left.1.clone(),
+                                    element_priority: 5,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(next_col_node) = col_elements[nc] {
+                        let (col_bl, col_bl_style) = get_element_borders(styles, next_col_node).2;
                         right_conflicts.push(BorderConflict {
-                            width: cg_bl,
-                            style: cg_bl_style,
-                            element_priority: 1,
+                            width: col_bl,
+                            style: col_bl_style,
+                            element_priority: 2,
                         });
+                    }
+                    if let Some(next_cg_node) = colgroup_elements[nc] {
+                        let is_first_col_of_next_cg =
+                            colgroup_elements[col_idx + colspan - 1] != Some(next_cg_node);
+                        if is_first_col_of_next_cg {
+                            let (cg_bl, cg_bl_style) = get_element_borders(styles, next_cg_node).2;
+                            right_conflicts.push(BorderConflict {
+                                width: cg_bl,
+                                style: cg_bl_style,
+                                element_priority: 1,
+                            });
+                        }
                     }
                 }
             }
@@ -804,18 +871,24 @@ pub fn layout_table_container(
         // Update table's outer borders by taking max of resolved outer borders of outer cells
         for (&cell_node, placement) in &cell_placements {
             if let Some(cell_style) = local_styles.get(&cell_node) {
-                if placement.row_idx == 0 {
+                let is_outer_top = (0..placement.row_idx).all(&row_is_empty_or_hidden);
+                if is_outer_top {
                     border_top = border_top.max(cell_style.reset_surround.border_top_width as f32);
                 }
-                if placement.row_idx + placement.rowspan == rows.len() {
+                let is_outer_bottom = ((placement.row_idx + placement.rowspan)..rows.len())
+                    .all(&row_is_empty_or_hidden);
+                if is_outer_bottom {
                     border_bottom =
                         border_bottom.max(cell_style.reset_surround.border_bottom_width as f32);
                 }
-                if placement.col_idx == 0 {
+                let is_outer_left = (0..placement.col_idx).all(&col_is_empty);
+                if is_outer_left {
                     border_left =
                         border_left.max(cell_style.reset_surround.border_left_width as f32);
                 }
-                if placement.col_idx + placement.colspan == num_cols {
+                let is_outer_right =
+                    ((placement.col_idx + placement.colspan)..num_cols).all(&col_is_empty);
+                if is_outer_right {
                     border_right =
                         border_right.max(cell_style.reset_surround.border_right_width as f32);
                 }
@@ -5345,5 +5418,100 @@ mod tests {
         let (resolved_w, resolved_s) = resolve_collapsed_borders_new(&[c1, c2, c3]);
         assert_eq!(resolved_w, 2.0);
         assert_eq!(resolved_s, "solid");
+    }
+
+    #[test]
+    fn test_border_collapse_empty_hidden_rows_skipping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Create table element
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Row 1
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row1_node);
+
+        // Cell 1
+        let cell1_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell1_node);
+
+        // Row 2 (completely empty - has no cells at all)
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row2_node);
+
+        // Row 3
+        let row3_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row3_node);
+
+        // Cell 3
+        let cell3_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row3_node, cell3_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: border-collapse: collapse
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        table_style.insert(
+            "border-collapse".to_string(),
+            CssValue::Keyword("collapse".to_string()),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+        styles.insert(row3_node, style_with_display("table-row"));
+
+        // Cell 1 style: border-bottom 5px solid
+        let mut cell1_style = style_with_display("table-cell");
+        cell1_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell1_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        cell1_style.insert(
+            "border-bottom-width".to_string(),
+            CssValue::Length(5.0, LengthUnit::Px),
+        );
+        styles.insert(cell1_node, cell1_style);
+
+        // Cell 3 style: border-top 10px solid
+        let mut cell3_style = style_with_display("table-cell");
+        cell3_style.insert("width".to_string(), CssValue::Length(100.0, LengthUnit::Px));
+        cell3_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        cell3_style.insert(
+            "border-top-width".to_string(),
+            CssValue::Length(10.0, LengthUnit::Px),
+        );
+        styles.insert(cell3_node, cell3_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // The layout should resolve and find that Row 2 is empty, so Row 3 and Row 1 are directly adjacent for border conflict resolution.
+        // Therefore, Cell 1's border-bottom should resolve against Cell 3's border-top: max(5, 10) = 10px.
+        assert_eq!(table_box.children.len(), 3);
+        let r1 = &table_box.children[0];
+        let r3 = &table_box.children[2]; // Index 2 is Row 3, as Row 2 is at Index 1
+
+        assert_eq!(r1.children.len(), 1);
+        assert_eq!(r3.children.len(), 1);
     }
 }
