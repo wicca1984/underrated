@@ -52,8 +52,10 @@ impl Dom {
         let node_type_match = if let Some(n) = self.arena.get(node) {
             match n.data {
                 NodeData::Text(_) | NodeData::Comment(_) => 1, // CharacterData
-                NodeData::Doctype { .. } | NodeData::Document => 2, // No-op ignored types
-                _ => 0,                                        // Element / other
+                NodeData::Doctype { .. } => 2,                 // No-op ignored types
+                NodeData::Document if node == self.document() => 2, // Document node - no-op per spec
+                NodeData::Document => 0, // DocumentFragment - Element / other behavior
+                _ => 0,                  // Element / other
             }
         } else {
             return;
@@ -1647,5 +1649,90 @@ mod tests {
         dom.set_text_content(doc_node, "some text");
         assert_eq!(dom.children(doc_node).len(), 1);
         assert!(!dom.is_dirty(doc_node));
+    }
+
+    #[test]
+    fn test_t1086_dom_text_edge_cases() {
+        let mut dom = Dom::new();
+
+        // 1. DocumentFragment textContent setter compliance
+        // In this DOM engine, a NodeData::Document with ID != dom.document() is a DocumentFragment.
+        let fragment = dom.create_node(NodeData::Document);
+        assert_ne!(fragment, dom.document());
+
+        // DocumentFragment textContent should initially be empty
+        assert_eq!(dom.text_content(fragment), "");
+
+        // Set textContent on the DocumentFragment
+        dom.clear_dirty();
+        dom.set_text_content(fragment, "hello fragment");
+        assert!(dom.is_dirty(fragment));
+        assert_eq!(dom.text_content(fragment), "hello fragment");
+
+        // The DocumentFragment should now have exactly one child (the Text node)
+        let frag_children = dom.children(fragment);
+        assert_eq!(frag_children.len(), 1);
+        assert_eq!(
+            dom.character_data(frag_children[0]),
+            Some("hello fragment".into())
+        );
+
+        // Set textContent to empty string on the DocumentFragment
+        dom.clear_dirty();
+        dom.set_text_content(fragment, "");
+        assert_eq!(dom.text_content(fragment), "");
+        assert_eq!(dom.children(fragment).len(), 0);
+        assert!(dom.is_dirty(fragment));
+
+        // 2. split_text on a surrogate pair at various locations
+        // Snake emoji "🐍" (U+1F40D) has UTF-16 surrogate pair [0xd83d, 0xdc0d], length 2
+        let snake_node = dom.create_node(NodeData::Text("🐍".into()));
+        assert_eq!(dom.character_data_len(snake_node), Some(2));
+
+        // Split at offset 0 -> splits into "" and "🐍"
+        let split_zero = dom.split_text(snake_node, 0).unwrap();
+        assert_eq!(dom.character_data(snake_node), Some("".into()));
+        assert_eq!(dom.character_data(split_zero), Some("🐍".into()));
+
+        // Split at offset 2 of split_zero -> splits "🐍" into "🐍" and ""
+        let split_end = dom.split_text(split_zero, 2).unwrap();
+        assert_eq!(dom.character_data(split_zero), Some("🐍".into()));
+        assert_eq!(dom.character_data(split_end), Some("".into()));
+
+        // 3. whole_text and replace_whole_text with multiple comments and elements
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        let tx1 = dom.create_node(NodeData::Text("AAA".into()));
+        let elem1 = dom.create_node(NodeData::Element {
+            name: "br".into(),
+            attrs: vec![],
+        });
+        let tx2 = dom.create_node(NodeData::Text("BBB".into()));
+        let tx3 = dom.create_node(NodeData::Text("CCC".into()));
+
+        dom.append_child(parent, tx1);
+        dom.append_child(parent, elem1);
+        dom.append_child(parent, tx2);
+        dom.append_child(parent, tx3);
+
+        // Contiguous text starting from tx2 should be "BBBCCC"
+        assert_eq!(dom.whole_text(tx2), Some("BBBCCC".into()));
+        assert_eq!(dom.whole_text(tx3), Some("BBBCCC".into()));
+        // tx1 is blocked by elem1, so its whole_text is just "AAA"
+        assert_eq!(dom.whole_text(tx1), Some("AAA".into()));
+
+        // replace_whole_text on tx2 with "new_text"
+        let replace_res = dom.replace_whole_text(tx2, "new_text").unwrap();
+        assert_eq!(replace_res, Some(tx2));
+        assert_eq!(dom.character_data(tx2), Some("new_text".into()));
+
+        // tx3 must have been removed, but tx1 and elem1 must remain untouched!
+        let parent_children = dom.children(parent);
+        assert_eq!(parent_children.len(), 3);
+        assert_eq!(parent_children[0], tx1);
+        assert_eq!(parent_children[1], elem1);
+        assert_eq!(parent_children[2], tx2);
     }
 }
