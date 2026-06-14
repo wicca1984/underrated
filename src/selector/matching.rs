@@ -274,6 +274,13 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // in this engine. Thus, :fullscreen always returns false.
                         false
                     }
+                    "picture-in-picture" => {
+                        // TODO(spec): Real :picture-in-picture matching requires tracking active picture-in-picture status
+                        // (e.g. video elements in picture-in-picture mode, or document picture-in-picture).
+                        // This engine has no Picture-in-Picture API / media playback presentation mode,
+                        // so no element is ever in picture-in-picture and the pseudo-class always returns false.
+                        false
+                    }
                     "checked" => is_checked(dom, node),
                     "default" => is_default(dom, node),
                     "disabled" => is_disabled(dom, node),
@@ -3095,6 +3102,22 @@ mod tests {
         });
         dom.append_child(doc, dialog_elem);
         assert!(!matches(&sel_modal, &dom, dialog_elem));
+
+        // Matches :picture-in-picture (should never match since we have no Picture-in-Picture API)
+        let sel_pip = parse_selector_list(":picture-in-picture").unwrap();
+        assert!(!matches(&sel_pip, &dom, a_with_href));
+        assert!(!matches(&sel_pip, &dom, area_with_href));
+        assert!(!matches(&sel_pip, &dom, link_with_href));
+        assert!(!matches(&sel_pip, &dom, a_no_href));
+        assert!(!matches(&sel_pip, &dom, div_with_href));
+
+        // Ensure <video> (and other elements) also never match :picture-in-picture
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+        assert!(!matches(&sel_pip, &dom, video_elem));
     }
 
     #[test]
