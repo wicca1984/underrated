@@ -17,6 +17,17 @@ impl Dom {
         false
     }
 
+    /// Returns the parent of the given `node` if it is an element.
+    // spec: https://dom.spec.whatwg.org/#dom-node-parentelement
+    pub fn parent_element(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.parent(node)?;
+        if matches!(self.data(parent), Some(NodeData::Element { .. })) {
+            Some(parent)
+        } else {
+            None
+        }
+    }
+
     /// Returns the first element in the document with the given `id`.
     // spec: https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
     pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
@@ -541,6 +552,17 @@ fn matches_component_with_scope(
     node: NodeId,
     scope: NodeId,
 ) -> bool {
+    // Non-element nodes never match any selector component, except for the :scope pseudo-class.
+    // Spec: https://drafts.csswg.org/selectors-4/#match-against-element
+    if !matches!(dom.data(node), Some(NodeData::Element { .. })) {
+        if let selector::Component::PseudoClass(s) = comp
+            && s == "scope"
+        {
+            return node == scope;
+        }
+        return false;
+    }
+
     match comp {
         selector::Component::PseudoClass(s) if s == "scope" => node == scope,
         selector::Component::Not(sub) => !matches_compound_with_scope(sub, dom, node, scope),
@@ -1562,5 +1584,39 @@ mod tests {
         let sub_spans =
             dom.get_elements_by_tag_name_ns_from(div, "http://www.w3.org/1999/xhtml", "span");
         assert_eq!(sub_spans, vec![span]);
+    }
+
+    #[test]
+    fn test_t0935_non_elements_selector_and_parent_element() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let text = dom.create_node(NodeData::Text("some text".into()));
+        dom.append_child(div, text);
+
+        let comment = dom.create_node(NodeData::Comment("some comment".into()));
+        dom.append_child(div, comment);
+
+        // --- Test parent_element ---
+        assert_eq!(dom.parent_element(text), Some(div));
+        assert_eq!(dom.parent_element(comment), Some(div));
+        assert_eq!(dom.parent_element(div), None); // parent is doc, which is not an Element
+        assert_eq!(dom.parent_element(doc), None);
+
+        // --- Test selector matching on non-elements ---
+        // A Text node or Comment node must NEVER match any selector like :not(div) or div
+        assert!(!dom.matches(text, "div"));
+        assert!(!dom.matches(text, ":not(div)"));
+        assert!(!dom.matches(comment, ":not(div)"));
+
+        // querySelector / querySelectorAll must never return non-elements even if the selector is :not(div)
+        let results = dom.query_selector_all_from(div, ":not(div)");
+        assert!(results.is_empty());
     }
 }
