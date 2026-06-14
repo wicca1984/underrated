@@ -38,16 +38,17 @@ impl Dom {
     // spec: https://dom.spec.whatwg.org/#dom-element-setattribute
     pub fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
         let mut changed = false;
+        let name_lc = name.to_ascii_lowercase();
         if let Some(n) = self.arena.get_mut(node)
             && let NodeData::Element { attrs, .. } = &mut n.data
         {
-            if let Some(pair) = attrs.iter_mut().find(|(k, _)| k == name) {
+            if let Some(pair) = attrs.iter_mut().find(|(k, _)| k == &name_lc) {
                 if pair.1 != value {
                     pair.1 = value.to_string();
                     changed = true;
                 }
             } else {
-                attrs.push((name.to_string(), value.to_string()));
+                attrs.push((name_lc, value.to_string()));
                 changed = true;
             }
         }
@@ -61,11 +62,12 @@ impl Dom {
     // spec: https://dom.spec.whatwg.org/#dom-element-removeattribute
     pub fn remove_attribute(&mut self, node: NodeId, name: &str) {
         let mut changed = false;
+        let name_lc = name.to_ascii_lowercase();
         if let Some(n) = self.arena.get_mut(node)
             && let NodeData::Element { attrs, .. } = &mut n.data
         {
             let before = attrs.len();
-            attrs.retain(|(k, _)| k != name);
+            attrs.retain(|(k, _)| k != &name_lc);
             if attrs.len() != before {
                 changed = true;
             }
@@ -78,12 +80,59 @@ impl Dom {
     /// Returns the value of an element's attribute, or `None`.
     // spec: https://dom.spec.whatwg.org/#dom-element-getattribute
     pub fn get_attribute(&self, node: NodeId, name: &str) -> Option<&str> {
+        let name_lc = name.to_ascii_lowercase();
         match &self.arena.get(node)?.data {
             NodeData::Element { attrs, .. } => attrs
                 .iter()
-                .find(|(k, _)| k == name)
+                .find(|(k, _)| k == &name_lc)
                 .map(|(_, v)| v.as_str()),
             _ => None,
+        }
+    }
+
+    /// Returns true if the element has the specified attribute.
+    // spec: https://dom.spec.whatwg.org/#dom-element-hasattribute
+    pub fn has_attribute(&self, node: NodeId, name: &str) -> bool {
+        self.get_attribute(node, name).is_some()
+    }
+
+    /// Toggles the presence of an attribute.
+    /// If `force` is `Some(true)`, the attribute is set to `""`.
+    /// If `force` is `Some(false)`, the attribute is removed.
+    /// If `force` is `None`, the attribute is toggled (removed if present, set to `""` if absent).
+    /// Returns `true` if the attribute is present after the operation, `false` otherwise.
+    // spec: https://dom.spec.whatwg.org/#dom-element-toggleattribute
+    pub fn toggle_attribute(&mut self, node: NodeId, name: &str, force: Option<bool>) -> bool {
+        let present = self.has_attribute(node, name);
+        let should_be_present = force.unwrap_or(!present);
+        if should_be_present {
+            if !present {
+                self.set_attribute(node, name, "");
+            }
+            true
+        } else {
+            if present {
+                self.remove_attribute(node, name);
+            }
+            false
+        }
+    }
+
+    /// Returns the names of all attributes on the given element node, or `None`.
+    // spec: https://dom.spec.whatwg.org/#dom-element-getattributenames
+    pub fn get_attribute_names(&self, node: NodeId) -> Option<Vec<String>> {
+        match &self.arena.get(node)?.data {
+            NodeData::Element { attrs, .. } => Some(attrs.iter().map(|(k, _)| k.clone()).collect()),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the element has any attributes.
+    // spec: https://dom.spec.whatwg.org/#dom-element-hasattributes
+    pub fn has_attributes(&self, node: NodeId) -> bool {
+        match self.data(node) {
+            Some(NodeData::Element { attrs, .. }) => !attrs.is_empty(),
+            _ => false,
         }
     }
 
@@ -4403,7 +4452,7 @@ impl Dom {
             .into_iter()
             .find(|&node_id| {
                 if let Some(NodeData::Element { name, .. }) = temp_dom.data(node_id) {
-                    name == "body"
+                    name.eq_ignore_ascii_case("body")
                 } else {
                     false
                 }
@@ -8487,5 +8536,55 @@ mod tests {
         assert_eq!(dom.children(parent), &[f1, child2]);
         assert_eq!(dom.parent(child1), None);
         assert_eq!(dom.parent(f1), Some(parent));
+    }
+
+    #[test]
+    fn test_t1097_attribute_reflection_and_helpers() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. Case-insensitivity in attribute retrieval and setting
+        dom.set_attribute(el, "CLASS", "my-class");
+        assert_eq!(dom.get_attribute(el, "class"), Some("my-class"));
+        assert_eq!(dom.get_attribute(el, "CLASS"), Some("my-class"));
+
+        // Overwrite using different case
+        dom.set_attribute(el, "Class", "new-class");
+        assert_eq!(dom.get_attribute(el, "class"), Some("new-class"));
+        assert_eq!(dom.get_attribute_names(el), Some(vec!["class".to_string()]));
+
+        // 2. has_attribute
+        assert!(dom.has_attribute(el, "CLASS"));
+        assert!(dom.has_attribute(el, "class"));
+        assert!(!dom.has_attribute(el, "id"));
+
+        // 3. has_attributes
+        assert!(dom.has_attributes(el));
+        let empty_el = elem(&mut dom, "span");
+        assert!(!dom.has_attributes(empty_el));
+
+        // 4. toggle_attribute
+        // Toggling absent attribute
+        let toggled = dom.toggle_attribute(el, "HIDDEN", None);
+        assert!(toggled);
+        assert_eq!(dom.get_attribute(el, "hidden"), Some(""));
+
+        // Toggling present attribute
+        let toggled_off = dom.toggle_attribute(el, "hidden", None);
+        assert!(!toggled_off);
+        assert_eq!(dom.get_attribute(el, "hidden"), None);
+
+        // Force set
+        assert!(dom.toggle_attribute(el, "hidden", Some(true)));
+        assert_eq!(dom.get_attribute(el, "hidden"), Some(""));
+
+        // Force remove
+        assert!(!dom.toggle_attribute(el, "hidden", Some(false)));
+        assert_eq!(dom.get_attribute(el, "hidden"), None);
+
+        // 5. remove_attribute case-insensitive
+        dom.remove_attribute(el, "cLASS");
+        assert_eq!(dom.get_attribute(el, "class"), None);
+        assert_eq!(dom.get_attribute_names(el), Some(vec![]));
     }
 }
