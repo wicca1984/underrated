@@ -321,6 +321,7 @@ fn adjust_svg_attributes(attrs: &mut [(String, String)]) {
 fn adjust_foreign_attributes(attrs: &mut [(String, String)]) {
     for (name, _) in attrs.iter_mut() {
         match name.as_str() {
+            "definitionurl" => *name = "definitionURL".to_string(),
             "xlink:actuate" => *name = "xlink actuate".to_string(),
             "xlink:arcrole" => *name = "xlink arcrole".to_string(),
             "xlink:href" => *name = "xlink href".to_string(),
@@ -1343,7 +1344,7 @@ impl TreeBuilder {
                 "address" | "article" | "aside" | "blockquote" | "center" | "details"
                 | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure"
                 | "footer" | "header" | "hgroup" | "main" | "menu" | "nav" | "ol" | "pre"
-                | "listing" | "search" | "section" | "summary" | "ul" => {
+                | "listing" | "plaintext" | "search" | "section" | "summary" | "ul" => {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name.clone(), attrs);
                     self.open_elements_push(node);
@@ -1380,15 +1381,6 @@ impl TreeBuilder {
                 "rp" | "rt" => {
                     if self.is_in_scope("ruby") {
                         self.generate_implied_end_tags(Some("rtc"));
-                        while let Some(&top_id) = self.stack_of_open_elements.last() {
-                            if let Some(NodeData::Element { name: top_name, .. }) =
-                                self.dom.data(top_id)
-                                && (top_name == "ruby" || top_name == "rtc")
-                            {
-                                break;
-                            }
-                            self.open_elements_pop();
-                        }
                     }
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
@@ -1598,9 +1590,13 @@ impl TreeBuilder {
                 }
                 _ => {
                     self.reconstruct_active_formatting_elements();
+                    let is_foreign_root = name == "svg" || name == "math";
                     let node = self.create_and_insert_element(name.clone(), attrs);
                     if !self.is_void_element(&name) {
                         self.open_elements_push(node);
+                        if is_foreign_root && self_closing {
+                            self.open_elements_pop();
+                        }
                     }
                 }
             },
