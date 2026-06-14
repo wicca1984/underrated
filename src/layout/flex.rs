@@ -110,7 +110,7 @@ pub fn layout_flex_container(
         if is_absolute_or_fixed(styles, child) {
             continue;
         }
-        if let Some(child_box) = layout_node(
+        if let Some(mut child_box) = layout_node(
             dom,
             styles,
             child,
@@ -119,6 +119,38 @@ pub fn layout_flex_container(
             inner_y,
             depth + 1,
         ) {
+            if let Some(child_style) = styles.get(&child) {
+                // Determine initial main size (either flex-basis or laid out size)
+                let flex_basis = child_style.reset_flex.flex_basis;
+                let mut main_val = if flex_basis != -1 {
+                    flex_basis as f32
+                } else {
+                    match flex_direction {
+                        FlexDirection::Row => child_box.rect.size.width,
+                        FlexDirection::Column => child_box.rect.size.height,
+                    }
+                };
+
+                // Clamp using min/max main size
+                let container_height = get_px(style, "height", 0.0);
+                main_val = clamp_main_size(
+                    child_style,
+                    main_val,
+                    flex_direction,
+                    content_width,
+                    container_height,
+                );
+
+                match flex_direction {
+                    FlexDirection::Row => {
+                        child_box.rect.size.width = main_val;
+                    }
+                    FlexDirection::Column => {
+                        child_box.rect.size.height = main_val;
+                    }
+                }
+            }
+
             let order = styles.get(&child).map(|s| s.reset_flex.order).unwrap_or(0);
             temp_children.push((order, child_box));
         }
@@ -222,9 +254,30 @@ pub fn layout_flex_container(
                 if let Some(child_style) = child_box.node.and_then(|id| styles.get(&id)) {
                     let grow = get_number(child_style, "flex-grow", 0.0);
                     let extra = (grow / total_line_flex_grow) * line_free_space;
+                    let container_height = get_px(style, "height", 0.0);
                     match flex_direction {
-                        FlexDirection::Row => child_box.rect.size.width += extra,
-                        FlexDirection::Column => child_box.rect.size.height += extra,
+                        FlexDirection::Row => {
+                            let mut new_width = child_box.rect.size.width + extra;
+                            new_width = clamp_main_size(
+                                child_style,
+                                new_width,
+                                flex_direction,
+                                content_width,
+                                container_height,
+                            );
+                            child_box.rect.size.width = new_width;
+                        }
+                        FlexDirection::Column => {
+                            let mut new_height = child_box.rect.size.height + extra;
+                            new_height = clamp_main_size(
+                                child_style,
+                                new_height,
+                                flex_direction,
+                                content_width,
+                                container_height,
+                            );
+                            child_box.rect.size.height = new_height;
+                        }
                     }
                 }
             }
@@ -254,7 +307,15 @@ pub fn layout_flex_container(
                         let scaled_shrink = shrink * base_size;
                         let shrink_amount =
                             (scaled_shrink / total_scaled_shrink) * negative_free_space;
-                        let new_size = (base_size - shrink_amount).max(0.0);
+                        let mut new_size = (base_size - shrink_amount).max(0.0);
+                        let container_height = get_px(style, "height", 0.0);
+                        new_size = clamp_main_size(
+                            child_style,
+                            new_size,
+                            flex_direction,
+                            content_width,
+                            container_height,
+                        );
                         match flex_direction {
                             FlexDirection::Row => child_box.rect.size.width = new_size,
                             FlexDirection::Column => child_box.rect.size.height = new_size,
@@ -437,8 +498,34 @@ pub fn layout_flex_container(
                     };
                     if !has_explicit {
                         match flex_direction {
-                            FlexDirection::Row => child_box.rect.size.height = line_cross_size,
-                            FlexDirection::Column => child_box.rect.size.width = line_cross_size,
+                            FlexDirection::Row => {
+                                let container_height = get_px(style, "height", 0.0);
+                                let mut stretched = line_cross_size;
+                                if let Some(cs) = child_style {
+                                    stretched = clamp_cross_size(
+                                        cs,
+                                        stretched,
+                                        flex_direction,
+                                        content_width,
+                                        container_height,
+                                    );
+                                }
+                                child_box.rect.size.height = stretched;
+                            }
+                            FlexDirection::Column => {
+                                let container_height = get_px(style, "height", 0.0);
+                                let mut stretched = line_cross_size;
+                                if let Some(cs) = child_style {
+                                    stretched = clamp_cross_size(
+                                        cs,
+                                        stretched,
+                                        flex_direction,
+                                        content_width,
+                                        container_height,
+                                    );
+                                }
+                                child_box.rect.size.width = stretched;
+                            }
                         }
                     }
                     0.0
@@ -569,6 +656,92 @@ fn get_align_self(style: Option<&CategorizedComputedStyle>, default: AlignItems)
         "baseline" => AlignItems::Baseline,
         _ => default,
     }
+}
+
+fn clamp_main_size(
+    style: &CategorizedComputedStyle,
+    mut size: f32,
+    flex_direction: FlexDirection,
+    container_width: f32,
+    container_height: f32,
+) -> f32 {
+    let resolve = |stored: i32, ref_size: f32| -> Option<f32> {
+        if stored == -1 {
+            None
+        } else if stored >= crate::style::categorized::WIDTH_PERCENT_BAND {
+            Some((stored - crate::style::categorized::WIDTH_PERCENT_BAND) as f32 / 100.0 * ref_size)
+        } else {
+            Some(stored as f32)
+        }
+    };
+
+    let (min_stored, max_stored, ref_size) = match flex_direction {
+        FlexDirection::Row => (
+            style.reset_box.min_width,
+            style.reset_box.max_width,
+            container_width,
+        ),
+        FlexDirection::Column => (
+            style.reset_box.min_height,
+            style.reset_box.max_height,
+            container_height,
+        ),
+    };
+
+    if let Some(max_val) = resolve(max_stored, ref_size)
+        && size > max_val
+    {
+        size = max_val;
+    }
+    if let Some(min_val) = resolve(min_stored, ref_size)
+        && size < min_val
+    {
+        size = min_val;
+    }
+    size.max(0.0)
+}
+
+fn clamp_cross_size(
+    style: &CategorizedComputedStyle,
+    mut size: f32,
+    flex_direction: FlexDirection,
+    container_width: f32,
+    container_height: f32,
+) -> f32 {
+    let resolve = |stored: i32, ref_size: f32| -> Option<f32> {
+        if stored == -1 {
+            None
+        } else if stored >= crate::style::categorized::WIDTH_PERCENT_BAND {
+            Some((stored - crate::style::categorized::WIDTH_PERCENT_BAND) as f32 / 100.0 * ref_size)
+        } else {
+            Some(stored as f32)
+        }
+    };
+
+    let (min_stored, max_stored, ref_size) = match flex_direction {
+        FlexDirection::Row => (
+            style.reset_box.min_height,
+            style.reset_box.max_height,
+            container_height,
+        ),
+        FlexDirection::Column => (
+            style.reset_box.min_width,
+            style.reset_box.max_width,
+            container_width,
+        ),
+    };
+
+    if let Some(max_val) = resolve(max_stored, ref_size)
+        && size > max_val
+    {
+        size = max_val;
+    }
+    if let Some(min_val) = resolve(min_stored, ref_size)
+        && size < min_val
+    {
+        size = min_val;
+    }
+    size.max(0.0)
 }
 
 #[cfg(test)]
@@ -2463,5 +2636,165 @@ mod tests {
         assert!(approx_eq(container_box.children[2].rect.origin.x, 200.0));
         assert!(approx_eq(container_box.children[3].rect.origin.x, 300.0));
         assert!(approx_eq(container_box.children[4].rect.origin.x, 400.0));
+    }
+
+    #[test]
+    fn test_flex_basis_resolution() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 500px;
+            }
+            div {
+                height: 50px;
+            }
+            #child1 {
+                width: 100px;
+                flex-basis: 150px;
+            }
+            #child2 {
+                width: 100px;
+                /* flex-basis not specified, so uses width */
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        // child1 width should be its flex-basis (150px) instead of 100px
+        assert!(approx_eq(container_box.children[0].rect.size.width, 150.0));
+        // child2 width should remain its default/specified width (100px)
+        assert!(approx_eq(container_box.children[1].rect.size.width, 100.0));
+    }
+
+    #[test]
+    fn test_flex_main_min_max_clamping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 500px;
+            }
+            div {
+                height: 50px;
+            }
+            #child1 {
+                width: 250px;
+                max-width: 200px;
+            }
+            #child2 {
+                width: 50px;
+                min-width: 100px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        // child1 width should be clamped down to max-width: 200.0 from 250.0
+        assert!(approx_eq(container_box.children[0].rect.size.width, 200.0));
+        // child2 width should be clamped up to min-width: 100.0 from 50.0
+        assert!(approx_eq(container_box.children[1].rect.size.width, 100.0));
+    }
+
+    #[test]
+    fn test_flex_cross_min_max_clamping_on_stretch() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                height: 200px;
+                align-items: stretch;
+            }
+            div {
+                width: 100px;
+            }
+            #child1 {
+                /* stretch would make height 200px, but clamped by max-height */
+                max-height: 150px;
+            }
+            #child2 {
+                /* stretch would make height 200px, but min-height is 250px */
+                min-height: 250px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        // child1 height should be clamped to max-height (150px)
+        assert!(approx_eq(container_box.children[0].rect.size.height, 150.0));
+        // child2 height should be clamped to min-height (250px)
+        assert!(approx_eq(container_box.children[1].rect.size.height, 250.0));
     }
 }
