@@ -198,6 +198,68 @@ impl BoaHost {
         let _ = context.register_global_class::<PerformanceObserver>();
         let _ = context.register_global_class::<Blob>();
 
+        if let Ok(string_constructor) = context
+            .global_object()
+            .get(JsString::from("String"), context)
+            && let Some(string_constructor_obj) = string_constructor.as_object()
+            && let Ok(prototype) = string_constructor_obj.get(JsString::from("prototype"), context)
+            && let Some(proto_obj) = prototype.as_object()
+        {
+            let realm = context.realm().clone();
+            let pad_start_fn = boa_engine::object::FunctionObjectBuilder::new(
+                &realm,
+                NativeFunction::from_fn_ptr(string_pad_start),
+            )
+            .name("padStart")
+            .length(1)
+            .build();
+            let _ = proto_obj.set(
+                JsString::from("padStart"),
+                JsValue::from(pad_start_fn),
+                false,
+                context,
+            );
+            let pad_end_fn = boa_engine::object::FunctionObjectBuilder::new(
+                &realm,
+                NativeFunction::from_fn_ptr(string_pad_end),
+            )
+            .name("padEnd")
+            .length(1)
+            .build();
+            let _ = proto_obj.set(
+                JsString::from("padEnd"),
+                JsValue::from(pad_end_fn),
+                false,
+                context,
+            );
+            let repeat_fn = boa_engine::object::FunctionObjectBuilder::new(
+                &realm,
+                NativeFunction::from_fn_ptr(string_repeat),
+            )
+            .name("repeat")
+            .length(1)
+            .build();
+            let _ = proto_obj.set(
+                JsString::from("repeat"),
+                JsValue::from(repeat_fn),
+                false,
+                context,
+            );
+            let replace_all_fn = boa_engine::object::FunctionObjectBuilder::new(
+                &realm,
+                NativeFunction::from_fn_ptr(string_replace_all),
+            )
+            .name("replaceAll")
+            .length(2)
+            .build();
+            let _ = proto_obj.set(
+                JsString::from("replaceAll"),
+                JsValue::from(replace_all_fn),
+                false,
+                context,
+            );
+        }
+
         let bridge = ObjectInitializer::new(context)
             .function(
                 NativeFunction::from_fn_ptr(bridge_active_element),
@@ -3886,6 +3948,376 @@ fn css_escape(
     })?;
     let escaped = serialize_css_identifier(&input_str);
     Ok(JsValue::from(JsString::from(escaped)))
+}
+
+fn get_substitution(
+    matched: &[u16],
+    str_utf16: &[u16],
+    position: usize,
+    replacement: &[u16],
+) -> Vec<u16> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < replacement.len() {
+        if replacement[i] == 0x0024 && i + 1 < replacement.len() {
+            // '$'
+            let next = replacement[i + 1];
+            match next {
+                0x0024 => {
+                    // '$$'
+                    result.push(0x0024);
+                    i += 2;
+                }
+                0x0026 => {
+                    // '$&'
+                    result.extend_from_slice(matched);
+                    i += 2;
+                }
+                0x0060 => {
+                    // '$`'
+                    result.extend_from_slice(&str_utf16[..position]);
+                    i += 2;
+                }
+                0x0027 => {
+                    // '$''
+                    let after = position + matched.len();
+                    if after < str_utf16.len() {
+                        result.extend_from_slice(&str_utf16[after..]);
+                    }
+                    i += 2;
+                }
+                _ => {
+                    result.push(0x0024);
+                    i += 1;
+                }
+            }
+        } else {
+            result.push(replacement[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
+fn string_pad_start(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    if this.is_undefined() || this.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "String.prototype.padStart called on null or undefined",
+        )));
+    }
+    let this_str = this.to_string(context)?.to_std_string().map_err(|e| {
+        JsError::from(
+            JsNativeError::typ().with_message(format!("Failed to convert this to string: {}", e)),
+        )
+    })?;
+
+    let target_len_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let target_len_num = target_len_val.to_number(context)?;
+    let target_len = if target_len_num.is_nan() || target_len_num <= 0.0 {
+        0
+    } else if target_len_num >= 9007199254740991.0 {
+        9007199254740991
+    } else {
+        target_len_num as usize
+    };
+
+    let this_utf16: Vec<u16> = this_str.encode_utf16().collect();
+    let this_len = this_utf16.len();
+
+    if target_len <= this_len {
+        return Ok(JsValue::from(JsString::from(this_str)));
+    }
+
+    let pad_str_val = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    let pad_utf16: Vec<u16> = if pad_str_val.is_undefined() {
+        vec![0x0020]
+    } else {
+        let pad_str = pad_str_val
+            .to_string(context)?
+            .to_std_string()
+            .map_err(|e| {
+                JsError::from(
+                    JsNativeError::typ()
+                        .with_message(format!("Failed to convert padString to string: {}", e)),
+                )
+            })?;
+        pad_str.encode_utf16().collect()
+    };
+
+    if pad_utf16.is_empty() {
+        return Ok(JsValue::from(JsString::from(this_str)));
+    }
+
+    let fill_len = target_len - this_len;
+    let mut filler: Vec<u16> = Vec::with_capacity(fill_len);
+    while filler.len() < fill_len {
+        let remaining = fill_len - filler.len();
+        if remaining >= pad_utf16.len() {
+            filler.extend_from_slice(&pad_utf16);
+        } else {
+            filler.extend_from_slice(&pad_utf16[..remaining]);
+        }
+    }
+
+    let mut result_utf16 = filler;
+    result_utf16.extend_from_slice(&this_utf16);
+
+    let result_str = String::from_utf16(&result_utf16).map_err(|e| {
+        JsError::from(
+            JsNativeError::typ().with_message(format!("Failed to convert UTF-16 to string: {}", e)),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(result_str)))
+}
+
+fn string_pad_end(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    if this.is_undefined() || this.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "String.prototype.padEnd called on null or undefined",
+        )));
+    }
+    let this_str = this.to_string(context)?.to_std_string().map_err(|e| {
+        JsError::from(
+            JsNativeError::typ().with_message(format!("Failed to convert this to string: {}", e)),
+        )
+    })?;
+
+    let target_len_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let target_len_num = target_len_val.to_number(context)?;
+    let target_len = if target_len_num.is_nan() || target_len_num <= 0.0 {
+        0
+    } else if target_len_num >= 9007199254740991.0 {
+        9007199254740991
+    } else {
+        target_len_num as usize
+    };
+
+    let this_utf16: Vec<u16> = this_str.encode_utf16().collect();
+    let this_len = this_utf16.len();
+
+    if target_len <= this_len {
+        return Ok(JsValue::from(JsString::from(this_str)));
+    }
+
+    let pad_str_val = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    let pad_utf16: Vec<u16> = if pad_str_val.is_undefined() {
+        vec![0x0020]
+    } else {
+        let pad_str = pad_str_val
+            .to_string(context)?
+            .to_std_string()
+            .map_err(|e| {
+                JsError::from(
+                    JsNativeError::typ()
+                        .with_message(format!("Failed to convert padString to string: {}", e)),
+                )
+            })?;
+        pad_str.encode_utf16().collect()
+    };
+
+    if pad_utf16.is_empty() {
+        return Ok(JsValue::from(JsString::from(this_str)));
+    }
+
+    let fill_len = target_len - this_len;
+    let mut filler: Vec<u16> = Vec::with_capacity(fill_len);
+    while filler.len() < fill_len {
+        let remaining = fill_len - filler.len();
+        if remaining >= pad_utf16.len() {
+            filler.extend_from_slice(&pad_utf16);
+        } else {
+            filler.extend_from_slice(&pad_utf16[..remaining]);
+        }
+    }
+
+    let mut result_utf16 = this_utf16;
+    result_utf16.extend_from_slice(&filler);
+
+    let result_str = String::from_utf16(&result_utf16).map_err(|e| {
+        JsError::from(
+            JsNativeError::typ().with_message(format!("Failed to convert UTF-16 to string: {}", e)),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(result_str)))
+}
+
+fn string_repeat(this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    if this.is_undefined() || this.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "String.prototype.repeat called on null or undefined",
+        )));
+    }
+    let this_str = this.to_string(context)?.to_std_string().map_err(|e| {
+        JsError::from(
+            JsNativeError::typ().with_message(format!("Failed to convert this to string: {}", e)),
+        )
+    })?;
+
+    let count_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let count_num = count_val.to_number(context)?;
+
+    if count_num.is_nan() {
+        return Ok(JsValue::from(JsString::from("")));
+    }
+    if count_num < 0.0 || count_num.is_infinite() {
+        return Err(JsError::from(JsNativeError::range().with_message(
+            "String.prototype.repeat count must be non-negative and finite",
+        )));
+    }
+    let n = count_num as usize;
+
+    if n == 0 || this_str.is_empty() {
+        return Ok(JsValue::from(JsString::from("")));
+    }
+
+    if let Some(total_len) = this_str.len().checked_mul(n) {
+        if total_len > 100_000_000 {
+            return Err(JsError::from(JsNativeError::range().with_message(
+                "String.prototype.repeat resulting string length exceeds maximum size",
+            )));
+        }
+    } else {
+        return Err(JsError::from(
+            JsNativeError::range().with_message("String.prototype.repeat count is too large"),
+        ));
+    }
+
+    let result_str = this_str.repeat(n);
+    Ok(JsValue::from(JsString::from(result_str)))
+}
+
+fn string_replace_all(
+    this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    if this.is_undefined() || this.is_null() {
+        return Err(JsError::from(JsNativeError::typ().with_message(
+            "String.prototype.replaceAll called on null or undefined",
+        )));
+    }
+    let this_str = this.to_string(context)?.to_std_string().map_err(|e| {
+        JsError::from(
+            JsNativeError::typ().with_message(format!("Failed to convert this to string: {}", e)),
+        )
+    })?;
+
+    let search_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let search_str = search_val
+        .to_string(context)?
+        .to_std_string()
+        .map_err(|e| {
+            JsError::from(
+                JsNativeError::typ()
+                    .with_message(format!("Failed to convert searchValue to string: {}", e)),
+            )
+        })?;
+
+    let replace_val = args.get(1).cloned().unwrap_or(JsValue::undefined());
+    let is_callable = replace_val.is_callable();
+    let replace_callable = replace_val.as_callable();
+
+    let replace_utf16: Vec<u16> = if is_callable {
+        Vec::new()
+    } else {
+        let replace_str = replace_val
+            .to_string(context)?
+            .to_std_string()
+            .map_err(|e| {
+                JsError::from(
+                    JsNativeError::typ()
+                        .with_message(format!("Failed to convert replaceValue to string: {}", e)),
+                )
+            })?;
+        replace_str.encode_utf16().collect()
+    };
+
+    let this_utf16: Vec<u16> = this_str.encode_utf16().collect();
+    let search_utf16: Vec<u16> = search_str.encode_utf16().collect();
+
+    if search_utf16.is_empty() {
+        let mut result = Vec::new();
+        for pos in 0..=this_utf16.len() {
+            let replacement_at_pos = if is_callable {
+                if let Some(callable) = &replace_callable {
+                    let pos_val = JsValue::from(pos);
+                    let this_str_val = JsValue::from(JsString::from(this_str.clone()));
+                    let empty_val = JsValue::from(JsString::from(""));
+                    let res_val = callable.call(
+                        &JsValue::undefined(),
+                        &[empty_val, pos_val, this_str_val],
+                        context,
+                    )?;
+                    let res_str = res_val.to_string(context)?.to_std_string().map_err(|e| {
+                        JsError::from(
+                            JsNativeError::typ()
+                                .with_message(format!("Failed to convert replace value: {}", e)),
+                        )
+                    })?;
+                    res_str.encode_utf16().collect::<Vec<u16>>()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                get_substitution(&[], &this_utf16, pos, &replace_utf16)
+            };
+            result.extend_from_slice(&replacement_at_pos);
+            if pos < this_utf16.len() {
+                result.push(this_utf16[pos]);
+            }
+        }
+        let final_str = String::from_utf16(&result).map_err(|e| {
+            JsError::from(
+                JsNativeError::typ()
+                    .with_message(format!("Failed to convert UTF-16 to string: {}", e)),
+            )
+        })?;
+        return Ok(JsValue::from(JsString::from(final_str)));
+    }
+
+    let mut result = Vec::new();
+    let mut pos = 0;
+    let search_len = search_utf16.len();
+    while pos < this_utf16.len() {
+        if pos + search_len <= this_utf16.len() && this_utf16[pos..pos + search_len] == search_utf16
+        {
+            let replacement_at_pos = if is_callable {
+                if let Some(callable) = &replace_callable {
+                    let match_val = JsValue::from(JsString::from(search_str.clone()));
+                    let pos_val = JsValue::from(pos);
+                    let this_str_val = JsValue::from(JsString::from(this_str.clone()));
+                    let res_val = callable.call(
+                        &JsValue::undefined(),
+                        &[match_val, pos_val, this_str_val],
+                        context,
+                    )?;
+                    let res_str = res_val.to_string(context)?.to_std_string().map_err(|e| {
+                        JsError::from(
+                            JsNativeError::typ()
+                                .with_message(format!("Failed to convert replace value: {}", e)),
+                        )
+                    })?;
+                    res_str.encode_utf16().collect::<Vec<u16>>()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                get_substitution(&search_utf16, &this_utf16, pos, &replace_utf16)
+            };
+            result.extend_from_slice(&replacement_at_pos);
+            pos += search_len;
+        } else {
+            result.push(this_utf16[pos]);
+            pos += 1;
+        }
+    }
+
+    let final_str = String::from_utf16(&result).map_err(|e| {
+        JsError::from(
+            JsNativeError::typ().with_message(format!("Failed to convert UTF-16 to string: {}", e)),
+        )
+    })?;
+    Ok(JsValue::from(JsString::from(final_str)))
 }
 
 fn structured_clone_value(value: &JsValue, context: &mut Context) -> JsResult<JsValue> {
@@ -11198,6 +11630,70 @@ mod tests {
         assert!(
             host.eval(script).is_ok(),
             "CSS.escape API JS verification failed!"
+        );
+    }
+
+    #[test]
+    fn test_string_prototype_extensions() {
+        let mut host = BoaHost::new();
+        let script = r#"
+            // Test padStart
+            if (typeof String.prototype.padStart !== "function") throw "padStart missing";
+            if ("abc".padStart(5) !== "  abc") throw "padStart default padString failed";
+            if ("abc".padStart(5, "foo") !== "foabc") throw "padStart non-default padString failed";
+            if ("abc".padStart(3, "foo") !== "abc") throw "padStart already targetLength failed";
+            if ("abc".padStart(2, "foo") !== "abc") throw "padStart targetLength <= current failed";
+            if ("abc".padStart(10, "12") !== "1212121abc") throw "padStart truncation pattern failed";
+            if ("𠮷".padStart(3, "a") !== "a𠮷") throw "padStart surrogate pair failed";
+            if ("abc".padStart(0) !== "abc") throw "padStart target 0 failed";
+            if ("abc".padStart(-5) !== "abc") throw "padStart target negative failed";
+
+            // Test padEnd
+            if (typeof String.prototype.padEnd !== "function") throw "padEnd missing";
+            if ("abc".padEnd(5) !== "abc  ") throw "padEnd default padString failed";
+            if ("abc".padEnd(5, "foo") !== "abcfo") throw "padEnd non-default padString failed";
+            if ("abc".padEnd(3, "foo") !== "abc") throw "padEnd already targetLength failed";
+            if ("abc".padEnd(2, "foo") !== "abc") throw "padEnd targetLength <= current failed";
+            if ("abc".padEnd(10, "12") !== "abc1212121") throw "padEnd truncation pattern failed";
+            if ("𠮷".padEnd(3, "a") !== "𠮷a") throw "padEnd surrogate pair failed";
+            if ("abc".padEnd(0) !== "abc") throw "padEnd target 0 failed";
+            if ("abc".padEnd(-5) !== "abc") throw "padEnd target negative failed";
+
+            // Test repeat
+            if (typeof String.prototype.repeat !== "function") throw "repeat missing";
+            if ("abc".repeat(3) !== "abcabcabc") throw "repeat 3 failed";
+            if ("abc".repeat(0) !== "") throw "repeat 0 failed";
+            if ("".repeat(5) !== "") throw "repeat empty failed";
+            let thrown = false;
+            try {
+                "abc".repeat(-1);
+            } catch (e) {
+                if (e instanceof RangeError) thrown = true;
+            }
+            if (!thrown) throw "repeat negative did not throw RangeError";
+
+            thrown = false;
+            try {
+                "abc".repeat(Infinity);
+            } catch (e) {
+                if (e instanceof RangeError) thrown = true;
+            }
+            if (!thrown) throw "repeat Infinity did not throw RangeError";
+
+            // Test replaceAll
+            if (typeof String.prototype.replaceAll !== "function") throw "replaceAll missing";
+            if ("abcabc".replaceAll("b", "z") !== "azcazc") throw "replaceAll basic failed";
+            if ("abc".replaceAll("", "x") !== "xaxbxcx") throw "replaceAll empty searchValue failed";
+            if ("".replaceAll("", "x") !== "x") throw "replaceAll empty searchValue empty string failed";
+            if ("abc".replaceAll("d", "x") !== "abc") throw "replaceAll no-match failed";
+
+            // Test replaceAll with functions
+            if ("abcabc".replaceAll("b", (match, offset, str) => match + offset) !== "ab1cab4c") throw "replaceAll function replacement failed";
+            if ("abc".replaceAll("", (match, offset) => "x" + offset) !== "x0ax1bx2cx3") throw "replaceAll empty searchValue function replacement failed";
+        "#;
+        assert!(
+            host.eval(script).is_ok(),
+            "String.prototype extensions API JS verification failed!"
         );
     }
 
