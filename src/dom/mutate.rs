@@ -1756,6 +1756,98 @@ impl Dom {
         }
     }
 
+    /// Sets the `title` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_title(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "title", value);
+        }
+    }
+
+    /// Sets the `lang` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_lang(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "lang", value);
+        }
+    }
+
+    /// Sets the `dir` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_dir(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "dir", value);
+        }
+    }
+
+    /// Sets the `target` content attribute on a valid element node (a, area, base, form).
+    /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
+    pub fn set_target(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+        {
+            let is_defined = name.eq_ignore_ascii_case("a")
+                || name.eq_ignore_ascii_case("area")
+                || name.eq_ignore_ascii_case("base")
+                || name.eq_ignore_ascii_case("form");
+            if is_defined {
+                self.set_attribute(node, "target", value);
+            }
+        }
+    }
+
+    /// Sets the `rel` content attribute on a valid element node.
+    /// No-op if the node is not an element node, or if the `NodeId` is invalid.
+    pub fn set_rel(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { .. } = &n.data
+        {
+            self.set_attribute(node, "rel", value);
+        }
+    }
+
+    /// Sets the `formtarget` content attribute on a valid submit button element
+    /// (input, button).
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_formtarget(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            self.set_attribute(node, "formtarget", value);
+        }
+    }
+
+    /// Sets the `formaction` content attribute on a valid submit button element
+    /// (input, button).
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_formaction(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            self.set_attribute(node, "formaction", value);
+        }
+    }
+
+    /// Sets the `formmethod` content attribute on a valid submit button element
+    /// (input, button).
+    /// No-op if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn set_formmethod(&mut self, node: NodeId, value: &str) {
+        if let Some(n) = self.arena.get(node)
+            && let NodeData::Element { name, .. } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            self.set_attribute(node, "formmethod", value);
+        }
+    }
+
     /// Sets the `type` content attribute on a valid element node (button, input, embed, object, ol, script, source, style, link, menu, command).
     /// No-op if the node is not one of those element tags, or if the `NodeId` is invalid.
     pub fn set_type(&mut self, node: NodeId, value: &str) {
@@ -4560,5 +4652,69 @@ mod tests {
         assert_eq!(dom.get_selected(option_id), Some(true));
         dom.set_selected(option_id, false);
         assert_eq!(dom.get_selected(option_id), Some(false));
+    }
+
+    #[test]
+    fn test_reflected_content_attribute_accessors_t0813() {
+        let mut dom = Dom::new();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![],
+        });
+
+        // 1. title, lang, dir (any element node)
+        assert_eq!(dom.get_title(div_id), None);
+        dom.set_title(div_id, "Hello Title");
+        assert_eq!(dom.get_title(div_id), Some("Hello Title"));
+
+        assert_eq!(dom.get_lang(div_id), None);
+        dom.set_lang(div_id, "ja");
+        assert_eq!(dom.get_lang(div_id), Some("ja"));
+
+        assert_eq!(dom.get_dir(div_id), None);
+        dom.set_dir(div_id, "rtl");
+        assert_eq!(dom.get_dir(div_id), Some("rtl"));
+
+        // 2. target (a, area, base, form)
+        let a_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_target(a_id), None);
+        dom.set_target(a_id, "_blank");
+        assert_eq!(dom.get_target(a_id), Some("_blank"));
+        dom.set_target(div_id, "_self");
+        assert_eq!(dom.get_target(div_id), None);
+
+        // 3. rel (any element node)
+        assert_eq!(dom.get_rel(div_id), None);
+        dom.set_rel(div_id, "stylesheet");
+        assert_eq!(dom.get_rel(div_id), Some("stylesheet"));
+
+        // 4. formtarget, formaction, formmethod (input, button)
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_formtarget(input_id), None);
+        dom.set_formtarget(input_id, "_parent");
+        assert_eq!(dom.get_formtarget(input_id), Some("_parent"));
+
+        assert_eq!(dom.get_formaction(input_id), None);
+        dom.set_formaction(input_id, "/submit-form");
+        assert_eq!(dom.get_formaction(input_id), Some("/submit-form"));
+
+        assert_eq!(dom.get_formmethod(input_id), None);
+        dom.set_formmethod(input_id, "get");
+        assert_eq!(dom.get_formmethod(input_id), Some("get"));
+
+        // check non-submit elements are no-ops
+        dom.set_formtarget(div_id, "_blank");
+        assert_eq!(dom.get_formtarget(div_id), None);
+        dom.set_formaction(div_id, "/post");
+        assert_eq!(dom.get_formaction(div_id), None);
+        dom.set_formmethod(div_id, "post");
+        assert_eq!(dom.get_formmethod(div_id), None);
     }
 }
