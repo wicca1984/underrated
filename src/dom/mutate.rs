@@ -291,6 +291,34 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `rel` content attribute of a valid element node.
+    /// Returns `None` if the node has no `rel` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_rel(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("rel"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `for` content attribute of a valid element node.
+    /// Returns `None` if the node has no `for` attribute, is not an element node,
+    /// or if the `NodeId` is invalid.
+    pub fn get_for(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name: _, attrs } = &n.data {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("for"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Returns the value of the `target` content attribute of a valid element node,
     /// but only if `target` is a defined attribute for its element tag (a, area, base, form).
     /// Returns `None` if the node is not one of those element tags, has no `target` attribute,
@@ -909,6 +937,59 @@ mod tests {
             foreign_node = elem(&mut foreign_dom, "div");
         }
         assert_eq!(dom.get_lang(foreign_node), None);
+    }
+
+    #[test]
+    fn test_rel_and_for_accessors() {
+        let mut dom = Dom::new();
+
+        // 1. Element with rel / for attribute -> returns Some(value)
+        let a_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("rel".to_string(), "stylesheet".to_string())],
+        });
+        assert_eq!(dom.get_rel(a_id), Some("stylesheet"));
+
+        let label_id = dom.create_node(NodeData::Element {
+            name: "label".to_string(),
+            attrs: vec![("for".to_string(), "username".to_string())],
+        });
+        assert_eq!(dom.get_for(label_id), Some("username"));
+
+        // 2. Element with case-insensitive rel / for attribute (e.g., REL / FOR) -> returns Some(value)
+        let a_id_upper = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("REL".to_string(), "stylesheet-upper".to_string())],
+        });
+        assert_eq!(dom.get_rel(a_id_upper), Some("stylesheet-upper"));
+
+        let label_id_upper = dom.create_node(NodeData::Element {
+            name: "label".to_string(),
+            attrs: vec![("FOR".to_string(), "username-upper".to_string())],
+        });
+        assert_eq!(dom.get_for(label_id_upper), Some("username-upper"));
+
+        // 3. Element without rel / for attribute -> returns None
+        let p_id = dom.create_node(NodeData::Element {
+            name: "p".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_rel(p_id), None);
+        assert_eq!(dom.get_for(p_id), None);
+
+        // 4. Non-element node (e.g., Text node) -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_rel(text_id), None);
+        assert_eq!(dom.get_for(text_id), None);
+
+        // 5. Invalid / foreign NodeId -> returns None
+        let mut foreign_dom = Dom::new();
+        let mut foreign_node = elem(&mut foreign_dom, "input");
+        for _ in 0..100 {
+            foreign_node = elem(&mut foreign_dom, "input");
+        }
+        assert_eq!(dom.get_rel(foreign_node), None);
+        assert_eq!(dom.get_for(foreign_node), None);
     }
 
     #[test]
