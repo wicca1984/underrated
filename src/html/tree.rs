@@ -285,6 +285,7 @@ pub struct TreeBuilder {
     pending_table_character_tokens: Vec<char>,
     original_insertion_mode: Option<InsertionMode>,
     ignore_next_lf: bool,
+    frameset_ok: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,6 +516,7 @@ impl TreeBuilder {
             pending_table_character_tokens: Vec::new(),
             original_insertion_mode: None,
             ignore_next_lf: false,
+            frameset_ok: true,
         }
     }
 
@@ -679,6 +681,9 @@ impl TreeBuilder {
                     self.insert_character('\u{FFFD}');
                 } else {
                     self.insert_character(c);
+                    if !is_html_whitespace(c) {
+                        self.frameset_ok = false;
+                    }
                 }
             }
             Token::Comment(data) => {
@@ -706,6 +711,7 @@ impl TreeBuilder {
                 mut attrs,
                 self_closing,
             } => {
+                self.frameset_ok = false;
                 let is_html_breaking = match name.as_str() {
                     "b" | "big" | "blockquote" | "body" | "br" | "center" | "code" | "dd"
                     | "div" | "dl" | "dt" | "em" | "embed" | "h1" | "h2" | "h3" | "h4" | "h5"
@@ -1266,7 +1272,7 @@ impl TreeBuilder {
             Token::StartTag { name, attrs, .. } if name == "body" => {
                 let node = self.create_and_insert_element(name, attrs);
                 self.open_elements_push(node);
-                // TODO(spec): frameset-ok flag
+                self.frameset_ok = false;
                 self.insertion_mode = InsertionMode::InBody;
             }
             Token::StartTag { name, attrs, .. } if name == "template" => {
@@ -1354,6 +1360,9 @@ impl TreeBuilder {
                 } else {
                     self.reconstruct_active_formatting_elements();
                     self.insert_character(c);
+                    if !is_html_whitespace(c) {
+                        self.frameset_ok = false;
+                    }
                 }
             }
             Token::Comment(data) => {
@@ -1449,6 +1458,7 @@ impl TreeBuilder {
                     self.open_elements_push(node);
                     if name == "pre" || name == "listing" {
                         self.ignore_next_lf = true;
+                        self.frameset_ok = false;
                     }
                 }
                 "form" => {
@@ -1509,6 +1519,7 @@ impl TreeBuilder {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
+                    self.frameset_ok = false;
                 }
                 "dd" | "dt" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1531,6 +1542,7 @@ impl TreeBuilder {
                     self.close_p_element_if_in_button_scope();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
+                    self.frameset_ok = false;
                 }
                 "option" => {
                     // spec: https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody
@@ -1563,7 +1575,7 @@ impl TreeBuilder {
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
-                    // TODO(spec): set frameset-ok to not ok
+                    self.frameset_ok = false;
                     if matches!(
                         self.insertion_mode,
                         InsertionMode::InTable
@@ -1619,6 +1631,7 @@ impl TreeBuilder {
                     self.open_elements_push(node);
                     self.list_of_active_formatting_elements
                         .push(FormattingElement::Marker);
+                    self.frameset_ok = false;
                 }
                 "table" => {
                     if !matches!(self.quirks_mode, QuirksMode::Quirks) {
@@ -1627,16 +1640,24 @@ impl TreeBuilder {
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
                     self.insertion_mode = InsertionMode::InTable;
+                    self.frameset_ok = false;
                 }
                 "area" | "br" | "embed" | "img" | "keygen" | "wbr" => {
                     self.reconstruct_active_formatting_elements();
                     self.create_and_insert_element(name, attrs);
                     // void elements, don't push to stack
+                    self.frameset_ok = false;
                 }
                 "input" => {
                     self.reconstruct_active_formatting_elements();
-                    self.create_and_insert_element(name, attrs);
-                    // TODO(spec): frameset-ok = false
+                    self.create_and_insert_element(name, attrs.clone());
+                    // void elements, don't push to stack
+                    let is_hidden = attrs.iter().any(|(k, v)| {
+                        k.eq_ignore_ascii_case("type") && v.eq_ignore_ascii_case("hidden")
+                    });
+                    if !is_hidden {
+                        self.frameset_ok = false;
+                    }
                 }
                 "textarea" => {
                     let node = self.create_and_insert_element(name.clone(), attrs);
@@ -1645,6 +1666,7 @@ impl TreeBuilder {
                     self.tokenizer.set_last_start_tag(&name);
                     self.ignore_next_lf = true;
                     self.insertion_mode = InsertionMode::Text;
+                    self.frameset_ok = false;
                 }
                 "iframe" | "noembed" | "xmp" => {
                     if name == "xmp" {
@@ -1656,6 +1678,7 @@ impl TreeBuilder {
                     self.tokenizer.set_initial_state("RAWTEXT state");
                     self.tokenizer.set_last_start_tag(&name);
                     self.insertion_mode = InsertionMode::Text;
+                    self.frameset_ok = false;
                 }
                 "button" => {
                     if self.is_in_scope("button") {
@@ -1664,6 +1687,7 @@ impl TreeBuilder {
                     self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
+                    self.frameset_ok = false;
                 }
                 "param" | "source" | "track" => {
                     self.create_and_insert_element(name, attrs);
@@ -1671,6 +1695,7 @@ impl TreeBuilder {
                 "hr" => {
                     self.close_p_element_if_in_button_scope();
                     self.create_and_insert_element(name, attrs);
+                    self.frameset_ok = false;
                 }
                 "frameset" => {
                     let has_body_as_second = if self.stack_of_open_elements.len() >= 2 {
@@ -1680,7 +1705,7 @@ impl TreeBuilder {
                         false
                     };
 
-                    if !has_body_as_second {
+                    if !has_body_as_second || !self.frameset_ok {
                         // Parse error. Ignore the token.
                     } else {
                         let body_id = self.stack_of_open_elements[1];

@@ -350,18 +350,7 @@ fn test_html5lib_tree_construction_conformance() {
                 continue;
             }
 
-            // Skip test cases containing frameset, frame, noframes, or noscript elements
-            // to avoid parser stack overflows due to recursive process_token calls in the current engine.
-            let data_lower = case.data.to_lowercase();
-            if data_lower.contains("<noscript")
-                || data_lower.contains("</noscript")
-                || data_lower.contains("<frameset")
-                || data_lower.contains("</frameset")
-                || data_lower.contains("<frame")
-                || data_lower.contains("</frame")
-                || data_lower.contains("<noframes")
-                || data_lower.contains("</noframes")
-            {
+            if case.file_path.contains("scripted/") {
                 skipped += 1;
                 continue;
             }
@@ -382,7 +371,7 @@ fn test_html5lib_tree_construction_conformance() {
         }
     }
 
-    const BASELINE: usize = 1454;
+    const BASELINE: usize = 1570;
 
     eprintln!(
         "html5lib tree-construction: PASS={} FAIL={} SKIP={} (baseline >= {})",
