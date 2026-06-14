@@ -231,6 +231,37 @@ pub fn layout_flex_container(
         (row_gap, col_gap)
     };
 
+    let mut modified_styles;
+    let has_any_content_basis = dom.children(node).iter().any(|&child| {
+        if is_absolute_or_fixed(styles, child) {
+            return false;
+        }
+        let child_style = styles.get(&child);
+        is_flex_basis_content(child_style)
+    });
+
+    let styles = if has_any_content_basis {
+        modified_styles = styles.clone();
+        for &child in dom.children(node) {
+            if is_absolute_or_fixed(&modified_styles, child) {
+                continue;
+            }
+            if let Some(child_style) = modified_styles.get_mut(&child)
+                && is_flex_basis_content(Some(child_style))
+            {
+                // Ignore specified width/height for flex-basis content: set it to auto (-1)
+                if flex_direction.is_row() {
+                    std::sync::Arc::make_mut(&mut child_style.reset_box).width = -1;
+                } else {
+                    std::sync::Arc::make_mut(&mut child_style.reset_box).height = -1;
+                }
+            }
+        }
+        &modified_styles
+    } else {
+        styles
+    };
+
     // 1. Layout children to determine their base sizes.
     // For now, we layout them as blocks to get their natural height/width.
     let mut temp_children = Vec::new();
@@ -253,7 +284,13 @@ pub fn layout_flex_container(
             if let Some(child_style) = styles.get(&child) {
                 // Determine initial main size (either flex-basis or laid out size)
                 let flex_basis = child_style.reset_flex.flex_basis;
-                let mut main_val = if flex_basis != -1 {
+                let mut main_val = if is_flex_basis_content(Some(child_style)) {
+                    if flex_direction.is_row() {
+                        child_box.rect.size.width
+                    } else {
+                        child_box.rect.size.height
+                    }
+                } else if flex_basis != -1 {
                     flex_basis as f32
                 } else {
                     if flex_direction.is_row() {
@@ -662,61 +699,73 @@ pub fn layout_flex_container(
     let mut line_cross_offsets = Vec::new();
     let free_space = (container_cross_size - total_lines_cross_size).max(0.0);
 
-    if num_lines > 1 {
-        match align_content {
-            AlignContent::FlexStart | AlignContent::Stretch => {
-                let extra = if align_content == AlignContent::Stretch {
-                    free_space / num_lines as f32
-                } else {
-                    0.0
-                };
-                let mut current_offset = 0.0;
-                for &size in &line_max_cross_sizes {
-                    line_cross_offsets.push(current_offset);
-                    current_offset += size + extra + cross_gap;
+    if flex_wrap != FlexWrap::Nowrap {
+        if num_lines > 1 {
+            match align_content {
+                AlignContent::FlexStart | AlignContent::Stretch => {
+                    let extra = if align_content == AlignContent::Stretch {
+                        free_space / num_lines as f32
+                    } else {
+                        0.0
+                    };
+                    let mut current_offset = 0.0;
+                    for &size in &line_max_cross_sizes {
+                        line_cross_offsets.push(current_offset);
+                        current_offset += size + extra + cross_gap;
+                    }
+                }
+                AlignContent::FlexEnd => {
+                    let mut current_offset = free_space;
+                    for &size in &line_max_cross_sizes {
+                        line_cross_offsets.push(current_offset);
+                        current_offset += size + cross_gap;
+                    }
+                }
+                AlignContent::Center => {
+                    let start_offset = free_space / 2.0;
+                    let mut current_offset = start_offset;
+                    for &size in &line_max_cross_sizes {
+                        line_cross_offsets.push(current_offset);
+                        current_offset += size + cross_gap;
+                    }
+                }
+                AlignContent::SpaceBetween => {
+                    let extra_gap = free_space / (num_lines - 1) as f32;
+                    let mut current_offset = 0.0;
+                    for &size in &line_max_cross_sizes {
+                        line_cross_offsets.push(current_offset);
+                        current_offset += size + cross_gap + extra_gap;
+                    }
+                }
+                AlignContent::SpaceAround => {
+                    let spacing = free_space / num_lines as f32;
+                    let mut current_offset = spacing / 2.0;
+                    for &size in &line_max_cross_sizes {
+                        line_cross_offsets.push(current_offset);
+                        current_offset += size + cross_gap + spacing;
+                    }
+                }
+                AlignContent::SpaceEvenly => {
+                    let spacing = free_space / (num_lines + 1) as f32;
+                    let mut current_offset = spacing;
+                    for &size in &line_max_cross_sizes {
+                        line_cross_offsets.push(current_offset);
+                        current_offset += size + cross_gap + spacing;
+                    }
                 }
             }
-            AlignContent::FlexEnd => {
-                let mut current_offset = free_space;
-                for &size in &line_max_cross_sizes {
-                    line_cross_offsets.push(current_offset);
-                    current_offset += size + cross_gap;
+        } else if num_lines == 1 {
+            let offset = match align_content {
+                AlignContent::FlexStart | AlignContent::Stretch | AlignContent::SpaceBetween => 0.0,
+                AlignContent::FlexEnd => free_space,
+                AlignContent::Center | AlignContent::SpaceAround | AlignContent::SpaceEvenly => {
+                    free_space / 2.0
                 }
-            }
-            AlignContent::Center => {
-                let start_offset = free_space / 2.0;
-                let mut current_offset = start_offset;
-                for &size in &line_max_cross_sizes {
-                    line_cross_offsets.push(current_offset);
-                    current_offset += size + cross_gap;
-                }
-            }
-            AlignContent::SpaceBetween => {
-                let extra_gap = free_space / (num_lines - 1) as f32;
-                let mut current_offset = 0.0;
-                for &size in &line_max_cross_sizes {
-                    line_cross_offsets.push(current_offset);
-                    current_offset += size + cross_gap + extra_gap;
-                }
-            }
-            AlignContent::SpaceAround => {
-                let spacing = free_space / num_lines as f32;
-                let mut current_offset = spacing / 2.0;
-                for &size in &line_max_cross_sizes {
-                    line_cross_offsets.push(current_offset);
-                    current_offset += size + cross_gap + spacing;
-                }
-            }
-            AlignContent::SpaceEvenly => {
-                let spacing = free_space / (num_lines + 1) as f32;
-                let mut current_offset = spacing;
-                for &size in &line_max_cross_sizes {
-                    line_cross_offsets.push(current_offset);
-                    current_offset += size + cross_gap + spacing;
-                }
-            }
+            };
+            line_cross_offsets.push(offset);
         }
     } else {
+        // Single-line container, align-content has no effect.
         let mut current_offset = 0.0;
         for &size in &line_max_cross_sizes {
             line_cross_offsets.push(current_offset);
@@ -1077,6 +1126,18 @@ fn get_align_self(style: Option<&CategorizedComputedStyle>, default: AlignItems)
         "baseline" => AlignItems::Baseline,
         _ => default,
     }
+}
+
+fn is_flex_basis_content(style: Option<&CategorizedComputedStyle>) -> bool {
+    let Some(style) = style else {
+        return false;
+    };
+    if let Some(ref extra) = style.extra_values
+        && let Some(crate::css::values::CssValue::Keyword(kw)) = extra.get("flex-basis")
+    {
+        return kw.eq_ignore_ascii_case("content");
+    }
+    false
 }
 
 fn clamp_main_size(
@@ -3876,5 +3937,232 @@ mod tests {
         assert!(approx_eq(container_box.children[0].rect.size.width, 80.0));
         assert!(approx_eq(container_box.children[1].rect.size.width, 60.0));
         assert!(approx_eq(container_box.children[2].rect.size.width, 60.0));
+    }
+
+    #[test]
+    fn test_flex_basis_content() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 500px;
+            }
+            #child1 {
+                width: 200px;
+                flex-basis: content;
+                flex-shrink: 0;
+            }
+            #child2 {
+                width: 150px;
+                flex-shrink: 0;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        // child1 had width 200px but flex-basis was content, which ignores specified width and uses auto.
+        // For child1 block under auto width, it fills the containing block (500px).
+        assert_eq!(container_box.children[0].rect.size.width, 500.0);
+    }
+
+    #[test]
+    fn test_align_content_multi_line_space_between() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-wrap: wrap;
+                width: 200px;
+                height: 300px;
+                align-content: space-between;
+            }
+            div {
+                width: 150px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 250.0));
+    }
+
+    #[test]
+    fn test_align_content_multi_line_space_around() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-wrap: wrap;
+                width: 200px;
+                height: 300px;
+                align-content: space-around;
+            }
+            div {
+                width: 150px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 50.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.y, 200.0));
+    }
+
+    #[test]
+    fn test_align_content_single_line_multi_line_container() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        dom.append_child(container, child1);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-wrap: wrap;
+                width: 200px;
+                height: 300px;
+                align-content: center;
+            }
+            div {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 1);
+        assert!(approx_eq(container_box.children[0].rect.origin.y, 125.0));
+    }
+
+    #[test]
+    fn test_flex_gaps() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "container".into())],
+        });
+        dom.append_child(doc, container);
+
+        let child1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child1".into())],
+        });
+        let child2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "child2".into())],
+        });
+        dom.append_child(container, child1);
+        dom.append_child(container, child2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            #container {
+                display: flex;
+                flex-direction: row;
+                width: 300px;
+                column-gap: 20px;
+            }
+            div {
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let container_box =
+            layout_flex_container(&dom, &styles, container, 800.0, 0.0, 0.0, 0).unwrap();
+
+        assert_eq!(container_box.children.len(), 2);
+        assert!(approx_eq(container_box.children[0].rect.origin.x, 0.0));
+        assert!(approx_eq(container_box.children[1].rect.origin.x, 120.0));
     }
 }
