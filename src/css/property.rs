@@ -208,6 +208,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "wrap",
     },
+    PropertyMetadata {
+        name: "forced-color-adjust",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "caret-shape",
+        inherited: true,
+        initial: "auto",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -789,6 +799,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "luminance",
     },
+    PropertyMetadata {
+        name: "field-sizing",
+        inherited: false,
+        initial: "fixed",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1231,6 +1246,30 @@ mod tests {
         assert_eq!(text_wrap.name, "text-wrap");
         assert!(text_wrap.inherited);
         assert_eq!(text_wrap.initial, "wrap");
+    }
+
+    #[test]
+    fn test_additive_properties_t0710() {
+        let forced_color_adjust = lookup("forced-color-adjust");
+        assert!(forced_color_adjust.is_some());
+        let forced_color_adjust = forced_color_adjust.unwrap();
+        assert_eq!(forced_color_adjust.name, "forced-color-adjust");
+        assert!(forced_color_adjust.inherited);
+        assert_eq!(forced_color_adjust.initial, "auto");
+
+        let caret_shape = lookup("caret-shape");
+        assert!(caret_shape.is_some());
+        let caret_shape = caret_shape.unwrap();
+        assert_eq!(caret_shape.name, "caret-shape");
+        assert!(caret_shape.inherited);
+        assert_eq!(caret_shape.initial, "auto");
+
+        let field_sizing = lookup("field-sizing");
+        assert!(field_sizing.is_some());
+        let field_sizing = field_sizing.unwrap();
+        assert_eq!(field_sizing.name, "field-sizing");
+        assert!(!field_sizing.inherited);
+        assert_eq!(field_sizing.initial, "fixed");
     }
 
     #[test]
