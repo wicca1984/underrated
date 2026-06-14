@@ -144,6 +144,16 @@ impl Class for Performance {
                 NativeFunction::from_fn_ptr(performance_clear_measures),
             )
             .method(
+                JsString::from("clearResourceTimings"),
+                0,
+                NativeFunction::from_fn_ptr(performance_clear_resource_timings),
+            )
+            .method(
+                JsString::from("setResourceTimingBufferSize"),
+                1,
+                NativeFunction::from_fn_ptr(performance_set_resource_timing_buffer_size),
+            )
+            .method(
                 JsString::from("getEntries"),
                 0,
                 NativeFunction::from_fn_ptr(performance_get_entries),
@@ -459,6 +469,50 @@ fn performance_mark(this: &JsValue, args: &[JsValue], context: &mut Context) -> 
     Ok(mark_obj)
 }
 
+fn throw_dom_exception(name: &str, message: &str, context: &mut Context) -> JsError {
+    let dom_exception_constructor = context
+        .global_object()
+        .get(JsString::from("DOMException"), context);
+    if let Some(constructor_obj) = dom_exception_constructor
+        .ok()
+        .as_ref()
+        .and_then(|val| val.as_object())
+    {
+        let args = [
+            JsValue::from(JsString::from(message)),
+            JsValue::from(JsString::from(name)),
+        ];
+        if let Ok(exception_obj) = constructor_obj.construct(&args, None, context) {
+            return JsError::from_opaque(JsValue::from(exception_obj));
+        }
+    }
+    JsError::from(JsNativeError::typ().with_message(format!("{}: {}", name, message)))
+}
+
+const TIMING_PROPERTIES: &[(&str, bool)] = &[
+    ("navigationStart", true),
+    ("unloadEventStart", false),
+    ("unloadEventEnd", false),
+    ("redirectStart", false),
+    ("redirectEnd", false),
+    ("fetchStart", true),
+    ("domainLookupStart", true),
+    ("domainLookupEnd", true),
+    ("connectStart", true),
+    ("connectEnd", true),
+    ("secureConnectionStart", false),
+    ("requestStart", true),
+    ("responseStart", true),
+    ("responseEnd", true),
+    ("domLoading", true),
+    ("domInteractive", true),
+    ("domContentLoadedEventStart", true),
+    ("domContentLoadedEventEnd", true),
+    ("domComplete", true),
+    ("loadEventStart", true),
+    ("loadEventEnd", true),
+];
+
 fn resolve_mark_or_value(
     val: &JsValue,
     performance: &Performance,
@@ -470,13 +524,30 @@ fn resolve_mark_or_value(
         Ok(val.as_number().unwrap_or(0.0))
     } else {
         let name = val.to_string(context)?.to_std_string().unwrap_or_default();
-        let marks_borrow = performance.marks.borrow();
-        let mark_opt = marks_borrow.iter().rev().find(|m| m.name == name);
-        match mark_opt {
-            Some(mark) => Ok(mark.start_time),
-            None => Err(JsError::from(JsNativeError::syntax().with_message(
-                format!("performance.measure: mark '{}' not found", name),
-            ))),
+
+        // 1. Check if name is a PerformanceTiming property
+        if let Some(&(_, is_nonzero)) = TIMING_PROPERTIES.iter().find(|&&(k, _)| k == name) {
+            if is_nonzero {
+                Ok(0.0)
+            } else {
+                Err(throw_dom_exception(
+                    "InvalidAccessError",
+                    &format!("performance.measure: timing attribute '{}' is 0", name),
+                    context,
+                ))
+            }
+        } else {
+            // 2. Check if name is in performance.marks
+            let marks_borrow = performance.marks.borrow();
+            let mark_opt = marks_borrow.iter().rev().find(|m| m.name == name);
+            match mark_opt {
+                Some(mark) => Ok(mark.start_time),
+                None => Err(throw_dom_exception(
+                    "SyntaxError",
+                    &format!("performance.measure: mark '{}' not found", name),
+                    context,
+                )),
+            }
         }
     }
 }
@@ -681,6 +752,22 @@ fn performance_clear_measures(
     }
 
     performance.measures.borrow_mut().clear();
+    Ok(JsValue::undefined())
+}
+
+fn performance_clear_resource_timings(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    Ok(JsValue::undefined())
+}
+
+fn performance_set_resource_timing_buffer_size(
+    _this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
     Ok(JsValue::undefined())
 }
 
@@ -1479,6 +1566,122 @@ mod tests {
                 measJson.startTime === 123.45 &&
                 measJson.duration === 50 &&
                 measJson.detail === "meas-detail"
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_timing_resolution_and_exceptions() {
+        let mut context = Context::default();
+
+        // Register DOMException so that throw_dom_exception can construct it
+        let source_init = Source::from_bytes(
+            r#"
+            class DOMException extends Error {
+                constructor(message, name) {
+                    super(message);
+                    this.name = name || "DOMException";
+                }
+            }
+            globalThis.DOMException = DOMException;
+            "#,
+        );
+        context.eval(source_init).unwrap();
+
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        // 1. Measure using non-zero PerformanceTiming property ("fetchStart")
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m = performance.measure("from-fetch", "fetchStart");
+                m.startTime === 0 && m.duration >= 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. Measure using non-zero start and end PerformanceTiming properties
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m2 = performance.measure("fetch-to-load", "fetchStart", "loadEventEnd");
+                m2.startTime === 0 && m2.duration === 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 3. Measure using options with PerformanceTiming properties
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const m3 = performance.measure("meas-opt-timing", {
+                    start: "fetchStart",
+                    end: "loadEventEnd"
+                });
+                m3.startTime === 0 && m3.duration === 0
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 4. Measure using a zero PerformanceTiming property ("unloadEventStart") should throw InvalidAccessError DOMException
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threwInvalidAccess = false;
+                try {
+                    performance.measure("invalid", "unloadEventStart");
+                } catch (e) {
+                    threwInvalidAccess = (e instanceof DOMException) && (e.name === "InvalidAccessError");
+                }
+                threwInvalidAccess
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 5. Measure using nonexistent mark should throw SyntaxError DOMException
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                let threwSyntax = false;
+                try {
+                    performance.measure("invalid-syntax", "non-existent-mark-name");
+                } catch (e) {
+                    threwSyntax = (e instanceof DOMException) && (e.name === "SyntaxError");
+                }
+                threwSyntax
+                "#,
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_performance_resource_timing_stubs() {
+        let mut context = Context::default();
+        let performance = create_performance(&mut context);
+        let _ = context.register_global_property(
+            JsString::from("performance"),
+            performance,
+            Attribute::all(),
+        );
+
+        let res = context
+            .eval(Source::from_bytes(
+                r#"
+                const res1 = performance.clearResourceTimings();
+                const res2 = performance.setResourceTimingBufferSize(150);
+                res1 === undefined && res2 === undefined
                 "#,
             ))
             .unwrap();
