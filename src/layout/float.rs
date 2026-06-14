@@ -53,7 +53,12 @@ pub(crate) fn find_clearance_y(
                 _ => false,
             };
             if matches_side {
-                let bottom_edge = current.rect.max_y();
+                let margin_bottom = current
+                    .node
+                    .and_then(|node_id| styles.get(&node_id))
+                    .map(|s| crate::layout::get_px(s, "margin-bottom", 0.0))
+                    .unwrap_or(0.0);
+                let bottom_edge = current.rect.max_y() + margin_bottom;
                 max_float_y = Some(match max_float_y {
                     Some(y) => f32::max(y, bottom_edge),
                     None => bottom_edge,
@@ -66,6 +71,202 @@ pub(crate) fn find_clearance_y(
     }
 
     max_float_y
+}
+
+struct PrecedingFloat {
+    float_type: String, // "left" or "right"
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+fn collect_preceding_floats(
+    children: &[LayoutBox],
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> Vec<PrecedingFloat> {
+    let mut floats = Vec::new();
+    let mut stack = Vec::new();
+    for child in children.iter().rev() {
+        stack.push(child);
+    }
+
+    while let Some(current) = stack.pop() {
+        if let Some(node_id) = current.node
+            && let Some(style) = styles.get(&node_id)
+            && let Some(fv) = get_float_value(style)
+        {
+            let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
+            let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
+            let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
+            let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+
+            let x = current.rect.origin.x - margin_left;
+            let y = current.rect.origin.y - margin_top;
+            let width = current.rect.size.width + margin_left + margin_right;
+            let height = current.rect.size.height + margin_top + margin_bottom;
+
+            floats.push(PrecedingFloat {
+                float_type: fv.to_string(),
+                x,
+                y,
+                width,
+                height,
+            });
+        }
+
+        for child in current.children.iter().rev() {
+            stack.push(child);
+        }
+    }
+
+    floats
+}
+
+fn get_bounds_at_y(
+    floats: &[PrecedingFloat],
+    candidate_y: f32,
+    float_outer_height: f32,
+    containing_left: f32,
+    containing_width: f32,
+) -> (f32, f32) {
+    let mut left_bound = containing_left;
+    let mut right_bound = containing_left + containing_width;
+
+    for f in floats {
+        let overlap = f.y < candidate_y + float_outer_height && f.y + f.height > candidate_y;
+        if overlap {
+            if f.float_type == "left" {
+                let right_edge = f.x + f.width;
+                if right_edge > left_bound {
+                    left_bound = right_edge;
+                }
+            } else if f.float_type == "right" {
+                let left_edge = f.x;
+                if left_edge < right_bound {
+                    right_bound = left_edge;
+                }
+            }
+        }
+    }
+
+    (left_bound, right_bound)
+}
+
+/// Positions and shifts a float LayoutBox correctly, accounting for:
+/// - clearance (left/right/both)
+/// - stacking side-by-side with preceding floats
+/// - constrained containing block width (shifting down if it doesn't fit)
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn layout_and_position_float(
+    child_box: &mut LayoutBox,
+    children: &[LayoutBox],
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+    float_val: &str,
+    clear_val: Option<&str>,
+    containing_left: f32,
+    containing_width: f32,
+    starting_y: f32,
+) {
+    let node_id = match child_box.node {
+        Some(id) => id,
+        None => return,
+    };
+    let style = match styles.get(&node_id) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let margin_left = crate::layout::get_px(style, "margin-left", 0.0);
+    let margin_right = crate::layout::get_px(style, "margin-right", 0.0);
+    let margin_top = crate::layout::get_px(style, "margin-top", 0.0);
+    let margin_bottom = crate::layout::get_px(style, "margin-bottom", 0.0);
+
+    let child_box_width = child_box.rect.size.width;
+    let child_box_height = child_box.rect.size.height;
+
+    let float_outer_width = child_box_width + margin_left + margin_right;
+    let float_outer_height = child_box_height + margin_top + margin_bottom;
+
+    let floats = collect_preceding_floats(children, styles);
+
+    // Initial candidate Y starts at starting_y.
+    // Apply clearance first.
+    let mut candidate_y = starting_y;
+    if let Some(cv) = clear_val
+        && let Some(cy) = find_clearance_y(children, styles, cv)
+        && cy > candidate_y
+    {
+        candidate_y = cy;
+    }
+
+    let final_x;
+    let final_y;
+
+    loop {
+        let (left_bound, right_bound) = get_bounds_at_y(
+            &floats,
+            candidate_y,
+            float_outer_height,
+            containing_left,
+            containing_width,
+        );
+
+        let available_width = right_bound - left_bound;
+        if float_outer_width <= available_width
+            || (left_bound == containing_left && right_bound == containing_left + containing_width)
+        {
+            // Fits here!
+            final_x = if float_val == "left" {
+                left_bound + margin_left
+            } else {
+                right_bound - margin_right - child_box_width
+            };
+            final_y = candidate_y + margin_top;
+            break;
+        }
+
+        // Find next candidate Y
+        let mut next_y = None;
+        for f in &floats {
+            let overlap = f.y < candidate_y + float_outer_height && f.y + f.height > candidate_y;
+            if overlap {
+                let bottom = f.y + f.height;
+                if bottom > candidate_y {
+                    next_y = Some(match next_y {
+                        Some(ny) => f32::min(ny, bottom),
+                        None => bottom,
+                    });
+                }
+            }
+        }
+
+        match next_y {
+            Some(ny) => {
+                candidate_y = ny;
+            }
+            None => {
+                // Fallback
+                final_x = if float_val == "left" {
+                    containing_left + margin_left
+                } else {
+                    containing_left + containing_width - margin_right - child_box_width
+                };
+                final_y = candidate_y + margin_top;
+                break;
+            }
+        }
+    }
+
+    // Shift child_box to (final_x, final_y)
+    let initial_x = child_box.rect.origin.x;
+    let initial_y = child_box.rect.origin.y;
+    let dx = final_x - initial_x;
+    let dy = final_y - initial_y;
+
+    if dx != 0.0 || dy != 0.0 {
+        super::position::shift_layout_box(child_box, styles, dx, dy, 0);
+    }
 }
 
 #[cfg(test)]
@@ -409,5 +610,242 @@ mod tests {
         // p has clear: both, margin-top: 10.
         // p_layout.rect.origin.y should be 80 + 10 = 90.
         assert!(approx_eq(p_layout.rect.origin.y, 90.0));
+    }
+
+    #[test]
+    fn test_multiple_floats_stack_side_by_side() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let left_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f1".into())],
+        });
+        dom.append_child(body, left_1);
+
+        let left_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f2".into())],
+        });
+        dom.append_child(body, left_2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .f1 {
+                float: left;
+                width: 100px;
+                height: 50px;
+            }
+            .f2 {
+                float: left;
+                width: 120px;
+                height: 60px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let f1_layout = &body_box.children[0];
+        let f2_layout = &body_box.children[1];
+
+        // f1 is at x=0, y=0
+        assert!(approx_eq(f1_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f1_layout.rect.origin.y, 0.0));
+
+        // f2 stacks next to f1, so x=100, y=0
+        assert!(approx_eq(f2_layout.rect.origin.x, 100.0));
+        assert!(approx_eq(f2_layout.rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_float_wraps_vertically_when_width_constrained() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let left_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f1".into())],
+        });
+        dom.append_child(body, left_1);
+
+        let left_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f2".into())],
+        });
+        dom.append_child(body, left_2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .f1 {
+                float: left;
+                width: 150px;
+                height: 50px;
+            }
+            .f2 {
+                float: left;
+                width: 150px;
+                height: 60px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let f1_layout = &body_box.children[0];
+        let f2_layout = &body_box.children[1];
+
+        // f1 fits at x=0, y=0
+        assert!(approx_eq(f1_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f1_layout.rect.origin.y, 0.0));
+
+        // f2 has width 150, which doesn't fit next to f1 (150 + 150 = 300 > 200)
+        // so it must wrap to below f1: x=0, y=50
+        assert!(approx_eq(f2_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f2_layout.rect.origin.y, 50.0));
+    }
+
+    #[test]
+    fn test_float_stacking_right() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let right_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f1".into())],
+        });
+        dom.append_child(body, right_1);
+
+        let right_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f2".into())],
+        });
+        dom.append_child(body, right_2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .f1 {
+                float: right;
+                width: 100px;
+                height: 50px;
+            }
+            .f2 {
+                float: right;
+                width: 120px;
+                height: 60px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 500.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let f1_layout = &body_box.children[0];
+        let f2_layout = &body_box.children[1];
+
+        // f1 is at x = 500 - 100 = 400, y = 0
+        assert!(approx_eq(f1_layout.rect.origin.x, 400.0));
+        assert!(approx_eq(f1_layout.rect.origin.y, 0.0));
+
+        // f2 stacks next to f1 on the left, so x = 400 - 120 = 280, y = 0
+        assert!(approx_eq(f2_layout.rect.origin.x, 280.0));
+        assert!(approx_eq(f2_layout.rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_clearance_with_stacked_floats() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let left_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f1".into())],
+        });
+        dom.append_child(body, left_1);
+
+        let left_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f2".into())],
+        });
+        dom.append_child(body, left_2);
+
+        let clearing_p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![],
+        });
+        dom.append_child(body, clearing_p);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(clearing_p, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .f1 {
+                float: left;
+                width: 150px;
+                height: 50px;
+            }
+            .f2 {
+                float: left;
+                width: 150px;
+                height: 60px;
+            }
+            p {
+                display: block;
+                clear: left;
+                margin-top: 10px;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 3);
+        let f2_layout = &body_box.children[1];
+        let p_layout = &body_box.children[2];
+
+        // f2 wrapped and is at x=0, y=50, height=60, so its bottom edge is 110.
+        assert!(approx_eq(f2_layout.rect.origin.y, 50.0));
+        assert!(approx_eq(f2_layout.rect.size.height, 60.0));
+
+        // p has clear: left, so it must clear both f1 (bottom 50) and f2 (bottom 110).
+        // Max bottom edge is 110.
+        // p has margin-top = 10, so its border box y should be 110 + 10 = 120.
+        assert!(approx_eq(p_layout.rect.origin.y, 120.0));
     }
 }
