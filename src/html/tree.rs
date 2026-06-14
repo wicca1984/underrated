@@ -15,7 +15,89 @@ pub fn parse_document(input: InputStream) -> Dom {
 pub fn parse_document_with_quirks(input: InputStream) -> (Dom, QuirksMode) {
     let mut builder = TreeBuilder::new(input);
     builder.run();
+    let doc = builder.dom.document();
+    sync_selectedcontent(&mut builder.dom, doc);
     (builder.dom, builder.quirks_mode)
+}
+
+fn clone_children_recursive(dom: &mut Dom, src_parent: NodeId, dest_parent: NodeId) {
+    let children = dom.children(src_parent).to_vec();
+    for child_id in children {
+        if let Some(data) = dom.data(child_id) {
+            let cloned_data = data.clone();
+            let cloned_child = dom.create_node(cloned_data);
+            dom.append_child(dest_parent, cloned_child);
+            clone_children_recursive(dom, child_id, cloned_child);
+        }
+    }
+}
+
+fn clear_children(dom: &mut Dom, parent: NodeId) {
+    let children = dom.children(parent).to_vec();
+    for child in children {
+        dom.remove_child(parent, child);
+    }
+}
+
+fn find_options_descendants(dom: &Dom, parent: NodeId, options: &mut Vec<NodeId>) {
+    for &child in dom.children(parent) {
+        if let Some(NodeData::Element { name, .. }) = dom.data(child) {
+            if name == "option" {
+                options.push(child);
+            } else {
+                find_options_descendants(dom, child, options);
+            }
+        }
+    }
+}
+
+fn sync_selectedcontent(dom: &mut Dom, node: NodeId) {
+    let is_selectedcontent = if let Some(NodeData::Element { name, .. }) = dom.data(node) {
+        name == "selectedcontent"
+    } else {
+        false
+    };
+
+    if is_selectedcontent {
+        let mut curr = node;
+        let mut select_node = None;
+        while let Some(parent) = dom.parent(curr) {
+            if let Some(NodeData::Element { name: p_name, .. }) = dom.data(parent)
+                && p_name == "select"
+            {
+                select_node = Some(parent);
+                break;
+            }
+            curr = parent;
+        }
+
+        if let Some(sel) = select_node {
+            let mut options = Vec::new();
+            find_options_descendants(dom, sel, &mut options);
+
+            let mut selected_option = None;
+            for &opt in &options {
+                if let Some(NodeData::Element { attrs, .. }) = dom.data(opt)
+                    && attrs.iter().any(|(k, _)| k == "selected")
+                {
+                    selected_option = Some(opt);
+                }
+            }
+            if selected_option.is_none() && !options.is_empty() {
+                selected_option = Some(options[0]);
+            }
+
+            if let Some(opt) = selected_option {
+                clear_children(dom, node);
+                clone_children_recursive(dom, opt, node);
+            }
+        }
+    }
+
+    let children = dom.children(node).to_vec();
+    for child in children {
+        sync_selectedcontent(dom, child);
+    }
 }
 
 /// Represents the document's quirks mode as determined by the DOCTYPE.
@@ -587,6 +669,12 @@ impl TreeBuilder {
         self.stack_of_open_elements[idx] = node;
         let ns = self.compute_namespace_at_index(idx, node);
         self.namespace_stack[idx] = ns;
+    }
+
+    fn open_elements_insert(&mut self, idx: usize, node: NodeId) {
+        self.stack_of_open_elements.insert(idx, node);
+        let ns = self.compute_namespace_at_index(idx, node);
+        self.namespace_stack.insert(idx, ns);
     }
 
     fn handle_foreign_content(&mut self, token: Token) {
@@ -2659,6 +2747,7 @@ impl TreeBuilder {
                 if c == '\0' {
                     // Parse error. Ignore.
                 } else {
+                    self.reconstruct_active_formatting_elements();
                     self.insert_character(c);
                 }
             }
@@ -2686,8 +2775,22 @@ impl TreeBuilder {
                     }) {
                         self.open_elements_pop();
                     }
+                    self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
+                }
+                "hr" => {
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "option")
+                    }) {
+                        self.open_elements_pop();
+                    }
+                    if self.stack_of_open_elements.last().is_some_and(|&top_id| {
+                        matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == "optgroup")
+                    }) {
+                        self.open_elements_pop();
+                    }
+                    self.create_and_insert_element(name, attrs);
                 }
                 "optgroup" => {
                     if self.stack_of_open_elements.last().is_some_and(|&top_id| {
@@ -2700,6 +2803,7 @@ impl TreeBuilder {
                     }) {
                         self.open_elements_pop();
                     }
+                    self.reconstruct_active_formatting_elements();
                     let node = self.create_and_insert_element(name, attrs);
                     self.open_elements_push(node);
                 }
@@ -2717,7 +2821,7 @@ impl TreeBuilder {
                     self.pop_until("select");
                     self.reset_insertion_mode_appropriately();
                 }
-                "input" | "keygen" | "textarea" if self.is_in_select_scope("select") => {
+                "input" | "textarea" if self.is_in_select_scope("select") => {
                     // Parse error.
                     self.pop_until("select");
                     self.reset_insertion_mode_appropriately();
@@ -2778,15 +2882,25 @@ impl TreeBuilder {
                     self.reset_insertion_mode_appropriately();
                 }
                 _ => {
-                    // Parse error.
-                    if self.is_in_select_scope("select") {
-                        self.pop_until("select");
-                        self.reset_insertion_mode_appropriately();
-                        self.process_token(Token::EndTag {
+                    // Ignore end tags in select if they were opened outside/before the select element.
+                    let select_idx = self.stack_of_open_elements.iter().position(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name: n, .. }) if n == "select")
+                    });
+                    let element_idx = self.stack_of_open_elements.iter().rev().position(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name: n, .. }) if n.as_str() == name.as_str())
+                    }).map(|rev_idx| self.stack_of_open_elements.len() - 1 - rev_idx);
+                    if let Some(s_idx) = select_idx
+                        && let Some(e_idx) = element_idx
+                        && e_idx > s_idx
+                    {
+                        // Opened inside select, so process in body!
+                        self.handle_in_body(Token::EndTag {
                             name,
                             attrs,
                             self_closing,
                         });
+                    } else {
+                        // Parse error. Ignore.
                     }
                 }
             },
@@ -3431,16 +3545,14 @@ impl TreeBuilder {
             }
 
             // Step 22:
-            self.stack_of_open_elements
-                .retain(|&id| id != formatting_element);
+            self.open_elements_retain(|id| id != formatting_element);
 
             let fb_idx = self
                 .stack_of_open_elements
                 .iter()
                 .position(|&id| id == furthest_block);
             if let Some(idx) = fb_idx {
-                self.stack_of_open_elements
-                    .insert(idx + 1, clone_formatting_element);
+                self.open_elements_insert(idx + 1, clone_formatting_element);
             } else {
                 self.open_elements_push(clone_formatting_element);
             }
@@ -4598,7 +4710,7 @@ mod tests {
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
         assert_eq!(
             dom.serialize(dom.document()),
-            "<html><head></head><body><select><option>a</option></select><keygen></keygen></body></html>"
+            "<html><head></head><body><select><option>a</option><keygen></keygen></select></body></html>"
         );
     }
 
