@@ -7490,6 +7490,44 @@ fn parse_transform_function(name: &str, value: &[ComponentValue]) -> Option<Tran
                 None
             }
         }
+        "skew" => {
+            if args.len() == 1 {
+                let ax = parse_angle(args[0])?;
+                let rad_x = ax.0 * std::f32::consts::PI / 180.0;
+                let tan_x = rad_x.tan();
+                Some(TransformFn::Matrix([1.0, 0.0, tan_x, 1.0, 0.0, 0.0]))
+            } else if args.len() == 2 {
+                let ax = parse_angle(args[0])?;
+                let ay = parse_angle(args[1])?;
+                let rad_x = ax.0 * std::f32::consts::PI / 180.0;
+                let rad_y = ay.0 * std::f32::consts::PI / 180.0;
+                let tan_x = rad_x.tan();
+                let tan_y = rad_y.tan();
+                Some(TransformFn::Matrix([1.0, tan_y, tan_x, 1.0, 0.0, 0.0]))
+            } else {
+                None
+            }
+        }
+        "skewx" => {
+            if args.len() == 1 {
+                let ax = parse_angle(args[0])?;
+                let rad_x = ax.0 * std::f32::consts::PI / 180.0;
+                let tan_x = rad_x.tan();
+                Some(TransformFn::Matrix([1.0, 0.0, tan_x, 1.0, 0.0, 0.0]))
+            } else {
+                None
+            }
+        }
+        "skewy" => {
+            if args.len() == 1 {
+                let ay = parse_angle(args[0])?;
+                let rad_y = ay.0 * std::f32::consts::PI / 180.0;
+                let tan_y = rad_y.tan();
+                Some(TransformFn::Matrix([1.0, tan_y, 0.0, 1.0, 0.0, 0.0]))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -12083,8 +12121,75 @@ mod tests {
             ])
         );
 
-        // 7. Invalid inputs return None
-        assert!(parse("skew(10deg)").is_none());
+        // 7. Skew tests
+        let val_skew_1 = parse("skew(45deg)").unwrap();
+        if let CssValue::Transform(ref fns) = val_skew_1 {
+            if let TransformFn::Matrix(m) = fns[0] {
+                assert!((m[0] - 1.0).abs() < 1e-5);
+                assert!((m[1] - 0.0).abs() < 1e-5);
+                assert!((m[2] - 1.0).abs() < 1e-5);
+                assert!((m[3] - 1.0).abs() < 1e-5);
+                assert!((m[4] - 0.0).abs() < 1e-5);
+                assert!((m[5] - 0.0).abs() < 1e-5);
+            } else {
+                panic!("Expected Matrix");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        let val_skew_2 = parse("skew(45deg, 45deg)").unwrap();
+        if let CssValue::Transform(ref fns) = val_skew_2 {
+            if let TransformFn::Matrix(m) = fns[0] {
+                assert!((m[0] - 1.0).abs() < 1e-5);
+                assert!((m[1] - 1.0).abs() < 1e-5);
+                assert!((m[2] - 1.0).abs() < 1e-5);
+                assert!((m[3] - 1.0).abs() < 1e-5);
+                assert!((m[4] - 0.0).abs() < 1e-5);
+                assert!((m[5] - 0.0).abs() < 1e-5);
+            } else {
+                panic!("Expected Matrix");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        let val_skewx = parse("skewX(45deg)").unwrap();
+        if let CssValue::Transform(ref fns) = val_skewx {
+            if let TransformFn::Matrix(m) = fns[0] {
+                assert!((m[0] - 1.0).abs() < 1e-5);
+                assert!((m[1] - 0.0).abs() < 1e-5);
+                assert!((m[2] - 1.0).abs() < 1e-5);
+                assert!((m[3] - 1.0).abs() < 1e-5);
+                assert!((m[4] - 0.0).abs() < 1e-5);
+                assert!((m[5] - 0.0).abs() < 1e-5);
+            } else {
+                panic!("Expected Matrix");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        let val_skewy = parse("skewY(45deg)").unwrap();
+        if let CssValue::Transform(ref fns) = val_skewy {
+            if let TransformFn::Matrix(m) = fns[0] {
+                assert!((m[0] - 1.0).abs() < 1e-5);
+                assert!((m[1] - 1.0).abs() < 1e-5);
+                assert!((m[2] - 0.0).abs() < 1e-5);
+                assert!((m[3] - 1.0).abs() < 1e-5);
+                assert!((m[4] - 0.0).abs() < 1e-5);
+                assert!((m[5] - 0.0).abs() < 1e-5);
+            } else {
+                panic!("Expected Matrix");
+            }
+        } else {
+            panic!("Expected Transform");
+        }
+
+        // 8. Invalid inputs return None
+        assert!(parse("skew(10deg, 20deg, 30deg)").is_none());
+        assert!(parse("skewX(10deg, 20deg)").is_none());
+        assert!(parse("skewY(10deg, 20deg)").is_none());
         assert!(parse("translate(1px, 2px, 3px)").is_none());
         assert!(parse("scale(10px)").is_none());
         assert!(parse("rotate(45)").is_none()); // unitless non-zero angle is invalid
