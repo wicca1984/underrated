@@ -1875,6 +1875,18 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'rel', {
+                        // rel reflected IDL attribute (t0708)
+                        get() {
+                            return this.getAttribute('rel') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('rel', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'nonce', {
                         get() {
                             return this.getAttribute('nonce') || '';
@@ -13146,6 +13158,40 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|en|en|fr|12345|12345".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_rel() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            // 1. A freshly created element has rel === '' by default when 'rel' is absent.
+            let el = document.createElement('a');
+            let res1 = el.rel;
+
+            // 2. Setting el.rel = 'stylesheet' via setter returns 'stylesheet' via getter
+            el.rel = 'stylesheet';
+            let res2 = el.rel;
+
+            // 3. Setter also writes the value to the underlying 'rel' content attribute verbatim
+            let res3 = el.getAttribute('rel');
+
+            // 4. Updating the 'rel' content attribute via setAttribute is reflected by the getter
+            el.setAttribute('rel', 'alternate');
+            let res4 = el.rel;
+
+            // 5. Test coercion to string (e.g. numeric value is coerced to string)
+            el.rel = 54321;
+            let res5 = el.rel;
+            let res6 = el.getAttribute('rel');
+
+            [res1, res2, res3, res4, res5, res6].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|stylesheet|stylesheet|alternate|54321|54321".to_string())
         );
     }
 
