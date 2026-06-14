@@ -514,6 +514,28 @@ fn evaluate_single_query(tokens: &[CssToken], viewport_w: f32) -> bool {
     if is_negated { !matches } else { matches }
 }
 
+/// Parses a CSS <ratio> from a slice of tokens.
+fn parse_ratio(tokens: &[CssToken]) -> Option<f32> {
+    if tokens.is_empty() {
+        return None;
+    }
+    match tokens.len() {
+        1 => match &tokens[0] {
+            CssToken::Number(val) if *val > 0.0 => Some(*val as f32),
+            _ => None,
+        },
+        3 => match (&tokens[0], &tokens[1], &tokens[2]) {
+            (CssToken::Number(num), CssToken::Delim('/'), CssToken::Number(den))
+                if *num > 0.0 && *den > 0.0 =>
+            {
+                Some((*num / *den) as f32)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Evaluates a single media feature, e.g., max-width: 600px.
 fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
     if tokens.is_empty() {
@@ -549,6 +571,21 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "monochrome" => return false,
             "grid" => return false,
             "scan" => return true,
+            "width" => return true,
+            "min-width" => return true,
+            "max-width" => return true,
+            "height" => return true,
+            "min-height" => return true,
+            "max-height" => return true,
+            "aspect-ratio" => return true,
+            "min-aspect-ratio" => return true,
+            "max-aspect-ratio" => return true,
+            "color" => return true,
+            "min-color" => return true,
+            "max-color" => return true,
+            "color-index" => return false,
+            "min-color-index" => return true,
+            "max-color-index" => return true,
             _ => return false,
         }
     }
@@ -851,6 +888,57 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         return false;
     }
 
+    if feature_name == "aspect-ratio"
+        || feature_name == "min-aspect-ratio"
+        || feature_name == "max-aspect-ratio"
+    {
+        if let Some(target_ratio) = parse_ratio(&tokens[2..]) {
+            let current_ratio = if viewport_h() > 0.0 {
+                viewport_w / viewport_h()
+            } else {
+                0.0
+            };
+            match feature_name.as_str() {
+                "aspect-ratio" => return (current_ratio - target_ratio).abs() < 1e-5,
+                "min-aspect-ratio" => return current_ratio >= target_ratio - 1e-5,
+                "max-aspect-ratio" => return current_ratio <= target_ratio + 1e-5,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "color" || feature_name == "min-color" || feature_name == "max-color" {
+        if let CssToken::Number(val) = &tokens[2] {
+            let limit = *val as i32;
+            let current = 8; // standard 8-bit color depth per color component
+            match feature_name.as_str() {
+                "color" => return current == limit,
+                "min-color" => return current >= limit,
+                "max-color" => return current <= limit,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "color-index"
+        || feature_name == "min-color-index"
+        || feature_name == "max-color-index"
+    {
+        if let CssToken::Number(val) = &tokens[2] {
+            let limit = *val as i32;
+            let current = 0; // standard displays do not use color lookup tables
+            match feature_name.as_str() {
+                "color-index" => return current == limit,
+                "min-color-index" => return current >= limit,
+                "max-color-index" => return current <= limit,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
     let value_px = match &tokens[2] {
         CssToken::Dimension { value, unit } => {
             if unit.eq_ignore_ascii_case("px") {
@@ -869,6 +957,9 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         "min-width" => value_px.is_some_and(|limit| viewport_w >= limit),
         "max-width" => value_px.is_some_and(|limit| viewport_w <= limit),
         "width" => value_px.is_some_and(|limit| (viewport_w - limit).abs() < 1e-5),
+        "min-height" => value_px.is_some_and(|limit| viewport_h() >= limit),
+        "max-height" => value_px.is_some_and(|limit| viewport_h() <= limit),
+        "height" => value_px.is_some_and(|limit| (viewport_h() - limit).abs() < 1e-5),
         _ => {
             // TODO(spec): other media features
             false
@@ -1932,5 +2023,54 @@ mod tests {
         assert!(media_matches("(scan: progressive)", 1000.0));
         assert!(!media_matches("(scan: interlace)", 1000.0));
         assert!(media_matches("(scan)", 1000.0));
+    }
+
+    #[test]
+    fn test_height_features() {
+        set_viewport_h(800.0);
+        assert!(media_matches("(height: 800px)", 1000.0));
+        assert!(media_matches("(min-height: 700px)", 1000.0));
+        assert!(media_matches("(max-height: 900px)", 1000.0));
+        assert!(!media_matches("(height: 600px)", 1000.0));
+        assert!(media_matches("(height)", 1000.0));
+        set_viewport_h(1024.0); // Reset to default
+    }
+
+    #[test]
+    fn test_aspect_ratio_features() {
+        set_viewport_h(1000.0);
+        // viewport_w = 1000.0, viewport_h = 1000.0 -> ratio 1.0
+        assert!(media_matches("(aspect-ratio: 1)", 1000.0));
+        assert!(media_matches("(aspect-ratio: 1/1)", 1000.0));
+        assert!(media_matches("(min-aspect-ratio: 0.5)", 1000.0));
+        assert!(media_matches("(max-aspect-ratio: 1.5)", 1000.0));
+        assert!(media_matches("(aspect-ratio)", 1000.0));
+
+        set_viewport_h(500.0);
+        // viewport_w = 1000.0, viewport_h = 500.0 -> ratio 2.0 (i.e. 2/1)
+        assert!(media_matches("(aspect-ratio: 2/1)", 1000.0));
+        assert!(media_matches("(aspect-ratio: 2)", 1000.0));
+        assert!(media_matches("(min-aspect-ratio: 16/9)", 1000.0)); // 2.0 >= 1.77777
+        assert!(!media_matches("(max-aspect-ratio: 4/3)", 1000.0)); // 2.0 <= 1.33333
+
+        set_viewport_h(1024.0); // Reset to default
+    }
+
+    #[test]
+    fn test_color_and_color_index_features() {
+        // color depth = 8 (non-zero)
+        assert!(media_matches("(color)", 1000.0));
+        assert!(media_matches("(color: 8)", 1000.0));
+        assert!(media_matches("(min-color: 4)", 1000.0));
+        assert!(media_matches("(max-color: 16)", 1000.0));
+        assert!(!media_matches("(color: 10)", 1000.0));
+
+        // color-index = 0 (zero)
+        assert!(!media_matches("(color-index)", 1000.0));
+        assert!(media_matches("(color-index: 0)", 1000.0));
+        assert!(media_matches("(min-color-index: 0)", 1000.0));
+        assert!(!media_matches("(min-color-index: 1)", 1000.0));
+        assert!(media_matches("(max-color-index: 0)", 1000.0));
+        assert!(media_matches("(max-color-index: 4)", 1000.0));
     }
 }
