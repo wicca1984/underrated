@@ -117,12 +117,12 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         err.name = "InvalidStateError";
                         throw err;
                     }
-                    const valStr = String(value);
-                    if (this._async === false && valStr !== "" && valStr !== "text") {
-                        const err = new Error("InvalidStateError: Synchronous requests do not support responseType other than '' or 'text'");
-                        err.name = "InvalidStateError";
+                    if (this._async === false) {
+                        const err = new Error("InvalidAccessError");
+                        err.name = "InvalidAccessError";
                         throw err;
                     }
+                    const valStr = String(value);
                     const allowedTypes = ["", "arraybuffer", "blob", "document", "json", "text"];
                     if (allowedTypes.includes(valStr)) {
                         this._responseType = valStr;
@@ -135,14 +135,14 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         err.name = "InvalidStateError";
                         throw err;
                     }
-                    if (this._readyState === 0 || this._readyState === 1) {
+                    if (this._readyState !== 3 && this._readyState !== 4) {
                         return "";
                     }
                     return this._responseText;
                 }
 
                 get response() {
-                    if (this._readyState === 0 || this._readyState === 1) {
+                    if (this._readyState !== 3 && this._readyState !== 4) {
                         if (this._responseType === "" || this._responseType === "text") {
                             return "";
                         }
@@ -240,8 +240,8 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                 set timeout(value) {
                     if (this._async === false) {
-                        const err = new Error("InvalidStateError");
-                        err.name = "InvalidStateError";
+                        const err = new Error("InvalidAccessError");
+                        err.name = "InvalidAccessError";
                         throw err;
                     }
                     const num = Number(value);
@@ -266,8 +266,8 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         throw err;
                     }
                     if (this._async === false) {
-                        const err = new Error("InvalidStateError");
-                        err.name = "InvalidStateError";
+                        const err = new Error("InvalidAccessError");
+                        err.name = "InvalidAccessError";
                         throw err;
                     }
                     this._withCredentials = !!value;
@@ -339,8 +339,13 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         } catch (e) {}
                     }
 
+                    if (!this._sendFlag) return;
+
                     this._changeReadyState(2); // HEADERS_RECEIVED
+                    if (!this._sendFlag) return;
+
                     this._changeReadyState(3); // LOADING
+                    if (!this._sendFlag) return;
 
                     this._status = 200;
                     this._statusText = "OK";
@@ -369,7 +374,10 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                         } catch (e) {}
                     }
 
+                    if (!this._sendFlag) return;
+
                     this._changeReadyState(4); // DONE
+                    if (!this._sendFlag) return;
                     this._sendFlag = false;
 
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
@@ -467,18 +475,40 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     let res = "";
                     const keys = Object.keys(this._headers).sort();
                     for (const key of keys) {
+                        if (key === "set-cookie" || key === "set-cookie2") {
+                            continue;
+                        }
                         res += key + ": " + this._headers[key] + "\r\n";
                     }
                     return res;
                 }
 
                 abort() {
+                    const state = this._readyState;
                     const wasSending = this._sendFlag;
+
+                    // Clear response properties
                     this._status = 0;
                     this._statusText = "";
                     this._headers = {};
+                    this._responseText = "";
                     this._sendFlag = false;
-                    this._changeReadyState(0); // UNSENT
+
+                    if (state === 0 || (state === 1 && !wasSending)) {
+                        this._readyState = 0; // Set to UNSENT directly, no events
+                        return;
+                    }
+
+                    if (state === 4) {
+                        this._readyState = 0; // Set to UNSENT directly, no events
+                        return;
+                    }
+
+                    // For states 1 (with wasSending), 2, 3: Active request error steps
+                    // 1. Change readyState to 4 (DONE), and fire readystatechange
+                    this._changeReadyState(4);
+
+                    // 2. Fire progress events
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
                             const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
@@ -506,6 +536,9 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                             }));
                         } catch (e) {}
                     }
+
+                    // 3. Finally set state to 0 (UNSENT) directly (no readystatechange fired)
+                    this._readyState = 0;
                 }
 
                 _simulateTimeout() {
@@ -515,6 +548,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._status = 0;
                     this._statusText = "";
                     this._headers = {};
+                    this._responseText = "";
                     this._sendFlag = false;
 
                     this._changeReadyState(4); // DONE
@@ -560,6 +594,9 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                 _changeReadyState(newState) {
                     if (this._readyState !== newState) {
                         this._readyState = newState;
+                        if (newState === 0) {
+                            return;
+                        }
                         if (typeof this.onreadystatechange === "function") {
                             try {
                                 this.onreadystatechange.call(this);
@@ -708,7 +745,7 @@ mod tests {
                 // Test abort
                 xhr.abort();
                 if (xhr.readyState !== 0) throw new Error("readyState should be 0 after abort()");
-                if (statesChanged[statesChanged.length - 1] !== 0) throw new Error("onreadystatechange not called for abort()");
+                if (statesChanged.includes(0)) throw new Error("onreadystatechange should not be called for abort() when send() was not called");
             } catch (e) {
                 globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
             }
@@ -970,16 +1007,16 @@ mod tests {
 
                 try {
                     syncXhr.timeout = 1000;
-                    throw new Error("syncXhr.timeout setter should throw InvalidStateError");
+                    throw new Error("syncXhr.timeout setter should throw InvalidAccessError");
                 } catch (e) {
-                    if (e.name !== "InvalidStateError") throw e;
+                    if (e.name !== "InvalidAccessError") throw e;
                 }
 
                 try {
                     syncXhr.withCredentials = true;
-                    throw new Error("syncXhr.withCredentials setter should throw InvalidStateError");
+                    throw new Error("syncXhr.withCredentials setter should throw InvalidAccessError");
                 } catch (e) {
-                    if (e.name !== "InvalidStateError") throw e;
+                    if (e.name !== "InvalidAccessError") throw e;
                 }
 
                 // 6. Verify withCredentials state-based throws (cannot be set after send/DONE)
@@ -1034,8 +1071,8 @@ mod tests {
                 abortXhr2.onloadend = () => abortEvents2.push("loadend");
                 abortXhr2.open("GET", "https://example.com");
                 abortXhr2.abort();
-                if (!abortEvents2.includes("abort") || !abortEvents2.includes("loadend")) {
-                    throw new Error("abort() before send did not dispatch abort/loadend correctly: " + JSON.stringify(abortEvents2));
+                if (abortEvents2.length !== 0) {
+                    throw new Error("abort() before send should not dispatch any events, got: " + JSON.stringify(abortEvents2));
                 }
 
             } catch (e) {
@@ -1365,16 +1402,18 @@ mod tests {
                 const syncXhr = new XMLHttpRequest();
                 syncXhr.open("GET", "https://example.com", false);
                 
-                // setting responseType to "" or "text" should succeed
-                syncXhr.responseType = "text";
-                syncXhr.responseType = "";
-                
-                // setting responseType to other values on sync XHR should throw InvalidStateError
+                // setting responseType on sync XHR should throw InvalidAccessError
                 try {
                     syncXhr.responseType = "json";
-                    throw new Error("setting responseType to json on sync XHR did not throw");
+                    throw new Error("setting responseType on sync XHR did not throw");
                 } catch (e) {
-                    if (e.name !== "InvalidStateError") throw e;
+                    if (e.name !== "InvalidAccessError") throw e;
+                }
+                try {
+                    syncXhr.responseType = "text";
+                    throw new Error("setting responseType on sync XHR did not throw");
+                } catch (e) {
+                    if (e.name !== "InvalidAccessError") throw e;
                 }
             } catch (e) {
                 globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
@@ -1391,6 +1430,155 @@ mod tests {
         if !error_val.is_null() {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!("test_xhr_surgical_gaps JS assert failed: {}", error_str);
+        }
+    }
+
+    #[test]
+    fn test_xhr_compliance_t0987() {
+        let mut context = Context::default();
+        register_xhr(&mut context).expect("Failed to register XMLHttpRequest");
+
+        // Mock Event if it doesn't exist
+        let setup_script = r#"
+            if (typeof Event === "undefined") {
+                globalThis.Event = class Event {
+                    constructor(type) {
+                        this.type = type;
+                    }
+                };
+            }
+        "#;
+        context
+            .eval(Source::from_bytes(setup_script.as_bytes()))
+            .unwrap();
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Verify abort() during active request (with sendFlag set)
+                const xhr1 = new XMLHttpRequest();
+                let eventsFired1 = [];
+                let stateSequence1 = [];
+                
+                xhr1.onreadystatechange = () => {
+                    stateSequence1.push(xhr1.readyState);
+                };
+                xhr1.onabort = () => { eventsFired1.push("abort"); };
+                xhr1.onloadend = () => { eventsFired1.push("loadend"); };
+
+                xhr1.open("POST", "https://example.com");
+                // Reset/clear sequence for state after open
+                stateSequence1 = [];
+
+                // Call send() which will transition to 2, 3, 4 synchronously under our mock.
+                // But wait! To simulate aborting an *active* request (where sendFlag is true),
+                // we can intercept the readyState transitions!
+                // Let's call abort() inside a readyState event handler when state is 2 or 3!
+                xhr1.onreadystatechange = () => {
+                    stateSequence1.push(xhr1.readyState);
+                    if (xhr1.readyState === 2) {
+                        xhr1.abort();
+                    }
+                };
+
+                xhr1.send("my upload body");
+
+                // Under WHATWG:
+                // When abort is called in state 2:
+                // 1) changeReadyState(4) is called, transition state 2 -> 4. So onreadystatechange fires with state 4.
+                // 2) abort/loadend events are fired on upload & XHR.
+                // 3) state becomes UNSENT (0) directly (no extra event).
+                // So the stateSequence should end up with:
+                // - [2] from send() HEADERS_RECEIVED
+                // - [4] from abort() changeReadyState(4)
+                // And total events fired on XHR should include "abort" and "loadend".
+                if (stateSequence1.join(",") !== "2,4") {
+                    throw new Error("abort in active state should transition 2 -> 4. Sequence was: " + stateSequence1.join(","));
+                }
+                if (xhr1.readyState !== 0) {
+                    throw new Error("XHR readyState after abort should be 0 (UNSENT)");
+                }
+                if (!eventsFired1.includes("abort") || !eventsFired1.includes("loadend")) {
+                    throw new Error("Active abort should fire abort and loadend events. Got: " + JSON.stringify(eventsFired1));
+                }
+
+                // 2. Verify abort() when state is DONE (4)
+                const xhr2 = new XMLHttpRequest();
+                let eventsFired2 = [];
+                let stateSequence2 = [];
+                
+                xhr2.open("GET", "https://example.com");
+                xhr2.send();
+                
+                // Now state is DONE (4). Let's attach abort handlers.
+                xhr2.onreadystatechange = () => { stateSequence2.push(xhr2.readyState); };
+                xhr2.onabort = () => { eventsFired2.push("abort"); };
+                xhr2.onloadend = () => { eventsFired2.push("loadend"); };
+
+                xhr2.abort();
+
+                // On DONE(4), abort() should silently transition state to 0 and fire no events.
+                if (xhr2.readyState !== 0) {
+                    throw new Error("XHR readyState after aborting DONE should be 0");
+                }
+                if (stateSequence2.length !== 0) {
+                    throw new Error("Aborting DONE should not fire readystatechange, got: " + JSON.stringify(stateSequence2));
+                }
+                if (eventsFired2.length !== 0) {
+                    throw new Error("Aborting DONE should not fire any abort/loadend events, got: " + JSON.stringify(eventsFired2));
+                }
+
+                // 3. Verify getAllResponseHeaders() excludes Set-Cookie and Set-Cookie2 case-insensitively
+                const xhr3 = new XMLHttpRequest();
+                xhr3.open("GET", "https://example.com");
+                xhr3.setRequestHeader("Set-Cookie", "mycookie=123");
+                xhr3.setRequestHeader("set-cookie2", "mycookie2=456");
+                xhr3.setRequestHeader("X-Custom", "allowed");
+                xhr3.send();
+                
+                const headers = xhr3.getAllResponseHeaders();
+                if (headers.includes("set-cookie") || headers.includes("Set-Cookie")) {
+                    throw new Error("getAllResponseHeaders must exclude Set-Cookie, got: " + JSON.stringify(headers));
+                }
+                if (headers.includes("set-cookie2")) {
+                    throw new Error("getAllResponseHeaders must exclude Set-Cookie2, got: " + JSON.stringify(headers));
+                }
+                if (!headers.includes("x-custom: allowed")) {
+                    throw new Error("getAllResponseHeaders should include allowed headers, got: " + JSON.stringify(headers));
+                }
+
+                // 4. Verify accessors responseText and response return empty string or null before LOADING (3)
+                const xhr4 = new XMLHttpRequest();
+                xhr4.open("GET", "https://example.com");
+                
+                // State is OPENED (1)
+                if (xhr4.responseText !== "") {
+                    throw new Error("responseText should return empty string in OPENED state");
+                }
+                if (xhr4.response !== "") {
+                    throw new Error("response should return empty string in OPENED state (for default text responseType)");
+                }
+
+                xhr4.responseType = "json";
+                if (xhr4.response !== null) {
+                    throw new Error("response should return null in OPENED state for non-text responseType");
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        let res = context.eval(Source::from_bytes(script.as_bytes()));
+        assert!(res.is_ok(), "Evaluation itself failed: {:?}", res);
+
+        let error_val = context
+            .eval(Source::from_bytes("globalThis.test_error".as_bytes()))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!("test_xhr_compliance_t0987 JS assert failed: {}", error_str);
         }
     }
 }
