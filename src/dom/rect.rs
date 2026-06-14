@@ -1254,25 +1254,160 @@ impl From<crate::geom::Rect> for DomQuad {
     }
 }
 
+std::thread_local! {
+    pub static CURRENT_LAYOUT: std::cell::RefCell<Option<crate::layout::LayoutBox>> = const { std::cell::RefCell::new(None) };
+    pub static CURRENT_STYLES: std::cell::RefCell<Option<std::collections::HashMap<crate::infra::NodeId, crate::style::CategorizedComputedStyle>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Dom {
     /// Returns the bounding client rect of the element.
     ///
-    /// // TODO(spec): Element::get_bounding_client_rect() will, in a future task,
-    /// // read the element's laid-out box and return a `DomRect`. For now, this is
-    /// // a DOM-side preparation placeholder.
-    pub fn get_bounding_client_rect(&self, _node: NodeId) -> DomRect {
-        DomRect::new(0.0, 0.0, 0.0, 0.0)
+    /// Reads the element's laid-out box and return a `DomRect` from the currently
+    /// active `CURRENT_LAYOUT` and `CURRENT_STYLES`, or falls back to a 0-rect
+    /// if none is active or matching.
+    pub fn get_bounding_client_rect(&self, node: NodeId) -> DomRect {
+        let rects = self.get_client_rects(node);
+        if rects.length() == 0 {
+            return DomRect::new(0.0, 0.0, 0.0, 0.0);
+        }
+
+        let mut min_left = f64::INFINITY;
+        let mut max_right = -f64::INFINITY;
+        let mut min_top = f64::INFINITY;
+        let mut max_bottom = -f64::INFINITY;
+
+        for i in 0..rects.length() {
+            if let Some(r) = rects.item(i) {
+                let left = r.left();
+                let right = r.right();
+                let top = r.top();
+                let bottom = r.bottom();
+
+                if left < min_left {
+                    min_left = left;
+                }
+                if right > max_right {
+                    max_right = right;
+                }
+                if top < min_top {
+                    min_top = top;
+                }
+                if bottom > max_bottom {
+                    max_bottom = bottom;
+                }
+            }
+        }
+
+        if min_left.is_infinite() || min_top.is_infinite() {
+            DomRect::new(0.0, 0.0, 0.0, 0.0)
+        } else {
+            DomRect::new(
+                min_left,
+                min_top,
+                max_right - min_left,
+                max_bottom - min_top,
+            )
+        }
     }
 
     /// Returns the list of client rectangles for an element.
     ///
-    /// For a non-fragmented box this is a single-item list equal to the bounding rect;
-    /// returns an empty list for elements with no box or if the node is not an element.
+    /// Recursively computes transformed client rectangles for each fragment of
+    /// the element in tree-order. Handles nested transforms correctly.
     pub fn get_client_rects(&self, node: NodeId) -> DomRectList {
         use crate::dom::NodeData;
         if let Some(NodeData::Element { .. }) = self.data(node) {
-            let rect = self.get_bounding_client_rect(node);
-            DomRectList::new(vec![rect])
+            let mut rects = Vec::new();
+            let mut layout_active = false;
+
+            CURRENT_LAYOUT.with(|layout_cell| {
+                if let Some(root) = layout_cell.borrow().as_ref() {
+                    layout_active = true;
+                    CURRENT_STYLES.with(|styles_cell| {
+                        let empty_styles = std::collections::HashMap::new();
+                        let styles_borrow = styles_cell.borrow();
+                        let styles = styles_borrow.as_ref().unwrap_or(&empty_styles);
+
+                        let mut stack = vec![(root, crate::css::matrix::Affine::identity())];
+                        while let Some((layout_box, parent_matrix)) = stack.pop() {
+                            let mut local_matrix = crate::css::matrix::Affine::identity();
+                            if let Some(node_id) = layout_box.node
+                                && let Some(style) = styles.get(&node_id)
+                                && !style.reset_effects.transform.is_empty()
+                            {
+                                let cx =
+                                    layout_box.rect.origin.x + layout_box.rect.size.width / 2.0;
+                                let cy =
+                                    layout_box.rect.origin.y + layout_box.rect.size.height / 2.0;
+                                let trans_origin = crate::css::matrix::Affine::translate(cx, cy);
+                                let trans_origin_inv =
+                                    crate::css::matrix::Affine::translate(-cx, -cy);
+                                let matrix_fns = crate::css::matrix::Affine::from_transform_fns(
+                                    &style.reset_effects.transform,
+                                );
+                                local_matrix = trans_origin
+                                    .multiply(&matrix_fns)
+                                    .multiply(&trans_origin_inv);
+                            }
+
+                            let accumulated_matrix = parent_matrix.multiply(&local_matrix);
+
+                            if layout_box.node == Some(node) {
+                                let x0 = layout_box.rect.origin.x;
+                                let y0 = layout_box.rect.origin.y;
+                                let w = layout_box.rect.size.width;
+                                let h = layout_box.rect.size.height;
+
+                                let p1 = accumulated_matrix.apply_point(x0, y0);
+                                let p2 = accumulated_matrix.apply_point(x0 + w, y0);
+                                let p3 = accumulated_matrix.apply_point(x0, y0 + h);
+                                let p4 = accumulated_matrix.apply_point(x0 + w, y0 + h);
+
+                                let xs = [p1.0, p2.0, p3.0, p4.0];
+                                let ys = [p1.1, p2.1, p3.1, p4.1];
+
+                                let mut min_x = xs[0];
+                                let mut max_x = xs[0];
+                                let mut min_y = ys[0];
+                                let mut max_y = ys[0];
+
+                                for i in 1..4 {
+                                    if xs[i] < min_x {
+                                        min_x = xs[i];
+                                    }
+                                    if xs[i] > max_x {
+                                        max_x = xs[i];
+                                    }
+                                    if ys[i] < min_y {
+                                        min_y = ys[i];
+                                    }
+                                    if ys[i] > max_y {
+                                        max_y = ys[i];
+                                    }
+                                }
+
+                                rects.push(DomRect::new(
+                                    min_x as f64,
+                                    min_y as f64,
+                                    (max_x - min_x) as f64,
+                                    (max_y - min_y) as f64,
+                                ));
+                            }
+
+                            for child in layout_box.children.iter().rev() {
+                                stack.push((child, accumulated_matrix));
+                            }
+                        }
+                    });
+                }
+            });
+
+            if layout_active {
+                DomRectList::new(rects)
+            } else {
+                // Backward-compatibility fallback: return a single zero-rect
+                DomRectList::new(vec![DomRect::new(0.0, 0.0, 0.0, 0.0)])
+            }
         } else {
             DomRectList::new(Vec::new())
         }
@@ -2062,5 +2197,162 @@ mod tests {
             assert_eq!(rect_mut.right(), er);
             assert_eq!(rect_mut.bottom(), eb);
         }
+    }
+
+    #[test]
+    fn test_get_bounding_client_rect_nested_and_transformed() {
+        use crate::css::values::TransformFn;
+        use crate::geom::Rect;
+        use crate::layout::LayoutBox;
+        use crate::style::CategorizedComputedStyle;
+        use std::collections::HashMap;
+
+        // 1. Set up DOM
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let parent_node = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(document, parent_node);
+
+        let child_node = dom.create_node(crate::dom::NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(parent_node, child_node);
+
+        // 2. Set up Styles
+        let mut styles = HashMap::new();
+
+        // Parent transform: scale(2.0, 3.0) at origin (50, 50) of parent_box (0,0, 100x100)
+        let mut parent_style = CategorizedComputedStyle::default();
+        std::sync::Arc::make_mut(&mut parent_style.reset_effects).transform =
+            vec![TransformFn::Scale { x: 2.0, y: 3.0 }];
+        styles.insert(parent_node, parent_style);
+
+        // Child transform: translate(10.0, 20.0) -> then scale(1.5, 1.5) at origin (15, 25) of child_box (10,10, 10x30)
+        let mut child_style = CategorizedComputedStyle::default();
+        std::sync::Arc::make_mut(&mut child_style.reset_effects).transform = vec![
+            TransformFn::Translate {
+                x: crate::css::values::LengthOrPercent {
+                    value: 10.0,
+                    unit: crate::css::values::LengthUnit::Px,
+                },
+                y: crate::css::values::LengthOrPercent {
+                    value: 20.0,
+                    unit: crate::css::values::LengthUnit::Px,
+                },
+            },
+            TransformFn::Scale { x: 1.5, y: 1.5 },
+        ];
+        styles.insert(child_node, child_style);
+
+        // 3. Set up LayoutBox tree
+        // Parent box at (0.0, 0.0, 100.0, 100.0)
+        // Child box at (10.0, 10.0, 10.0, 30.0)
+        let child_box = LayoutBox {
+            node: Some(child_node),
+            rect: Rect::new(10.0, 10.0, 10.0, 30.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let parent_box = LayoutBox {
+            node: Some(parent_node),
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            children: vec![child_box],
+            text: None,
+        };
+
+        // 4. Set thread locals
+        CURRENT_LAYOUT.with(|cell| {
+            *cell.borrow_mut() = Some(parent_box);
+        });
+        CURRENT_STYLES.with(|cell| {
+            *cell.borrow_mut() = Some(styles);
+        });
+
+        // 5. Query and Assert
+        let parent_rect = dom.get_bounding_client_rect(parent_node);
+        assert_eq!(parent_rect.x(), -50.0);
+        assert_eq!(parent_rect.y(), -100.0);
+        assert_eq!(parent_rect.width(), 200.0);
+        assert_eq!(parent_rect.height(), 300.0);
+
+        let child_rect = dom.get_bounding_client_rect(child_node);
+        assert_eq!(child_rect.x(), -15.0);
+        assert_eq!(child_rect.y(), -32.5);
+        assert_eq!(child_rect.width(), 30.0);
+        assert_eq!(child_rect.height(), 135.0);
+
+        // Clean up thread locals
+        CURRENT_LAYOUT.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+        CURRENT_STYLES.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
+
+    #[test]
+    fn test_get_client_rects_multiple_fragments() {
+        use crate::geom::Rect;
+        use crate::layout::LayoutBox;
+
+        let mut dom = Dom::new();
+        let document = dom.document();
+
+        let elem_node = dom.create_node(crate::dom::NodeData::Element {
+            name: "span".into(),
+            attrs: vec![],
+        });
+        dom.append_child(document, elem_node);
+
+        // Multiple layout fragments for the span
+        let frag1 = LayoutBox {
+            node: Some(elem_node),
+            rect: Rect::new(10.0, 10.0, 50.0, 20.0),
+            children: Vec::new(),
+            text: None,
+        };
+        let frag2 = LayoutBox {
+            node: Some(elem_node),
+            rect: Rect::new(10.0, 40.0, 30.0, 20.0),
+            children: Vec::new(),
+            text: None,
+        };
+
+        let root_box = LayoutBox {
+            node: Some(document),
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            children: vec![frag1, frag2],
+            text: None,
+        };
+
+        CURRENT_LAYOUT.with(|cell| {
+            *cell.borrow_mut() = Some(root_box);
+        });
+
+        let rects = dom.get_client_rects(elem_node);
+        assert_eq!(rects.length(), 2);
+        assert_eq!(rects.item(0).unwrap().x(), 10.0);
+        assert_eq!(rects.item(0).unwrap().width(), 50.0);
+        assert_eq!(rects.item(1).unwrap().x(), 10.0);
+        assert_eq!(rects.item(1).unwrap().y(), 40.0);
+
+        let bounding = dom.get_bounding_client_rect(elem_node);
+        // Union of (10, 10, 50, 20) and (10, 40, 30, 20)
+        // x range: [10, 60]
+        // y range: [10, 60]
+        assert_eq!(bounding.x(), 10.0);
+        assert_eq!(bounding.y(), 10.0);
+        assert_eq!(bounding.width(), 50.0);
+        assert_eq!(bounding.height(), 50.0);
+
+        CURRENT_LAYOUT.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
     }
 }
