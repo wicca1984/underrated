@@ -181,32 +181,38 @@ fn get_node_namespace(dom: &Dom, node: underrated::infra::NodeId) -> Namespace {
                 }
             }
             Namespace::Mathml => {
-                let is_mathml_text_integration =
-                    matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
-                let is_annotation_xml_integration = if parent_name == "annotation-xml" {
-                    if let Some(NodeData::Element { attrs, .. }) = dom.data(parent_id) {
-                        attrs.iter().any(|(k, v)| {
-                            k.eq_ignore_ascii_case("encoding")
-                                && (v.eq_ignore_ascii_case("text/html")
-                                    || v.eq_ignore_ascii_case("application/xhtml+xml"))
-                        })
+                if parent_name == "annotation-xml" && name == "svg" {
+                    Namespace::Svg
+                } else {
+                    let is_mathml_text_integration =
+                        matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
+                    let is_annotation_xml_integration = if parent_name == "annotation-xml" {
+                        if let Some(NodeData::Element { attrs, .. }) = dom.data(parent_id) {
+                            attrs.iter().any(|(k, v)| {
+                                k.eq_ignore_ascii_case("encoding")
+                                    && (v.eq_ignore_ascii_case("text/html")
+                                        || v.eq_ignore_ascii_case("application/xhtml+xml"))
+                            })
+                        } else {
+                            false
+                        }
                     } else {
                         false
-                    }
-                } else {
-                    false
-                };
+                    };
 
-                if is_mathml_text_integration || is_annotation_xml_integration {
-                    if name == "svg" {
-                        Namespace::Svg
-                    } else if name == "math" {
+                    if is_mathml_text_integration && (name == "mglyph" || name == "malignmark") {
                         Namespace::Mathml
+                    } else if is_mathml_text_integration || is_annotation_xml_integration {
+                        if name == "svg" {
+                            Namespace::Svg
+                        } else if name == "math" {
+                            Namespace::Mathml
+                        } else {
+                            Namespace::Html
+                        }
                     } else {
-                        Namespace::Html
+                        Namespace::Mathml
                     }
-                } else {
-                    Namespace::Mathml
                 }
             }
         };
@@ -283,7 +289,7 @@ fn serialize_dom(dom: &Dom) -> String {
                     out.push(attr_line);
                 }
 
-                if name == "template" {
+                if name == "template" && ns == Namespace::Html {
                     let mut content_line = String::new();
                     content_line.push_str("| ");
                     content_line.push_str(&"  ".repeat(depth + 1));
@@ -372,7 +378,7 @@ fn test_html5lib_tree_construction_conformance() {
         }
     }
 
-    const BASELINE: usize = 1328;
+    const BASELINE: usize = 1360;
 
     eprintln!(
         "html5lib tree-construction: PASS={} FAIL={} SKIP={} (baseline >= {})",

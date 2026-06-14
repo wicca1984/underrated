@@ -491,32 +491,40 @@ impl TreeBuilder {
                     }
                 }
                 Namespace::Mathml => {
-                    let is_mathml_text_integration =
-                        matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
-                    let is_annotation_xml_integration = if parent_name == "annotation-xml" {
-                        if let Some(NodeData::Element { attrs, .. }) = self.dom.data(parent_id) {
-                            attrs.iter().any(|(k, v)| {
-                                k.eq_ignore_ascii_case("encoding")
-                                    && (v.eq_ignore_ascii_case("text/html")
-                                        || v.eq_ignore_ascii_case("application/xhtml+xml"))
-                            })
+                    if parent_name == "annotation-xml" && name == "svg" {
+                        Namespace::Svg
+                    } else {
+                        let is_mathml_text_integration =
+                            matches!(parent_name, "mi" | "mo" | "mn" | "ms" | "mtext");
+                        let is_annotation_xml_integration = if parent_name == "annotation-xml" {
+                            if let Some(NodeData::Element { attrs, .. }) = self.dom.data(parent_id)
+                            {
+                                attrs.iter().any(|(k, v)| {
+                                    k.eq_ignore_ascii_case("encoding")
+                                        && (v.eq_ignore_ascii_case("text/html")
+                                            || v.eq_ignore_ascii_case("application/xhtml+xml"))
+                                })
+                            } else {
+                                false
+                            }
                         } else {
                             false
-                        }
-                    } else {
-                        false
-                    };
+                        };
 
-                    if is_mathml_text_integration || is_annotation_xml_integration {
-                        if name == "svg" {
-                            Namespace::Svg
-                        } else if name == "math" {
+                        if is_mathml_text_integration && (name == "mglyph" || name == "malignmark")
+                        {
                             Namespace::Mathml
+                        } else if is_mathml_text_integration || is_annotation_xml_integration {
+                            if name == "svg" {
+                                Namespace::Svg
+                            } else if name == "math" {
+                                Namespace::Mathml
+                            } else {
+                                Namespace::Html
+                            }
                         } else {
-                            Namespace::Html
+                            Namespace::Mathml
                         }
-                    } else {
-                        Namespace::Mathml
                     }
                 }
             };
@@ -1192,7 +1200,30 @@ impl TreeBuilder {
                 attrs,
                 self_closing,
             } => match name.as_str() {
-                "html" | "head" | "body" => {
+                "html" => {
+                    // Parse error.
+                    let has_template = self.stack_of_open_elements.iter().any(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "template")
+                    });
+                    if !has_template && let Some(&html_node) = self.stack_of_open_elements.first() {
+                        self.append_attributes_if_missing(html_node, attrs);
+                    }
+                }
+                "body" => {
+                    // Parse error.
+                    let has_template = self.stack_of_open_elements.iter().any(|&id| {
+                        matches!(self.dom.data(id), Some(NodeData::Element { name, .. }) if name == "template")
+                    });
+                    if !has_template && self.stack_of_open_elements.len() >= 2 {
+                        let second_id = self.stack_of_open_elements[1];
+                        let is_body = matches!(self.dom.data(second_id), Some(NodeData::Element { name, .. }) if name == "body");
+                        if is_body {
+                            // TODO(spec): set frameset-ok to not ok
+                            self.append_attributes_if_missing(second_id, attrs);
+                        }
+                    }
+                }
+                "head" => {
                     // Parse error. Ignore the token.
                 }
                 "caption" | "col" | "colgroup" | "tbody" | "td" | "tfoot" | "th" | "thead"
@@ -2716,8 +2747,15 @@ impl TreeBuilder {
 
     fn pop_until(&mut self, target_name: &str) {
         while let Some(&top_id) = self.stack_of_open_elements.last() {
-            if matches!(self.dom.data(top_id), Some(NodeData::Element { name, .. }) if name == target_name)
-            {
+            let idx = self.stack_of_open_elements.len() - 1;
+            let ns = self.get_namespace_at_index(idx);
+            let is_match = match self.dom.data(top_id) {
+                Some(NodeData::Element { name, .. }) => {
+                    name == target_name && ns == Namespace::Html
+                }
+                _ => false,
+            };
+            if is_match {
                 self.stack_of_open_elements.pop();
                 break;
             }
@@ -2737,12 +2775,113 @@ impl TreeBuilder {
     }
 
     // Helper: create and insert an element
-    fn create_and_insert_element(&mut self, name: String, attrs: Vec<(String, String)>) -> NodeId {
+    fn create_and_insert_element(
+        &mut self,
+        mut name: String,
+        mut attrs: Vec<(String, String)>,
+    ) -> NodeId {
+        let mut target_ns = Namespace::Html;
+        if let Some(&current_id) = self.stack_of_open_elements.last() {
+            let current_ns = self.get_node_namespace(current_id);
+            let current_name = match self.dom.data(current_id) {
+                Some(NodeData::Element { name, .. }) => name.as_str(),
+                _ => "",
+            };
+            target_ns = match current_ns {
+                Namespace::Html => {
+                    if name == "svg" {
+                        Namespace::Svg
+                    } else if name == "math" {
+                        Namespace::Mathml
+                    } else {
+                        Namespace::Html
+                    }
+                }
+                Namespace::Svg => {
+                    let is_html_integration =
+                        matches!(current_name, "foreignObject" | "desc" | "title");
+                    if is_html_integration {
+                        if name == "svg" {
+                            Namespace::Svg
+                        } else if name == "math" {
+                            Namespace::Mathml
+                        } else {
+                            Namespace::Html
+                        }
+                    } else {
+                        Namespace::Svg
+                    }
+                }
+                Namespace::Mathml => {
+                    if current_name == "annotation-xml" && name == "svg" {
+                        Namespace::Svg
+                    } else {
+                        let is_mathml_text_integration =
+                            matches!(current_name, "mi" | "mo" | "mn" | "ms" | "mtext");
+                        let is_annotation_xml_integration = if current_name == "annotation-xml" {
+                            if let Some(NodeData::Element { attrs, .. }) = self.dom.data(current_id)
+                            {
+                                attrs.iter().any(|(k, v)| {
+                                    k.eq_ignore_ascii_case("encoding")
+                                        && (v.eq_ignore_ascii_case("text/html")
+                                            || v.eq_ignore_ascii_case("application/xhtml+xml"))
+                                })
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if is_mathml_text_integration && (name == "mglyph" || name == "malignmark")
+                        {
+                            Namespace::Mathml
+                        } else if is_mathml_text_integration || is_annotation_xml_integration {
+                            if name == "svg" {
+                                Namespace::Svg
+                            } else if name == "math" {
+                                Namespace::Mathml
+                            } else {
+                                Namespace::Html
+                            }
+                        } else {
+                            Namespace::Mathml
+                        }
+                    }
+                }
+            };
+        } else {
+            if name == "svg" {
+                target_ns = Namespace::Svg;
+            } else if name == "math" {
+                target_ns = Namespace::Mathml;
+            }
+        }
+
+        if target_ns == Namespace::Svg {
+            name = adjust_svg_tag_name(&name);
+            adjust_svg_attributes(&mut attrs);
+        }
+        if target_ns == Namespace::Svg || target_ns == Namespace::Mathml {
+            adjust_foreign_attributes(&mut attrs);
+        }
+
         let node = self.dom.create_node(NodeData::Element { name, attrs });
         let insertion_point = self.get_appropriate_place_for_inserting_node();
         self.dom
             .insert_before(insertion_point.parent, node, insertion_point.reference);
         node
+    }
+
+    fn append_attributes_if_missing(
+        &mut self,
+        target_node: NodeId,
+        new_attrs: Vec<(String, String)>,
+    ) {
+        for (name, value) in new_attrs {
+            if self.dom.get_attribute(target_node, &name).is_none() {
+                self.dom.set_attribute(target_node, &name, &value);
+            }
+        }
     }
 
     fn generate_implied_end_tags(&mut self, except: Option<&str>) {
@@ -3292,7 +3431,11 @@ impl TreeBuilder {
     }
 
     fn is_in_select_scope(&self, target_name: &str) -> bool {
-        for &node_id in self.stack_of_open_elements.iter().rev() {
+        for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+            let ns = self.get_namespace_at_index(idx);
+            if ns != Namespace::Html {
+                continue;
+            }
             if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
                 if name == target_name {
                     return true;
@@ -3306,7 +3449,11 @@ impl TreeBuilder {
     }
 
     fn is_in_specific_scope(&self, target_name: &str, list: &[&str]) -> bool {
-        for &node_id in self.stack_of_open_elements.iter().rev() {
+        for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+            let ns = self.get_namespace_at_index(idx);
+            if ns != Namespace::Html {
+                continue;
+            }
             if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
                 if name == target_name {
                     return true;
@@ -3459,6 +3606,12 @@ impl TreeBuilder {
             if node_idx == 0 {
                 last = true;
                 // TODO(spec): fragment case
+            }
+
+            let ns = self.get_namespace_at_index(node_idx);
+            if ns != Namespace::Html && !last {
+                node_idx -= 1;
+                continue;
             }
 
             if let Some(NodeData::Element { name, .. }) = self.dom.data(node_id) {
