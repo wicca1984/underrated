@@ -26,12 +26,19 @@ impl Dom {
         }
     }
 
+    /// Checks if a class token is valid according to the DOM Standard.
+    ///
+    /// A token is valid if it is not empty and does not contain any ASCII whitespace.
+    pub fn is_valid_class_token(&self, token: &str) -> bool {
+        !token.is_empty() && !token.chars().any(crate::ascii::is_html_whitespace)
+    }
+
     /// Returns `true` if the element has the given class `name`.
     ///
-    /// If the node is not an Element, returns `false`.
+    /// If the node is not an Element, or if `name` is empty/invalid, returns `false`.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-contains
     pub fn has_class(&self, node: NodeId, name: &str) -> bool {
-        if name.is_empty() {
+        if !self.is_valid_class_token(name) {
             return false;
         }
         self.class_list(node).iter().any(|c| c == name)
@@ -40,11 +47,11 @@ impl Dom {
     /// Adds the class `name` to the element's `class` attribute.
     ///
     /// This operation is idempotent. If the class is already present,
-    /// or if the node is not an Element, or if `name` is empty, this is a no-op.
+    /// or if the node is not an Element, or if `name` is invalid, this is a no-op.
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-add
     pub fn add_class(&mut self, node: NodeId, name: &str) {
-        if name.is_empty() {
+        if !self.is_valid_class_token(name) {
             return;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
@@ -57,22 +64,39 @@ impl Dom {
         }
     }
 
+    /// Adds multiple class tokens to the element's `class` attribute.
+    ///
+    /// This operation is idempotent. Any invalid tokens are skipped as safe no-ops.
+    /// The resulting `class` attribute is normalized to be space-separated.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-add
+    pub fn add_classes(&mut self, node: NodeId, tokens: &[&str]) {
+        if let Some(NodeData::Element { .. }) = self.data(node) {
+            let mut classes = self.class_list(node);
+            let mut changed = false;
+            for token in tokens {
+                if self.is_valid_class_token(token) && !classes.contains(&token.to_string()) {
+                    classes.push(token.to_string());
+                    changed = true;
+                }
+            }
+            if changed {
+                let new_value = classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+            }
+        }
+    }
+
     /// Removes the class `name` from the element's `class` attribute.
     ///
     /// This drops all occurrences of the class `name`.
-    /// If the node is not an Element, or if `name` is empty, this is a no-op.
+    /// If the node is not an Element, or if `name` is invalid, this is a no-op.
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-remove
     pub fn remove_class(&mut self, node: NodeId, name: &str) {
-        if name.is_empty() {
+        if !self.is_valid_class_token(name) {
             return;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
-            // TODO(spec): WHATWG DOM Standard specifies that if name is empty,
-            // it should throw a SyntaxError DOMException, and if name contains
-            // ASCII whitespace, it should throw an InvalidCharacterError DOMException.
-            // Since we return no-op / safe failure here, we should update this if
-            // DOMException-throwing bindings are introduced.
             let classes = self.class_list(node);
             let new_classes: Vec<String> = classes.into_iter().filter(|c| c != name).collect();
             let new_value = new_classes.join(" ");
@@ -80,11 +104,32 @@ impl Dom {
         }
     }
 
+    /// Removes multiple class tokens from the element's `class` attribute.
+    ///
+    /// Any invalid tokens are skipped as safe no-ops.
+    /// The resulting `class` attribute is normalized to be space-separated.
+    // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-remove
+    pub fn remove_classes(&mut self, node: NodeId, tokens: &[&str]) {
+        if let Some(NodeData::Element { .. }) = self.data(node) {
+            let mut classes = self.class_list(node);
+            let len_before = classes.len();
+            for token in tokens {
+                if self.is_valid_class_token(token) {
+                    classes.retain(|c| c != token);
+                }
+            }
+            if classes.len() != len_before {
+                let new_value = classes.join(" ");
+                self.set_attribute(node, "class", &new_value);
+            }
+        }
+    }
+
     /// Toggles the presence of class `name` in the element's `class` attribute.
     ///
     /// If the class is present, removes all its occurrences and returns `false`.
     /// If the class is absent, adds it (appends) and returns `true`.
-    /// If the node is not an Element, or if `name` is empty, this is a no-op returning `false`.
+    /// If the node is not an Element, or if `name` is invalid, this is a no-op returning `false`.
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-toggle
     pub fn toggle_class(&mut self, node: NodeId, name: &str) -> bool {
@@ -97,11 +142,11 @@ impl Dom {
     /// When force == Some(true): ensures the token is present (adds if absent, leaves if present) and returns true.
     /// When force == Some(false): ensures the token is absent (removes if present, no-op if absent) and returns false.
     ///
-    /// If the node is not an Element, or if `name` is empty, this is a no-op returning `false`.
+    /// If the node is not an Element, or if `name` is invalid, this is a no-op returning `false`.
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-toggle
     pub fn toggle_class_force(&mut self, node: NodeId, name: &str, force: Option<bool>) -> bool {
-        if name.is_empty() {
+        if !self.is_valid_class_token(name) {
             return false;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
@@ -136,12 +181,12 @@ impl Dom {
     ///
     /// If `old` is present, it is replaced with `new` and returns `true`.
     /// If `new` is already present, `old` is just dropped.
-    /// If `old` is not present, or if `old` or `new` is empty, or if the node is
+    /// If `old` is not present, or if `old` or `new` is invalid, or if the node is
     /// not an Element, this is a no-op returning `false`.
     /// The resulting `class` attribute is normalized to be space-separated.
     // spec: https://dom.spec.whatwg.org/#dom-domtokenlist-replace
     pub fn replace_class(&mut self, node: NodeId, old: &str, new: &str) -> bool {
-        if old.is_empty() || new.is_empty() {
+        if !self.is_valid_class_token(old) || !self.is_valid_class_token(new) {
             return false;
         }
         if let Some(NodeData::Element { .. }) = self.data(node) {
@@ -163,6 +208,19 @@ impl Dom {
             true
         } else {
             false
+        }
+    }
+
+    /// Executes a callback for each class token in the element's class list.
+    ///
+    /// The callback receives the zero-based index and the class token.
+    /// If the node is not an Element, this is a no-op.
+    pub fn class_list_for_each<F>(&self, node: NodeId, mut f: F)
+    where
+        F: FnMut(usize, &str),
+    {
+        for (index, token) in self.class_list(node).iter().enumerate() {
+            f(index, token);
         }
     }
 
@@ -525,5 +583,53 @@ mod tests {
         assert!(dom.class_list_entries(text).is_empty());
         assert!(dom.class_list_keys(text).is_empty());
         assert!(dom.class_list_values(text).is_empty());
+    }
+
+    #[test]
+    fn test_classlist_completeness() {
+        let mut dom = Dom::new();
+        let el = elem(&mut dom, "div");
+
+        // 1. Token validation checks
+        assert!(dom.is_valid_class_token("valid-token"));
+        assert!(!dom.is_valid_class_token(""));
+        assert!(!dom.is_valid_class_token("has space"));
+        assert!(!dom.is_valid_class_token("has\twhitespace"));
+        assert!(!dom.is_valid_class_token("has\nnewline"));
+
+        // 2. add_classes multi-token behavior
+        dom.add_classes(el, &["foo", "bar", "invalid space", "baz", ""]);
+        assert_eq!(dom.class_list(el), vec!["foo", "bar", "baz"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("foo bar baz"));
+
+        // 3. remove_classes multi-token behavior
+        dom.remove_classes(el, &["bar", "", "invalid space", "foo"]);
+        assert_eq!(dom.class_list(el), vec!["baz"]);
+        assert_eq!(dom.get_attribute(el, "class"), Some("baz"));
+
+        // 4. class_list_for_each behavior
+        dom.add_classes(el, &["apple", "banana"]);
+        let mut visited = Vec::new();
+        dom.class_list_for_each(el, |idx, token| {
+            visited.push((idx, token.to_string()));
+        });
+        assert_eq!(
+            visited,
+            vec![
+                (0, "baz".to_string()),
+                (1, "apple".to_string()),
+                (2, "banana".to_string())
+            ]
+        );
+
+        // 5. Safe no-ops on non-element or invalid
+        let text = dom.create_node(NodeData::Text("text".into()));
+        dom.add_classes(text, &["foo", "bar"]);
+        assert_eq!(dom.get_attribute(text, "class"), None);
+        let mut visited_text = Vec::new();
+        dom.class_list_for_each(text, |idx, token| {
+            visited_text.push((idx, token.to_string()));
+        });
+        assert!(visited_text.is_empty());
     }
 }
