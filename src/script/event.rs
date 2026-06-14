@@ -39,6 +39,7 @@ pub struct Event {
     pub(crate) event_phase: GcRefCell<u16>,
     pub(crate) time_stamp: f64,
     pub(crate) dispatch_flag: GcRefCell<bool>,
+    pub(crate) path: GcRefCell<Vec<JsValue>>,
 }
 
 impl Class for Event {
@@ -94,6 +95,7 @@ impl Class for Event {
             event_phase: GcRefCell::new(0),
             time_stamp: get_event_timestamp(),
             dispatch_flag: GcRefCell::new(false),
+            path: GcRefCell::new(Vec::new()),
         })
     }
 
@@ -448,12 +450,7 @@ fn composed_path(this: &JsValue, _args: &[JsValue], context: &mut Context) -> Js
         JsError::from(JsNativeError::typ().with_message("Array constructor not found"))
     })?;
 
-    let mut elements = Vec::new();
-    if let Some(ref target) = *event.current_target.borrow() {
-        elements.push(target.clone());
-    } else if let Some(ref target) = *event.target.borrow() {
-        elements.push(target.clone());
-    }
+    let elements = event.path.borrow().clone();
 
     let array_val = array_obj.construct(&elements, None, context)?;
     Ok(array_val.into())
@@ -828,6 +825,7 @@ struct EventDispatchGuard<'a> {
     dispatch_flag: &'a GcRefCell<bool>,
     event_phase: &'a GcRefCell<u16>,
     current_target: &'a GcRefCell<Option<JsValue>>,
+    path: &'a GcRefCell<Vec<JsValue>>,
 }
 
 impl<'a> Drop for EventDispatchGuard<'a> {
@@ -835,6 +833,7 @@ impl<'a> Drop for EventDispatchGuard<'a> {
         *self.dispatch_flag.borrow_mut() = false;
         *self.event_phase.borrow_mut() = 0; // NONE
         *self.current_target.borrow_mut() = None;
+        self.path.borrow_mut().clear();
     }
 }
 
@@ -872,11 +871,36 @@ pub fn dispatch_event(
         *event.target.borrow_mut() = Some(this.clone());
         *event.current_target.borrow_mut() = Some(this.clone());
 
+        // Build standard dispatch path from this element up to root
+        let mut path_list = Vec::new();
+        let mut curr = this.clone();
+        while let Some(curr_obj) = curr.as_object() {
+            path_list.push(curr.clone());
+            if let Ok(default_view) = curr_obj.get(JsString::from("defaultView"), context)
+                && !default_view.is_undefined()
+                && !default_view.is_null()
+            {
+                path_list.push(default_view);
+                break;
+            }
+            if let Ok(parent) = curr_obj.get(JsString::from("parentNode"), context) {
+                if !parent.is_undefined() && !parent.is_null() {
+                    curr = parent;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        *event.path.borrow_mut() = path_list;
+
         // Use guard for cleanup
         let _guard = EventDispatchGuard {
             dispatch_flag: &event.dispatch_flag,
             event_phase: &event.event_phase,
             current_target: &event.current_target,
+            path: &event.path,
         };
 
         // Get list of listeners (either native or legacy)
@@ -1541,5 +1565,37 @@ mod tests {
         }"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_t0933_event_path_and_composed_path() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        // 1. Verify composedPath() of a newly constructed event is empty
+        let script = "{
+            let ev = new Event('test');
+            ev.composedPath().length === 0;
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. Verify composedPath() of an event during dispatch on a target with no parentNode contains just that target
+        let script = "{
+            let target = new EventTarget();
+            let ev = new Event('test');
+            let path = null;
+            target.addEventListener('test', (e) => {
+                path = e.composedPath();
+            });
+            target.dispatchEvent(ev);
+            [path ? path.length : -1, path && path[0] === target, ev.composedPath().length === 0];
+        }";
+        let res = context.eval(Source::from_bytes(script)).unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_number(), Some(1.0));
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(true));
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(true)); // cleared after dispatch!
     }
 }
