@@ -139,6 +139,17 @@ thread_local! {
     static ANY_HOVER: Cell<Hover> = const { Cell::new(Hover::Hover) };
     static POINTER: Cell<Pointer> = const { Cell::new(Pointer::Fine) };
     static ANY_POINTER: Cell<Pointer> = const { Cell::new(Pointer::Fine) };
+    static VIEWPORT_H: Cell<f32> = const { Cell::new(1024.0) };
+}
+
+/// Sets the viewport height for the current thread (default 1024.0 matching standard height).
+pub fn set_viewport_h(h: f32) {
+    VIEWPORT_H.with(|c| c.set(h));
+}
+
+/// Gets the viewport height for the current thread.
+pub fn viewport_h() -> f32 {
+    VIEWPORT_H.with(|c| c.get())
 }
 
 /// Sets the preferred color scheme for the current thread.
@@ -534,6 +545,10 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "display-mode" => return true,
             "overflow-block" => return true,
             "overflow-inline" => return true,
+            "orientation" => return true,
+            "monochrome" => return false,
+            "grid" => return false,
+            "scan" => return true,
             _ => return false,
         }
     }
@@ -774,6 +789,62 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             match (current, val_lower.as_str()) {
                 (OverflowInline::None, "none") => return true,
                 (OverflowInline::Scroll, "scroll") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "orientation" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let is_portrait = viewport_h() >= viewport_w;
+            match (is_portrait, val_lower.as_str()) {
+                (true, "portrait") => return true,
+                (false, "landscape") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "monochrome"
+        || feature_name == "min-monochrome"
+        || feature_name == "max-monochrome"
+    {
+        if let CssToken::Number(val) = &tokens[2] {
+            let limit = *val as i32;
+            let current = 0; // On color display, monochrome is 0
+            match feature_name.as_str() {
+                "monochrome" => return current == limit,
+                "min-monochrome" => return current >= limit,
+                "max-monochrome" => return current <= limit,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "grid" || feature_name == "min-grid" || feature_name == "max-grid" {
+        if let CssToken::Number(val) = &tokens[2] {
+            let limit = *val as i32;
+            let current = 0; // bitmap display is 0
+            match feature_name.as_str() {
+                "grid" => return current == limit,
+                "min-grid" => return current >= limit,
+                "max-grid" => return current <= limit,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "scan" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            match val_lower.as_str() {
+                "progressive" => return true,
+                "interlace" => return false,
                 _ => return false,
             }
         }
@@ -1797,5 +1868,69 @@ mod tests {
         assert!(media_matches("(OVERFLOW-INLINE: ScRoLl)", 1000.0));
         // Boolean context: should be true
         assert!(media_matches("(overflow-inline)", 1000.0));
+    }
+
+    #[test]
+    fn test_orientation_feature() {
+        // viewport_h is thread-local and defaults to 1024
+        // With viewport_w = 1000.0, viewport_h = 1024.0 -> portrait
+        set_viewport_h(1024.0);
+        assert!(media_matches("(orientation: portrait)", 1000.0));
+        assert!(!media_matches("(orientation: landscape)", 1000.0));
+        assert!(media_matches("(orientation)", 1000.0));
+
+        // With viewport_w = 1200.0, viewport_h = 1024.0 -> landscape
+        assert!(!media_matches("(orientation: portrait)", 1200.0));
+        assert!(media_matches("(orientation: landscape)", 1200.0));
+        assert!(media_matches("(orientation)", 1200.0));
+
+        // Let's change viewport_h to 500.0
+        set_viewport_h(500.0);
+        // With viewport_w = 600.0, viewport_h = 500.0 -> landscape
+        assert!(!media_matches("(orientation: portrait)", 600.0));
+        assert!(media_matches("(orientation: landscape)", 600.0));
+
+        // With viewport_w = 400.0, viewport_h = 500.0 -> portrait
+        assert!(media_matches("(orientation: portrait)", 400.0));
+        assert!(!media_matches("(orientation: landscape)", 400.0));
+
+        // Reset to default
+        set_viewport_h(1024.0);
+    }
+
+    #[test]
+    fn test_monochrome_feature() {
+        // Monochrome evaluates to 0
+        assert!(media_matches("(monochrome: 0)", 1000.0));
+        assert!(!media_matches("(monochrome: 1)", 1000.0));
+        assert!(!media_matches("(monochrome)", 1000.0));
+
+        assert!(media_matches("(min-monochrome: 0)", 1000.0));
+        assert!(!media_matches("(min-monochrome: 1)", 1000.0));
+
+        assert!(media_matches("(max-monochrome: 0)", 1000.0));
+        assert!(media_matches("(max-monochrome: 1)", 1000.0));
+    }
+
+    #[test]
+    fn test_grid_feature() {
+        // Grid evaluates to 0
+        assert!(media_matches("(grid: 0)", 1000.0));
+        assert!(!media_matches("(grid: 1)", 1000.0));
+        assert!(!media_matches("(grid)", 1000.0));
+
+        assert!(media_matches("(min-grid: 0)", 1000.0));
+        assert!(!media_matches("(min-grid: 1)", 1000.0));
+
+        assert!(media_matches("(max-grid: 0)", 1000.0));
+        assert!(media_matches("(max-grid: 1)", 1000.0));
+    }
+
+    #[test]
+    fn test_scan_feature() {
+        // Scan evaluates to progressive
+        assert!(media_matches("(scan: progressive)", 1000.0));
+        assert!(!media_matches("(scan: interlace)", 1000.0));
+        assert!(media_matches("(scan)", 1000.0));
     }
 }
