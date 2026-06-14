@@ -7,6 +7,31 @@
 use super::{Dom, NodeData};
 use crate::infra::NodeId;
 
+/// Represents an argument that can be either a DOM Node or a text string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeOrString {
+    Node(NodeId),
+    String(String),
+}
+
+fn copy_node_to_dom_recursive(src_dom: &Dom, src_node_id: NodeId, dest_dom: &mut Dom) -> NodeId {
+    let node_data = if let Some(data) = src_dom.data(src_node_id) {
+        data.clone()
+    } else {
+        NodeData::Comment(String::new())
+    };
+
+    let dest_node_id = dest_dom.create_node(node_data);
+
+    let children: Vec<NodeId> = src_dom.children(src_node_id).to_vec();
+    for child_id in children {
+        let cloned_child_id = copy_node_to_dom_recursive(src_dom, child_id, dest_dom);
+        dest_dom.append_child(dest_node_id, cloned_child_id);
+    }
+
+    dest_node_id
+}
+
 impl Dom {
     /// Sets (adds or overwrites) an attribute on an element node.
     /// No-op for non-element nodes or invalid ids.
@@ -3866,17 +3891,165 @@ impl Dom {
         }
     }
 
-    /// Replaces the children of `parent` with a new list of `nodes`.
+    /// Converts a slice of `NodeOrString` into a vector of `NodeId`s.
+    /// Strings are converted into newly created `Text` nodes.
+    /// DocumentFragments are expanded into their list of children, which are then emptied/detached from the fragment.
+    fn convert_nodes_or_strings(&mut self, nodes: &[NodeOrString]) -> Vec<NodeId> {
+        let mut result = Vec::new();
+        for item in nodes {
+            match item {
+                NodeOrString::String(s) => {
+                    let text_node = self.create_node(NodeData::Text(s.clone()));
+                    result.push(text_node);
+                }
+                NodeOrString::Node(id) => {
+                    let id = *id;
+                    let is_frag =
+                        matches!(self.data(id), Some(NodeData::Document)) && id != self.document();
+                    if is_frag {
+                        let frag_children = self.children(id).to_vec();
+                        // Detach children from DocumentFragment
+                        if let Some(frag_node) = self.arena.get_mut(id) {
+                            frag_node.children.clear();
+                        }
+                        self.mark_dirty(id);
+                        for &child in &frag_children {
+                            if let Some(c) = self.arena.get_mut(child) {
+                                c.parent = None;
+                            }
+                        }
+                        result.extend(frag_children);
+                    } else {
+                        result.push(id);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Inserts nodes before the given node in its parent's children.
+    ///
+    /// If the node has no parent, this does nothing.
+    // spec: https://dom.spec.whatwg.org/#dom-childnode-before
+    pub fn before(&mut self, node: NodeId, nodes: &[NodeOrString]) {
+        let parent = match self.parent(node) {
+            Some(p) => p,
+            None => return,
+        };
+        let converted = self.convert_nodes_or_strings(nodes);
+
+        // Find viable_previous_sibling
+        let mut viable_previous_sibling = None;
+        if let Some(p_node) = self.arena.get(parent)
+            && let Some(pos) = p_node.children.iter().position(|&c| c == node)
+        {
+            for sibling in p_node.children[..pos].iter().rev() {
+                if !converted.contains(sibling) {
+                    viable_previous_sibling = Some(*sibling);
+                    break;
+                }
+            }
+        }
+
+        let reference_child = match viable_previous_sibling {
+            None => self.children(parent).first().copied(),
+            Some(sibling) => {
+                let children = self.children(parent);
+                let pos = children.iter().position(|&c| c == sibling);
+                pos.and_then(|idx| children.get(idx + 1).copied())
+            }
+        };
+
+        for to_insert in converted {
+            if to_insert == parent || self.contains(to_insert, parent) {
+                continue;
+            }
+            self.insert_before(parent, to_insert, reference_child);
+        }
+    }
+
+    /// Inserts nodes after the given node in its parent's children.
+    ///
+    /// If the node has no parent, this does nothing.
+    // spec: https://dom.spec.whatwg.org/#dom-childnode-after
+    pub fn after(&mut self, node: NodeId, nodes: &[NodeOrString]) {
+        let parent = match self.parent(node) {
+            Some(p) => p,
+            None => return,
+        };
+        let converted = self.convert_nodes_or_strings(nodes);
+
+        // Find viable_next_sibling
+        let mut viable_next_sibling = None;
+        if let Some(p_node) = self.arena.get(parent)
+            && let Some(pos) = p_node.children.iter().position(|&c| c == node)
+        {
+            for sibling in &p_node.children[pos + 1..] {
+                if !converted.contains(sibling) {
+                    viable_next_sibling = Some(*sibling);
+                    break;
+                }
+            }
+        }
+
+        for to_insert in converted {
+            if to_insert == parent || self.contains(to_insert, parent) {
+                continue;
+            }
+            self.insert_before(parent, to_insert, viable_next_sibling);
+        }
+    }
+
+    /// Replaces the given node with other nodes in its parent's children.
+    ///
+    /// If the node has no parent, this does nothing.
+    // spec: https://dom.spec.whatwg.org/#dom-childnode-replacewith
+    pub fn replace_with(&mut self, node: NodeId, nodes: &[NodeOrString]) {
+        let parent = match self.parent(node) {
+            Some(p) => p,
+            None => return,
+        };
+        let converted = self.convert_nodes_or_strings(nodes);
+
+        // Find viable_next_sibling
+        let mut viable_next_sibling = None;
+        if let Some(p_node) = self.arena.get(parent)
+            && let Some(pos) = p_node.children.iter().position(|&c| c == node)
+        {
+            for sibling in &p_node.children[pos + 1..] {
+                if !converted.contains(sibling) {
+                    viable_next_sibling = Some(*sibling);
+                    break;
+                }
+            }
+        }
+
+        for to_insert in converted {
+            if to_insert == parent || self.contains(to_insert, parent) {
+                continue;
+            }
+            self.insert_before(parent, to_insert, viable_next_sibling);
+        }
+
+        if self.parent(node) == Some(parent) {
+            self.remove_child(parent, node);
+        }
+    }
+
+    /// Replaces the children of `parent` with a new list of `nodes` (mixed node and string arguments).
     /// Each node in `nodes` is first detached from its previous parent.
     /// Any existing children of `parent` are removed and their parent link is cleared.
     // spec: https://dom.spec.whatwg.org/#dom-parentnode-replacechildren
-    pub fn replace_children(&mut self, parent: NodeId, nodes: &[NodeId]) {
+    pub fn replace_children(&mut self, parent: NodeId, nodes: &[NodeOrString]) {
         if self.arena.get(parent).is_none() {
             return;
         }
 
+        let converted = self.convert_nodes_or_strings(nodes);
+
         // Validate nodes to ensure no cycles are introduced.
-        for &node in nodes {
+        for &node in &converted {
             if node == parent {
                 return;
             }
@@ -3896,8 +4069,8 @@ impl Dom {
             }
         }
 
-        let mut new_children = Vec::with_capacity(nodes.len());
-        for &child in nodes {
+        let mut new_children = Vec::with_capacity(converted.len());
+        for child in converted {
             if let Some(old) = self.parent(child)
                 && old != parent
                 && let Some(op) = self.arena.get_mut(old)
@@ -3915,6 +4088,96 @@ impl Dom {
             p.children = new_children;
         }
         self.mark_dirty(parent);
+    }
+
+    /// Parses the given HTML string and inserts the resulting nodes at the specified position relative to the reference node.
+    /// Positions:
+    /// - "beforebegin": Before the reference node itself.
+    /// - "afterbegin": Before the first child of the reference node.
+    /// - "beforeend": After the last child of the reference node.
+    /// - "afterend": After the reference node itself.
+    ///
+    /// Returns the vector of newly inserted `NodeId`s if successful, or `None` on failure.
+    // spec: https://dom.spec.whatwg.org/#dom-element-insertadjacenthtml
+    pub fn insert_adjacent_html(
+        &mut self,
+        ref_id: NodeId,
+        position: &str,
+        html: &str,
+    ) -> Option<Vec<NodeId>> {
+        let pos = position.trim().to_lowercase();
+        if pos != "beforebegin" && pos != "afterbegin" && pos != "beforeend" && pos != "afterend" {
+            return None;
+        }
+
+        self.arena.get(ref_id)?;
+
+        // Parse the HTML fragment (using wrapped body).
+        let wrapped_html = format!("<body>{}</body>", html);
+        let temp_dom = crate::html::parse_document(crate::encoding::InputStream::from_utf8(
+            wrapped_html.as_bytes(),
+        ));
+
+        // Find the <body> element in temp_dom.
+        let body_id_opt = temp_dom
+            .descendants(temp_dom.document())
+            .into_iter()
+            .find(|&node_id| {
+                if let Some(NodeData::Element { name, .. }) = temp_dom.data(node_id) {
+                    name == "body"
+                } else {
+                    false
+                }
+            });
+
+        let body_id = body_id_opt?;
+        let temp_children = temp_dom.children(body_id).to_vec();
+
+        let mut inserted_nodes = Vec::new();
+
+        match pos.as_str() {
+            "beforebegin" => {
+                let parent_id = self.parent(ref_id)?;
+                for temp_child_id in temp_children {
+                    let dest_child_id = copy_node_to_dom_recursive(&temp_dom, temp_child_id, self);
+                    self.insert_before(parent_id, dest_child_id, Some(ref_id));
+                    inserted_nodes.push(dest_child_id);
+                }
+            }
+            "afterbegin" => {
+                let original_first_child = self.children(ref_id).first().copied();
+                for temp_child_id in temp_children {
+                    let dest_child_id = copy_node_to_dom_recursive(&temp_dom, temp_child_id, self);
+                    self.insert_before(ref_id, dest_child_id, original_first_child);
+                    inserted_nodes.push(dest_child_id);
+                }
+            }
+            "beforeend" => {
+                for temp_child_id in temp_children {
+                    let dest_child_id = copy_node_to_dom_recursive(&temp_dom, temp_child_id, self);
+                    self.insert_before(ref_id, dest_child_id, None);
+                    inserted_nodes.push(dest_child_id);
+                }
+            }
+            "afterend" => {
+                let parent_id = self.parent(ref_id)?;
+                let parent_children = self.children(parent_id);
+                let original_next_sibling =
+                    if let Some(p) = parent_children.iter().position(|&c| c == ref_id) {
+                        parent_children.get(p + 1).copied()
+                    } else {
+                        None
+                    };
+                for temp_child_id in temp_children {
+                    let dest_child_id = copy_node_to_dom_recursive(&temp_dom, temp_child_id, self);
+                    self.insert_before(parent_id, dest_child_id, original_next_sibling);
+                    inserted_nodes.push(dest_child_id);
+                }
+            }
+            _ => return None,
+        }
+
+        Some(inserted_nodes)
     }
 
     /// Prepends `child` as the first child of `parent`.
@@ -4001,6 +4264,7 @@ impl Dom {
 
 #[cfg(test)]
 mod tests {
+    use super::NodeOrString;
     use crate::dom::{Dom, NodeData};
     use crate::infra::NodeId;
 
@@ -7328,7 +7592,7 @@ mod tests {
 
         let n1 = elem(&mut dom, "n1");
         let n2 = elem(&mut dom, "n2");
-        dom.replace_children(p, &[n1, n2]);
+        dom.replace_children(p, &[NodeOrString::Node(n1), NodeOrString::Node(n2)]);
         assert_eq!(dom.children(p), &[n1, n2]);
         assert_eq!(dom.parent(n1), Some(p));
         assert_eq!(dom.parent(n2), Some(p));
@@ -7546,5 +7810,112 @@ mod tests {
         assert_eq!(res2, None); // rejected
         assert_eq!(dom.children(parent), &[child]);
         assert_eq!(dom.children(frag), &[frag_child]);
+    }
+
+    #[test]
+    fn test_extended_dom_mutations() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let ref_node = elem(&mut dom, "p");
+        dom.append_child(parent, ref_node);
+
+        // 1. insert_adjacent_html
+        let inserted = dom
+            .insert_adjacent_html(ref_node, "beforeend", "<span>hello</span>world")
+            .unwrap();
+        assert_eq!(inserted.len(), 2);
+        assert!(matches!(
+            dom.data(inserted[0]),
+            Some(NodeData::Element { .. })
+        ));
+        assert!(matches!(dom.data(inserted[1]), Some(NodeData::Text(..))));
+        assert_eq!(dom.children(ref_node), &[inserted[0], inserted[1]]);
+
+        let inserted_before = dom
+            .insert_adjacent_html(ref_node, "beforebegin", "<!--comment-->")
+            .unwrap();
+        assert_eq!(inserted_before.len(), 1);
+        assert_eq!(dom.children(parent), &[inserted_before[0], ref_node]);
+
+        let inserted_after = dom
+            .insert_adjacent_html(ref_node, "afterend", "<b>after</b>")
+            .unwrap();
+        assert_eq!(inserted_after.len(), 1);
+        assert_eq!(
+            dom.children(parent),
+            &[inserted_before[0], ref_node, inserted_after[0]]
+        );
+
+        let inserted_start = dom
+            .insert_adjacent_html(ref_node, "afterbegin", "<em>start</em>")
+            .unwrap();
+        assert_eq!(inserted_start.len(), 1);
+        assert_eq!(
+            dom.children(ref_node),
+            &[inserted_start[0], inserted[0], inserted[1]]
+        );
+
+        // Invalid position handling
+        assert!(dom.insert_adjacent_html(ref_node, "invalid", "x").is_none());
+
+        // 2. before, after, replace_with with mixed arguments
+        let node_x = elem(&mut dom, "x");
+        let node_y = elem(&mut dom, "y");
+        let frag = dom.create_node(NodeData::Document);
+        let f1 = elem(&mut dom, "frag1");
+        dom.append_child(frag, f1);
+
+        // Reset parent to just contain ref_node
+        dom.replace_children(parent, &[NodeOrString::Node(ref_node)]);
+        assert_eq!(dom.children(parent), &[ref_node]);
+
+        // Call before on ref_node with [node_x, "string_val", frag]
+        dom.before(
+            ref_node,
+            &[
+                NodeOrString::Node(node_x),
+                NodeOrString::String("string_val".to_string()),
+                NodeOrString::Node(frag),
+            ],
+        );
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 4);
+        assert_eq!(children[0], node_x);
+        assert_eq!(
+            dom.character_data(children[1]),
+            Some("string_val".to_string())
+        );
+        assert_eq!(children[2], f1); // frag children expanded
+        assert_eq!(children[3], ref_node);
+
+        // Call after on ref_node with [node_y, "after_val"]
+        dom.after(
+            ref_node,
+            &[
+                NodeOrString::Node(node_y),
+                NodeOrString::String("after_val".to_string()),
+            ],
+        );
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 6);
+        assert_eq!(children[3], ref_node);
+        assert_eq!(children[4], node_y);
+        assert_eq!(
+            dom.character_data(children[5]),
+            Some("after_val".to_string())
+        );
+
+        // Call replace_with on ref_node with ["replaced_val"]
+        dom.replace_with(
+            ref_node,
+            &[NodeOrString::String("replaced_val".to_string())],
+        );
+        let children = dom.children(parent);
+        assert_eq!(children.len(), 6);
+        assert_eq!(
+            dom.character_data(children[3]),
+            Some("replaced_val".to_string())
+        );
+        assert_eq!(dom.parent(ref_node), None); // ref_node detached
     }
 }

@@ -469,51 +469,6 @@ impl Dom {
         }
     }
 
-    /// Inserts nodes before the given node in its parent's children.
-    ///
-    /// If the node has no parent, this does nothing.
-    // spec: https://dom.spec.whatwg.org/#dom-childnode-before
-    pub fn before(&mut self, node: NodeId, new_node: NodeId) {
-        if let Some(parent) = self.parent(node) {
-            self.insert_before(parent, new_node, Some(node));
-        }
-    }
-
-    /// Inserts nodes after the given node in its parent's children.
-    ///
-    /// If the node has no parent, this does nothing.
-    // spec: https://dom.spec.whatwg.org/#dom-childnode-after
-    pub fn after(&mut self, node: NodeId, new_node: NodeId) {
-        if let Some(parent) = self.parent(node) {
-            // Find the sibling immediately following `node`.
-            let next = if let Some(p_node) = self.arena.get(parent) {
-                let idx = p_node.children.iter().position(|&c| c == node);
-                idx.and_then(|i| p_node.children.get(i + 1).copied())
-            } else {
-                None
-            };
-            self.insert_before(parent, new_node, next);
-        }
-    }
-
-    /// Replaces the given node with another node in its parent's children.
-    ///
-    /// If the node has no parent, this does nothing.
-    // spec: https://dom.spec.whatwg.org/#dom-childnode-replacewith
-    pub fn replace_with(&mut self, node: NodeId, new_node: NodeId) {
-        if let Some(parent) = self.parent(node) {
-            // Find the position of `node`.
-            let next = if let Some(p_node) = self.arena.get(parent) {
-                let idx = p_node.children.iter().position(|&c| c == node);
-                idx.and_then(|i| p_node.children.get(i + 1).copied())
-            } else {
-                None
-            };
-            self.insert_before(parent, new_node, next);
-            self.remove_child(parent, node);
-        }
-    }
-
     /// Normalizes the subtree rooted at the given node.
     ///
     /// This removes empty Text nodes and merges contiguous Text nodes.
@@ -593,6 +548,7 @@ impl Dom {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dom::mutate::NodeOrString;
 
     #[test]
     fn test_set_text_content_element_with_children() {
@@ -1100,17 +1056,17 @@ mod tests {
 
         // 2. before
         let before_node = dom.create_node(NodeData::Text("before".into()));
-        dom.before(c, before_node);
+        dom.before(c, &[NodeOrString::Node(before_node)]);
         assert_eq!(dom.children(parent), vec![a, before_node, c]);
 
         // 3. after
         let after_node = dom.create_node(NodeData::Text("after".into()));
-        dom.after(c, after_node);
+        dom.after(c, &[NodeOrString::Node(after_node)]);
         assert_eq!(dom.children(parent), vec![a, before_node, c, after_node]);
 
         // 4. replace_with
         let replaced_node = dom.create_node(NodeData::Text("replaced".into()));
-        dom.replace_with(c, replaced_node);
+        dom.replace_with(c, &[NodeOrString::Node(replaced_node)]);
         assert_eq!(
             dom.children(parent),
             vec![a, before_node, replaced_node, after_node]
