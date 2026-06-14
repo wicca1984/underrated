@@ -61,9 +61,15 @@ fn find_last_fragment_baseline(
     if let Some(node_id) = lb.node
         && is_inline_block(styles, node_id)
     {
-        for child in lb.children.iter().rev() {
-            if let Some(bl) = find_last_fragment_baseline(child, styles, _dom) {
-                return Some(bl);
+        let is_visible = styles
+            .get(&node_id)
+            .map(|style| style.reset_box.overflow == "visible")
+            .unwrap_or(true);
+        if is_visible {
+            for child in lb.children.iter().rev() {
+                if let Some(bl) = find_last_fragment_baseline(child, styles, _dom) {
+                    return Some(bl);
+                }
             }
         }
         let margin_bottom = styles
@@ -130,6 +136,80 @@ fn get_vertical_align_shift(
     }
 
     total_shift
+}
+
+fn is_pure_neutral(s: &str) -> bool {
+    for c in s.chars() {
+        if c.is_alphabetic() {
+            return false;
+        }
+    }
+    true
+}
+
+fn resolve_line_children_directions(
+    children: &[LayoutBox],
+    base_direction: &'static str, // "ltr" or "rtl"
+    styles: &HashMap<NodeId, CategorizedComputedStyle>,
+) -> Vec<&'static str> {
+    let mut resolved = vec!["neutral"; children.len()];
+
+    // Step 1: Assign strong directions
+    for (i, child) in children.iter().enumerate() {
+        if let Some(ref text) = child.text
+            && is_pure_neutral(text)
+        {
+            resolved[i] = "neutral";
+            continue;
+        }
+        if let Some(node_id) = child.node
+            && let Some(style) = styles.get(&node_id)
+        {
+            let dir = style.inherited_text.direction.as_str();
+            if dir == "rtl" || dir == "ltr" {
+                resolved[i] = if dir == "rtl" { "rtl" } else { "ltr" };
+                continue;
+            }
+        }
+    }
+
+    // Step 2: Resolve Neutral runs
+    let mut i = 0;
+    while i < children.len() {
+        if resolved[i] == "neutral" {
+            let start = i;
+            while i < children.len() && resolved[i] == "neutral" {
+                i += 1;
+            }
+            let end = i; // exclusive
+
+            // The left neighbor direction
+            let left_dir = if start > 0 {
+                resolved[start - 1]
+            } else {
+                base_direction
+            };
+
+            // The right neighbor direction
+            let right_dir = if end < children.len() {
+                resolved[end]
+            } else {
+                base_direction
+            };
+
+            let final_dir = if left_dir == right_dir {
+                left_dir
+            } else {
+                base_direction
+            };
+
+            resolved[start..end].fill(final_dir);
+        } else {
+            i += 1;
+        }
+    }
+
+    resolved
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -329,16 +409,62 @@ fn create_line_box_adjusted(
         }
     }
 
-    if is_rtl {
-        for child in &mut children {
-            let old_x = child.rect.origin.x;
-            let new_x = 2.0 * offset_x + width - old_x - child.rect.size.width;
-            let delta = new_x - old_x;
-            if delta != 0.0 {
-                shift_x(child, delta);
-            }
+    // Bidi layout and neutral run resolution
+    {
+        struct BidiRun {
+            direction: &'static str,
+            children: Vec<(LayoutBox, f32)>,
         }
-        children.reverse();
+
+        let mut gaps = Vec::with_capacity(children.len());
+        let mut prev_right = offset_x;
+        for child in &children {
+            let gap = child.rect.origin.x - prev_right;
+            gaps.push(gap);
+            prev_right = child.rect.origin.x + child.rect.size.width;
+        }
+
+        let static_dir = if direction == "rtl" { "rtl" } else { "ltr" };
+        let resolved_dirs = resolve_line_children_directions(&children, static_dir, styles);
+        let mut runs: Vec<BidiRun> = Vec::new();
+        for ((child, gap), dir) in children.into_iter().zip(gaps).zip(resolved_dirs) {
+            if let Some(last_run) = runs.last_mut()
+                && last_run.direction == dir
+            {
+                last_run.children.push((child, gap));
+                continue;
+            }
+            runs.push(BidiRun {
+                direction: dir,
+                children: vec![(child, gap)],
+            });
+        }
+
+        let base_is_rtl = direction == "rtl";
+        if base_is_rtl {
+            runs.reverse();
+        }
+
+        let mut final_children = Vec::new();
+        for mut run in runs {
+            if run.direction == "rtl" {
+                run.children.reverse();
+            }
+            final_children.extend(run.children);
+        }
+
+        let mut cur_x = offset_x;
+        let mut resolved_children = Vec::new();
+        for (mut child, gap) in final_children {
+            cur_x += gap;
+            let delta_x = cur_x - child.rect.origin.x;
+            if delta_x != 0.0 {
+                shift_x(&mut child, delta_x);
+            }
+            cur_x += child.rect.size.width;
+            resolved_children.push(child);
+        }
+        children = resolved_children;
     }
 
     let final_align = match resolved_align {
@@ -432,6 +558,30 @@ pub fn layout_inline_run(
     let mut cursor_y = 0.0;
     let mut current_line_height = line_height;
 
+    let mut push_line_box = |children: &mut Vec<LayoutBox>,
+                             line_cx: f32,
+                             is_last: bool,
+                             current_lh: f32,
+                             cy: f32|
+     -> f32 {
+        let line_box = create_line_box_adjusted(
+            dom,
+            block_container,
+            std::mem::take(children),
+            offset_x,
+            offset_y + cy,
+            line_cx,
+            current_lh,
+            styles,
+            text_align,
+            containing_width,
+            is_last,
+        );
+        let height = line_box.rect.size.height;
+        line_boxes.push(line_box);
+        height
+    };
+
     let mut stack: Vec<(NodeId, usize)> = Vec::new();
     // To preserve document order, push children in reverse order so the first child is processed first.
     for &child in children.iter().rev() {
@@ -519,21 +669,15 @@ pub fn layout_inline_run(
                     for (i, segment) in segments.iter().enumerate() {
                         if i > 0 {
                             // Force a line break!
-                            line_boxes.push(create_line_box_adjusted(
-                                dom,
-                                block_container,
-                                std::mem::take(&mut current_line_children),
-                                offset_x,
-                                offset_y + cursor_y,
+                            let lh = push_line_box(
+                                &mut current_line_children,
                                 cursor_x,
-                                current_line_height,
-                                styles,
-                                text_align,
-                                containing_width,
                                 true,
-                            ));
+                                current_line_height,
+                                cursor_y,
+                            );
                             cursor_x = 0.0;
-                            cursor_y += current_line_height;
+                            cursor_y += lh;
                             current_line_height = node_line_height;
                         }
 
@@ -551,9 +695,15 @@ pub fn layout_inline_run(
                             let should_break =
                                 break_all || (break_word && word_width > containing_width);
 
+                            let mut check_width = word_width;
+                            if collapse && word.ends_with(' ') {
+                                let trimmed = word.trim_end_matches(' ');
+                                check_width = measure_text(trimmed);
+                            }
+
                             if allow_wrap
                                 && should_break
-                                && cursor_x + word_width > containing_width
+                                && cursor_x + check_width > containing_width
                             {
                                 let mut rem_word = word;
                                 while !rem_word.is_empty() {
@@ -605,21 +755,15 @@ pub fn layout_inline_run(
                                     {
                                         // Not even the first character fits in the remaining space.
                                         // Flush the current line.
-                                        line_boxes.push(create_line_box_adjusted(
-                                            dom,
-                                            block_container,
-                                            std::mem::take(&mut current_line_children),
-                                            offset_x,
-                                            offset_y + cursor_y,
+                                        let lh = push_line_box(
+                                            &mut current_line_children,
                                             cursor_x,
-                                            current_line_height,
-                                            styles,
-                                            text_align,
-                                            containing_width,
                                             false,
-                                        ));
+                                            current_line_height,
+                                            cursor_y,
+                                        );
                                         cursor_x = 0.0;
-                                        cursor_y += current_line_height;
+                                        cursor_y += lh;
                                         current_line_height = node_line_height;
                                         // Continue loop - now cursor_x is 0.0, so the next iteration will retry with the full line.
                                         continue;
@@ -671,44 +815,32 @@ pub fn layout_inline_run(
                                     }
 
                                     // Since we didn't fit the whole rem_word, we must flush the line now.
-                                    line_boxes.push(create_line_box_adjusted(
-                                        dom,
-                                        block_container,
-                                        std::mem::take(&mut current_line_children),
-                                        offset_x,
-                                        offset_y + cursor_y,
+                                    let lh = push_line_box(
+                                        &mut current_line_children,
                                         cursor_x,
-                                        current_line_height,
-                                        styles,
-                                        text_align,
-                                        containing_width,
                                         false,
-                                    ));
+                                        current_line_height,
+                                        cursor_y,
+                                    );
                                     cursor_x = 0.0;
-                                    cursor_y += current_line_height;
+                                    cursor_y += lh;
                                     current_line_height = node_line_height;
                                 }
                             } else {
                                 if allow_wrap
-                                    && cursor_x + word_width > containing_width
+                                    && cursor_x + check_width > containing_width
                                     && cursor_x > 0.0
                                 {
                                     // Flush current line
-                                    line_boxes.push(create_line_box_adjusted(
-                                        dom,
-                                        block_container,
-                                        std::mem::take(&mut current_line_children),
-                                        offset_x,
-                                        offset_y + cursor_y,
+                                    let lh = push_line_box(
+                                        &mut current_line_children,
                                         cursor_x,
-                                        current_line_height,
-                                        styles,
-                                        text_align,
-                                        containing_width,
                                         false,
-                                    ));
+                                        current_line_height,
+                                        cursor_y,
+                                    );
                                     cursor_x = 0.0;
-                                    cursor_y += current_line_height;
+                                    cursor_y += lh;
                                     current_line_height = node_line_height;
                                 }
 
@@ -751,21 +883,15 @@ pub fn layout_inline_run(
                             continue;
                         }
                         // Force a line break!
-                        line_boxes.push(create_line_box_adjusted(
-                            dom,
-                            block_container,
-                            std::mem::take(&mut current_line_children),
-                            offset_x,
-                            offset_y + cursor_y,
+                        let lh = push_line_box(
+                            &mut current_line_children,
                             cursor_x,
-                            current_line_height,
-                            styles,
-                            text_align,
-                            containing_width,
                             true,
-                        ));
+                            current_line_height,
+                            cursor_y,
+                        );
                         cursor_x = 0.0;
-                        cursor_y += current_line_height;
+                        cursor_y += lh;
                         current_line_height = line_height;
                         continue;
                     }
@@ -802,21 +928,15 @@ pub fn layout_inline_run(
                             // Check wrapping
                             if cursor_x + margin_box_width > containing_width && cursor_x > 0.0 {
                                 // Flush line
-                                line_boxes.push(create_line_box_adjusted(
-                                    dom,
-                                    block_container,
-                                    std::mem::take(&mut current_line_children),
-                                    offset_x,
-                                    offset_y + cursor_y,
+                                let lh = push_line_box(
+                                    &mut current_line_children,
                                     cursor_x,
-                                    current_line_height,
-                                    styles,
-                                    text_align,
-                                    containing_width,
                                     false,
-                                ));
+                                    current_line_height,
+                                    cursor_y,
+                                );
                                 cursor_x = 0.0;
-                                cursor_y += current_line_height;
+                                cursor_y += lh;
                                 current_line_height = line_height;
 
                                 // Re-layout at the start of the new line
@@ -857,20 +977,14 @@ pub fn layout_inline_run(
     }
 
     if !current_line_children.is_empty() {
-        line_boxes.push(create_line_box_adjusted(
-            dom,
-            block_container,
-            current_line_children,
-            offset_x,
-            offset_y + cursor_y,
+        let lh = push_line_box(
+            &mut current_line_children,
             cursor_x,
-            current_line_height,
-            styles,
-            text_align,
-            containing_width,
             true,
-        ));
-        cursor_y += current_line_height;
+            current_line_height,
+            cursor_y,
+        );
+        cursor_y += lh;
     }
 
     (line_boxes, cursor_y)
