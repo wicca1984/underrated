@@ -650,6 +650,198 @@ fn matches_compound_with_scope(
         .all(|comp| matches_component_with_scope(comp, dom, node, scope))
 }
 
+fn is_default_html_case_insensitive_attribute(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "accept"
+            | "accept-charset"
+            | "align"
+            | "alink"
+            | "axis"
+            | "bgcolor"
+            | "charset"
+            | "checked"
+            | "clear"
+            | "codetype"
+            | "color"
+            | "compact"
+            | "declare"
+            | "defer"
+            | "dir"
+            | "direction"
+            | "disabled"
+            | "enctype"
+            | "face"
+            | "frame"
+            | "gopher"
+            | "hreflang"
+            | "http-equiv"
+            | "lang"
+            | "language"
+            | "link"
+            | "media"
+            | "method"
+            | "multiple"
+            | "nohref"
+            | "noresize"
+            | "noshade"
+            | "nowrap"
+            | "readonly"
+            | "rel"
+            | "rev"
+            | "rules"
+            | "scope"
+            | "scrolling"
+            | "selected"
+            | "shape"
+            | "target"
+            | "text"
+            | "type"
+            | "valign"
+            | "valuetype"
+            | "vlink"
+    )
+}
+
+fn matches_an_plus_b(index: i32, a: i32, b: i32) -> bool {
+    if a == 0 {
+        index == b
+    } else {
+        let diff = index - b;
+        if a > 0 {
+            diff >= 0 && diff % a == 0
+        } else {
+            diff <= 0 && diff % a == 0
+        }
+    }
+}
+
+fn nth_child(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                return matches_an_plus_b(i, a, b);
+            }
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                element_index += 1;
+            }
+        }
+    }
+    false
+}
+
+fn nth_last_child(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children.iter().rev() {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                return matches_an_plus_b(i, a, b);
+            }
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                element_index += 1;
+            }
+        }
+    }
+    false
+}
+
+fn nth_of_type(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                return matches_an_plus_b(i, a, b);
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if name.eq_ignore_ascii_case(current_tag_name) =>
+                {
+                    element_index += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn nth_last_of_type(dom: &Dom, node: NodeId, a: i32, b: i32) -> bool {
+    let current_tag_name = match dom.data(node) {
+        Some(NodeData::Element { name, .. }) => name,
+        _ => return false,
+    };
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        let mut element_index = 0;
+        for &child in children.iter().rev() {
+            if child == node {
+                let i = element_index + 1; // 1-indexed
+                return matches_an_plus_b(i, a, b);
+            }
+            match dom.data(child) {
+                Some(NodeData::Element { name, .. })
+                    if name.eq_ignore_ascii_case(current_tag_name) =>
+                {
+                    element_index += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn is_first_child(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children {
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                return child == node;
+            }
+        }
+    }
+    false
+}
+
+fn is_last_child(dom: &Dom, node: NodeId) -> bool {
+    match dom.data(node) {
+        Some(NodeData::Element { .. }) => {}
+        _ => return false,
+    }
+    if let Some(parent) = dom.parent(node) {
+        let children = dom.children(parent);
+        for &child in children.iter().rev() {
+            if matches!(dom.data(child), Some(NodeData::Element { .. })) {
+                return child == node;
+            }
+        }
+    }
+    false
+}
+
 fn matches_component_with_scope(
     comp: &selector::Component,
     dom: &Dom,
@@ -668,6 +860,32 @@ fn matches_component_with_scope(
     }
 
     match comp {
+        selector::Component::Type(name) => {
+            if let Some(NodeData::Element { name: tag_name, .. }) = dom.data(node) {
+                tag_name.eq_ignore_ascii_case(name)
+            } else {
+                false
+            }
+        }
+        selector::Component::Universal => true,
+        selector::Component::Id(id) => {
+            if let Some(NodeData::Element { attrs, .. }) = dom.data(node) {
+                attrs.iter().any(|(n, v)| n == "id" && v == id)
+            } else {
+                false
+            }
+        }
+        selector::Component::Class(class) => {
+            if let Some(NodeData::Element { attrs, .. }) = dom.data(node) {
+                attrs.iter().any(|(n, v)| {
+                    n == "class"
+                        && v.split(crate::ascii::is_html_whitespace)
+                            .any(|c| c == class)
+                })
+            } else {
+                false
+            }
+        }
         selector::Component::PseudoClass(s) if s.eq_ignore_ascii_case("scope") => node == scope,
         selector::Component::Not(sub) => !matches_compound_with_scope(sub, dom, node, scope),
         selector::Component::Is(list) => list
@@ -680,6 +898,12 @@ fn matches_component_with_scope(
             .any(|sel| matches_complex_with_scope(sel, dom, node, scope)),
         selector::Component::Has(list) => matches_has_with_scope(list, dom, node, scope),
         selector::Component::PseudoElement(_) => false, // Pseudo-elements do not match DOM element nodes under querySelector or matches()
+        selector::Component::NthChild(a, b) => nth_child(dom, node, *a, *b),
+        selector::Component::NthLastChild(a, b) => nth_last_child(dom, node, *a, *b),
+        selector::Component::NthOfType(a, b) => nth_of_type(dom, node, *a, *b),
+        selector::Component::NthLastOfType(a, b) => nth_last_of_type(dom, node, *a, *b),
+        selector::Component::FirstChild => is_first_child(dom, node),
+        selector::Component::LastChild => is_last_child(dom, node),
         selector::Component::Attribute {
             name,
             op,
@@ -698,20 +922,17 @@ fn matches_component_with_scope(
             match (attr_val, op, value) {
                 (Some(_), None, _) => true, // Presence only
                 (Some(v), Some(op), Some(val)) => {
+                    // Edge case: if val is empty and operator is NOT Exact (=), it never matches!
+                    if val.is_empty() && *op != selector::AttrOp::Exact {
+                        return false;
+                    }
+
                     let case_insensitive = match modifier {
                         Some('i') | Some('I') => true,
                         Some('s') | Some('S') => false,
                         _ => {
                             // Default HTML case-insensitive attributes
-                            name.eq_ignore_ascii_case("type")
-                                || name.eq_ignore_ascii_case("lang")
-                                || name.eq_ignore_ascii_case("dir")
-                                || name.eq_ignore_ascii_case("align")
-                                || name.eq_ignore_ascii_case("valign")
-                                || name.eq_ignore_ascii_case("method")
-                                || name.eq_ignore_ascii_case("rel")
-                                || name.eq_ignore_ascii_case("target")
-                                || name.eq_ignore_ascii_case("media")
+                            is_default_html_case_insensitive_attribute(name)
                         }
                     };
 
@@ -1989,5 +2210,141 @@ mod tests {
         // :nOt(:NoT(#p1)) should match p1.
         let matches_nested = dom.query_selector_all_from(wrapper, "p:nOt(:NoT(#p1))");
         assert_eq!(matches_nested, vec![p1]);
+    }
+
+    #[test]
+    fn test_t1005_selectors_correctness_edge_cases() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Structure:
+        // <div id="test-root">
+        //   <div id="div1" class="item" data-empty="">
+        //     <span id="span1">S1</span>
+        //     <p id="p1">P1</p>
+        //     <span id="span2">S2</span>
+        //     <p id="p2">P2</p>
+        //     <span id="span3">S3</span>
+        //     <div id="div2">D2</div>
+        //   </div>
+        // </div>
+        let test_root = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "test-root".into())],
+        });
+        dom.append_child(doc, test_root);
+
+        let div1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![
+                ("id".into(), "div1".into()),
+                ("class".into(), "item".into()),
+                ("data-empty".into(), "".into()),
+            ],
+        });
+        dom.append_child(test_root, div1);
+
+        let span1 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("id".into(), "span1".into())],
+        });
+        dom.append_child(div1, span1);
+
+        let p1 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p1".into())],
+        });
+        dom.append_child(div1, p1);
+
+        let span2 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("id".into(), "span2".into())],
+        });
+        dom.append_child(div1, span2);
+
+        let p2 = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("id".into(), "p2".into())],
+        });
+        dom.append_child(div1, p2);
+
+        let span3 = dom.create_node(NodeData::Element {
+            name: "span".into(),
+            attrs: vec![("id".into(), "span3".into())],
+        });
+        dom.append_child(div1, span3);
+
+        let div2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("id".into(), "div2".into())],
+        });
+        dom.append_child(div1, div2);
+
+        // --- 1. :nth-child / :nth-of-type formulas ---
+        // odd/even nth-child
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-child(odd)"),
+            vec![span1, span2, span3]
+        );
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-child(even)"),
+            vec![] // even children are p1(2), p2(4), div2(6)
+        );
+
+        // odd/even nth-of-type
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-of-type(odd)"),
+            vec![span1, span3]
+        );
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-of-type(even)"),
+            vec![span2]
+        );
+
+        // arithmetic nth-child: 2n+1
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-child(2n+1)"),
+            vec![span1, span2, span3]
+        );
+        // arithmetic nth-child: -n+2
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-child(-n+2)"),
+            vec![span1] // children with index <= 2 are span1(1), p1(2). Only span1 is a span.
+        );
+
+        // nth-last-child / nth-last-of-type
+        // last element in div1 is div2(6).
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-last-child(2)"),
+            vec![span3] // span3 is 5th child (2nd from end)
+        );
+        assert_eq!(
+            dom.query_selector_all_from(div1, "span:nth-last-of-type(1)"),
+            vec![span3]
+        );
+
+        // --- 2. Attribute operators with empty value ---
+        // data-empty is exactly ""
+        assert_eq!(dom.query_selector("[data-empty=\"\"]"), Some(div1));
+        // operators with empty value should NOT match
+        assert_eq!(dom.query_selector_all("[data-empty^=\"\"]"), vec![]);
+        assert_eq!(dom.query_selector_all("[data-empty$=\"\"]"), vec![]);
+        assert_eq!(dom.query_selector_all("[data-empty*=\"\"]"), vec![]);
+        assert_eq!(dom.query_selector_all("[data-empty~=\"\"]"), vec![]);
+        assert_eq!(dom.query_selector_all("[data-empty|=\"\"]"), vec![]);
+
+        // --- 3. Combinator chains and :not()/:is()/:where() handling ---
+        // div:not(:is(p, span)) > div
+        // div1 is a div, not p or span. It contains div2.
+        assert_eq!(
+            dom.query_selector_all_from(test_root, "div:not(:is(p, span)) > div"),
+            vec![div1, div2] // div1 is child of test-root (which is div), div2 is child of div1 (which is div)
+        );
+
+        // using :where (which functions identically to :is but has 0 specificity)
+        assert_eq!(
+            dom.query_selector_all_from(test_root, "div:not(:where(p, span)) > div"),
+            vec![div1, div2]
+        );
     }
 }
