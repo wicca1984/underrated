@@ -11,6 +11,15 @@ use boa_engine::{
 };
 use boa_gc::{Finalize, GcRefCell, Trace};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::Instant;
+
+static EVENT_TIME_ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+fn get_event_timestamp() -> f64 {
+    let origin = EVENT_TIME_ORIGIN.get_or_init(Instant::now);
+    origin.elapsed().as_secs_f64() * 1000.0
+}
 
 /// The DOM `Event` interface represents an event which takes place in the DOM.
 ///
@@ -22,6 +31,13 @@ pub struct Event {
     pub(crate) current_target: GcRefCell<Option<JsValue>>,
     pub(crate) default_prevented: GcRefCell<bool>,
     pub(crate) propagation_stopped: GcRefCell<bool>,
+    pub(crate) immediate_propagation_stopped: GcRefCell<bool>,
+    pub(crate) bubbles: bool,
+    pub(crate) cancelable: bool,
+    pub(crate) composed: bool,
+    pub(crate) is_trusted: bool,
+    pub(crate) event_phase: GcRefCell<u16>,
+    pub(crate) time_stamp: f64,
 }
 
 impl Class for Event {
@@ -45,12 +61,37 @@ impl Class for Event {
             .to_std_string()
             .unwrap_or_default();
 
+        let mut bubbles = false;
+        let mut cancelable = false;
+        let mut composed = false;
+
+        if let Some(init_val) = args.get(1)
+            && let Some(init_obj) = init_val.as_object()
+        {
+            if let Ok(bubbles_prop) = init_obj.get(JsString::from("bubbles"), context) {
+                bubbles = bubbles_prop.as_boolean().unwrap_or(false);
+            }
+            if let Ok(cancelable_prop) = init_obj.get(JsString::from("cancelable"), context) {
+                cancelable = cancelable_prop.as_boolean().unwrap_or(false);
+            }
+            if let Ok(composed_prop) = init_obj.get(JsString::from("composed"), context) {
+                composed = composed_prop.as_boolean().unwrap_or(false);
+            }
+        }
+
         Ok(Event {
             r#type: event_type,
             target: GcRefCell::new(None),
             current_target: GcRefCell::new(None),
             default_prevented: GcRefCell::new(false),
             propagation_stopped: GcRefCell::new(false),
+            immediate_propagation_stopped: GcRefCell::new(false),
+            bubbles,
+            cancelable,
+            composed,
+            is_trusted: false,
+            event_phase: GcRefCell::new(0),
+            time_stamp: get_event_timestamp(),
         })
     }
 
@@ -71,6 +112,30 @@ impl Class for Event {
         let get_default_prevented_fn =
             FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_default_prevented))
                 .name("get defaultPrevented")
+                .build();
+        let get_bubbles_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_bubbles))
+                .name("get bubbles")
+                .build();
+        let get_cancelable_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_cancelable))
+                .name("get cancelable")
+                .build();
+        let get_composed_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_composed))
+                .name("get composed")
+                .build();
+        let get_is_trusted_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_is_trusted))
+                .name("get isTrusted")
+                .build();
+        let get_event_phase_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_event_phase))
+                .name("get eventPhase")
+                .build();
+        let get_time_stamp_fn =
+            FunctionObjectBuilder::new(&realm, NativeFunction::from_fn_ptr(get_time_stamp))
+                .name("get timeStamp")
                 .build();
 
         class
@@ -98,6 +163,42 @@ impl Class for Event {
                 None,
                 Attribute::all(),
             )
+            .accessor(
+                JsString::from("bubbles"),
+                Some(get_bubbles_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("cancelable"),
+                Some(get_cancelable_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("composed"),
+                Some(get_composed_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("isTrusted"),
+                Some(get_is_trusted_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("eventPhase"),
+                Some(get_event_phase_fn),
+                None,
+                Attribute::all(),
+            )
+            .accessor(
+                JsString::from("timeStamp"),
+                Some(get_time_stamp_fn),
+                None,
+                Attribute::all(),
+            )
             .method(
                 JsString::from("preventDefault"),
                 0,
@@ -107,7 +208,25 @@ impl Class for Event {
                 JsString::from("stopPropagation"),
                 0,
                 NativeFunction::from_fn_ptr(stop_propagation),
-            );
+            )
+            .method(
+                JsString::from("stopImmediatePropagation"),
+                0,
+                NativeFunction::from_fn_ptr(stop_immediate_propagation),
+            )
+            .method(
+                JsString::from("composedPath"),
+                0,
+                NativeFunction::from_fn_ptr(composed_path),
+            )
+            .property(JsString::from("NONE"), 0, Attribute::ENUMERABLE)
+            .property(JsString::from("CAPTURING_PHASE"), 1, Attribute::ENUMERABLE)
+            .property(JsString::from("AT_TARGET"), 2, Attribute::ENUMERABLE)
+            .property(JsString::from("BUBBLING_PHASE"), 3, Attribute::ENUMERABLE)
+            .static_property(JsString::from("NONE"), 0, Attribute::ENUMERABLE)
+            .static_property(JsString::from("CAPTURING_PHASE"), 1, Attribute::ENUMERABLE)
+            .static_property(JsString::from("AT_TARGET"), 2, Attribute::ENUMERABLE)
+            .static_property(JsString::from("BUBBLING_PHASE"), 3, Attribute::ENUMERABLE);
 
         Ok(())
     }
@@ -165,6 +284,66 @@ fn get_default_prevented(
     Ok(JsValue::from(*event.default_prevented.borrow()))
 }
 
+fn get_bubbles(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(event.bubbles))
+}
+
+fn get_cancelable(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(event.cancelable))
+}
+
+fn get_composed(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(event.composed))
+}
+
+fn get_is_trusted(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(event.is_trusted))
+}
+
+fn get_event_phase(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(*event.event_phase.borrow()))
+}
+
+fn get_time_stamp(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    Ok(JsValue::from(event.time_stamp))
+}
+
 fn prevent_default(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> JsResult<JsValue> {
     let obj = this.as_object().ok_or_else(|| {
         JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
@@ -189,6 +368,41 @@ fn stop_propagation(
     })?;
     *event.propagation_stopped.borrow_mut() = true;
     Ok(JsValue::undefined())
+}
+
+fn stop_immediate_propagation(
+    this: &JsValue,
+    _args: &[JsValue],
+    _context: &mut Context,
+) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+    *event.propagation_stopped.borrow_mut() = true;
+    *event.immediate_propagation_stopped.borrow_mut() = true;
+    Ok(JsValue::undefined())
+}
+
+fn composed_path(this: &JsValue, _args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let obj = this.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-object"))
+    })?;
+    let _event = obj.downcast_ref::<Event>().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Method called on non-Event object"))
+    })?;
+
+    // TODO(spec): Return the real path once event propagation path tracking is fully wired.
+    let array_constructor = context
+        .global_object()
+        .get(JsString::from("Array"), context)?;
+    let array_obj = array_constructor.as_object().ok_or_else(|| {
+        JsError::from(JsNativeError::typ().with_message("Array constructor not found"))
+    })?;
+    let array_val = array_obj.construct(&[], None, context)?;
+    Ok(array_val.into())
 }
 
 /// The `EventTarget` interface is implemented by objects that can receive events and may have listeners for them.
@@ -431,7 +645,8 @@ pub fn dispatch_event(
         }
 
         for listener in listeners_to_call {
-            if *event.propagation_stopped.borrow() {
+            if *event.propagation_stopped.borrow() || *event.immediate_propagation_stopped.borrow()
+            {
                 break;
             }
 
@@ -519,5 +734,119 @@ pub fn dispatch_event(
 
         let prevented_val = event_obj.get(JsString::from("defaultPrevented"), context)?;
         Ok(JsValue::from(!prevented_val.as_boolean().unwrap_or(false)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use boa_engine::Source;
+
+    #[test]
+    fn test_event_constants_and_getters() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+
+        // 1. Check constants on constructor and prototype/instance
+        let res = context
+            .eval(Source::from_bytes("Event.CAPTURING_PHASE === 1"))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        let res = context
+            .eval(Source::from_bytes("Event.BUBBLING_PHASE === 3"))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        let res = context
+            .eval(Source::from_bytes(
+                "{ let ev = new Event('foo'); ev.CAPTURING_PHASE === 1 }",
+            ))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 2. Check default values for getters
+        let res = context
+            .eval(Source::from_bytes("{ let ev = new Event('foo'); [ev.type, ev.bubbles, ev.cancelable, ev.composed, ev.isTrusted, ev.eventPhase, ev.defaultPrevented] }"))
+            .unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(
+            arr.get(0, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap(),
+            "foo"
+        );
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(false)); // bubbles
+        assert_eq!(arr.get(2, &mut context).unwrap().as_boolean(), Some(false)); // cancelable
+        assert_eq!(arr.get(3, &mut context).unwrap().as_boolean(), Some(false)); // composed
+        assert_eq!(arr.get(4, &mut context).unwrap().as_boolean(), Some(false)); // isTrusted
+        assert_eq!(arr.get(5, &mut context).unwrap().as_number(), Some(0.0)); // eventPhase
+        assert_eq!(arr.get(6, &mut context).unwrap().as_boolean(), Some(false)); // defaultPrevented
+
+        // 3. Check Constructor with EventInit options
+        let res = context
+            .eval(Source::from_bytes("{ let ev = new Event('bar', { bubbles: true, cancelable: true, composed: true }); [ev.type, ev.bubbles, ev.cancelable, ev.composed] }"))
+            .unwrap();
+        let arr2 = res.as_object().unwrap();
+        assert_eq!(
+            arr2.get(0, &mut context)
+                .unwrap()
+                .as_string()
+                .unwrap()
+                .to_std_string()
+                .unwrap(),
+            "bar"
+        );
+        assert_eq!(arr2.get(1, &mut context).unwrap().as_boolean(), Some(true)); // bubbles
+        assert_eq!(arr2.get(2, &mut context).unwrap().as_boolean(), Some(true)); // cancelable
+        assert_eq!(arr2.get(3, &mut context).unwrap().as_boolean(), Some(true)); // composed
+
+        // 4. Check timeStamp is a number >= 0
+        let res = context
+            .eval(Source::from_bytes("{ let ev = new Event('foo'); typeof ev.timeStamp === 'number' && ev.timeStamp >= 0 }"))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+
+        // 5. Check composedPath() returns an empty array
+        let res = context
+            .eval(Source::from_bytes("{ let ev = new Event('foo'); Array.isArray(ev.composedPath()) && ev.composedPath().length === 0 }"))
+            .unwrap();
+        assert_eq!(res.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_event_stop_immediate_propagation() {
+        let mut context = Context::default();
+        context.register_global_class::<Event>().unwrap();
+        context.register_global_class::<EventTarget>().unwrap();
+
+        // Let's set up an EventTarget and dispatch an event
+        let register_and_dispatch_script = "
+            let target = new EventTarget();
+            let ev = new Event('click');
+            let called1 = false;
+            let called2 = false;
+
+            target.addEventListener('click', () => {
+                called1 = true;
+                ev.stopImmediatePropagation();
+            });
+
+            target.addEventListener('click', () => {
+                called2 = true;
+            });
+
+            target.dispatchEvent(ev);
+            [called1, called2];
+        ";
+        let res = context
+            .eval(Source::from_bytes(register_and_dispatch_script))
+            .unwrap();
+        let arr = res.as_object().unwrap();
+        assert_eq!(arr.get(0, &mut context).unwrap().as_boolean(), Some(true)); // called1 should be true
+        assert_eq!(arr.get(1, &mut context).unwrap().as_boolean(), Some(false)); // called2 should be false because of stopImmediatePropagation!
     }
 }
