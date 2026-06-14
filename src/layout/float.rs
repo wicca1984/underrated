@@ -323,8 +323,8 @@ fn collect_preceding_floats(
 
                 let x = current.rect.origin.x - margin_left;
                 let y = current.rect.origin.y - margin_top;
-                let width = current.rect.size.width + margin_left + margin_right;
-                let height = current.rect.size.height + margin_top + margin_bottom;
+                let width = f32::max(0.0, current.rect.size.width + margin_left + margin_right);
+                let height = f32::max(0.0, current.rect.size.height + margin_top + margin_bottom);
 
                 floats.push(PrecedingFloat {
                     float_type: fv.to_string(),
@@ -381,6 +381,8 @@ fn collect_preceding_floats(
 }
 
 fn floats_overlap_vertically(y1: f32, h1: f32, y2: f32, h2: f32) -> bool {
+    let h1 = if h1 < 0.0 { 0.0 } else { h1 };
+    let h2 = if h2 < 0.0 { 0.0 } else { h2 };
     if h1 > 0.0 && h2 > 0.0 {
         y1 < y2 + h2 && y2 < y1 + h1
     } else if h1 == 0.0 && h2 > 0.0 {
@@ -455,8 +457,8 @@ pub(crate) fn layout_and_position_float(
     let child_box_width = child_box.rect.size.width;
     let child_box_height = child_box.rect.size.height;
 
-    let float_outer_width = child_box_width + margin_left + margin_right;
-    let float_outer_height = child_box_height + margin_top + margin_bottom;
+    let float_outer_width = f32::max(0.0, child_box_width + margin_left + margin_right);
+    let float_outer_height = f32::max(0.0, child_box_height + margin_top + margin_bottom);
 
     // Sync session and prune duplicate/stale floats
     sync_session(styles);
@@ -608,8 +610,8 @@ pub(crate) fn get_line_box_bounds_at_y(
 
                 let fx = current.rect.origin.x - margin_left;
                 let fy = current.rect.origin.y - margin_top;
-                let w = current.rect.size.width + margin_left + margin_right;
-                let h = current.rect.size.height + margin_top + margin_bottom;
+                let w = f32::max(0.0, current.rect.size.width + margin_left + margin_right);
+                let h = f32::max(0.0, current.rect.size.height + margin_top + margin_bottom);
 
                 floats.push(PrecedingFloat {
                     float_type: fv.to_string(),
@@ -714,9 +716,11 @@ pub(crate) fn adjust_bfc_width_and_position(
         return;
     }
 
-    let bfc_outer_width = bfc_box.rect.size.width + margin_left + margin_right;
-    let bfc_outer_height =
-        bfc_box.rect.size.height + margin_top + crate::layout::get_px(style, "margin-bottom", 0.0);
+    let bfc_outer_width = f32::max(0.0, bfc_box.rect.size.width + margin_left + margin_right);
+    let bfc_outer_height = f32::max(
+        0.0,
+        bfc_box.rect.size.height + margin_top + crate::layout::get_px(style, "margin-bottom", 0.0),
+    );
 
     let (left_bound, right_bound) = get_bounds_at_y(
         &floats,
@@ -2645,5 +2649,109 @@ mod tests {
         // p clears both, so its top border edge must be 70.
         // Since margin-top is 15, its origin.y should be 70 + 15 = 85.
         assert!(approx_eq(p_layout.rect.origin.y, 85.0));
+    }
+
+    #[test]
+    fn test_negative_margin_float_clamping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float-neg".into())],
+        });
+        dom.append_child(body, float_box);
+
+        let sibling_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "sibling".into())],
+        });
+        dom.append_child(body, sibling_box);
+
+        let text = dom.create_node(NodeData::Text("ab".into()));
+        dom.append_child(sibling_box, text);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 300px; }
+            .float-neg {
+                float: left;
+                width: 100px;
+                height: 50px;
+                margin-right: -120px;
+                margin-bottom: -60px;
+            }
+            .sibling {
+                display: block;
+                clear: left;
+                height: 30px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 300.0);
+        let body_box = &layout_tree.children[0];
+
+        // Ensure we laid out both elements safely.
+        assert_eq!(body_box.children.len(), 2);
+        let f_layout = &body_box.children[0];
+        let s_layout = &body_box.children[1];
+
+        // The float_neg element has a border-box height of 50.0.
+        // Its margin-bottom is -60px.
+        // Its outer height is max(0.0, 50 - 60) = 0.0.
+        // The clearance for sibling (clear: left) should clear the float.
+        // Since outer height is clamped to 0.0, the bottom edge is y = 0.0.
+        // So the cleared sibling can be placed at y = 0.0 without any issues.
+        assert!(approx_eq(f_layout.rect.origin.y, 0.0));
+        assert!(approx_eq(s_layout.rect.origin.y, 0.0));
+    }
+
+    #[test]
+    fn test_float_negative_margin_positioning() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let float_box = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "float-neg-pos".into())],
+        });
+        dom.append_child(body, float_box);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 300px; }
+            .float-neg-pos {
+                float: left;
+                width: 100px;
+                height: 50px;
+                margin-left: -20px;
+                margin-top: -10px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 300.0);
+        let body_box = &layout_tree.children[0];
+
+        let f_layout = &body_box.children[0];
+
+        // The actual position of the float should still reflect the negative margins:
+        // final_x = left_bound + margin_left = 0.0 - 20.0 = -20.0
+        // final_y = candidate_y + margin_top = 0.0 - 10.0 = -10.0
+        assert!(approx_eq(f_layout.rect.origin.x, -20.0));
+        assert!(approx_eq(f_layout.rect.origin.y, -10.0));
     }
 }
