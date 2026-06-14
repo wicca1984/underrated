@@ -139,6 +139,19 @@ fn collect_preceding_floats(
     floats
 }
 
+fn floats_overlap_vertically(y1: f32, h1: f32, y2: f32, h2: f32) -> bool {
+    if h1 > 0.0 && h2 > 0.0 {
+        y1 < y2 + h2 && y2 < y1 + h1
+    } else if h1 == 0.0 && h2 > 0.0 {
+        y2 <= y1 && y1 < y2 + h2
+    } else if h1 > 0.0 && h2 == 0.0 {
+        y1 <= y2 && y2 < y1 + h1
+    } else {
+        // h1 == 0.0 && h2 == 0.0
+        y1 == y2
+    }
+}
+
 fn get_bounds_at_y(
     floats: &[PrecedingFloat],
     candidate_y: f32,
@@ -150,7 +163,7 @@ fn get_bounds_at_y(
     let mut right_bound = containing_left + containing_width;
 
     for f in floats {
-        let overlap = f.y < candidate_y + float_outer_height && f.y + f.height > candidate_y;
+        let overlap = floats_overlap_vertically(f.y, f.height, candidate_y, float_outer_height);
         if overlap {
             if f.float_type == "left" {
                 let right_edge = f.x + f.width;
@@ -253,7 +266,7 @@ pub(crate) fn layout_and_position_float(
         // Find next candidate Y
         let mut next_y = None;
         for f in &floats {
-            let overlap = f.y < candidate_y + float_outer_height && f.y + f.height > candidate_y;
+            let overlap = floats_overlap_vertically(f.y, f.height, candidate_y, float_outer_height);
             if overlap {
                 let bottom = f.y + f.height;
                 if bottom > candidate_y {
@@ -1071,5 +1084,87 @@ mod tests {
         // (if it had cleared the inner-float of height 50, it would be >= 50.0).
         let p_layout = &body_box.children[1];
         assert!(p_layout.rect.origin.y < 40.0);
+    }
+
+    #[test]
+    fn test_floats_overlap_vertically_various_cases() {
+        use super::floats_overlap_vertically;
+        // Non-zero heights, overlapping
+        assert!(floats_overlap_vertically(0.0, 50.0, 25.0, 50.0));
+        assert!(floats_overlap_vertically(10.0, 20.0, 15.0, 5.0));
+
+        // Non-zero heights, touching but not overlapping
+        assert!(!floats_overlap_vertically(0.0, 50.0, 50.0, 50.0));
+        assert!(!floats_overlap_vertically(50.0, 50.0, 0.0, 50.0));
+
+        // One zero height, overlapping
+        assert!(floats_overlap_vertically(50.0, 50.0, 50.0, 0.0));
+        assert!(floats_overlap_vertically(50.0, 50.0, 75.0, 0.0));
+        assert!(!floats_overlap_vertically(50.0, 50.0, 100.0, 0.0));
+        assert!(!floats_overlap_vertically(50.0, 50.0, 49.0, 0.0));
+
+        // One zero height (preceding float is 0 height)
+        assert!(floats_overlap_vertically(50.0, 0.0, 50.0, 50.0));
+        assert!(floats_overlap_vertically(50.0, 0.0, 25.0, 50.0));
+        assert!(!floats_overlap_vertically(50.0, 0.0, 100.0, 50.0));
+
+        // Both zero heights
+        assert!(floats_overlap_vertically(50.0, 0.0, 50.0, 0.0));
+        assert!(!floats_overlap_vertically(50.0, 0.0, 51.0, 0.0));
+    }
+
+    #[test]
+    fn test_zero_height_float_stacking() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let left_1 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f1".into())],
+        });
+        dom.append_child(body, left_1);
+
+        let left_2 = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "f2".into())],
+        });
+        dom.append_child(body, left_2);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 200px; }
+            .f1 {
+                float: left;
+                width: 100px;
+                height: 0px;
+            }
+            .f2 {
+                float: left;
+                width: 100px;
+                height: 0px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let layout_tree = layout_document(&dom, &styles, 200.0);
+        let body_box = &layout_tree.children[0];
+
+        assert_eq!(body_box.children.len(), 2);
+        let f1_layout = &body_box.children[0];
+        let f2_layout = &body_box.children[1];
+
+        // f1 is at x=0, y=0
+        assert!(approx_eq(f1_layout.rect.origin.x, 0.0));
+        assert!(approx_eq(f1_layout.rect.origin.y, 0.0));
+
+        // f2 stacks next to f1, so x=100, y=0
+        assert!(approx_eq(f2_layout.rect.origin.x, 100.0));
+        assert!(approx_eq(f2_layout.rect.origin.y, 0.0));
     }
 }
