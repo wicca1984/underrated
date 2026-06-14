@@ -346,9 +346,24 @@ pub fn layout_absolute_and_fixed_elements(
             if let Some(ancestor_id) = positioned_ancestor
                 && let Some(ancestor_box) = find_layout_box_mut(root_box, ancestor_id, 0)
             {
-                ancestor_origin = (ancestor_box.rect.origin.x, ancestor_box.rect.origin.y);
-                container_width = ancestor_box.rect.size.width;
-                container_height = ancestor_box.rect.size.height;
+                let mut border_left = 0.0;
+                let mut border_top = 0.0;
+                let mut border_right = 0.0;
+                let mut border_bottom = 0.0;
+                if let Some(anc_style) = styles.get(&ancestor_id) {
+                    border_left = crate::layout::get_px(anc_style, "border-left-width", 0.0);
+                    border_top = crate::layout::get_px(anc_style, "border-top-width", 0.0);
+                    border_right = crate::layout::get_px(anc_style, "border-right-width", 0.0);
+                    border_bottom = crate::layout::get_px(anc_style, "border-bottom-width", 0.0);
+                }
+                ancestor_origin = (
+                    ancestor_box.rect.origin.x + border_left,
+                    ancestor_box.rect.origin.y + border_top,
+                );
+                container_width =
+                    (ancestor_box.rect.size.width - border_left - border_right).max(0.0);
+                container_height =
+                    (ancestor_box.rect.size.height - border_top - border_bottom).max(0.0);
             }
         }
 
@@ -1541,5 +1556,163 @@ mod tests {
         assert_eq!(child_box.rect.origin.y, 150.0);
         assert_eq!(child_box.rect.size.width, 50.0);
         assert_eq!(child_box.rect.size.height, 50.0);
+    }
+
+    #[test]
+    fn test_absolute_position_nested_inside_relative_with_borders() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let relative_parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, relative_parent);
+
+        let absolute_child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(relative_parent, absolute_child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .parent {
+                display: block;
+                position: relative;
+                left: 50px;
+                top: 40px;
+                width: 400px;
+                height: 300px;
+                border-left-width: 15px;
+                border-top-width: 25px;
+                border-right-width: 10px;
+                border-bottom-width: 20px;
+            }
+            .child {
+                display: block;
+                position: absolute;
+                left: 10px;
+                top: 10px;
+                width: 100px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(absolute_child) {
+                child_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let child_box = child_box.expect("Absolute child box not found");
+        // Bounded by the padding edge of the ancestor.
+        // Parent's static origin is (0, 0) prior to relative shift in layout_absolute_and_fixed_elements,
+        // and its border-left is 15px, border-top is 25px.
+        // So containing block origin is (15, 25).
+        // child left = 10px, top = 10px.
+        // child.x should be 15 + 10 = 25.0
+        // child.y should be 25 + 10 = 35.0
+        assert_eq!(child_box.rect.origin.x, 25.0);
+        assert_eq!(child_box.rect.origin.y, 35.0);
+    }
+
+    #[test]
+    fn test_absolute_position_stretch_nested_inside_relative_with_borders() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let relative_parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, relative_parent);
+
+        let absolute_child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(relative_parent, absolute_child);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .parent {
+                display: block;
+                position: relative;
+                left: 50px;
+                top: 40px;
+                width: 400px;
+                height: 300px;
+                border-left-width: 15px;
+                border-top-width: 25px;
+                border-right-width: 10px;
+                border-bottom-width: 20px;
+            }
+            .child {
+                display: block;
+                position: absolute;
+                left: 0px;
+                right: 0px;
+                top: 0px;
+                bottom: 0px;
+                /* width/height are auto */
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let viewport_width = 800.0;
+        let layout_tree = layout_document(&dom, &styles, viewport_width);
+
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(absolute_child) {
+                child_box = Some(current);
+                break;
+            }
+            for child in &current.children {
+                stack.push(child);
+            }
+        }
+
+        let child_box = child_box.expect("Absolute child box not found");
+        // Bounded by the padding edge of the ancestor.
+        // Parent content width is 400px, border-left is 15px, border-right is 10px.
+        // So padding box (containing block) width is 400px (with border box width being 425px).
+        // Parent content height is 300px, border-top is 25px, border-bottom is 20px.
+        // So padding box (containing block) height is 300px (with border box height being 345px).
+        // child left = 0, right = 0, top = 0, bottom = 0.
+        // child.x should be 15.0
+        // child.y should be 25.0
+        // child width should be 400.0
+        // child height should be 300.0
+        assert_eq!(child_box.rect.origin.x, 15.0);
+        assert_eq!(child_box.rect.origin.y, 25.0);
+        assert_eq!(child_box.rect.size.width, 400.0);
+        assert_eq!(child_box.rect.size.height, 300.0);
     }
 }
