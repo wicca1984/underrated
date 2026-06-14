@@ -2128,4 +2128,137 @@ mod tests {
         assert_eq!(last_timer.delay, 4);
         assert_eq!(last_timer.nesting_level, 6);
     }
+
+    #[test]
+    fn test_t1079_expanded_timer_id_and_clamping_behavior() {
+        clear_all_timers();
+        let mut context = Context::default();
+        register_timer_builtins(&mut context).unwrap();
+
+        // 1. NaN, Infinity, -Infinity delay value clamping and wrapping
+        context
+            .eval(Source::from_bytes(
+                r#"
+            var id_nan = setTimeout(() => {}, NaN);
+            var id_inf = setTimeout(() => {}, Infinity);
+            var id_neginf = setTimeout(() => {}, -Infinity);
+            "#,
+            ))
+            .unwrap();
+
+        let id_nan = context
+            .eval(Source::from_bytes("id_nan"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        let t_nan = get_timer(id_nan).unwrap();
+        assert_eq!(t_nan.delay, 0);
+
+        let id_inf = context
+            .eval(Source::from_bytes("id_inf"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        let t_inf = get_timer(id_inf).unwrap();
+        assert_eq!(t_inf.delay, 0);
+
+        let id_neginf = context
+            .eval(Source::from_bytes("id_neginf"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        let t_neginf = get_timer(id_neginf).unwrap();
+        assert_eq!(t_neginf.delay, 0);
+
+        // 2. String, invalid string, and object conversions for delay
+        context
+            .eval(Source::from_bytes(
+                r#"
+            var id_str = setTimeout(() => {}, "150");
+            var id_inv = setTimeout(() => {}, "invalid-delay");
+            var id_obj = setTimeout(() => {}, { valueOf() { return 88; } });
+            "#,
+            ))
+            .unwrap();
+
+        let id_str = context
+            .eval(Source::from_bytes("id_str"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        let t_str = get_timer(id_str).unwrap();
+        assert_eq!(t_str.delay, 150);
+
+        let id_inv = context
+            .eval(Source::from_bytes("id_inv"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        let t_inv = get_timer(id_inv).unwrap();
+        assert_eq!(t_inv.delay, 0);
+
+        let id_obj = context
+            .eval(Source::from_bytes("id_obj"))
+            .unwrap()
+            .as_number()
+            .unwrap() as i32;
+        let t_obj = get_timer(id_obj).unwrap();
+        assert_eq!(t_obj.delay, 88);
+
+        // 3. WebIDL conversion error propagation during clearing
+        context
+            .eval(Source::from_bytes(
+                r#"
+            var bad_obj = { valueOf() { throw new Error("conversion-error"); } };
+            "#,
+            ))
+            .unwrap();
+        let res_clear = context.eval(Source::from_bytes("clearTimeout(bad_obj)"));
+        assert!(res_clear.is_err());
+        let err_str = res_clear.err().unwrap().to_string();
+        assert!(err_str.contains("conversion-error"));
+
+        // 4. Mixed Timer ID sharing, wrapping, and collision
+        clear_all_timers();
+        let id1_val = context
+            .eval(Source::from_bytes("setTimeout(() => {}, 100)"))
+            .unwrap();
+        let id1 = id1_val.as_number().unwrap() as i32;
+        assert_eq!(id1, 1);
+
+        let id2_val = context
+            .eval(Source::from_bytes("setInterval(() => {}, 100)"))
+            .unwrap();
+        let id2 = id2_val.as_number().unwrap() as i32;
+        assert_eq!(id2, 2);
+
+        NEXT_TIMER_ID.with(|cell| {
+            *cell.borrow_mut() = i32::MAX;
+        });
+
+        let id3_val = context
+            .eval(Source::from_bytes("setTimeout(() => {}, 100)"))
+            .unwrap();
+        let id3 = id3_val.as_number().unwrap() as i32;
+        assert_eq!(id3, i32::MAX);
+
+        let id4_val = context
+            .eval(Source::from_bytes("setTimeout(() => {}, 100)"))
+            .unwrap();
+        let id4 = id4_val.as_number().unwrap() as i32;
+        assert_eq!(id4, 3);
+
+        // 5. Clear interchangeable semantics
+        // Clear interval with clearTimeout
+        context.eval(Source::from_bytes("clearTimeout(2)")).unwrap();
+        assert!(get_timer(2).is_none());
+
+        // Clear timeout with clearInterval
+        context
+            .eval(Source::from_bytes("clearInterval(3)"))
+            .unwrap();
+        assert!(get_timer(3).is_none());
+
+        assert_eq!(get_timer_count(), 2); // only id1 (1) and id3 (i32::MAX) are active
+    }
 }
