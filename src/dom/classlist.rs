@@ -197,28 +197,48 @@ impl Dom {
             let classes = self.class_list(node);
             let is_present = classes.contains(&name.to_string());
 
-            let should_be_present = match force {
-                Some(f) => f,
-                None => !is_present,
-            };
-
-            if should_be_present {
-                let mut new_classes = classes;
-                if !is_present {
-                    new_classes.push(name.to_string());
+            match force {
+                Some(true) => {
+                    if is_present {
+                        true
+                    } else {
+                        let mut new_classes = classes;
+                        new_classes.push(name.to_string());
+                        let new_value = new_classes.join(" ");
+                        self.set_attribute(node, "class", &new_value);
+                        true
+                    }
                 }
-                if !new_classes.is_empty() || has_class_attr {
-                    let new_value = new_classes.join(" ");
-                    self.set_attribute(node, "class", &new_value);
+                Some(false) => {
+                    if is_present {
+                        let new_classes: Vec<String> =
+                            classes.into_iter().filter(|c| c != name).collect();
+                        if !new_classes.is_empty() || has_class_attr {
+                            let new_value = new_classes.join(" ");
+                            self.set_attribute(node, "class", &new_value);
+                        }
+                        false
+                    } else {
+                        false
+                    }
                 }
-                true
-            } else {
-                let new_classes: Vec<String> = classes.into_iter().filter(|c| c != name).collect();
-                if !new_classes.is_empty() || has_class_attr {
-                    let new_value = new_classes.join(" ");
-                    self.set_attribute(node, "class", &new_value);
+                None => {
+                    if is_present {
+                        let new_classes: Vec<String> =
+                            classes.into_iter().filter(|c| c != name).collect();
+                        if !new_classes.is_empty() || has_class_attr {
+                            let new_value = new_classes.join(" ");
+                            self.set_attribute(node, "class", &new_value);
+                        }
+                        false
+                    } else {
+                        let mut new_classes = classes;
+                        new_classes.push(name.to_string());
+                        let new_value = new_classes.join(" ");
+                        self.set_attribute(node, "class", &new_value);
+                        true
+                    }
                 }
-                false
             }
         } else {
             false
@@ -956,14 +976,23 @@ mod tests {
         dom.remove_class(el, "a"); // "a" is present, removes "a" and normalizes spacing
         assert_eq!(dom.get_attribute(el, "class"), Some("b"));
 
-        // 3. Verification of normalization on toggle_class_force
+        // 3. Verification of standard-compliant toggle_class_force (does not normalize on no-op force toggle)
         dom.set_attribute(el, "class", "  a   b  ");
-        assert!(dom.toggle_class_force(el, "a", Some(true))); // "a" already present, returns true and normalizes spacing
-        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
+        assert!(dom.toggle_class_force(el, "a", Some(true))); // "a" already present, returns true, does NOT normalize spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
 
         dom.set_attribute(el, "class", "  a   b  ");
-        assert!(!dom.toggle_class_force(el, "c", Some(false))); // "c" already absent, returns false and normalizes spacing
-        assert_eq!(dom.get_attribute(el, "class"), Some("a b"));
+        assert!(!dom.toggle_class_force(el, "c", Some(false))); // "c" already absent, returns false, does NOT normalize spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("  a   b  "));
+
+        // 3b. Verify normalization happens when there IS a change with force toggle
+        dom.set_attribute(el, "class", "  a   b  ");
+        assert!(dom.toggle_class_force(el, "c", Some(true))); // "c" absent, adds c, returns true and normalizes spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("a b c"));
+
+        dom.set_attribute(el, "class", "  a   b  ");
+        assert!(!dom.toggle_class_force(el, "a", Some(false))); // "a" present, removes a, returns false and normalizes spacing
+        assert_eq!(dom.get_attribute(el, "class"), Some("b"));
 
         // 4. Verification of replace_class old == new (now normalizes when present per spec update steps)
         dom.set_attribute(el, "class", "  a   b  ");
