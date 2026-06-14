@@ -1928,6 +1928,42 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'contentEditable', {
+                        get() {
+                            const attr = this.getAttribute('contenteditable');
+                            if (attr === null) {
+                                return 'inherit';
+                            }
+                            const lower = attr.toLowerCase();
+                            if (lower === '' || lower === 'true') {
+                                return 'true';
+                            }
+                            if (lower === 'false') {
+                                return 'false';
+                            }
+                            if (lower === 'plaintext-only') {
+                                return 'plaintext-only';
+                            }
+                            return 'inherit';
+                        },
+                        set(val) {
+                            const lower = String(val).toLowerCase();
+                            if (lower === 'true') {
+                                this.setAttribute('contenteditable', 'true');
+                            } else if (lower === 'false') {
+                                this.setAttribute('contenteditable', 'false');
+                            } else if (lower === 'plaintext-only') {
+                                this.setAttribute('contenteditable', 'plaintext-only');
+                            } else if (lower === 'inherit') {
+                                this.removeAttribute('contenteditable');
+                            } else {
+                                throw new DOMException("The value provided is not a valid contentEditable value", "SyntaxError");
+                            }
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'autocorrect', {
                         get() {
                             const attr = this.getAttribute('autocorrect');
@@ -13132,6 +13168,82 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|true|false||yes|no||true|false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_reflected_content_editable() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+
+            // 1. Getter on absent attribute -> 'inherit'
+            let g_absent = div.contentEditable;
+
+            // 2. Getter on empty attribute -> 'true'
+            div.setAttribute('contenteditable', '');
+            let g_empty = div.contentEditable;
+
+            // 3. Getter on 'TRUE' (case-insensitive) -> 'true'
+            div.setAttribute('contenteditable', 'TRUE');
+            let g_true = div.contentEditable;
+
+            // 4. Getter on 'fAlSe' (case-insensitive) -> 'false'
+            div.setAttribute('contenteditable', 'fAlSe');
+            let g_false = div.contentEditable;
+
+            // 5. Getter on 'pLaInTeXt-OnLy' (case-insensitive) -> 'plaintext-only'
+            div.setAttribute('contenteditable', 'pLaInTeXt-OnLy');
+            let g_plaintext = div.contentEditable;
+
+            // 6. Getter on invalid attribute value 'invalid-val' -> 'inherit'
+            div.setAttribute('contenteditable', 'invalid-val');
+            let g_invalid = div.contentEditable;
+
+            // 7. Setter 'TrUe' -> sets attribute to 'true' and returns 'true' from getter
+            div.contentEditable = 'TrUe';
+            let s_true_attr = div.getAttribute('contenteditable');
+            let s_true_get = div.contentEditable;
+
+            // 8. Setter 'FaLsE' -> sets attribute to 'false' and returns 'false' from getter
+            div.contentEditable = 'FaLsE';
+            let s_false_attr = div.getAttribute('contenteditable');
+            let s_false_get = div.contentEditable;
+
+            // 9. Setter 'PlAiNtExT-oNlY' -> sets attribute to 'plaintext-only' and returns 'plaintext-only' from getter
+            div.contentEditable = 'PlAiNtExT-oNlY';
+            let s_plain_attr = div.getAttribute('contenteditable');
+            let s_plain_get = div.contentEditable;
+
+            // 10. Setter 'InHeRiT' -> removes attribute and returns 'inherit' from getter
+            div.contentEditable = 'InHeRiT';
+            let s_inherit_attr = div.getAttribute('contenteditable') === null ? 'removed' : 'not-removed';
+            let s_inherit_get = div.contentEditable;
+
+            // 11. Setter invalid value -> throws SyntaxError DOMException
+            let thrown = 'no-throw';
+            try {
+                div.contentEditable = 'invalid';
+            } catch (e) {
+                if (e instanceof DOMException && e.name === 'SyntaxError') {
+                    thrown = 'syntax-error-dom-exception';
+                } else {
+                    thrown = 'wrong-error: ' + e;
+                }
+            }
+
+            [
+                g_absent, g_empty, g_true, g_false, g_plaintext, g_invalid,
+                s_true_attr, s_true_get, s_false_attr, s_false_get,
+                s_plain_attr, s_plain_get, s_inherit_attr, s_inherit_get,
+                thrown
+            ].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("inherit|true|true|false|plaintext-only|inherit|true|true|false|false|plaintext-only|plaintext-only|removed|inherit|syntax-error-dom-exception".to_string())
         );
     }
 
