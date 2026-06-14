@@ -1630,6 +1630,16 @@ impl TreeBuilder {
                         self.pop_until(&name);
                         self.reset_insertion_mode_appropriately();
                     }
+                } else if name == "li" {
+                    if self.is_in_list_item_scope("li") {
+                        self.generate_implied_end_tags(Some("li"));
+                        self.pop_until("li");
+                    }
+                } else if name == "dd" || name == "dt" {
+                    if self.is_in_scope(&name) {
+                        self.generate_implied_end_tags(Some(&name));
+                        self.pop_until(&name);
+                    }
                 } else if self.is_special_element(&name) {
                     if self.is_in_scope(&name) {
                         self.pop_until(&name);
@@ -2547,7 +2557,16 @@ impl TreeBuilder {
                     self.reset_insertion_mode_appropriately();
                 }
                 _ => {
-                    // Parse error. Ignore.
+                    // Parse error.
+                    if self.is_in_select_scope("select") {
+                        self.pop_until("select");
+                        self.reset_insertion_mode_appropriately();
+                        self.process_token(Token::EndTag {
+                            name,
+                            attrs,
+                            self_closing,
+                        });
+                    }
                 }
             },
             Token::Eof => {
@@ -3243,6 +3262,16 @@ impl TreeBuilder {
             target_name,
             &[
                 "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
+            ],
+        )
+    }
+
+    fn is_in_list_item_scope(&self, target_name: &str) -> bool {
+        self.is_in_specific_scope(
+            target_name,
+            &[
+                "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
+                "ol", "ul",
             ],
         )
     }
