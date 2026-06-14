@@ -37,6 +37,8 @@ pub struct ResolveContext {
     pub property_name: Option<String>,
     pub parent_value: Option<CssValue>,
     pub current_color: Option<CssValue>,
+    pub revert_value: Option<CssValue>,
+    pub revert_layer_value: Option<CssValue>,
 }
 
 impl Default for ResolveContext {
@@ -52,6 +54,8 @@ impl Default for ResolveContext {
             property_name: None,
             parent_value: None,
             current_color: None,
+            revert_value: None,
+            revert_layer_value: None,
         }
     }
 }
@@ -1545,6 +1549,66 @@ pub fn resolve_value_with_context(
                         return Some(CssValue::Keyword("unset".to_string()));
                     }
                 }
+                "revert" => {
+                    if let Some(revert_val) = &context.revert_value {
+                        return Some(revert_val.clone());
+                    } else if let Some(prop) = &context.property_name {
+                        let is_inh = crate::css::property::is_inherited(prop);
+                        if is_inh {
+                            if let Some(parent) = &context.parent_value {
+                                return Some(parent.clone());
+                            } else if let Some(init_str) = crate::css::property::initial_value(prop)
+                            {
+                                let mut sub_context = context.clone();
+                                sub_context.property_name = None;
+                                return resolve_string_with_context(init_str, &sub_context);
+                            } else {
+                                return Some(CssValue::Keyword("revert".to_string()));
+                            }
+                        } else {
+                            if let Some(init_str) = crate::css::property::initial_value(prop) {
+                                let mut sub_context = context.clone();
+                                sub_context.property_name = None;
+                                return resolve_string_with_context(init_str, &sub_context);
+                            } else {
+                                return Some(CssValue::Keyword("revert".to_string()));
+                            }
+                        }
+                    } else {
+                        return Some(CssValue::Keyword("revert".to_string()));
+                    }
+                }
+                "revert-layer" => {
+                    if let Some(revert_layer_val) = &context.revert_layer_value {
+                        return Some(revert_layer_val.clone());
+                    } else if let Some(revert_val) = &context.revert_value {
+                        return Some(revert_val.clone());
+                    } else if let Some(prop) = &context.property_name {
+                        let is_inh = crate::css::property::is_inherited(prop);
+                        if is_inh {
+                            if let Some(parent) = &context.parent_value {
+                                return Some(parent.clone());
+                            } else if let Some(init_str) = crate::css::property::initial_value(prop)
+                            {
+                                let mut sub_context = context.clone();
+                                sub_context.property_name = None;
+                                return resolve_string_with_context(init_str, &sub_context);
+                            } else {
+                                return Some(CssValue::Keyword("revert-layer".to_string()));
+                            }
+                        } else {
+                            if let Some(init_str) = crate::css::property::initial_value(prop) {
+                                let mut sub_context = context.clone();
+                                sub_context.property_name = None;
+                                return resolve_string_with_context(init_str, &sub_context);
+                            } else {
+                                return Some(CssValue::Keyword("revert-layer".to_string()));
+                            }
+                        }
+                    } else {
+                        return Some(CssValue::Keyword("revert-layer".to_string()));
+                    }
+                }
                 "currentcolor" => {
                     if let Some("color") = context.property_name.as_deref() {
                         if let Some(parent) = &context.parent_value {
@@ -2706,5 +2770,74 @@ mod tests {
         // The resulting components should have currentcolor replaced by the hex formatted color.
         let parsed = crate::css::values::parse_value(&resolved);
         assert!(parsed.is_some());
+    }
+
+    #[test]
+    fn test_resolve_revert_keywords() {
+        // 1. revert keyword with explicit revert_value
+        let explicit_revert = CssValue::Length(100.0, LengthUnit::Px);
+        let ctx_revert = ResolveContext {
+            revert_value: Some(explicit_revert.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("revert", &ctx_revert),
+            Some(explicit_revert)
+        );
+
+        // 2. revert keyword fallback (behaves as unset)
+        // For inherited property (e.g. "color"), fallback inherits from parent value
+        let parent_color = CssValue::Color(crate::css::values::Color::Rgba(255, 0, 0, 255));
+        let ctx_revert_inherited = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(parent_color.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("revert", &ctx_revert_inherited),
+            Some(parent_color.clone())
+        );
+
+        // For non-inherited property (e.g. "background-color"), fallback resolves to initial
+        let ctx_revert_non_inherited = ResolveContext {
+            property_name: Some("background-color".to_string()),
+            parent_value: Some(parent_color.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("revert", &ctx_revert_non_inherited),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 0)))
+        );
+
+        // 3. revert-layer keyword with explicit revert_layer_value
+        let explicit_revert_layer = CssValue::Length(50.0, LengthUnit::Px);
+        let ctx_revert_layer = ResolveContext {
+            revert_layer_value: Some(explicit_revert_layer.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("revert-layer", &ctx_revert_layer),
+            Some(explicit_revert_layer.clone())
+        );
+
+        // 4. revert-layer falls back to revert_value
+        let ctx_revert_layer_to_revert = ResolveContext {
+            revert_value: Some(explicit_revert_layer.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_string_with_context("revert-layer", &ctx_revert_layer_to_revert),
+            Some(explicit_revert_layer.clone())
+        );
+
+        // 5. revert-layer falls back to unset (inherited/initial) when no rollback is given
+        assert_eq!(
+            resolve_string_with_context("revert-layer", &ctx_revert_inherited),
+            Some(parent_color)
+        );
+        assert_eq!(
+            resolve_string_with_context("revert-layer", &ctx_revert_non_inherited),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 0)))
+        );
     }
 }
