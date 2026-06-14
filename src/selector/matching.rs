@@ -323,14 +323,14 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         false
                     }
                     "user-valid" => {
-                        // TODO(spec): Real :user-valid matching requires form-validation plus user-interaction state
-                        // which this engine does not track.
+                        // TODO(spec): Real :user-valid matching requires user-interaction validity state,
+                        // which is intentionally out of scope and not implemented in this engine.
                         // Thus, :user-valid always returns false.
                         false
                     }
                     "user-invalid" => {
-                        // TODO(spec): Real :user-invalid matching requires form-validation plus user-interaction state
-                        // which this engine does not track.
+                        // TODO(spec): Real :user-invalid matching requires user-interaction validity state,
+                        // which is intentionally out of scope and not implemented in this engine.
                         // Thus, :user-invalid always returns false.
                         false
                     }
@@ -3144,6 +3144,24 @@ mod tests {
         });
         dom.append_child(doc, input_elem);
         assert!(!matches(&sel_autofill, &dom, input_elem));
+
+        // Matches :user-valid (should never match since we have no user-interaction validity state tracking)
+        let sel_user_valid = parse_selector_list(":user-valid").unwrap();
+        assert!(!matches(&sel_user_valid, &dom, a_with_href));
+        assert!(!matches(&sel_user_valid, &dom, area_with_href));
+        assert!(!matches(&sel_user_valid, &dom, link_with_href));
+        assert!(!matches(&sel_user_valid, &dom, a_no_href));
+        assert!(!matches(&sel_user_valid, &dom, div_with_href));
+        assert!(!matches(&sel_user_valid, &dom, input_elem));
+
+        // Matches :user-invalid (should never match since we have no user-interaction validity state tracking)
+        let sel_user_invalid = parse_selector_list(":user-invalid").unwrap();
+        assert!(!matches(&sel_user_invalid, &dom, a_with_href));
+        assert!(!matches(&sel_user_invalid, &dom, area_with_href));
+        assert!(!matches(&sel_user_invalid, &dom, link_with_href));
+        assert!(!matches(&sel_user_invalid, &dom, a_no_href));
+        assert!(!matches(&sel_user_invalid, &dom, div_with_href));
+        assert!(!matches(&sel_user_invalid, &dom, input_elem));
 
         // Matches :modal (should never match since we have no modal/top-layer mechanism)
         let sel_modal = parse_selector_list(":modal").unwrap();
