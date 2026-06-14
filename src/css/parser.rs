@@ -243,102 +243,92 @@ impl<'a> Parser<'a> {
     fn consume_list_of_declarations(&mut self) -> Vec<Declaration> {
         let mut declarations = Vec::new();
         loop {
-            let token = self.consume_token();
-            match token {
-                // <whitespace-token> / <semicolon-token>: Do nothing.
-                CssToken::Whitespace | CssToken::Semicolon => {}
-                // <EOF-token>: Return the list of declarations.
-                CssToken::Eof => {
+            let val = self.consume_component_value();
+            match val {
+                ComponentValue::Token(CssToken::Whitespace)
+                | ComponentValue::Token(CssToken::Semicolon) => {}
+                ComponentValue::Token(CssToken::Eof) => {
                     return declarations;
                 }
-                // <right-curly-bracket-token>: Return the list of declarations.
-                CssToken::RightBrace => {
+                ComponentValue::Token(CssToken::RightBrace) => {
                     return declarations;
                 }
-                // <at-keyword-token>: Reconsume the current input token.
-                // Consume an at-rule. Append the returned rule to the list of declarations.
-                CssToken::AtKeyword(_) => {
-                    self.reconsume_token(token);
-                    // TODO(spec): Declaration struct only supports Declaration, not AtRule.
-                    // SPEC S-6: pub struct QualifiedRule { ..., declarations: Vec<Declaration> }
+                ComponentValue::Token(CssToken::AtKeyword(_)) => {
+                    if let ComponentValue::Token(token) = val {
+                        self.reconsume_token(token);
+                    }
                     self.consume_at_rule();
                 }
-                // <ident-token>: Create a list of tokens, initially containing the current input token.
-                CssToken::Ident(_) => {
-                    let mut tokens = vec![token];
-                    // While the next input token is anything other than a <semicolon-token> or <EOF-token>,
-                    // consume the next input token and append it to the list of tokens.
+                ComponentValue::Token(CssToken::Ident(_)) => {
+                    let mut decl_values = vec![val];
                     loop {
-                        let next = self.consume_token();
-                        // Note: RightBrace is also treated as terminator here to avoid infinite loop
-                        // if a declaration is not properly closed with semicolon inside a block.
-                        if next == CssToken::Semicolon
-                            || next == CssToken::Eof
-                            || next == CssToken::RightBrace
-                        {
-                            self.reconsume_token(next);
-                            break;
+                        let next = self.consume_component_value();
+                        match next {
+                            ComponentValue::Token(CssToken::Semicolon) => {
+                                break;
+                            }
+                            ComponentValue::Token(CssToken::Eof)
+                            | ComponentValue::Token(CssToken::RightBrace) => {
+                                if let ComponentValue::Token(token) = next {
+                                    self.reconsume_token(token);
+                                }
+                                break;
+                            }
+                            _ => {
+                                decl_values.push(next);
+                            }
                         }
-                        tokens.push(next);
                     }
-                    // Consume a declaration from the list of tokens. If anything is returned, append it to the list of declarations.
-                    if let Some(decl) = self.consume_declaration_from_tokens(tokens) {
+                    if let Some(decl) = self.consume_declaration_from_component_values(decl_values)
+                    {
                         declarations.push(decl);
                     }
                 }
-                // anything else: This is a parse error. Reconsume the current input token.
-                // While the next input token is anything other than a <semicolon-token> or <EOF-token>,
-                // consume the next input token.
-                _ => {
-                    self.reconsume_token(token);
-                    loop {
-                        let next = self.consume_token();
-                        if next == CssToken::Semicolon
-                            || next == CssToken::Eof
-                            || next == CssToken::RightBrace
-                        {
-                            self.reconsume_token(next);
+                _ => loop {
+                    let next = self.consume_component_value();
+                    match next {
+                        ComponentValue::Token(CssToken::Semicolon) => break,
+                        ComponentValue::Token(CssToken::Eof)
+                        | ComponentValue::Token(CssToken::RightBrace) => {
+                            if let ComponentValue::Token(token) = next {
+                                self.reconsume_token(token);
+                            }
                             break;
                         }
+                        _ => {}
                     }
-                }
+                },
             }
         }
     }
 
     // spec: https://www.w3.org/TR/css-syntax-3/#consume-declaration
-    fn consume_declaration_from_tokens(&mut self, tokens: Vec<CssToken>) -> Option<Declaration> {
-        // 1. Consume the next input token. Create a new declaration with its name set to the
-        // value of the current input token, and its value initially set to an empty list.
-        let mut it = tokens.into_iter();
-        let name = if let Some(CssToken::Ident(name)) = it.next() {
+    fn consume_declaration_from_component_values(
+        &mut self,
+        values: Vec<ComponentValue>,
+    ) -> Option<Declaration> {
+        let mut it = values.into_iter();
+        let name = if let Some(ComponentValue::Token(CssToken::Ident(name))) = it.next() {
             name
         } else {
             return None;
         };
 
-        // 2. While the next input token is a <whitespace-token>, consume the next input token.
         let mut next = it.next();
-        while let Some(CssToken::Whitespace) = next {
+        while let Some(ComponentValue::Token(CssToken::Whitespace)) = next {
             next = it.next();
         }
 
-        // 3. If the next input token is anything other than a <colon-token>, this is a parse error. Return nothing.
-        if next != Some(CssToken::Colon) {
+        if next != Some(ComponentValue::Token(CssToken::Colon)) {
             return None;
         }
 
-        // 4. While the next input token is anything other than an <EOF-token>,
-        // consume the next input token and append it to the declaration’s value.
-        let mut tokens_for_value: Vec<CssToken> = it.collect();
+        let mut value_components: Vec<ComponentValue> = it.collect();
 
-        // 5. If the last two non-whitespace tokens in the declaration’s value are a <delim-token> with
-        // the value "!" and an <ident-token> with a value that is an ASCII case-insensitive match for
-        // "important", set the declaration’s important flag to true, and remove them from the declaration’s value.
         let mut important = false;
         let mut non_whitespace_indices = Vec::new();
-        for (i, t) in tokens_for_value.iter().enumerate() {
-            if !matches!(t, CssToken::Whitespace) {
+        for (i, v) in value_components.iter().enumerate() {
+            if !matches!(v, ComponentValue::Token(CssToken::Whitespace)) {
                 non_whitespace_indices.push(i);
             }
         }
@@ -346,25 +336,22 @@ impl<'a> Parser<'a> {
         if non_whitespace_indices.len() >= 2 {
             let idx1 = non_whitespace_indices[non_whitespace_indices.len() - 2];
             let idx2 = non_whitespace_indices[non_whitespace_indices.len() - 1];
-            match (&tokens_for_value[idx1], &tokens_for_value[idx2]) {
-                (CssToken::Delim('!'), CssToken::Ident(ident))
-                    if ident.eq_ignore_ascii_case("important") =>
-                {
+            match (&value_components[idx1], &value_components[idx2]) {
+                (
+                    ComponentValue::Token(CssToken::Delim('!')),
+                    ComponentValue::Token(CssToken::Ident(ident)),
+                ) if ident.eq_ignore_ascii_case("important") => {
                     important = true;
-                    tokens_for_value.truncate(idx1);
+                    value_components.truncate(idx1);
                 }
                 _ => {}
             }
         }
 
-        // 6. Convert the declaration's value to a list of component values.
-        let value = self.tokens_to_component_values(tokens_for_value);
-
-        // Check if the property is a known layout-related property.
-        // If it is, and it does not contain a custom variable/calc function,
-        // validate its value. If the value is invalid or unknown, ignore/discard the declaration.
-        if crate::css::values::is_known_layout_property(&name) && !has_var_or_calc(&value) {
-            if let Some(parsed_val) = crate::css::values::parse_value(&value) {
+        if crate::css::values::is_known_layout_property(&name)
+            && !has_var_or_calc(&value_components)
+        {
+            if let Some(parsed_val) = crate::css::values::parse_value(&value_components) {
                 if !crate::css::values::is_valid_property_value(&name, &parsed_val) {
                     return None;
                 }
@@ -375,74 +362,9 @@ impl<'a> Parser<'a> {
 
         Some(Declaration {
             name,
-            value,
+            value: value_components,
             important,
         })
-    }
-
-    fn tokens_to_component_values(&mut self, tokens: Vec<CssToken>) -> Vec<ComponentValue> {
-        let mut values = Vec::new();
-        let mut it = tokens.into_iter().peekable();
-        while let Some(token) = it.next() {
-            match token {
-                CssToken::LeftBrace | CssToken::LeftBracket | CssToken::LeftParen => {
-                    let associated = match token {
-                        CssToken::LeftBrace => '{',
-                        CssToken::LeftBracket => '[',
-                        CssToken::LeftParen => '(',
-                        _ => unreachable!(),
-                    };
-                    let mut block_tokens = Vec::new();
-                    let mut depth = 1;
-                    let closing = match associated {
-                        '{' => CssToken::RightBrace,
-                        '[' => CssToken::RightBracket,
-                        '(' => CssToken::RightParen,
-                        _ => unreachable!(),
-                    };
-                    for t in it.by_ref() {
-                        if t == token {
-                            depth += 1;
-                        } else if t == closing {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        block_tokens.push(t);
-                    }
-                    values.push(ComponentValue::SimpleBlock {
-                        associated,
-                        value: self.tokens_to_component_values(block_tokens),
-                    });
-                }
-                CssToken::Function(name) => {
-                    let mut func_tokens = Vec::new();
-                    let mut depth = 1;
-                    for t in it.by_ref() {
-                        if let CssToken::Function(_) = t {
-                            depth += 1;
-                        } else if t == CssToken::LeftParen {
-                            depth += 1;
-                        } else if t == CssToken::RightParen {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        func_tokens.push(t);
-                    }
-                    values.push(ComponentValue::Function {
-                        name,
-                        value: self.tokens_to_component_values(func_tokens),
-                    });
-                }
-                _ => {
-                    values.push(ComponentValue::Token(token));
-                }
-            }
-        }
-        values
     }
 
     // spec: https://www.w3.org/TR/css-syntax-3/#consume-component-value
@@ -704,6 +626,122 @@ mod tests {
             assert_eq!(rule.declarations.len(), 2);
             assert_eq!(rule.declarations[0].name, "position");
             assert_eq!(rule.declarations[1].name, "flex-direction");
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_parse_nested_blocks_in_declarations() {
+        let input = "
+            div {
+                --custom: { color: red; background: blue; };
+                color: green;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            assert_eq!(rule.declarations.len(), 2);
+            assert_eq!(rule.declarations[0].name, "--custom");
+            assert_eq!(rule.declarations[1].name, "color");
+
+            // Check that the inner block was parsed as a simple block `{ ... }`
+            let custom_val = &rule.declarations[0].value;
+            // Whitespace + SimpleBlock
+            assert_eq!(custom_val.len(), 2);
+            if let ComponentValue::SimpleBlock { associated, value } = &custom_val[1] {
+                assert_eq!(*associated, '{');
+                // The inner block should contain all component values including semicolons!
+                // { color: red; background: blue; }
+                // Let's verify that "background" is present inside
+                let has_background = value.iter().any(|val| {
+                    if let ComponentValue::Token(CssToken::Ident(name)) = val {
+                        name == "background"
+                    } else {
+                        false
+                    }
+                });
+                assert!(
+                    has_background,
+                    "Expected 'background' inside custom property block"
+                );
+            } else {
+                panic!("Expected SimpleBlock for --custom value");
+            }
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_parse_unbalanced_braces_balancing() {
+        let input = "div { val1: [ { ]; val2: ( { } ; }";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            // Due to unmatched bracket/braces:
+            // val1's value contains unmatched LeftBracket '[' and LeftBrace '{'
+            // The rest of the stream is consumed inside the unbalanced block, yielding exactly 1 declaration.
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "val1");
+
+            // For val1: [ { ] ...
+            let val1 = &rule.declarations[0].value;
+            if let ComponentValue::SimpleBlock { associated, value } = &val1[1] {
+                assert_eq!(*associated, '[');
+                if let ComponentValue::SimpleBlock {
+                    associated: inner_assoc,
+                    value: _inner_val,
+                } = &value[1]
+                {
+                    assert_eq!(*inner_assoc, '{');
+                } else {
+                    panic!("Expected inner SimpleBlock");
+                }
+            } else {
+                panic!("Expected SimpleBlock for val1");
+            }
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_important_declaration_whitespace_robustness() {
+        let input = "
+            a {
+                color: red ! important ;
+                background: blue !important   ;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            assert_eq!(rule.declarations.len(), 2);
+            assert_eq!(rule.declarations[0].name, "color");
+            assert!(rule.declarations[0].important);
+            assert_eq!(rule.declarations[1].name, "background");
+            assert!(rule.declarations[1].important);
+        } else {
+            panic!("Expected qualified rule");
+        }
+    }
+
+    #[test]
+    fn test_parse_error_recovery_with_nested_blocks() {
+        let input = "
+            div {
+                position: { color: red; };
+                color: red;
+            }
+        ";
+        let stylesheet = parse_stylesheet(input);
+        assert_eq!(stylesheet.rules.len(), 1);
+        if let Rule::Qualified(rule) = &stylesheet.rules[0] {
+            // "position" has an invalid value (a simple block), so it is discarded, but "color" is kept!
+            assert_eq!(rule.declarations.len(), 1);
+            assert_eq!(rule.declarations[0].name, "color");
         } else {
             panic!("Expected qualified rule");
         }
