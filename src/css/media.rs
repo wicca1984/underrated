@@ -15,8 +15,76 @@ pub enum ColorScheme {
     Dark,
 }
 
+/// Represents the preferred reduced motion setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefersReducedMotion {
+    NoPreference,
+    Reduce,
+}
+
+/// Represents the preferred contrast setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefersContrast {
+    NoPreference,
+    More,
+    Less,
+    Custom,
+}
+
+/// Represents the preferred reduced data setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefersReducedData {
+    NoPreference,
+    Reduce,
+}
+
+/// Represents the preferred reduced transparency setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefersReducedTransparency {
+    NoPreference,
+    Reduce,
+}
+
+/// Represents whether forced colors are active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForcedColors {
+    None,
+    Active,
+}
+
+/// Represents whether inverted colors are active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvertedColors {
+    None,
+    Inverted,
+}
+
+/// Represents the update frequency of the output device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateMode {
+    None,
+    Slow,
+    Fast,
+}
+
+/// Represents the scripting support of the environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scripting {
+    None,
+    InitialOnly,
+    Enabled,
+}
+
 thread_local! {
     static PREFERRED_COLOR_SCHEME: Cell<ColorScheme> = const { Cell::new(ColorScheme::Light) };
+    static PREFERS_REDUCED_MOTION: Cell<PrefersReducedMotion> = const { Cell::new(PrefersReducedMotion::NoPreference) };
+    static PREFERS_CONTRAST: Cell<PrefersContrast> = const { Cell::new(PrefersContrast::NoPreference) };
+    static PREFERS_REDUCED_DATA: Cell<PrefersReducedData> = const { Cell::new(PrefersReducedData::NoPreference) };
+    static PREFERS_REDUCED_TRANSPARENCY: Cell<PrefersReducedTransparency> = const { Cell::new(PrefersReducedTransparency::NoPreference) };
+    static FORCED_COLORS: Cell<ForcedColors> = const { Cell::new(ForcedColors::None) };
+    static INVERTED_COLORS: Cell<InvertedColors> = const { Cell::new(InvertedColors::None) };
+    static UPDATE_MODE: Cell<UpdateMode> = const { Cell::new(UpdateMode::Fast) };
+    static SCRIPTING: Cell<Scripting> = const { Cell::new(Scripting::Enabled) };
 }
 
 /// Sets the preferred color scheme for the current thread.
@@ -27,6 +95,86 @@ pub fn set_preferred_color_scheme(scheme: ColorScheme) {
 /// Gets the preferred color scheme for the current thread.
 pub fn preferred_color_scheme() -> ColorScheme {
     PREFERRED_COLOR_SCHEME.with(|c| c.get())
+}
+
+/// Sets the preferred reduced motion setting for the current thread.
+pub fn set_prefers_reduced_motion(val: PrefersReducedMotion) {
+    PREFERS_REDUCED_MOTION.with(|c| c.set(val));
+}
+
+/// Gets the preferred reduced motion setting for the current thread.
+pub fn prefers_reduced_motion() -> PrefersReducedMotion {
+    PREFERS_REDUCED_MOTION.with(|c| c.get())
+}
+
+/// Sets the preferred contrast setting for the current thread.
+pub fn set_prefers_contrast(val: PrefersContrast) {
+    PREFERS_CONTRAST.with(|c| c.set(val));
+}
+
+/// Gets the preferred contrast setting for the current thread.
+pub fn prefers_contrast() -> PrefersContrast {
+    PREFERS_CONTRAST.with(|c| c.get())
+}
+
+/// Sets the preferred reduced data setting for the current thread.
+pub fn set_prefers_reduced_data(val: PrefersReducedData) {
+    PREFERS_REDUCED_DATA.with(|c| c.set(val));
+}
+
+/// Gets the preferred reduced data setting for the current thread.
+pub fn prefers_reduced_data() -> PrefersReducedData {
+    PREFERS_REDUCED_DATA.with(|c| c.get())
+}
+
+/// Sets the preferred reduced transparency setting for the current thread.
+pub fn set_prefers_reduced_transparency(val: PrefersReducedTransparency) {
+    PREFERS_REDUCED_TRANSPARENCY.with(|c| c.set(val));
+}
+
+/// Gets the preferred reduced transparency setting for the current thread.
+pub fn prefers_reduced_transparency() -> PrefersReducedTransparency {
+    PREFERS_REDUCED_TRANSPARENCY.with(|c| c.get())
+}
+
+/// Sets the forced colors setting for the current thread.
+pub fn set_forced_colors(val: ForcedColors) {
+    FORCED_COLORS.with(|c| c.set(val));
+}
+
+/// Gets the forced colors setting for the current thread.
+pub fn forced_colors() -> ForcedColors {
+    FORCED_COLORS.with(|c| c.get())
+}
+
+/// Sets the inverted colors setting for the current thread.
+pub fn set_inverted_colors(val: InvertedColors) {
+    INVERTED_COLORS.with(|c| c.set(val));
+}
+
+/// Gets the inverted colors setting for the current thread.
+pub fn inverted_colors() -> InvertedColors {
+    INVERTED_COLORS.with(|c| c.get())
+}
+
+/// Sets the update mode setting for the current thread.
+pub fn set_update_mode(val: UpdateMode) {
+    UPDATE_MODE.with(|c| c.set(val));
+}
+
+/// Gets the update mode setting for the current thread.
+pub fn update_mode() -> UpdateMode {
+    UPDATE_MODE.with(|c| c.get())
+}
+
+/// Sets the scripting setting for the current thread.
+pub fn set_scripting(val: Scripting) {
+    SCRIPTING.with(|c| c.set(val));
+}
+
+/// Gets the scripting setting for the current thread.
+pub fn scripting() -> Scripting {
+    SCRIPTING.with(|c| c.get())
 }
 
 /// Serializes component values back to a CSS string.
@@ -252,6 +400,14 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
     if tokens.len() == 1 {
         match feature_name.as_str() {
             "prefers-color-scheme" => return true,
+            "prefers-reduced-motion" => return true,
+            "prefers-contrast" => return true,
+            "prefers-reduced-data" => return true,
+            "prefers-reduced-transparency" => return true,
+            "forced-colors" => return forced_colors() != ForcedColors::None,
+            "inverted-colors" => return inverted_colors() != InvertedColors::None,
+            "update" => return update_mode() != UpdateMode::None,
+            "scripting" => return scripting() != Scripting::None,
             _ => return false,
         }
     }
@@ -271,6 +427,114 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             match (current, val_lower.as_str()) {
                 (ColorScheme::Light, "light") => return true,
                 (ColorScheme::Dark, "dark") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "prefers-reduced-motion" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = prefers_reduced_motion();
+            match (current, val_lower.as_str()) {
+                (PrefersReducedMotion::NoPreference, "no-preference") => return true,
+                (PrefersReducedMotion::Reduce, "reduce") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "prefers-contrast" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = prefers_contrast();
+            match (current, val_lower.as_str()) {
+                (PrefersContrast::NoPreference, "no-preference") => return true,
+                (PrefersContrast::More, "more") => return true,
+                (PrefersContrast::Less, "less") => return true,
+                (PrefersContrast::Custom, "custom") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "prefers-reduced-data" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = prefers_reduced_data();
+            match (current, val_lower.as_str()) {
+                (PrefersReducedData::NoPreference, "no-preference") => return true,
+                (PrefersReducedData::Reduce, "reduce") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "prefers-reduced-transparency" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = prefers_reduced_transparency();
+            match (current, val_lower.as_str()) {
+                (PrefersReducedTransparency::NoPreference, "no-preference") => return true,
+                (PrefersReducedTransparency::Reduce, "reduce") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "forced-colors" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = forced_colors();
+            match (current, val_lower.as_str()) {
+                (ForcedColors::None, "none") => return true,
+                (ForcedColors::Active, "active") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "inverted-colors" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = inverted_colors();
+            match (current, val_lower.as_str()) {
+                (InvertedColors::None, "none") => return true,
+                (InvertedColors::Inverted, "inverted") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "update" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = update_mode();
+            match (current, val_lower.as_str()) {
+                (UpdateMode::None, "none") => return true,
+                (UpdateMode::Slow, "slow") => return true,
+                (UpdateMode::Fast, "fast") => return true,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
+    if feature_name == "scripting" {
+        if let CssToken::Ident(val) = &tokens[2] {
+            let val_lower = val.to_ascii_lowercase();
+            let current = scripting();
+            match (current, val_lower.as_str()) {
+                (Scripting::None, "none") => return true,
+                (Scripting::InitialOnly, "initial-only") => return true,
+                (Scripting::Enabled, "enabled") => return true,
                 _ => return false,
             }
         }
@@ -816,6 +1080,241 @@ mod tests {
         assert!(!media_matches("(PREFERS-COLOR-SCHEME: LiGhT)", 1000.0));
         // Reset to default
         set_preferred_color_scheme(ColorScheme::Light);
+    }
+
+    #[test]
+    fn test_prefers_reduced_motion() {
+        // Default: no-preference
+        assert!(media_matches(
+            "(prefers-reduced-motion: no-preference)",
+            1000.0
+        ));
+        assert!(!media_matches("(prefers-reduced-motion: reduce)", 1000.0));
+        assert!(media_matches("(prefers-reduced-motion)", 1000.0));
+
+        // Configure: reduce
+        set_prefers_reduced_motion(PrefersReducedMotion::Reduce);
+        assert!(!media_matches(
+            "(prefers-reduced-motion: no-preference)",
+            1000.0
+        ));
+        assert!(media_matches("(prefers-reduced-motion: reduce)", 1000.0));
+        assert!(media_matches("(prefers-reduced-motion)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches("(prefers-reduced-motion: unknown)", 1000.0));
+        assert!(!media_matches("(prefers-reduced-motion-wrong)", 1000.0));
+
+        // Case insensitivity
+        assert!(media_matches("(PREFERS-REDUCED-MOTION: ReDuCe)", 1000.0));
+
+        // Reset
+        set_prefers_reduced_motion(PrefersReducedMotion::NoPreference);
+    }
+
+    #[test]
+    fn test_prefers_contrast() {
+        // Default: no-preference
+        assert!(media_matches("(prefers-contrast: no-preference)", 1000.0));
+        assert!(!media_matches("(prefers-contrast: more)", 1000.0));
+        assert!(media_matches("(prefers-contrast)", 1000.0));
+
+        // Configure: more
+        set_prefers_contrast(PrefersContrast::More);
+        assert!(!media_matches("(prefers-contrast: no-preference)", 1000.0));
+        assert!(media_matches("(prefers-contrast: more)", 1000.0));
+        assert!(media_matches("(prefers-contrast)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches("(prefers-contrast: unknown)", 1000.0));
+
+        // Case insensitivity
+        assert!(media_matches("(PREFERS-CONTRAST: MoRe)", 1000.0));
+
+        // Reset
+        set_prefers_contrast(PrefersContrast::NoPreference);
+    }
+
+    #[test]
+    fn test_prefers_reduced_data() {
+        // Default: no-preference
+        assert!(media_matches(
+            "(prefers-reduced-data: no-preference)",
+            1000.0
+        ));
+        assert!(!media_matches("(prefers-reduced-data: reduce)", 1000.0));
+        assert!(media_matches("(prefers-reduced-data)", 1000.0));
+
+        // Configure: reduce
+        set_prefers_reduced_data(PrefersReducedData::Reduce);
+        assert!(!media_matches(
+            "(prefers-reduced-data: no-preference)",
+            1000.0
+        ));
+        assert!(media_matches("(prefers-reduced-data: reduce)", 1000.0));
+        assert!(media_matches("(prefers-reduced-data)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches("(prefers-reduced-data: unknown)", 1000.0));
+
+        // Case insensitivity
+        assert!(media_matches("(PREFERS-REDUCED-DATA: ReDuCe)", 1000.0));
+
+        // Reset
+        set_prefers_reduced_data(PrefersReducedData::NoPreference);
+    }
+
+    #[test]
+    fn test_prefers_reduced_transparency() {
+        // Default: no-preference
+        assert!(media_matches(
+            "(prefers-reduced-transparency: no-preference)",
+            1000.0
+        ));
+        assert!(!media_matches(
+            "(prefers-reduced-transparency: reduce)",
+            1000.0
+        ));
+        assert!(media_matches("(prefers-reduced-transparency)", 1000.0));
+
+        // Configure: reduce
+        set_prefers_reduced_transparency(PrefersReducedTransparency::Reduce);
+        assert!(!media_matches(
+            "(prefers-reduced-transparency: no-preference)",
+            1000.0
+        ));
+        assert!(media_matches(
+            "(prefers-reduced-transparency: reduce)",
+            1000.0
+        ));
+        assert!(media_matches("(prefers-reduced-transparency)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches(
+            "(prefers-reduced-transparency: unknown)",
+            1000.0
+        ));
+
+        // Case insensitivity
+        assert!(media_matches(
+            "(PREFERS-REDUCED-TRANSPARENCY: ReDuCe)",
+            1000.0
+        ));
+
+        // Reset
+        set_prefers_reduced_transparency(PrefersReducedTransparency::NoPreference);
+    }
+
+    #[test]
+    fn test_forced_colors() {
+        // Default: none
+        assert!(media_matches("(forced-colors: none)", 1000.0));
+        assert!(!media_matches("(forced-colors: active)", 1000.0));
+        // Boolean context (since default is none, it evaluates to false)
+        assert!(!media_matches("(forced-colors)", 1000.0));
+
+        // Configure: active
+        set_forced_colors(ForcedColors::Active);
+        assert!(!media_matches("(forced-colors: none)", 1000.0));
+        assert!(media_matches("(forced-colors: active)", 1000.0));
+        assert!(media_matches("(forced-colors)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches("(forced-colors: unknown)", 1000.0));
+
+        // Case insensitivity
+        assert!(media_matches("(FORCED-COLORS: AcTiVe)", 1000.0));
+
+        // Reset
+        set_forced_colors(ForcedColors::None);
+    }
+
+    #[test]
+    fn test_inverted_colors() {
+        // Default: none
+        assert!(media_matches("(inverted-colors: none)", 1000.0));
+        assert!(!media_matches("(inverted-colors: inverted)", 1000.0));
+        // Boolean context (default none -> false)
+        assert!(!media_matches("(inverted-colors)", 1000.0));
+
+        // Configure: inverted
+        set_inverted_colors(InvertedColors::Inverted);
+        assert!(!media_matches("(inverted-colors: none)", 1000.0));
+        assert!(media_matches("(inverted-colors: inverted)", 1000.0));
+        assert!(media_matches("(inverted-colors)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches("(inverted-colors: unknown)", 1000.0));
+
+        // Case insensitivity
+        assert!(media_matches("(INVERTED-COLORS: InVeRtEd)", 1000.0));
+
+        // Reset
+        set_inverted_colors(InvertedColors::None);
+    }
+
+    #[test]
+    fn test_update_mode() {
+        // Default: fast
+        assert!(media_matches("(update: fast)", 1000.0));
+        assert!(!media_matches("(update: slow)", 1000.0));
+        assert!(!media_matches("(update: none)", 1000.0));
+        // Boolean context
+        assert!(media_matches("(update)", 1000.0));
+
+        // Configure: slow
+        set_update_mode(UpdateMode::Slow);
+        assert!(media_matches("(update: slow)", 1000.0));
+        assert!(!media_matches("(update: fast)", 1000.0));
+        assert!(media_matches("(update)", 1000.0));
+
+        // Configure: none
+        set_update_mode(UpdateMode::None);
+        assert!(media_matches("(update: none)", 1000.0));
+        assert!(!media_matches("(update: fast)", 1000.0));
+        assert!(!media_matches("(update)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches("(update: unknown)", 1000.0));
+
+        // Case insensitivity
+        set_update_mode(UpdateMode::Slow);
+        assert!(media_matches("(UPDATE: SlOw)", 1000.0));
+
+        // Reset
+        set_update_mode(UpdateMode::Fast);
+    }
+
+    #[test]
+    fn test_scripting() {
+        // Default: enabled
+        assert!(media_matches("(scripting: enabled)", 1000.0));
+        assert!(!media_matches("(scripting: initial-only)", 1000.0));
+        assert!(!media_matches("(scripting: none)", 1000.0));
+        // Boolean context
+        assert!(media_matches("(scripting)", 1000.0));
+
+        // Configure: initial-only
+        set_scripting(Scripting::InitialOnly);
+        assert!(media_matches("(scripting: initial-only)", 1000.0));
+        assert!(!media_matches("(scripting: enabled)", 1000.0));
+        assert!(media_matches("(scripting)", 1000.0));
+
+        // Configure: none
+        set_scripting(Scripting::None);
+        assert!(media_matches("(scripting: none)", 1000.0));
+        assert!(!media_matches("(scripting: enabled)", 1000.0));
+        assert!(!media_matches("(scripting)", 1000.0));
+
+        // Unknown value/wrong feature
+        assert!(!media_matches("(scripting: unknown)", 1000.0));
+
+        // Case insensitivity
+        set_scripting(Scripting::InitialOnly);
+        assert!(media_matches("(SCRIPTING: InItIaL-oNlY)", 1000.0));
+
+        // Reset
+        set_scripting(Scripting::Enabled);
     }
 
     #[test]
