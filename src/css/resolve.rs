@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 enum CalcValue {
     Length(f32),
     Number(f32),
+    Angle(f32), // In radians
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +59,40 @@ fn parse_var_function(components: &[ComponentValue]) -> Option<(&str, Option<&[C
     }
 }
 
+/// Helper to parse a `env()` function's arguments.
+/// format: `env( <custom-ident> [, <declaration-value>]? )`
+fn parse_env_function(components: &[ComponentValue]) -> Option<(&str, Option<&[ComponentValue]>)> {
+    let mut non_ws_components = Vec::new();
+    for comp in components {
+        if !matches!(comp, ComponentValue::Token(CssToken::Whitespace)) {
+            non_ws_components.push(comp);
+        }
+    }
+
+    if non_ws_components.is_empty() {
+        return None;
+    }
+
+    let env_name = match non_ws_components[0] {
+        ComponentValue::Token(CssToken::Ident(name)) => name.as_str(),
+        _ => return None,
+    };
+
+    if non_ws_components.len() == 1 {
+        return Some((env_name, None));
+    }
+
+    if matches!(non_ws_components[1], ComponentValue::Token(CssToken::Comma)) {
+        let comma_idx = components
+            .iter()
+            .position(|c| matches!(c, ComponentValue::Token(CssToken::Comma)))?;
+        let fallback = &components[comma_idx + 1..];
+        Some((env_name, Some(fallback)))
+    } else {
+        None
+    }
+}
+
 /// Recursively performs custom-property variable substitution.
 /// Returns `None` if a cyclic reference or malformed var structure is detected.
 fn substitute_variables(
@@ -79,6 +114,32 @@ fn substitute_variables(
                     let resolved =
                         substitute_variables(sub_val, custom_properties, active_lookups)?;
                     active_lookups.remove(var_name);
+                    result.extend(resolved);
+                } else if let Some(fb) = fallback {
+                    let resolved = substitute_variables(fb, custom_properties, active_lookups)?;
+                    result.extend(resolved);
+                } else {
+                    return None;
+                }
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("env") => {
+                let (env_name, fallback) = parse_env_function(value)?;
+                let known_env_val = match env_name {
+                    "safe-area-inset-top"
+                    | "safe-area-inset-right"
+                    | "safe-area-inset-bottom"
+                    | "safe-area-inset-left" => {
+                        Some(vec![ComponentValue::Token(CssToken::Dimension {
+                            value: 0.0,
+                            unit: "px".to_string(),
+                        })])
+                    }
+                    _ => None,
+                };
+
+                if let Some(resolved_env) = known_env_val {
+                    let resolved =
+                        substitute_variables(&resolved_env, custom_properties, active_lookups)?;
                     result.extend(resolved);
                 } else if let Some(fb) = fallback {
                     let resolved = substitute_variables(fb, custom_properties, active_lookups)?;
@@ -143,6 +204,7 @@ impl CalcExprParser {
                 match val {
                     CalcValue::Length(v) => CalcValue::Length(-v),
                     CalcValue::Number(v) => CalcValue::Number(-v),
+                    CalcValue::Angle(v) => CalcValue::Angle(-v),
                 }
             }
             CalcToken::Plus => self.parse_expr(10)?,
@@ -167,17 +229,21 @@ impl CalcExprParser {
                 CalcToken::Plus => match (lhs, rhs) {
                     (CalcValue::Length(l), CalcValue::Length(r)) => CalcValue::Length(l + r),
                     (CalcValue::Number(l), CalcValue::Number(r)) => CalcValue::Number(l + r),
+                    (CalcValue::Angle(l), CalcValue::Angle(r)) => CalcValue::Angle(l + r),
                     _ => return None,
                 },
                 CalcToken::Minus => match (lhs, rhs) {
                     (CalcValue::Length(l), CalcValue::Length(r)) => CalcValue::Length(l - r),
                     (CalcValue::Number(l), CalcValue::Number(r)) => CalcValue::Number(l - r),
+                    (CalcValue::Angle(l), CalcValue::Angle(r)) => CalcValue::Angle(l - r),
                     _ => return None,
                 },
                 CalcToken::Mul => match (lhs, rhs) {
                     (CalcValue::Length(l), CalcValue::Number(r)) => CalcValue::Length(l * r),
                     (CalcValue::Number(l), CalcValue::Length(r)) => CalcValue::Length(l * r),
                     (CalcValue::Number(l), CalcValue::Number(r)) => CalcValue::Number(l * r),
+                    (CalcValue::Angle(l), CalcValue::Number(r)) => CalcValue::Angle(l * r),
+                    (CalcValue::Number(l), CalcValue::Angle(r)) => CalcValue::Angle(l * r),
                     _ => return None,
                 },
                 CalcToken::Div => match (lhs, rhs) {
@@ -192,6 +258,12 @@ impl CalcExprParser {
                             return None;
                         }
                         CalcValue::Number(l / r)
+                    }
+                    (CalcValue::Angle(l), CalcValue::Number(r)) => {
+                        if r == 0.0 {
+                            return None;
+                        }
+                        CalcValue::Angle(l / r)
                     }
                     _ => return None,
                 },
@@ -215,20 +287,86 @@ fn component_to_calc_tokens(
         ComponentValue::Token(CssToken::Whitespace) => true,
         ComponentValue::Token(CssToken::Dimension { value, unit }) => {
             let lower_unit = unit.to_ascii_lowercase();
-            let px_val = match lower_unit.as_str() {
-                "px" => *value as f32,
-                "rem" => *value as f32 * root_font_size,
-                "vw" => *value as f32 * viewport_w / 100.0,
-                "vh" => *value as f32 * viewport_h / 100.0,
-                "pt" => *value as f32 * 96.0 / 72.0,
-                _ => return false,
-            };
-            tokens.push(CalcToken::Val(CalcValue::Length(px_val)));
-            true
+            match lower_unit.as_str() {
+                "px" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(*value as f32)));
+                    true
+                }
+                "rem" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * root_font_size,
+                    )));
+                    true
+                }
+                "vw" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * viewport_w / 100.0,
+                    )));
+                    true
+                }
+                "vh" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * viewport_h / 100.0,
+                    )));
+                    true
+                }
+                "pt" => {
+                    tokens.push(CalcToken::Val(CalcValue::Length(
+                        *value as f32 * 96.0 / 72.0,
+                    )));
+                    true
+                }
+                "deg" => {
+                    let rad = (*value as f32).to_radians();
+                    tokens.push(CalcToken::Val(CalcValue::Angle(rad)));
+                    true
+                }
+                "rad" => {
+                    tokens.push(CalcToken::Val(CalcValue::Angle(*value as f32)));
+                    true
+                }
+                "grad" => {
+                    let rad = (*value as f32) * std::f32::consts::PI / 200.0;
+                    tokens.push(CalcToken::Val(CalcValue::Angle(rad)));
+                    true
+                }
+                "turn" => {
+                    let rad = (*value as f32) * 2.0 * std::f32::consts::PI;
+                    tokens.push(CalcToken::Val(CalcValue::Angle(rad)));
+                    true
+                }
+                _ => false,
+            }
         }
         ComponentValue::Token(CssToken::Number(v)) => {
             tokens.push(CalcToken::Val(CalcValue::Number(*v as f32)));
             true
+        }
+        ComponentValue::Token(CssToken::Ident(name)) => {
+            let lower = name.to_ascii_lowercase();
+            match lower.as_str() {
+                "pi" => {
+                    tokens.push(CalcToken::Val(CalcValue::Number(std::f32::consts::PI)));
+                    true
+                }
+                "e" => {
+                    tokens.push(CalcToken::Val(CalcValue::Number(std::f32::consts::E)));
+                    true
+                }
+                "infinity" => {
+                    tokens.push(CalcToken::Val(CalcValue::Number(f32::INFINITY)));
+                    true
+                }
+                "-infinity" => {
+                    tokens.push(CalcToken::Val(CalcValue::Number(f32::NEG_INFINITY)));
+                    true
+                }
+                "nan" => {
+                    tokens.push(CalcToken::Val(CalcValue::Number(f32::NAN)));
+                    true
+                }
+                _ => false,
+            }
         }
         ComponentValue::Token(CssToken::Delim('+')) => {
             tokens.push(CalcToken::Plus);
@@ -276,7 +414,7 @@ fn component_to_calc_tokens(
         }
         ComponentValue::Function { name, value } => {
             let resolved = if name.eq_ignore_ascii_case("calc") {
-                evaluate_calc(
+                evaluate_calc_to_value(
                     value,
                     root_font_size,
                     viewport_w,
@@ -296,8 +434,15 @@ fn component_to_calc_tokens(
                 || name.eq_ignore_ascii_case("hypot")
                 || name.eq_ignore_ascii_case("log")
                 || name.eq_ignore_ascii_case("exp")
+                || name.eq_ignore_ascii_case("sin")
+                || name.eq_ignore_ascii_case("cos")
+                || name.eq_ignore_ascii_case("tan")
+                || name.eq_ignore_ascii_case("asin")
+                || name.eq_ignore_ascii_case("acos")
+                || name.eq_ignore_ascii_case("atan")
+                || name.eq_ignore_ascii_case("atan2")
             {
-                evaluate_math_fn(
+                evaluate_math_fn_to_value(
                     name,
                     value,
                     root_font_size,
@@ -310,12 +455,16 @@ fn component_to_calc_tokens(
             };
 
             match resolved {
-                Some(CssValue::Length(px, _)) => {
+                Some(CalcValue::Length(px)) => {
                     tokens.push(CalcToken::Val(CalcValue::Length(px)));
                     true
                 }
-                Some(CssValue::Number(num)) => {
+                Some(CalcValue::Number(num)) => {
                     tokens.push(CalcToken::Val(CalcValue::Number(num)));
+                    true
+                }
+                Some(CalcValue::Angle(rad)) => {
+                    tokens.push(CalcToken::Val(CalcValue::Angle(rad)));
                     true
                 }
                 _ => false,
@@ -325,15 +474,14 @@ fn component_to_calc_tokens(
     }
 }
 
-/// Evaluates CSS math functions `min()`, `max()`, `clamp()`, `abs()`, `sign()`, `round()`, `mod()`, `rem()`, `sqrt()`, `pow()`, `hypot()`, `log()`, and `exp()`.
-pub fn evaluate_math_fn(
+fn evaluate_math_fn_to_value(
     kind: &str,
     components: &[ComponentValue],
     root_font_size: f32,
     viewport_w: f32,
     viewport_h: f32,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
-) -> Option<CssValue> {
+) -> Option<CalcValue> {
     // 1. Split by top-level Comma tokens.
     let mut args = Vec::new();
     let mut start = 0;
@@ -383,12 +531,12 @@ pub fn evaluate_math_fn(
 
     // Arity validation
     match kind_str {
-        "abs" | "sign" | "sqrt" | "exp" => {
+        "abs" | "sign" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" => {
             if numeric_args_slices.len() != 1 {
                 return None;
             }
         }
-        "mod" | "rem" | "pow" => {
+        "mod" | "rem" | "pow" | "atan2" => {
             if numeric_args_slices.len() != 2 {
                 return None;
             }
@@ -416,14 +564,14 @@ pub fn evaluate_math_fn(
         _ => return None,
     }
 
-    // 3. Evaluate each argument group with the existing evaluate_calc.
+    // 3. Evaluate each argument group with the existing evaluate_calc_to_value.
     let mut evaluated_args = Vec::new();
     for arg_group in numeric_args_slices {
         let trimmed_group = trim_whitespace(arg_group);
         if trimmed_group.is_empty() {
             return None;
         }
-        let evaluated = evaluate_calc(
+        let evaluated = evaluate_calc_to_value(
             trimmed_group,
             root_font_size,
             viewport_w,
@@ -437,49 +585,80 @@ pub fn evaluate_math_fn(
         return None;
     }
 
-    // 4. Ensure all arguments are of the same kind: all Lengths in Px or all Numbers.
-    let is_exponential = matches!(kind_str, "sqrt" | "pow" | "hypot" | "log" | "exp");
-    if is_exponential {
-        // Exponential functions only accept plain numbers
-        for arg in &evaluated_args {
-            if !matches!(arg, CssValue::Number(_)) {
+    // 4. Validate types
+    match kind_str {
+        "sin" | "cos" | "tan" => {
+            if !matches!(
+                evaluated_args[0],
+                CalcValue::Number(_) | CalcValue::Angle(_)
+            ) {
+                return None;
+            }
+        }
+        "asin" | "acos" | "atan" => {
+            if !matches!(evaluated_args[0], CalcValue::Number(_)) {
+                return None;
+            }
+        }
+        "atan2" => match (evaluated_args[0], evaluated_args[1]) {
+            (CalcValue::Number(_), CalcValue::Number(_)) => {}
+            (CalcValue::Length(_), CalcValue::Length(_)) => {}
+            (CalcValue::Angle(_), CalcValue::Angle(_)) => {}
+            _ => return None,
+        },
+        "sqrt" | "pow" | "log" | "exp" | "hypot" => {
+            for arg in &evaluated_args {
+                if !matches!(arg, CalcValue::Number(_)) {
+                    return None;
+                }
+            }
+        }
+        _ => {
+            let first_type_ok = match evaluated_args[0] {
+                CalcValue::Length(_) => {
+                    for arg in &evaluated_args {
+                        if !matches!(arg, CalcValue::Length(_)) {
+                            return None;
+                        }
+                    }
+                    true
+                }
+                CalcValue::Number(_) => {
+                    for arg in &evaluated_args {
+                        if !matches!(arg, CalcValue::Number(_)) {
+                            return None;
+                        }
+                    }
+                    true
+                }
+                CalcValue::Angle(_) => {
+                    for arg in &evaluated_args {
+                        if !matches!(arg, CalcValue::Angle(_)) {
+                            return None;
+                        }
+                    }
+                    true
+                }
+            };
+            if !first_type_ok {
                 return None;
             }
         }
     }
 
-    let is_length = match evaluated_args[0] {
-        CssValue::Length(_, LengthUnit::Px) => true,
-        CssValue::Number(_) => false,
-        _ => return None,
-    };
+    // 5. Extract f32 values
+    let is_exponential = matches!(kind_str, "sqrt" | "pow" | "hypot" | "log" | "exp");
+    let is_length = matches!(evaluated_args[0], CalcValue::Length(_));
+    let is_angle = matches!(evaluated_args[0], CalcValue::Angle(_));
 
-    for arg in &evaluated_args {
-        match arg {
-            CssValue::Length(_, LengthUnit::Px) if is_length => {}
-            CssValue::Number(_) if !is_length => {}
-            _ => return None, // Mismatched kinds
-        }
-    }
-
-    // 5. Extract f32 values.
-    let values: Vec<f32> = if is_length {
-        evaluated_args
-            .iter()
-            .map(|arg| match arg {
-                CssValue::Length(v, _) => *v,
-                _ => 0.0,
-            })
-            .collect()
-    } else {
-        evaluated_args
-            .iter()
-            .map(|arg| match arg {
-                CssValue::Number(v) => *v,
-                _ => 0.0,
-            })
-            .collect()
-    };
+    let values: Vec<f32> = evaluated_args
+        .iter()
+        .map(|arg| match arg {
+            CalcValue::Length(v) => *v,
+            CalcValue::Number(v) => *v,
+            CalcValue::Angle(v) => *v,
+        })
+        .collect();
 
     // Safeguard input values against NaN or infinite values
     for &v in &values {
@@ -643,17 +822,97 @@ pub fn evaluate_math_fn(
             return None;
         }
         res
+    } else if kind_str == "sin" {
+        let res = values[0].sin();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "cos" {
+        let res = values[0].cos();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "tan" {
+        let res = values[0].tan();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "asin" {
+        let v = values[0];
+        if !(-1.0..=1.0).contains(&v) {
+            return None;
+        }
+        let res = v.asin();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "acos" {
+        let v = values[0];
+        if !(-1.0..=1.0).contains(&v) {
+            return None;
+        }
+        let res = v.acos();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "atan" {
+        let res = values[0].atan();
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
+    } else if kind_str == "atan2" {
+        let res = values[0].atan2(values[1]);
+        if res.is_nan() || res.is_infinite() {
+            return None;
+        }
+        res
     } else {
         return None;
     };
 
-    // 7. Return the result in the corresponding variant.
-    if kind_str == "sign" || is_exponential {
-        Some(CssValue::Number(result))
+    // 7. Return the result in the corresponding CalcValue variant.
+    let is_angle_res = matches!(kind_str, "asin" | "acos" | "atan" | "atan2");
+    if is_angle_res {
+        Some(CalcValue::Angle(result))
+    } else if kind_str == "sign" || is_exponential || matches!(kind_str, "sin" | "cos" | "tan") {
+        Some(CalcValue::Number(result))
     } else if is_length {
-        Some(CssValue::Length(result, LengthUnit::Px))
+        Some(CalcValue::Length(result))
+    } else if is_angle {
+        Some(CalcValue::Angle(result))
     } else {
-        Some(CssValue::Number(result))
+        Some(CalcValue::Number(result))
+    }
+}
+
+/// Evaluates CSS math functions `min()`, `max()`, `clamp()`, `abs()`, `sign()`, `round()`, `mod()`, `rem()`, `sqrt()`, `pow()`, `hypot()`, `log()`, and `exp()`.
+pub fn evaluate_math_fn(
+    kind: &str,
+    components: &[ComponentValue],
+    root_font_size: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CssValue> {
+    let res = evaluate_math_fn_to_value(
+        kind,
+        components,
+        root_font_size,
+        viewport_w,
+        viewport_h,
+        custom_properties,
+    )?;
+
+    match res {
+        CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
+        CalcValue::Number(v) => Some(CssValue::Number(v)),
+        CalcValue::Angle(_) => None,
     }
 }
 
@@ -680,15 +939,13 @@ fn trim_whitespace(components: &[ComponentValue]) -> &[ComponentValue] {
     &components[start..end]
 }
 
-/// Evaluates a CSS `calc()` expression.
-/// Supports basic arithmetic (+ - * /) of lengths (resolved to px) and numbers.
-pub fn evaluate_calc(
+fn evaluate_calc_to_value(
     components: &[ComponentValue],
     root_font_size: f32,
     viewport_w: f32,
     viewport_h: f32,
     custom_properties: &HashMap<String, Vec<ComponentValue>>,
-) -> Option<CssValue> {
+) -> Option<CalcValue> {
     let substituted = substitute_variables(components, custom_properties, &mut HashSet::new())?;
 
     let mut tokens = Vec::new();
@@ -711,9 +968,30 @@ pub fn evaluate_calc(
         return None;
     }
 
+    Some(res)
+}
+
+/// Evaluates a CSS `calc()` expression.
+/// Supports basic arithmetic (+ - * /) of lengths (resolved to px) and numbers.
+pub fn evaluate_calc(
+    components: &[ComponentValue],
+    root_font_size: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    custom_properties: &HashMap<String, Vec<ComponentValue>>,
+) -> Option<CssValue> {
+    let res = evaluate_calc_to_value(
+        components,
+        root_font_size,
+        viewport_w,
+        viewport_h,
+        custom_properties,
+    )?;
+
     match res {
         CalcValue::Length(v) => Some(CssValue::Length(v, LengthUnit::Px)),
         CalcValue::Number(v) => Some(CssValue::Number(v)),
+        CalcValue::Angle(_) => None,
     }
 }
 
@@ -882,6 +1160,76 @@ pub fn resolve_value(
             ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("exp") => {
                 evaluate_math_fn(
                     "exp",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("sin") => {
+                evaluate_math_fn(
+                    "sin",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("cos") => {
+                evaluate_math_fn(
+                    "cos",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("tan") => {
+                evaluate_math_fn(
+                    "tan",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("asin") => {
+                evaluate_math_fn(
+                    "asin",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("acos") => {
+                evaluate_math_fn(
+                    "acos",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("atan") => {
+                evaluate_math_fn(
+                    "atan",
+                    value,
+                    root_font_size,
+                    viewport_w,
+                    viewport_h,
+                    custom_properties,
+                )
+            }
+            ComponentValue::Function { name, value } if name.eq_ignore_ascii_case("atan2") => {
+                evaluate_math_fn(
+                    "atan2",
                     value,
                     root_font_size,
                     viewport_w,
@@ -1378,6 +1726,170 @@ mod tests {
         assert_eq!(
             resolve_string("sqrt(pow(2, 4))", 16.0, 1000.0, 800.0, &vars),
             Some(CssValue::Number(4.0))
+        );
+    }
+
+    #[test]
+    fn test_resolve_t0795_css_math_env() {
+        let vars = HashMap::new();
+
+        // 1. Trig functions: sin, cos, tan
+        assert_eq!(
+            resolve_string("sin(0)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(0.0))
+        );
+        if let Some(CssValue::Number(val)) =
+            resolve_string("sin(90deg)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) =
+            resolve_string("sin(0.25turn)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) =
+            resolve_string("sin(100grad)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) =
+            resolve_string("sin(1.5707963rad)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+
+        assert_eq!(
+            resolve_string("cos(0deg)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(1.0))
+        );
+        if let Some(CssValue::Number(val)) =
+            resolve_string("cos(180deg)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - -1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+
+        assert_eq!(
+            resolve_string("tan(0)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(0.0))
+        );
+        if let Some(CssValue::Number(val)) =
+            resolve_string("tan(45deg)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+
+        // 2. Inverse trig functions and nesting inside calc()
+        if let Some(CssValue::Number(val)) =
+            resolve_string("calc(sin(asin(0.5)))", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 0.5).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) =
+            resolve_string("calc(cos(acos(0.5)))", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 0.5).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) =
+            resolve_string("calc(tan(atan(1)))", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) =
+            resolve_string("calc(tan(atan2(1, 1)))", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 1.0).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+
+        // 3. Multiplication/addition of length and sin/cos values
+        if let Some(CssValue::Length(val, _)) =
+            resolve_string("calc(10px * sin(30deg))", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 5.0).abs() < 1e-4);
+        } else {
+            panic!("Expected a length");
+        }
+
+        // 4. Constants: pi, e, infinity, nan
+        if let Some(CssValue::Number(val)) = resolve_string("calc(pi)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - std::f32::consts::PI).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) = resolve_string("calc(e)", 16.0, 1000.0, 800.0, &vars) {
+            assert!((val - std::f32::consts::E).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        if let Some(CssValue::Number(val)) =
+            resolve_string("sin(pi / 6)", 16.0, 1000.0, 800.0, &vars)
+        {
+            assert!((val - 0.5).abs() < 1e-5);
+        } else {
+            panic!("Expected a number");
+        }
+        assert_eq!(
+            resolve_string("calc(infinity)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(f32::INFINITY))
+        );
+        assert_eq!(
+            resolve_string("calc(-infinity)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Number(f32::NEG_INFINITY))
+        );
+
+        // 5. env() variables
+        assert_eq!(
+            resolve_string("env(safe-area-inset-top)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(0.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("env(safe-area-inset-top, 20px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(0.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string("env(custom-unknown-env, 20px)", 16.0, 1000.0, 800.0, &vars),
+            Some(CssValue::Length(20.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string(
+                "calc(env(safe-area-inset-left) + 10px)",
+                16.0,
+                1000.0,
+                800.0,
+                &vars
+            ),
+            Some(CssValue::Length(10.0, LengthUnit::Px))
+        );
+        assert_eq!(
+            resolve_string(
+                "calc(env(custom-unknown-env, 5rem) * 2)",
+                16.0,
+                1000.0,
+                800.0,
+                &vars
+            ),
+            Some(CssValue::Length(160.0, LengthUnit::Px))
         );
     }
 }
