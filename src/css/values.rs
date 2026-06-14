@@ -4356,7 +4356,95 @@ fn parse_hex_color(s: &str) -> Option<Color> {
     }
 }
 
+fn evaluate_channel_expression(
+    comp: &ComponentValue,
+    br_f: f32,
+    bg_f: f32,
+    bb_f: f32,
+    ba_f: f32,
+    is_alpha: bool,
+) -> Option<f32> {
+    match comp {
+        ComponentValue::Token(CssToken::Number(v)) => Some(*v as f32),
+        ComponentValue::Token(CssToken::Percentage(v)) => {
+            let pct = *v as f32;
+            if is_alpha {
+                Some(pct / 100.0)
+            } else {
+                Some((pct / 100.0) * 255.0)
+            }
+        }
+        ComponentValue::Token(CssToken::Ident(s)) => {
+            if s.eq_ignore_ascii_case("r") {
+                Some(br_f)
+            } else if s.eq_ignore_ascii_case("g") {
+                Some(bg_f)
+            } else if s.eq_ignore_ascii_case("b") {
+                Some(bb_f)
+            } else if s.eq_ignore_ascii_case("alpha") {
+                Some(ba_f)
+            } else if s.eq_ignore_ascii_case("none") {
+                Some(0.0)
+            } else {
+                None
+            }
+        }
+        _ => {
+            // TODO(spec): Support calc() or other functions in relative colors
+            None
+        }
+    }
+}
+
 fn parse_rgb_function(components: &[ComponentValue]) -> Option<Color> {
+    // Filter out whitespace
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|comp| !matches!(comp, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    let is_relative = match non_ws.first() {
+        Some(ComponentValue::Token(CssToken::Ident(s))) => s.eq_ignore_ascii_case("from"),
+        _ => false,
+    };
+
+    if is_relative {
+        if non_ws.len() != 5 && non_ws.len() != 7 {
+            return None;
+        }
+        // base color is at non_ws[1]
+        let base_color_components = vec![non_ws[1].clone()];
+        let base_color = parse_color_argument(&base_color_components)?;
+
+        let Color::Rgba(br, bg, bb, ba) = base_color;
+        let br_f = br as f32;
+        let bg_f = bg as f32;
+        let bb_f = bb as f32;
+        let ba_f = ba as f32 / 255.0;
+
+        let r_val = evaluate_channel_expression(non_ws[2], br_f, bg_f, bb_f, ba_f, false)?;
+        let g_val = evaluate_channel_expression(non_ws[3], br_f, bg_f, bb_f, ba_f, false)?;
+        let b_val = evaluate_channel_expression(non_ws[4], br_f, bg_f, bb_f, ba_f, false)?;
+
+        let a_val = if non_ws.len() == 7 {
+            if !matches!(non_ws[5], ComponentValue::Token(CssToken::Delim('/'))) {
+                return None;
+            }
+            evaluate_channel_expression(non_ws[6], br_f, bg_f, bb_f, ba_f, true)?
+        } else {
+            1.0
+        };
+
+        // TODO(spec): other color spaces' relative form is out of scope.
+
+        return Some(Color::Rgba(
+            r_val.clamp(0.0, 255.0) as u8,
+            g_val.clamp(0.0, 255.0) as u8,
+            b_val.clamp(0.0, 255.0) as u8,
+            (a_val.clamp(0.0, 1.0) * 255.0) as u8,
+        ));
+    }
+
     // Basic support for rgb(r, g, b) or rgba(r, g, b, a)
     // Filter out whitespace and commas
     let mut args = Vec::new();
@@ -6604,6 +6692,67 @@ mod tests {
         assert_eq!(
             parse("LIGHT-DARK(White, Black)"),
             Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+    }
+
+    #[test]
+    fn test_parse_relative_color_rgb() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // a. parse("rgb(from red 0 0 255)") == Some(CssValue::Color(Color::Rgba(0,0,255,255)))
+        assert_eq!(
+            parse("rgb(from red 0 0 255)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 255, 255)))
+        );
+
+        // b. parse("rgb(from red r g b)") == Some(CssValue::Color(Color::Rgba(255,0,0,255)))
+        assert_eq!(
+            parse("rgb(from red r g b)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // c. parse("rgb(from red g b r)") == Some(CssValue::Color(Color::Rgba(0,0,255,255)))
+        assert_eq!(
+            parse("rgb(from red g b r)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 255, 255)))
+        );
+
+        // d. parse("rgb(from red 0 255 0 / 0.5)") == Some(CssValue::Color(Color::Rgba(0,255,0,127)))
+        assert_eq!(
+            parse("rgb(from red 0 255 0 / 0.5)"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 127)))
+        );
+
+        // e. parse("rgb(from #00ff00 r g b)") == Some(CssValue::Color(Color::Rgba(0,255,0,255)))
+        assert_eq!(
+            parse("rgb(from #00ff00 r g b)"),
+            Some(CssValue::Color(Color::Rgba(0, 255, 0, 255)))
+        );
+
+        // f. malformed tests
+        assert_eq!(parse("rgb(from red 0 0)"), None);
+        assert_eq!(parse("rgb(from 0 0 0)"), None);
+        assert_eq!(parse("rgb(from red 0 0 0 0)"), None);
+
+        // Additional relative color cases (none, percentages, alpha keyword)
+        assert_eq!(
+            parse("rgb(from red none none none)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+        assert_eq!(
+            parse("rgb(from red 100% 50% 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 127, 0, 255)))
+        );
+        assert_eq!(
+            parse("rgb(from red 0 0 255 / 50%)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 255, 127)))
+        );
+        assert_eq!(
+            parse("rgb(from red r g b / alpha)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
         );
     }
 
