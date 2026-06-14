@@ -71,40 +71,76 @@ pub fn setup_storage(context: &mut Context) {
     let setup_code = r#"
         (function() {
             const bridge = window.__storage_bridge__;
+            const initToken = Symbol('StorageInitToken');
 
             class Storage {
-                constructor(type) {
+                constructor(token, type) {
+                    if (token !== initToken) {
+                        throw new TypeError("Illegal constructor");
+                    }
                     this.__type__ = type;
                 }
 
                 getItem(key) {
+                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                        throw new TypeError("Failed to execute 'getItem' on 'Storage': Value of 'this' is not a Storage object.");
+                    }
+                    if (arguments.length < 1) {
+                        throw new TypeError("Failed to execute 'getItem' on 'Storage': 1 argument required, but only 0 present.");
+                    }
                     return bridge.getItem(this.__type__, String(key));
                 }
 
                 setItem(key, value) {
+                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                        throw new TypeError("Failed to execute 'setItem' on 'Storage': Value of 'this' is not a Storage object.");
+                    }
+                    if (arguments.length < 2) {
+                        throw new TypeError("Failed to execute 'setItem' on 'Storage': 2 arguments required, but only " + arguments.length + " present.");
+                    }
                     bridge.setItem(this.__type__, String(key), String(value));
                 }
 
                 removeItem(key) {
+                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                        throw new TypeError("Failed to execute 'removeItem' on 'Storage': Value of 'this' is not a Storage object.");
+                    }
+                    if (arguments.length < 1) {
+                        throw new TypeError("Failed to execute 'removeItem' on 'Storage': 1 argument required, but only 0 present.");
+                    }
                     bridge.removeItem(this.__type__, String(key));
                 }
 
                 clear() {
+                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                        throw new TypeError("Failed to execute 'clear' on 'Storage': Value of 'this' is not a Storage object.");
+                    }
                     bridge.clear(this.__type__);
                 }
 
                 key(index) {
+                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                        throw new TypeError("Failed to execute 'key' on 'Storage': Value of 'this' is not a Storage object.");
+                    }
                     return bridge.getKey(this.__type__, Number(index));
                 }
 
                 get length() {
+                    if (!(this instanceof Storage) || (this.__type__ !== 'local' && this.__type__ !== 'session')) {
+                        throw new TypeError("Failed to execute 'length' on 'Storage': Value of 'this' is not a Storage object.");
+                    }
                     return bridge.getLength(this.__type__);
                 }
             }
 
+            Object.defineProperty(Storage.prototype, Symbol.toStringTag, {
+                value: 'Storage',
+                configurable: true
+            });
+
             // Create window.localStorage and window.sessionStorage
-            const localStorageInstance = new Storage('local');
-            const sessionStorageInstance = new Storage('session');
+            const localStorageInstance = new Storage(initToken, 'local');
+            const sessionStorageInstance = new Storage(initToken, 'session');
 
             // Expose them as custom Proxies so that property-based gets/sets work!
             // e.g. localStorage.foo = 'bar' or localStorage['foo']
@@ -174,14 +210,14 @@ pub fn setup_storage(context: &mut Context) {
                 value: localProxy,
                 writable: false,
                 enumerable: true,
-                configurable: true
+                configurable: false
             });
 
             Object.defineProperty(window, 'sessionStorage', {
                 value: sessionProxy,
                 writable: false,
                 enumerable: true,
-                configurable: true
+                configurable: false
             });
 
             // Also define Storage globally
@@ -569,5 +605,82 @@ mod tests {
             host.eval("if (localStorage.key() !== 'k1') throw 'error8';")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn test_storage_validation_and_webidl() {
+        let mut host = new_host();
+
+        assert!(host.eval(r#"
+            (function() {
+                // 1. Storage constructor cannot be called directly
+                let threw1 = false;
+                try {
+                    new Storage();
+                } catch (e) {
+                    if (e.message === "Illegal constructor") {
+                        threw1 = true;
+                    }
+                }
+                if (!threw1) throw new Error("Storage constructor did not throw TypeError");
+
+                // 2. Storage methods require Storage instance as 'this' context
+                let threw2 = false;
+                try {
+                    Storage.prototype.getItem.call({}, "foo");
+                } catch (e) {
+                    if (e.message && e.message.indexOf("Value of 'this' is not a Storage object") !== -1) {
+                        threw2 = true;
+                    }
+                }
+                if (!threw2) throw new Error("Storage.prototype.getItem on plain object did not throw TypeError");
+
+                // 3. Method argument count validations
+                // - getItem requires 1 argument
+                let threw3 = false;
+                try {
+                    localStorage.getItem();
+                } catch (e) {
+                    if (e.message && e.message.indexOf("1 argument required, but only 0 present") !== -1) {
+                        threw3 = true;
+                    }
+                }
+                if (!threw3) throw new Error("localStorage.getItem() with 0 arguments did not throw TypeError");
+
+                // - setItem requires 2 arguments
+                let threw4 = false;
+                try {
+                    localStorage.setItem("foo");
+                } catch (e) {
+                    if (e.message && e.message.indexOf("2 arguments required, but only 1 present") !== -1) {
+                        threw4 = true;
+                    }
+                }
+                if (!threw4) throw new Error("localStorage.setItem('foo') with 1 argument did not throw TypeError");
+
+                // - removeItem requires 1 argument
+                let threw5 = false;
+                try {
+                    localStorage.removeItem();
+                } catch (e) {
+                    if (e.message && e.message.indexOf("1 argument required, but only 0 present") !== -1) {
+                        threw5 = true;
+                    }
+                }
+                if (!threw5) throw new Error("localStorage.removeItem() with 0 arguments did not throw TypeError");
+
+                // 4. Object.prototype.toString.call(localStorage) returns "[object Storage]"
+                const tag = Object.prototype.toString.call(localStorage);
+                if (tag !== "[object Storage]") {
+                    throw new Error("Expected [object Storage], got " + tag);
+                }
+
+                // 5. window.localStorage non-configurability
+                const desc = Object.getOwnPropertyDescriptor(window, 'localStorage');
+                if (desc.configurable !== false) {
+                    throw new Error("window.localStorage must be non-configurable");
+                }
+            })()
+        "#).is_ok());
     }
 }
