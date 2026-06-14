@@ -316,6 +316,12 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :stalled always returns false.
                         false
                     }
+                    "volume-locked" => {
+                        // TODO(spec): Real :volume-locked matching requires tracking HTMLMediaElement volume state / volume-locked status.
+                        // This engine has no media playback or HTMLMediaElement volume state, so no element is ever volume-locked.
+                        // Thus, :volume-locked always returns false.
+                        false
+                    }
                     "current" => {
                         // TODO(spec): This engine has no time-dimensional / timed-media context (e.g. WebVTT cues),
                         // so no element is ever the currently-presented one and the :current pseudo-class always returns false.
@@ -3381,6 +3387,64 @@ mod tests {
         assert!(!matches(&sel_stalled, &dom, div_elem));
         assert!(!matches(&sel_stalled, &dom, video_elem));
         assert!(!matches(&sel_stalled, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_volume_locked_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <video>
+        let video_elem = dom.create_node(NodeData::Element {
+            name: "video".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, video_elem);
+
+        // <audio>
+        let audio_elem = dom.create_node(NodeData::Element {
+            name: "audio".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, audio_elem);
+
+        // Matches :volume-locked (should never match since we have no media playback or volume state tracking)
+        let sel_volume_locked = parse_selector_list(":volume-locked").unwrap();
+        assert!(!matches(&sel_volume_locked, &dom, div_elem));
+        assert!(!matches(&sel_volume_locked, &dom, video_elem));
+        assert!(!matches(&sel_volume_locked, &dom, audio_elem));
+    }
+
+    #[test]
+    fn test_autofill_never_matches() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // <div>
+        let div_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_elem);
+
+        // <input>
+        let input_elem = dom.create_node(NodeData::Element {
+            name: "input".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, input_elem);
+
+        // Matches :autofill (should never match since we have no autofill machinery)
+        let sel_autofill = parse_selector_list(":autofill").unwrap();
+        assert!(!matches(&sel_autofill, &dom, div_elem));
+        assert!(!matches(&sel_autofill, &dom, input_elem));
     }
 
     #[test]
