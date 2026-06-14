@@ -330,6 +330,27 @@ fn parse_length_arg(s: &str) -> Option<f32> {
     }
 }
 
+fn split_args(args_str: &str) -> Option<Vec<&str>> {
+    let trimmed = args_str.trim();
+    if trimmed.is_empty() {
+        return Some(Vec::new());
+    }
+    if trimmed.contains(',') {
+        let mut args = Vec::new();
+        for part in trimmed.split(',') {
+            let part_trimmed = part.trim();
+            if part_trimmed.is_empty() {
+                return None; // Double, leading, or trailing comma is invalid
+            }
+            args.push(part_trimmed);
+        }
+        Some(args)
+    } else {
+        let args: Vec<&str> = trimmed.split_whitespace().collect();
+        Some(args)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Matrix3d {
     pub m: [f32; 16],
@@ -781,9 +802,12 @@ impl Matrix3d {
         let mut chars = trimmed.char_indices().peekable();
 
         while let Some(&(i, c)) = chars.peek() {
-            if c.is_whitespace() || c == ',' {
+            if c.is_whitespace() {
                 chars.next();
                 continue;
+            }
+            if c == ',' {
+                return None; // Comma at the top level between functions is a syntax error
             }
 
             // Parse identifier (function name)
@@ -841,12 +865,7 @@ impl Matrix3d {
                 }
 
                 let args_str = &trimmed[arg_start..arg_end];
-                // Split arguments by comma and/or whitespace
-                let args: Vec<&str> = args_str
-                    .split(',')
-                    .map(|a| a.trim())
-                    .filter(|a| !a.is_empty())
-                    .collect();
+                let args = split_args(args_str)?;
 
                 let next_matrix = match func_name.to_ascii_lowercase().as_str() {
                     "matrix" => {
@@ -2522,5 +2541,45 @@ mod tests {
             quaternion: (1.0, 0.0, 0.0, 0.0), // rotates around X
         };
         assert!(d3_non2d_quaternion.to_2d().is_none());
+    }
+
+    #[test]
+    fn test_matrix_parsing_improvements_t1087() {
+        // 1. Space vs comma separated arguments
+        let m1 = Matrix3d::parse("translate(10px 20px)").unwrap();
+        let m2 = Matrix3d::parse("translate(10px, 20px)").unwrap();
+        assert_eq!(m1.apply_point(0.0, 0.0), (10.0, 20.0));
+        assert_eq!(m2.apply_point(0.0, 0.0), (10.0, 20.0));
+
+        let m3 = Matrix3d::parse("matrix(1 2 3 4 5 6)").unwrap();
+        let m4 = Matrix3d::parse("matrix(1, 2, 3, 4, 5, 6)").unwrap();
+        assert_eq!(m3, m4);
+
+        let m5 = Matrix3d::parse("rotate3d(1 0 0 45deg)").unwrap();
+        let m6 = Matrix3d::parse("rotate3d(1, 0, 0, 45deg)").unwrap();
+        assert_eq!(m5, m6);
+
+        // 2. Comma syntax errors within arguments
+        assert!(Matrix3d::parse("translate(10px,, 20px)").is_none());
+        assert!(Matrix3d::parse("translate(,10px, 20px)").is_none());
+        assert!(Matrix3d::parse("translate(10px, 20px,)").is_none());
+        assert!(Matrix3d::parse("matrix(1,, 2, 3, 4, 5, 6)").is_none());
+
+        // 3. Forbid commas at top-level between functions
+        assert!(Matrix3d::parse("translate(10px), scale(2)").is_none());
+        assert!(Matrix3d::parse("translate(10px),scale(2)").is_none());
+        assert!(Matrix3d::parse("translate(10px) , scale(2)").is_none());
+
+        // 4. Empty and none transforms
+        assert!(Matrix3d::parse("").unwrap().is_identity());
+        assert!(Matrix3d::parse("none").unwrap().is_identity());
+        assert!(Matrix3d::parse("   ").unwrap().is_identity());
+
+        // 5. Length unit conversion correctness
+        let m_units = Matrix3d::parse("translate(1em, 2rem)").unwrap();
+        assert_eq!(m_units.apply_point(0.0, 0.0), (16.0, 32.0));
+
+        let m_pt = Matrix3d::parse("translate(72pt, 18pt)").unwrap();
+        assert_eq!(m_pt.apply_point(0.0, 0.0), (96.0, 24.0));
     }
 }
