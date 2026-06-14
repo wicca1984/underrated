@@ -205,6 +205,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
     },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
+        name: "scrollbar-gutter",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
         name: "display",
         inherited: false,
         initial: "inline",
@@ -1198,6 +1203,16 @@ mod tests {
         assert_eq!(scrollbar_color.name, "scrollbar-color");
         assert!(scrollbar_color.inherited);
         assert_eq!(scrollbar_color.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0702() {
+        let scrollbar_gutter = lookup("scrollbar-gutter");
+        assert!(scrollbar_gutter.is_some());
+        let scrollbar_gutter = scrollbar_gutter.unwrap();
+        assert_eq!(scrollbar_gutter.name, "scrollbar-gutter");
+        assert!(!scrollbar_gutter.inherited);
+        assert_eq!(scrollbar_gutter.initial, "auto");
     }
 
     #[test]
