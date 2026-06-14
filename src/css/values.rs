@@ -964,6 +964,58 @@ impl TryFrom<&CssValue> for ColorInterpolationValue {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum UserSelectValue {
+    #[default]
+    Auto,
+    Text,
+    None,
+    Contain,
+    All,
+}
+
+impl UserSelectValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "text" => Some(Self::Text),
+            "none" => Some(Self::None),
+            "contain" => Some(Self::Contain),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Text => "text",
+            Self::None => "none",
+            Self::Contain => "contain",
+            Self::All => "all",
+        }
+    }
+}
+
+impl std::str::FromStr for UserSelectValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for UserSelectValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum BreakInsideValue {
     #[default]
     Auto,
@@ -6149,6 +6201,72 @@ mod tests {
             ColorInterpolationValue::default(),
             ColorInterpolationValue::Srgb
         );
+    }
+
+    #[test]
+    fn test_user_select_value() {
+        // Test parsing keyword strings to UserSelectValue
+        assert_eq!(UserSelectValue::parse("auto"), Some(UserSelectValue::Auto));
+        assert_eq!(UserSelectValue::parse("text"), Some(UserSelectValue::Text));
+        assert_eq!(UserSelectValue::parse("none"), Some(UserSelectValue::None));
+        assert_eq!(
+            UserSelectValue::parse("contain"),
+            Some(UserSelectValue::Contain)
+        );
+        assert_eq!(UserSelectValue::parse("all"), Some(UserSelectValue::All));
+        assert_eq!(UserSelectValue::parse("AUTO"), Some(UserSelectValue::Auto));
+        assert_eq!(UserSelectValue::parse("tExT"), Some(UserSelectValue::Text));
+        assert_eq!(UserSelectValue::parse("nOnE"), Some(UserSelectValue::None));
+        assert_eq!(
+            UserSelectValue::parse("cOnTaIn"),
+            Some(UserSelectValue::Contain)
+        );
+        assert_eq!(UserSelectValue::parse("AlL"), Some(UserSelectValue::All));
+        assert_eq!(UserSelectValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!("auto".parse::<UserSelectValue>(), Ok(UserSelectValue::Auto));
+        assert_eq!("text".parse::<UserSelectValue>(), Ok(UserSelectValue::Text));
+        assert_eq!("none".parse::<UserSelectValue>(), Ok(UserSelectValue::None));
+        assert_eq!(
+            "contain".parse::<UserSelectValue>(),
+            Ok(UserSelectValue::Contain)
+        );
+        assert_eq!("all".parse::<UserSelectValue>(), Ok(UserSelectValue::All));
+        assert_eq!("BOGUS".parse::<UserSelectValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(UserSelectValue::Auto.as_str(), "auto");
+        assert_eq!(UserSelectValue::Text.as_str(), "text");
+        assert_eq!(UserSelectValue::None.as_str(), "none");
+        assert_eq!(UserSelectValue::Contain.as_str(), "contain");
+        assert_eq!(UserSelectValue::All.as_str(), "all");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            UserSelectValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(UserSelectValue::Auto)
+        );
+        assert_eq!(
+            UserSelectValue::try_from(&CssValue::Keyword("text".to_string())),
+            Ok(UserSelectValue::Text)
+        );
+        assert_eq!(
+            UserSelectValue::try_from(&CssValue::Keyword("none".to_string())),
+            Ok(UserSelectValue::None)
+        );
+        assert_eq!(
+            UserSelectValue::try_from(&CssValue::Keyword("contain".to_string())),
+            Ok(UserSelectValue::Contain)
+        );
+        assert_eq!(
+            UserSelectValue::try_from(&CssValue::Keyword("all".to_string())),
+            Ok(UserSelectValue::All)
+        );
+        assert_eq!(UserSelectValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation
+        assert_eq!(UserSelectValue::default(), UserSelectValue::Auto);
     }
 
     #[test]
