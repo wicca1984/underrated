@@ -43,17 +43,19 @@ impl Dom {
         // 2. Check if the element is a descendant of a disabled fieldset.
         let mut current = node;
         while let Some(parent) = self.parent(current) {
-            if let Some(parent_data) = self.data(parent) {
-                if let crate::dom::NodeData::Element { name: parent_name, .. } = parent_data {
-                    if parent_name == "fieldset" && self.get_attribute(parent, "disabled").is_some() {
-                        // It is a descendant of a disabled fieldset.
-                        // Is it inside the fieldset's first legend?
-                        if self.is_inside_first_legend_of_fieldset(parent, node) {
-                            return false;
-                        }
-                        return true;
-                    }
+            if let Some(parent_data) = self.data(parent)
+                && let crate::dom::NodeData::Element {
+                    name: parent_name, ..
+                } = parent_data
+                && parent_name == "fieldset"
+                && self.get_attribute(parent, "disabled").is_some()
+            {
+                // It is a descendant of a disabled fieldset.
+                // Is it inside the fieldset's first legend?
+                if self.is_inside_first_legend_of_fieldset(parent, node) {
+                    return false;
                 }
+                return true;
             }
             current = parent;
         }
@@ -91,26 +93,24 @@ impl Dom {
 
     /// Returns the document element of the DOM, if it exists and is connected.
     pub fn document_element(&self) -> Option<NodeId> {
-        self.descendants_iter(self.document)
-            .find(|&node| {
-                if let Some(crate::dom::NodeData::Element { name, .. }) = self.data(node) {
-                    name == "html"
-                } else {
-                    false
-                }
-            })
+        self.descendants_iter(self.document).find(|&node| {
+            if let Some(crate::dom::NodeData::Element { name, .. }) = self.data(node) {
+                name == "html"
+            } else {
+                false
+            }
+        })
     }
 
     /// Returns the body element of the DOM, if it exists and is connected.
     pub fn body_element(&self) -> Option<NodeId> {
-        self.descendants_iter(self.document)
-            .find(|&node| {
-                if let Some(crate::dom::NodeData::Element { name, .. }) = self.data(node) {
-                    name == "body" || name == "frameset"
-                } else {
-                    false
-                }
-            })
+        self.descendants_iter(self.document).find(|&node| {
+            if let Some(crate::dom::NodeData::Element { name, .. }) = self.data(node) {
+                name == "body" || name == "frameset"
+            } else {
+                false
+            }
+        })
     }
 
     /// Returns the NodeId of the active element.
@@ -121,19 +121,19 @@ impl Dom {
         if let Some(focused) = self.focused_node() {
             return Some(focused);
         }
-        
-        if let Some(body) = self.body_element() {
-            if self.is_connected(body) {
-                return Some(body);
-            }
+
+        if let Some(body) = self.body_element()
+            && self.is_connected(body)
+        {
+            return Some(body);
         }
-        
-        if let Some(doc_elem) = self.document_element() {
-            if self.is_connected(doc_elem) {
-                return Some(doc_elem);
-            }
+
+        if let Some(doc_elem) = self.document_element()
+            && self.is_connected(doc_elem)
+        {
+            return Some(doc_elem);
         }
-        
+
         None
     }
 
@@ -192,20 +192,14 @@ impl Dom {
                     // must have href attribute
                     attrs.iter().any(|(k, _)| k == "href")
                 }
-                "area" => {
-                    attrs.iter().any(|(k, _)| k == "href")
-                }
+                "area" => attrs.iter().any(|(k, _)| k == "href"),
                 "summary" => {
-                    if let Some(parent) = self.parent(node) {
-                        if let Some(parent_data) = self.data(parent) {
-                            if let crate::dom::NodeData::Element { name: parent_name, .. } = parent_data {
-                                parent_name == "details"
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
+                    if let Some(parent) = self.parent(node)
+                        && let Some(crate::dom::NodeData::Element {
+                            name: parent_name, ..
+                        }) = self.data(parent)
+                    {
+                        parent_name == "details"
                     } else {
                         false
                     }
@@ -751,5 +745,176 @@ mod tests {
         assert_eq!(dom.prev_focusable_node(Some(btn3)), Some(btn2));
         assert_eq!(dom.prev_focusable_node(Some(btn2)), Some(btn1));
         assert_eq!(dom.prev_focusable_node(Some(btn1)), Some(btn3)); // wrap around
+    }
+
+    #[test]
+    fn test_is_disabled_and_fieldset_rules() {
+        let mut dom = Dom::new();
+        let doc_id = dom.document();
+
+        // 1. Anchor with href and disabled attribute should STILL be focusable
+        // because <a> is not a disabled-capable element.
+        let a_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![
+                ("href".to_string(), "https://google.com".to_string()),
+                ("disabled".to_string(), "".to_string()),
+            ],
+        });
+        dom.append_child(doc_id, a_id);
+        assert!(!dom.is_disabled(a_id));
+        assert!(dom.is_focusable(a_id));
+
+        // 2. Button with disabled attribute is NOT focusable
+        let btn_id = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![("disabled".to_string(), "".to_string())],
+        });
+        dom.append_child(doc_id, btn_id);
+        assert!(dom.is_disabled(btn_id));
+        assert!(!dom.is_focusable(btn_id));
+
+        // 3. Fieldset disabled hierarchy rules
+        let fieldset_id = dom.create_node(NodeData::Element {
+            name: "fieldset".to_string(),
+            attrs: vec![("disabled".to_string(), "".to_string())],
+        });
+        dom.append_child(doc_id, fieldset_id);
+
+        // a. First legend child of the fieldset
+        let first_legend_id = dom.create_node(NodeData::Element {
+            name: "legend".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(fieldset_id, first_legend_id);
+
+        let input_inside_first_legend_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(first_legend_id, input_inside_first_legend_id);
+
+        // This input is inside the first legend of a disabled fieldset, so it is NOT disabled!
+        assert!(!dom.is_disabled(input_inside_first_legend_id));
+        assert!(dom.is_focusable(input_inside_first_legend_id));
+
+        // b. Second legend child of the fieldset
+        let second_legend_id = dom.create_node(NodeData::Element {
+            name: "legend".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(fieldset_id, second_legend_id);
+
+        let input_inside_second_legend_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(second_legend_id, input_inside_second_legend_id);
+
+        // This input is inside a second legend of a disabled fieldset, so it IS disabled!
+        assert!(dom.is_disabled(input_inside_second_legend_id));
+        assert!(!dom.is_focusable(input_inside_second_legend_id));
+
+        // c. Plain input descendant of the fieldset (not in a legend)
+        let plain_fieldset_input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(fieldset_id, plain_fieldset_input_id);
+
+        assert!(dom.is_disabled(plain_fieldset_input_id));
+        assert!(!dom.is_focusable(plain_fieldset_input_id));
+    }
+
+    #[test]
+    fn test_active_element_and_has_focus() {
+        let mut dom = Dom::new();
+        let doc_id = dom.document();
+
+        // 1. Initial document with nothing connected -> active_element() is None
+        assert_eq!(dom.active_element(), None);
+        assert!(!dom.has_focus());
+
+        // 2. Add html (document element)
+        let html_id = dom.create_node(NodeData::Element {
+            name: "html".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(doc_id, html_id);
+
+        // Active element should fall back to html_id because body is absent
+        assert_eq!(dom.active_element(), Some(html_id));
+        assert!(!dom.has_focus()); // has_focus is still false because no specific element is focused
+
+        // 3. Add body element
+        let body_id = dom.create_node(NodeData::Element {
+            name: "body".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(html_id, body_id);
+
+        // Active element should fall back to body_id because it exists
+        assert_eq!(dom.active_element(), Some(body_id));
+        assert!(!dom.has_focus());
+
+        // 4. Add focusable element and focus it
+        let input_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(body_id, input_id);
+
+        dom.focus(input_id);
+        assert_eq!(dom.active_element(), Some(input_id));
+        assert!(dom.has_focus());
+
+        // 5. Blur the element -> reverts to body_id
+        dom.blur();
+        assert_eq!(dom.active_element(), Some(body_id));
+        assert!(!dom.has_focus());
+    }
+
+    #[test]
+    fn test_area_and_summary_focusable_defaults() {
+        let mut dom = Dom::new();
+        let doc_id = dom.document();
+
+        // 1. Area tag without href is not focusable
+        let area_no_href = dom.create_node(NodeData::Element {
+            name: "area".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(doc_id, area_no_href);
+        assert!(!dom.is_focusable(area_no_href));
+
+        // Area tag with href is focusable by default
+        let area_with_href = dom.create_node(NodeData::Element {
+            name: "area".to_string(),
+            attrs: vec![("href".to_string(), "#test".to_string())],
+        });
+        dom.append_child(doc_id, area_with_href);
+        assert!(dom.is_focusable(area_with_href));
+
+        // 2. Summary tag outside details is not focusable by default
+        let summary_outside = dom.create_node(NodeData::Element {
+            name: "summary".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(doc_id, summary_outside);
+        assert!(!dom.is_focusable(summary_outside));
+
+        // Details tag containing summary
+        let details_id = dom.create_node(NodeData::Element {
+            name: "details".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(doc_id, details_id);
+
+        let summary_inside = dom.create_node(NodeData::Element {
+            name: "summary".to_string(),
+            attrs: vec![],
+        });
+        dom.append_child(details_id, summary_inside);
+        assert!(dom.is_focusable(summary_inside));
     }
 }
