@@ -4217,14 +4217,14 @@ mod tests {
         let dom_pre = parse_document(InputStream::from_utf8(html_pre.as_bytes()));
         assert_eq!(
             dom_pre.serialize(dom_pre.document()),
-            "<html><head></head><body><pre>\nA</pre></body></html>"
+            "<html><head></head><body><pre>\n\nA</pre></body></html>"
         );
 
         let html_textarea = "<textarea>\n\nB</textarea>";
         let dom_textarea = parse_document(InputStream::from_utf8(html_textarea.as_bytes()));
         assert_eq!(
             dom_textarea.serialize(dom_textarea.document()),
-            "<html><head></head><body><textarea>\nB</textarea></body></html>"
+            "<html><head></head><body><textarea>\n\nB</textarea></body></html>"
         );
     }
 

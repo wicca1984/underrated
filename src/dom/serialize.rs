@@ -53,6 +53,10 @@ pub fn serialize(dom: &Dom, node: NodeId) -> String {
                 result.push('>');
 
                 if !is_void_element(name) {
+                    if should_prepend_newline(dom, node, name) {
+                        result.push('\n');
+                    }
+
                     // End tag runs after the children (LIFO: push Close first).
                     stack.push(Work::Close(name.clone()));
                     push_children(dom, node, &mut stack);
@@ -88,6 +92,20 @@ pub fn serialize(dom: &Dom, node: NodeId) -> String {
 fn push_children(dom: &Dom, node: NodeId, stack: &mut Vec<Work>) {
     for &child in dom.children(node).iter().rev() {
         stack.push(Work::Open(child));
+    }
+}
+
+/// Returns true if the element is pre, textarea, or listing, and its first child
+/// is a Text node starting with a U+000A LINE FEED character.
+fn should_prepend_newline(dom: &Dom, node: NodeId, name: &str) -> bool {
+    let lower_name = name.to_ascii_lowercase();
+    if matches!(lower_name.as_str(), "pre" | "textarea" | "listing")
+        && let Some(&first_child) = dom.children(node).first()
+        && let Some(NodeData::Text(text)) = dom.data(first_child)
+    {
+        text.starts_with('\n')
+    } else {
+        false
     }
 }
 
@@ -189,6 +207,72 @@ mod tests {
         assert_eq!(
             dom.serialize(doc),
             "<p title=\"hello&nbsp;world\">hello&nbsp;world</p>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_leading_newline_pre_textarea_listing() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 1. <pre> with leading newline
+        let pre_with_lf = dom.create_node(NodeData::Element {
+            name: "pre".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, pre_with_lf);
+        let text1 = dom.create_node(NodeData::Text("\nhello".into()));
+        dom.append_child(pre_with_lf, text1);
+
+        // 2. <pre> without leading newline
+        let pre_no_lf = dom.create_node(NodeData::Element {
+            name: "pre".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, pre_no_lf);
+        let text2 = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(pre_no_lf, text2);
+
+        // 3. <textarea> with leading newline
+        let textarea_with_lf = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, textarea_with_lf);
+        let text3 = dom.create_node(NodeData::Text("\nhello".into()));
+        dom.append_child(textarea_with_lf, text3);
+
+        // 4. <textarea> without leading newline
+        let textarea_no_lf = dom.create_node(NodeData::Element {
+            name: "textarea".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, textarea_no_lf);
+        let text4 = dom.create_node(NodeData::Text("hello".into()));
+        dom.append_child(textarea_no_lf, text4);
+
+        // 5. <listing> with leading newline
+        let listing_with_lf = dom.create_node(NodeData::Element {
+            name: "listing".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, listing_with_lf);
+        let text5 = dom.create_node(NodeData::Text("\nhello".into()));
+        dom.append_child(listing_with_lf, text5);
+
+        // 6. <div> with leading newline (should NOT get extra LF prepended)
+        let div_with_lf = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div_with_lf);
+        let text6 = dom.create_node(NodeData::Text("\nhello".into()));
+        dom.append_child(div_with_lf, text6);
+
+        let serialized = dom.serialize(doc);
+        assert_eq!(
+            serialized,
+            "<pre>\n\nhello</pre><pre>hello</pre><textarea>\n\nhello</textarea><textarea>hello</textarea><listing>\n\nhello</listing><div>\nhello</div>"
         );
     }
 }
