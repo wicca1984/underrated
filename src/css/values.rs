@@ -1011,6 +1011,49 @@ impl TryFrom<&CssValue> for EmptyCellsValue {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum BorderCollapseValue {
+    #[default]
+    Separate,
+    Collapse,
+}
+
+impl BorderCollapseValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "separate" => Some(Self::Separate),
+            "collapse" => Some(Self::Collapse),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Separate => "separate",
+            Self::Collapse => "collapse",
+        }
+    }
+}
+
+impl std::str::FromStr for BorderCollapseValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for BorderCollapseValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Default)]
 pub enum TextAlignLastValue {
     #[default]
@@ -2082,6 +2125,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "word-wrap"
             | "object-fit"
             | "caption-side"
+            | "border-collapse"
             | "break-inside"
             | "pointer-events"
             | "unicode-bidi"
@@ -2506,6 +2550,12 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "caption-side" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "top" | "bottom")
+            }
+            _ => false,
+        },
+        "border-collapse" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "separate" | "collapse")
             }
             _ => false,
         },
@@ -3639,6 +3689,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "top" | "bottom" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "border-collapse" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "separate" | "collapse" => Some(val),
                     _ => None,
                 }
             } else {
@@ -6066,6 +6126,63 @@ mod tests {
             Ok(EmptyCellsValue::Hide)
         );
         assert_eq!(EmptyCellsValue::try_from(&CssValue::Number(1.0)), Err(()));
+    }
+
+    #[test]
+    fn test_border_collapse_value() {
+        // Test parsing keyword strings to BorderCollapseValue
+        assert_eq!(
+            BorderCollapseValue::parse("separate"),
+            Some(BorderCollapseValue::Separate)
+        );
+        assert_eq!(
+            BorderCollapseValue::parse("collapse"),
+            Some(BorderCollapseValue::Collapse)
+        );
+        assert_eq!(
+            BorderCollapseValue::parse("SEPARATE"),
+            Some(BorderCollapseValue::Separate)
+        );
+        assert_eq!(
+            BorderCollapseValue::parse("Collapse"),
+            Some(BorderCollapseValue::Collapse)
+        );
+        assert_eq!(BorderCollapseValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "separate".parse::<BorderCollapseValue>(),
+            Ok(BorderCollapseValue::Separate)
+        );
+        assert_eq!(
+            "collapse".parse::<BorderCollapseValue>(),
+            Ok(BorderCollapseValue::Collapse)
+        );
+        assert_eq!("BOGUS".parse::<BorderCollapseValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(BorderCollapseValue::Separate.as_str(), "separate");
+        assert_eq!(BorderCollapseValue::Collapse.as_str(), "collapse");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            BorderCollapseValue::try_from(&CssValue::Keyword("separate".to_string())),
+            Ok(BorderCollapseValue::Separate)
+        );
+        assert_eq!(
+            BorderCollapseValue::try_from(&CssValue::Keyword("COLLAPSE".to_string())),
+            Ok(BorderCollapseValue::Collapse)
+        );
+        assert_eq!(
+            BorderCollapseValue::try_from(&CssValue::Number(1.0)),
+            Err(())
+        );
+
+        // Test Default implementation (initial value)
+        assert_eq!(
+            BorderCollapseValue::default(),
+            BorderCollapseValue::Separate
+        );
     }
 
     #[test]
@@ -9331,6 +9448,68 @@ mod tests {
         assert_eq!(EmptyCellsValue::parse("hide"), Some(EmptyCellsValue::Hide));
         assert_eq!(EmptyCellsValue::parse("banana"), None);
         assert_eq!(EmptyCellsValue::parse("SHOW"), Some(EmptyCellsValue::Show));
+    }
+
+    #[test]
+    fn test_border_collapse_parsing_and_recognition() {
+        // Test border-collapse: separate
+        assert_eq!(
+            parse_property_value(
+                "border-collapse",
+                &[token(CssToken::Ident("separate".to_string()))]
+            ),
+            Some(CssValue::Keyword("separate".to_string()))
+        );
+
+        // Test border-collapse: collapse
+        assert_eq!(
+            parse_property_value(
+                "border-collapse",
+                &[token(CssToken::Ident("collapse".to_string()))]
+            ),
+            Some(CssValue::Keyword("collapse".to_string()))
+        );
+
+        // Test invalid keyword "banana" -> None
+        assert_eq!(
+            parse_property_value(
+                "border-collapse",
+                &[token(CssToken::Ident("banana".to_string()))]
+            ),
+            None
+        );
+
+        // Test is_known_layout_property
+        assert!(is_known_layout_property("border-collapse"));
+
+        // Test is_valid_property_value
+        assert!(is_valid_property_value(
+            "border-collapse",
+            &CssValue::Keyword("separate".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "border-collapse",
+            &CssValue::Keyword("collapse".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "border-collapse",
+            &CssValue::Keyword("banana".to_string())
+        ));
+
+        // Test BorderCollapseValue::parse directly
+        assert_eq!(
+            BorderCollapseValue::parse("separate"),
+            Some(BorderCollapseValue::Separate)
+        );
+        assert_eq!(
+            BorderCollapseValue::parse("collapse"),
+            Some(BorderCollapseValue::Collapse)
+        );
+        assert_eq!(BorderCollapseValue::parse("banana"), None);
+        assert_eq!(
+            BorderCollapseValue::parse("SEPARATE"),
+            Some(BorderCollapseValue::Separate)
+        );
     }
 
     #[test]
