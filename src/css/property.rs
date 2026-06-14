@@ -2192,6 +2192,42 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "normal",
         animatable: false,
     },
+    PropertyMetadata {
+        name: "outline-offset",
+        inherited: false,
+        initial: "0",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "grid-row-gap",
+        inherited: false,
+        initial: "normal",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "grid-column-gap",
+        inherited: false,
+        initial: "normal",
+        animatable: true,
+    },
+    PropertyMetadata {
+        name: "page-break-before",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "page-break-after",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "page-break-inside",
+        inherited: false,
+        initial: "auto",
+        animatable: false,
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -2255,6 +2291,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "border-block-color",
+        longhands: &["border-block-start-color", "border-block-end-color"],
+    },
+    ShorthandExpansion {
         name: "border-block-end",
         longhands: &[
             "border-block-end-width",
@@ -2269,6 +2309,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "border-block-start-style",
             "border-block-start-color",
         ],
+    },
+    ShorthandExpansion {
+        name: "border-block-style",
+        longhands: &["border-block-start-style", "border-block-end-style"],
+    },
+    ShorthandExpansion {
+        name: "border-block-width",
+        longhands: &["border-block-start-width", "border-block-end-width"],
     },
     ShorthandExpansion {
         name: "border-bottom",
@@ -2309,6 +2357,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
         ],
     },
     ShorthandExpansion {
+        name: "border-inline-color",
+        longhands: &["border-inline-start-color", "border-inline-end-color"],
+    },
+    ShorthandExpansion {
         name: "border-inline-end",
         longhands: &[
             "border-inline-end-width",
@@ -2323,6 +2375,14 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
             "border-inline-start-style",
             "border-inline-start-color",
         ],
+    },
+    ShorthandExpansion {
+        name: "border-inline-style",
+        longhands: &["border-inline-start-style", "border-inline-end-style"],
+    },
+    ShorthandExpansion {
+        name: "border-inline-width",
+        longhands: &["border-inline-start-width", "border-inline-end-width"],
     },
     ShorthandExpansion {
         name: "border-left",
@@ -2461,6 +2521,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "grid-column",
         longhands: &["grid-column-start", "grid-column-end"],
+    },
+    ShorthandExpansion {
+        name: "grid-gap",
+        longhands: &["grid-row-gap", "grid-column-gap"],
     },
     ShorthandExpansion {
         name: "grid-row",
@@ -2620,19 +2684,84 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
 /// Returns the ordered longhand property names for a shorthand, if `name` is a known shorthand.
 /// The lookup is ASCII-case-insensitive, matching `lookup`.
 pub fn shorthand_longhands(name: &str) -> Option<&'static [&'static str]> {
-    SHORTHAND_EXPANSIONS
+    if let Some(sh) = SHORTHAND_EXPANSIONS
         .iter()
         .find(|sh| sh.name.eq_ignore_ascii_case(name))
-        .map(|sh| sh.longhands)
+    {
+        return Some(sh.longhands);
+    }
+
+    // Edge case / fallback: Strip vendor prefixes and check if unprefixed counterpart exists.
+    let trimmed = name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
+        if lower.starts_with(prefix) {
+            let unprefixed = &trimmed[prefix.len()..];
+            if let Some(sh) = SHORTHAND_EXPANSIONS
+                .iter()
+                .find(|sh| sh.name.eq_ignore_ascii_case(unprefixed))
+            {
+                return Some(sh.longhands);
+            }
+        }
+    }
+
+    None
 }
 
 /// Looks up the metadata for a CSS property by name.
 ///
 /// This lookup is case-insensitive.
 pub fn lookup(name: &str) -> Option<&'static PropertyMetadata> {
-    PROPERTY_METADATA
+    if let Some(prop) = PROPERTY_METADATA
         .iter()
         .find(|prop| prop.name.eq_ignore_ascii_case(name))
+    {
+        return Some(prop);
+    }
+
+    // Edge case / fallback: Strip vendor prefixes and check if unprefixed counterpart exists.
+    let trimmed = name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for prefix in &["-webkit-", "-moz-", "-ms-", "-o-"] {
+        if lower.starts_with(prefix) {
+            let unprefixed = &trimmed[prefix.len()..];
+            if let Some(prop) = PROPERTY_METADATA
+                .iter()
+                .find(|prop| prop.name.eq_ignore_ascii_case(unprefixed))
+            {
+                return Some(prop);
+            }
+        }
+    }
+
+    None
+}
+
+/// Checks if a property name is syntactically valid in CSS.
+///
+/// A property name is valid if it is a registered longhand, a registered shorthand,
+/// or a CSS custom property (starts with `--`).
+pub fn is_valid_property_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.starts_with("--") {
+        trimmed.len() > 2
+    } else {
+        lookup(trimmed).is_some() || shorthand_longhands(trimmed).is_some()
+    }
+}
+
+/// Checks if a value string is a standard CSS-wide keyword.
+///
+/// These keywords are: `initial`, `inherit`, `unset`, `revert`, `revert-layer`.
+/// This check is ASCII case-insensitive.
+pub fn is_css_wide_keyword(value: &str) -> bool {
+    let val_trimmed = value.trim();
+    val_trimmed.eq_ignore_ascii_case("initial")
+        || val_trimmed.eq_ignore_ascii_case("inherit")
+        || val_trimmed.eq_ignore_ascii_case("unset")
+        || val_trimmed.eq_ignore_ascii_case("revert")
+        || val_trimmed.eq_ignore_ascii_case("revert-layer")
 }
 
 /// Convenience helper to check if a CSS property is inherited.
@@ -4658,5 +4787,139 @@ mod tests {
         assert!(!bir.inherited);
         assert_eq!(bir.initial, "stretch");
         assert!(!bir.animatable);
+    }
+
+    #[test]
+    fn test_additive_properties_t0993() {
+        // 1. Verify longhands
+        let oo = lookup("outline-offset").expect("outline-offset must be registered");
+        assert_eq!(oo.name, "outline-offset");
+        assert!(!oo.inherited);
+        assert_eq!(oo.initial, "0");
+        assert!(oo.animatable);
+
+        let grg = lookup("grid-row-gap").expect("grid-row-gap must be registered");
+        assert_eq!(grg.name, "grid-row-gap");
+        assert!(!grg.inherited);
+        assert_eq!(grg.initial, "normal");
+        assert!(grg.animatable);
+
+        let gcg = lookup("grid-column-gap").expect("grid-column-gap must be registered");
+        assert_eq!(gcg.name, "grid-column-gap");
+        assert!(!gcg.inherited);
+        assert_eq!(gcg.initial, "normal");
+        assert!(gcg.animatable);
+
+        let pbb = lookup("page-break-before").expect("page-break-before must be registered");
+        assert_eq!(pbb.name, "page-break-before");
+        assert!(!pbb.inherited);
+        assert_eq!(pbb.initial, "auto");
+        assert!(!pbb.animatable);
+
+        let pba = lookup("page-break-after").expect("page-break-after must be registered");
+        assert_eq!(pba.name, "page-break-after");
+        assert!(!pba.inherited);
+        assert_eq!(pba.initial, "auto");
+        assert!(!pba.animatable);
+
+        let pbi = lookup("page-break-inside").expect("page-break-inside must be registered");
+        assert_eq!(pbi.name, "page-break-inside");
+        assert!(!pbi.inherited);
+        assert_eq!(pbi.initial, "auto");
+        assert!(!pbi.animatable);
+
+        // 2. Verify logical shorthands in SHORTHAND_EXPANSIONS
+        let bbc = shorthand_longhands("border-block-color")
+            .expect("border-block-color shorthand must be registered");
+        assert_eq!(
+            bbc,
+            &["border-block-start-color", "border-block-end-color"][..]
+        );
+
+        let bbs = shorthand_longhands("border-block-style")
+            .expect("border-block-style shorthand must be registered");
+        assert_eq!(
+            bbs,
+            &["border-block-start-style", "border-block-end-style"][..]
+        );
+
+        let bbw = shorthand_longhands("border-block-width")
+            .expect("border-block-width shorthand must be registered");
+        assert_eq!(
+            bbw,
+            &["border-block-start-width", "border-block-end-width"][..]
+        );
+
+        let bic = shorthand_longhands("border-inline-color")
+            .expect("border-inline-color shorthand must be registered");
+        assert_eq!(
+            bic,
+            &["border-inline-start-color", "border-inline-end-color"][..]
+        );
+
+        let bis = shorthand_longhands("border-inline-style")
+            .expect("border-inline-style shorthand must be registered");
+        assert_eq!(
+            bis,
+            &["border-inline-start-style", "border-inline-end-style"][..]
+        );
+
+        let biw = shorthand_longhands("border-inline-width")
+            .expect("border-inline-width shorthand must be registered");
+        assert_eq!(
+            biw,
+            &["border-inline-start-width", "border-inline-end-width"][..]
+        );
+
+        let gg = shorthand_longhands("grid-gap").expect("grid-gap shorthand must be registered");
+        assert_eq!(gg, &["grid-row-gap", "grid-column-gap"][..]);
+
+        // 3. Verify vendor-prefixed lookups (edge cases)
+        let prefixed_width = lookup("-webkit-width").expect("should find width");
+        assert_eq!(prefixed_width.name, "width");
+
+        let prefixed_color = lookup("-moz-color").expect("should find color");
+        assert_eq!(prefixed_color.name, "color");
+
+        let prefixed_margin_top = lookup("-ms-margin-top").expect("should find margin-top");
+        assert_eq!(prefixed_margin_top.name, "margin-top");
+
+        let prefixed_opacity = lookup("-o-opacity").expect("should find opacity");
+        assert_eq!(prefixed_opacity.name, "opacity");
+
+        let prefixed_border_radius = shorthand_longhands("-webkit-border-radius")
+            .expect("should find border-radius shorthands");
+        assert_eq!(prefixed_border_radius[0], "border-top-left-radius");
+
+        let prefixed_transition =
+            shorthand_longhands("-moz-transition").expect("should find transition shorthands");
+        assert_eq!(prefixed_transition[0], "transition-property");
+
+        let prefixed_border_block =
+            shorthand_longhands("-ms-border-block").expect("should find border-block shorthands");
+        assert_eq!(prefixed_border_block[0], "border-block-start-width");
+
+        // 4. Verify is_valid_property_name helper
+        assert!(is_valid_property_name("width"));
+        assert!(is_valid_property_name("margin"));
+        assert!(is_valid_property_name("-webkit-width"));
+        assert!(is_valid_property_name("-moz-border-radius"));
+        assert!(is_valid_property_name("--custom-variable-name"));
+        assert!(is_valid_property_name("  --with-spaces  "));
+        assert!(is_valid_property_name("  -webkit-transform  "));
+        assert!(!is_valid_property_name("--"));
+        assert!(!is_valid_property_name("-"));
+        assert!(!is_valid_property_name("completely-unknown-property"));
+
+        // 5. Verify is_css_wide_keyword helper
+        assert!(is_css_wide_keyword("initial"));
+        assert!(is_css_wide_keyword("  INHERIT  "));
+        assert!(is_css_wide_keyword("unset"));
+        assert!(is_css_wide_keyword("revert"));
+        assert!(is_css_wide_keyword("revert-layer"));
+        assert!(!is_css_wide_keyword("none"));
+        assert!(!is_css_wide_keyword("auto"));
+        assert!(!is_css_wide_keyword("solid"));
+        assert!(!is_css_wide_keyword("red"));
     }
 }
