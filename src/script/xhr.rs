@@ -189,7 +189,9 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                 get responseXML() {
                     if (this._responseType !== "" && this._responseType !== "document") {
-                        return null;
+                        const err = new Error("InvalidStateError");
+                        err.name = "InvalidStateError";
+                        throw err;
                     }
                     if (this._readyState !== 4) {
                         return null;
@@ -302,6 +304,8 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._responseText = "";
                     this._headers = {};
                     this._async = async !== false;
+                    this._withCredentials = false;
+                    this._responseType = "";
 
                     this._changeReadyState(1); // OPENED
                 }
@@ -341,19 +345,20 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                     if (!this._sendFlag) return;
 
+                    this._status = 200;
+                    this._statusText = "OK";
+
                     this._changeReadyState(2); // HEADERS_RECEIVED
                     if (!this._sendFlag) return;
 
-                    this._changeReadyState(3); // LOADING
-                    if (!this._sendFlag) return;
-
-                    this._status = 200;
-                    this._statusText = "OK";
                     if (body !== undefined && body !== null) {
                         this._responseText = String(body);
                     } else {
                         this._responseText = "mock response";
                     }
+
+                    this._changeReadyState(3); // LOADING
+                    if (!this._sendFlag) return;
 
                     if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
@@ -579,6 +584,65 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                                 total: 0
                             }));
                         } catch (e) {}
+                    }
+                }
+
+                _simulateNetworkError() {
+                    if (this._readyState === 0 || this._readyState === 4) {
+                        return;
+                    }
+                    this._status = 0;
+                    this._statusText = "";
+                    this._headers = {};
+                    this._responseText = "";
+                    this._sendFlag = false;
+
+                    this._changeReadyState(4); // DONE
+
+                    const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
+                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                        try {
+                            if (this._upload) {
+                                this._upload.dispatchEvent(new ProgressEventClass("error", {
+                                    lengthComputable: false,
+                                    loaded: 0,
+                                    total: 0
+                                }));
+                                this._upload.dispatchEvent(new ProgressEventClass("loadend", {
+                                    lengthComputable: false,
+                                    loaded: 0,
+                                    total: 0
+                                }));
+                            }
+                            this.dispatchEvent(new ProgressEventClass("error", {
+                                lengthComputable: false,
+                                loaded: 0,
+                                total: 0
+                            }));
+                            this.dispatchEvent(new ProgressEventClass("loadend", {
+                                lengthComputable: false,
+                                loaded: 0,
+                                total: 0
+                            }));
+                        } catch (e) {}
+                    }
+                }
+
+                _parseResponseHeaders(rawHeadersString) {
+                    this._headers = {};
+                    if (!rawHeadersString) return;
+                    const lines = rawHeadersString.split(/\r?\n/);
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        const colonIdx = line.indexOf(":");
+                        if (colonIdx === -1) continue;
+                        const key = line.substring(0, colonIdx).trim().toLowerCase();
+                        const val = line.substring(colonIdx + 1).trim();
+                        if (this._headers[key] !== undefined) {
+                            this._headers[key] += ", " + val;
+                        } else {
+                            this._headers[key] = val;
+                        }
                     }
                 }
 
@@ -1025,9 +1089,12 @@ mod tests {
                 stateXhr.responseType = "json"; // set before send
                 stateXhr.send();
 
-                // Since responseType is "json", responseXML must be null
-                if (stateXhr.responseXML !== null) {
-                    throw new Error("responseXML should be null when responseType is json");
+                // Since responseType is "json", responseXML must throw InvalidStateError
+                try {
+                    const x = stateXhr.responseXML;
+                    throw new Error("responseXML should throw InvalidStateError when responseType is json");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") throw e;
                 }
 
                 try {
@@ -1579,6 +1646,132 @@ mod tests {
         if !error_val.is_null() {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!("test_xhr_compliance_t0987 JS assert failed: {}", error_str);
+        }
+    }
+
+    #[test]
+    fn test_xhr_ms4_extended_coverage() {
+        let mut context = Context::default();
+        register_xhr(&mut context).expect("Failed to register XMLHttpRequest");
+
+        // Mock Event if it doesn't exist
+        let setup_script = r#"
+            if (typeof Event === "undefined") {
+                globalThis.Event = class Event {
+                    constructor(type) {
+                        this.type = type;
+                    }
+                };
+            }
+        "#;
+        context
+            .eval(Source::from_bytes(setup_script.as_bytes()))
+            .unwrap();
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Verify withCredentials and responseType are reset on open()
+                const xhr1 = new XMLHttpRequest();
+                xhr1.open("GET", "https://example.com");
+                xhr1.withCredentials = true;
+                xhr1.responseType = "json";
+                
+                // second open should reset
+                xhr1.open("GET", "https://example.com");
+                if (xhr1.withCredentials !== false) {
+                    throw new Error("withCredentials should be reset to false on open()");
+                }
+                if (xhr1.responseType !== "") {
+                    throw new Error("responseType should be reset to empty string on open()");
+                }
+
+                // 2. Verify status and statusText are correct during HEADERS_RECEIVED transition
+                const xhr2 = new XMLHttpRequest();
+                let statusInState2 = null;
+                let statusTextInState2 = null;
+                xhr2.onreadystatechange = () => {
+                    if (xhr2.readyState === 2) {
+                        statusInState2 = xhr2.status;
+                        statusTextInState2 = xhr2.statusText;
+                    }
+                };
+                xhr2.open("GET", "https://example.com");
+                xhr2.send();
+                if (statusInState2 !== 200) {
+                    throw new Error("status should be set to 200 during HEADERS_RECEIVED, got: " + statusInState2);
+                }
+                if (statusTextInState2 !== "OK") {
+                    throw new Error("statusText should be 'OK' during HEADERS_RECEIVED, got: " + statusTextInState2);
+                }
+
+                // 3. Verify _parseResponseHeaders parses and getAllResponseHeaders works correctly
+                const xhr3 = new XMLHttpRequest();
+                xhr3.open("GET", "https://example.com");
+                xhr3._parseResponseHeaders("Content-Type: text/plain\r\nCache-Control: public, max-age=3600\r\nSet-Cookie: dummy\r\n");
+                xhr3.send();
+                
+                const headers = xhr3.getAllResponseHeaders();
+                const expectedHeaders = "cache-control: public, max-age=3600\r\ncontent-type: text/plain\r\n";
+                if (headers !== expectedHeaders) {
+                    throw new Error("getAllResponseHeaders or _parseResponseHeaders mismatch: " + JSON.stringify(headers));
+                }
+
+                // 4. Verify _simulateNetworkError fires error/loadend events on XHR and upload
+                const xhr4 = new XMLHttpRequest();
+                let xhrErr = false;
+                let xhrLoadend = false;
+                let uploadErr = false;
+                let uploadLoadend = false;
+                
+                xhr4.onerror = () => { xhrErr = true; };
+                xhr4.onloadend = () => { xhrLoadend = true; };
+                xhr4.upload.onerror = () => { uploadErr = true; };
+                xhr4.upload.onloadend = () => { uploadLoadend = true; };
+                
+                xhr4.open("POST", "https://example.com");
+                xhr4._simulateNetworkError();
+                
+                if (!xhrErr || !xhrLoadend) {
+                    throw new Error("XHR onerror or onloadend event failed to trigger");
+                }
+                if (!uploadErr || !uploadLoadend) {
+                    throw new Error("XHR upload onerror or onloadend event failed to trigger");
+                }
+                if (xhr4.readyState !== 4) {
+                    throw new Error("XHR readyState should be 4 (DONE) after simulated network error");
+                }
+
+                // 5. Verify responseXML throws InvalidStateError when responseType is incompatible
+                const xhr5 = new XMLHttpRequest();
+                xhr5.open("GET", "https://example.com");
+                xhr5.responseType = "arraybuffer";
+                
+                try {
+                    const doc = xhr5.responseXML;
+                    throw new Error("responseXML getter should have thrown InvalidStateError");
+                } catch (e) {
+                    if (e.name !== "InvalidStateError") throw e;
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        let res = context.eval(Source::from_bytes(script.as_bytes()));
+        assert!(res.is_ok(), "Evaluation itself failed: {:?}", res);
+
+        let error_val = context
+            .eval(Source::from_bytes("globalThis.test_error".as_bytes()))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!(
+                "test_xhr_ms4_extended_coverage JS assert failed: {}",
+                error_str
+            );
         }
     }
 }
