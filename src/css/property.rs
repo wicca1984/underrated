@@ -39,6 +39,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "medium",
     },
     PropertyMetadata {
+        name: "font-size-adjust",
+        inherited: true,
+        initial: "none",
+    },
+    PropertyMetadata {
         name: "font-style",
         inherited: true,
         initial: "normal",
@@ -249,6 +254,16 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         initial: "space-around",
     },
     PropertyMetadata {
+        name: "ruby-overhang",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "ruby-merge",
+        inherited: true,
+        initial: "separate",
+    },
+    PropertyMetadata {
         name: "math-style",
         inherited: true,
         initial: "normal",
@@ -453,6 +468,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         name: "overflow",
         inherited: false,
         initial: "visible",
+    },
+    PropertyMetadata {
+        name: "line-clamp",
+        inherited: false,
+        initial: "none",
     },
     PropertyMetadata {
         name: "z-index",
@@ -2265,6 +2285,37 @@ mod tests {
         assert_eq!(dominant_baseline.name, "dominant-baseline");
         assert!(!dominant_baseline.inherited);
         assert_eq!(dominant_baseline.initial, "auto");
+    }
+
+    #[test]
+    fn test_properties_t0765() {
+        let font_size_adjust = lookup("font-size-adjust");
+        assert!(font_size_adjust.is_some());
+        let font_size_adjust = font_size_adjust.unwrap();
+        assert_eq!(font_size_adjust.name, "font-size-adjust");
+        assert!(font_size_adjust.inherited);
+        assert_eq!(font_size_adjust.initial, "none");
+
+        let ruby_overhang = lookup("ruby-overhang");
+        assert!(ruby_overhang.is_some());
+        let ruby_overhang = ruby_overhang.unwrap();
+        assert_eq!(ruby_overhang.name, "ruby-overhang");
+        assert!(ruby_overhang.inherited);
+        assert_eq!(ruby_overhang.initial, "auto");
+
+        let ruby_merge = lookup("ruby-merge");
+        assert!(ruby_merge.is_some());
+        let ruby_merge = ruby_merge.unwrap();
+        assert_eq!(ruby_merge.name, "ruby-merge");
+        assert!(ruby_merge.inherited);
+        assert_eq!(ruby_merge.initial, "separate");
+
+        let line_clamp = lookup("line-clamp");
+        assert!(line_clamp.is_some());
+        let line_clamp = line_clamp.unwrap();
+        assert_eq!(line_clamp.name, "line-clamp");
+        assert!(!line_clamp.inherited);
+        assert_eq!(line_clamp.initial, "none");
     }
 
     #[test]
