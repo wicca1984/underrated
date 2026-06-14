@@ -112,20 +112,26 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                 }
 
                 set responseType(value) {
+                    const valStr = String(value);
+                    const allowedTypes = ["", "arraybuffer", "blob", "document", "json", "text"];
+                    if (!allowedTypes.includes(valStr)) {
+                        return;
+                    }
+                    if (this._async === false && this._readyState !== 0 && this._readyState !== 1) {
+                        const err = new Error("InvalidAccessError");
+                        err.name = "InvalidAccessError";
+                        throw err;
+                    }
                     if (this._readyState === 3 || this._readyState === 4) {
                         const err = new Error("InvalidStateError");
                         err.name = "InvalidStateError";
                         throw err;
                     }
-                    if (this._async === false) {
+                    this._responseType = valStr;
+                    if (this._async === false && this._responseType !== "") {
                         const err = new Error("InvalidAccessError");
                         err.name = "InvalidAccessError";
                         throw err;
-                    }
-                    const valStr = String(value);
-                    const allowedTypes = ["", "arraybuffer", "blob", "document", "json", "text"];
-                    if (allowedTypes.includes(valStr)) {
-                        this._responseType = valStr;
                     }
                 }
 
@@ -326,7 +332,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
 
                     const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
 
-                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                    if (this._async !== false && typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
                             this.dispatchEvent(new ProgressEventClass("loadstart", {
                                 lengthComputable: false,
@@ -360,7 +366,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._changeReadyState(3); // LOADING
                     if (!this._sendFlag) return;
 
-                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                    if (this._async !== false && typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
                             const responseLen = this._responseText ? this._responseText.length : 0;
                             this.dispatchEvent(new ProgressEventClass("progress", {
@@ -385,7 +391,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     if (!this._sendFlag) return;
                     this._sendFlag = false;
 
-                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                    if (this._async !== false && typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
                             const responseLen = this._responseText ? this._responseText.length : 0;
                             const bodyLen = body !== undefined && body !== null ? String(body).length : 0;
@@ -470,6 +476,9 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     if (this._readyState === 0 || this._readyState === 1) {
                         return null;
                     }
+                    if (lowerName === "set-cookie" || lowerName === "set-cookie2") {
+                        return null;
+                    }
                     return this._headers[lowerName] !== undefined ? this._headers[lowerName] : null;
                 }
 
@@ -514,7 +523,7 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     this._changeReadyState(4);
 
                     // 2. Fire progress events
-                    if (typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
+                    if (this._async !== false && typeof this.dispatchEvent === "function" && typeof Event !== "undefined") {
                         try {
                             const ProgressEventClass = typeof ProgressEvent !== "undefined" ? ProgressEvent : Event;
                             if (wasSending && this._upload) {
@@ -659,6 +668,9 @@ pub fn register_xhr(context: &mut Context) -> JsResult<()> {
                     if (this._readyState !== newState) {
                         this._readyState = newState;
                         if (newState === 0) {
+                            return;
+                        }
+                        if (this._async === false && newState !== 4) {
                             return;
                         }
                         if (typeof this.onreadystatechange === "function") {
@@ -1770,6 +1782,124 @@ mod tests {
             let error_str = error_val.as_string().unwrap().to_std_string_escaped();
             panic!(
                 "test_xhr_ms4_extended_coverage JS assert failed: {}",
+                error_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_xhr_ms4_improved_spec_conformity() {
+        let mut context = Context::default();
+        register_xhr(&mut context).expect("Failed to register XMLHttpRequest");
+
+        // Mock Event if it doesn't exist
+        let setup_script = r#"
+            if (typeof Event === "undefined") {
+                globalThis.Event = class Event {
+                    constructor(type) {
+                        this.type = type;
+                    }
+                };
+            }
+        "#;
+        context
+            .eval(Source::from_bytes(setup_script.as_bytes()))
+            .unwrap();
+
+        let script = r#"
+            globalThis.test_error = null;
+            try {
+                // 1. Verify responseType setter on sync XHR
+                const syncXhr1 = new XMLHttpRequest();
+                syncXhr1.open("GET", "https://example.com", false); // sync = false
+                
+                // Should NOT throw when setting to ""
+                syncXhr1.responseType = "";
+                
+                // Should throw InvalidAccessError when setting to non-empty
+                try {
+                    syncXhr1.responseType = "json";
+                    throw new Error("setting responseType to json on sync XHR should throw InvalidAccessError");
+                } catch (e) {
+                    if (e.name !== "InvalidAccessError") throw e;
+                }
+
+                try {
+                    syncXhr1.responseType = "text";
+                    throw new Error("setting responseType to text on sync XHR should throw InvalidAccessError");
+                } catch (e) {
+                    if (e.name !== "InvalidAccessError") throw e;
+                }
+
+                // 2. Verify Set-Cookie and Set-Cookie2 case-insensitively return null in getResponseHeader
+                const xhr1 = new XMLHttpRequest();
+                xhr1.open("GET", "https://example.com");
+                xhr1._parseResponseHeaders("Content-Type: text/plain\r\nSet-Cookie: foo=bar\r\nset-cookie2: abc=123\r\n");
+                xhr1.send();
+
+                if (xhr1.getResponseHeader("Set-Cookie") !== null) {
+                    throw new Error("getResponseHeader('Set-Cookie') must return null");
+                }
+                if (xhr1.getResponseHeader("set-cookie") !== null) {
+                    throw new Error("getResponseHeader('set-cookie') must return null");
+                }
+                if (xhr1.getResponseHeader("Set-Cookie2") !== null) {
+                    throw new Error("getResponseHeader('Set-Cookie2') must return null");
+                }
+                if (xhr1.getResponseHeader("set-cookie2") !== null) {
+                    throw new Error("getResponseHeader('set-cookie2') must return null");
+                }
+                if (xhr1.getResponseHeader("Content-Type") !== "text/plain") {
+                    throw new Error("getResponseHeader('Content-Type') returned incorrect value: " + xhr1.getResponseHeader("Content-Type"));
+                }
+
+                // 3. Verify readyState and events for synchronous requests
+                const syncXhr2 = new XMLHttpRequest();
+                let syncEvents = [];
+                let syncStates = [];
+
+                syncXhr2.onreadystatechange = () => {
+                    syncStates.push(syncXhr2.readyState);
+                };
+                syncXhr2.onloadstart = () => { syncEvents.push("loadstart"); };
+                syncXhr2.onprogress = () => { syncEvents.push("progress"); };
+                syncXhr2.onload = () => { syncEvents.push("load"); };
+                syncXhr2.onloadend = () => { syncEvents.push("loadend"); };
+
+                syncXhr2.open("GET", "https://example.com", false); // sync = false
+                // Note: open() transitions from UNSENT(0) to OPENED(1) and fires onreadystatechange
+                // Let's clear states and events tracking before sending
+                syncStates = [];
+                syncEvents = [];
+
+                syncXhr2.send();
+
+                // Under WHATWG:
+                // For synchronous XHR, we should not fire any progress events,
+                // and we should not fire readystatechange events except when transitioning to DONE (4).
+                if (syncEvents.length > 0) {
+                    throw new Error("Synchronous XHR must not dispatch progress events, but got: " + JSON.stringify(syncEvents));
+                }
+                if (syncStates.join(",") !== "4") {
+                    throw new Error("Synchronous XHR readystatechange sequence should contain only DONE (4), but got: " + syncStates.join(","));
+                }
+
+            } catch (e) {
+                globalThis.test_error = "JS_FAIL: " + e.message + "\nStack:\n" + e.stack;
+            }
+        "#;
+
+        let res = context.eval(Source::from_bytes(script.as_bytes()));
+        assert!(res.is_ok(), "Evaluation itself failed: {:?}", res);
+
+        let error_val = context
+            .eval(Source::from_bytes("globalThis.test_error".as_bytes()))
+            .expect("Failed to get globalThis.test_error");
+
+        if !error_val.is_null() {
+            let error_str = error_val.as_string().unwrap().to_std_string_escaped();
+            panic!(
+                "test_xhr_ms4_improved_spec_conformity JS assert failed: {}",
                 error_str
             );
         }
