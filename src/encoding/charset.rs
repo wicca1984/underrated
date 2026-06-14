@@ -34,6 +34,7 @@ pub enum Charset {
     Koi8U,
     Ibm866,
     Macintosh,
+    XMacCyrillic,
 }
 
 /// Sniff the charset from bytes and optional transport label.
@@ -142,6 +143,9 @@ pub fn sniff_charset(bytes: &[u8], transport_label: Option<&str>) -> Charset {
             "macintosh" | "csmacintosh" | "mac" | "x-mac-roman" => {
                 return Charset::Macintosh;
             }
+            "x-mac-cyrillic" | "x-mac-ukrainian" => {
+                return Charset::XMacCyrillic;
+            }
             _ => {} // TODO(spec): Non-UTF/non-1252 legacy encodings (e.g. shift_jis, euc-jp, gbk) are decoded as windows-1252 because no dedicated decoder exists yet.
         }
     }
@@ -232,6 +236,9 @@ fn prescan_meta(bytes: &[u8]) -> Option<Charset> {
                 "macintosh" | "csmacintosh" | "mac" | "x-mac-roman" => {
                     return Some(Charset::Macintosh);
                 }
+                "x-mac-cyrillic" | "x-mac-ukrainian" => {
+                    return Some(Charset::XMacCyrillic);
+                }
                 _ => {}
             }
         }
@@ -272,6 +279,7 @@ pub fn decode(bytes: &[u8], charset: Charset) -> String {
         Charset::Koi8U => decode_koi8u(bytes),
         Charset::Ibm866 => decode_ibm866(bytes),
         Charset::Macintosh => decode_macintosh(bytes),
+        Charset::XMacCyrillic => decode_x_mac_cyrillic(bytes),
     }
 }
 
@@ -3615,6 +3623,149 @@ fn decode_macintosh(bytes: &[u8]) -> String {
     result
 }
 
+const X_MAC_CYRILLIC_MAP: [char; 128] = [
+    '\u{0410}', // 0x80
+    '\u{0411}', // 0x81
+    '\u{0412}', // 0x82
+    '\u{0413}', // 0x83
+    '\u{0414}', // 0x84
+    '\u{0415}', // 0x85
+    '\u{0416}', // 0x86
+    '\u{0417}', // 0x87
+    '\u{0418}', // 0x88
+    '\u{0419}', // 0x89
+    '\u{041A}', // 0x8A
+    '\u{041B}', // 0x8B
+    '\u{041C}', // 0x8C
+    '\u{041D}', // 0x8D
+    '\u{041E}', // 0x8E
+    '\u{041F}', // 0x8F
+    '\u{0420}', // 0x90
+    '\u{0421}', // 0x91
+    '\u{0422}', // 0x92
+    '\u{0423}', // 0x93
+    '\u{0424}', // 0x94
+    '\u{0425}', // 0x95
+    '\u{0426}', // 0x96
+    '\u{0427}', // 0x97
+    '\u{0428}', // 0x98
+    '\u{0429}', // 0x99
+    '\u{042A}', // 0x9A
+    '\u{042B}', // 0x9B
+    '\u{042C}', // 0x9C
+    '\u{042D}', // 0x9D
+    '\u{042E}', // 0x9E
+    '\u{042F}', // 0x9F
+    '\u{2020}', // 0xA0
+    '\u{00B0}', // 0xA1
+    '\u{0490}', // 0xA2
+    '\u{00A3}', // 0xA3
+    '\u{00A7}', // 0xA4
+    '\u{2022}', // 0xA5
+    '\u{00B6}', // 0xA6
+    '\u{0406}', // 0xA7
+    '\u{00AE}', // 0xA8
+    '\u{00A9}', // 0xA9
+    '\u{2122}', // 0xAA
+    '\u{0402}', // 0xAB
+    '\u{0452}', // 0xAC
+    '\u{2260}', // 0xAD
+    '\u{0403}', // 0xAE
+    '\u{0453}', // 0xAF
+    '\u{221E}', // 0xB0
+    '\u{00B1}', // 0xB1
+    '\u{2264}', // 0xB2
+    '\u{2265}', // 0xB3
+    '\u{0456}', // 0xB4
+    '\u{00B5}', // 0xB5
+    '\u{0491}', // 0xB6
+    '\u{0408}', // 0xB7
+    '\u{0404}', // 0xB8
+    '\u{0454}', // 0xB9
+    '\u{0407}', // 0xBA
+    '\u{0457}', // 0xBB
+    '\u{0409}', // 0xBC
+    '\u{0459}', // 0xBD
+    '\u{040A}', // 0xBE
+    '\u{045A}', // 0xBF
+    '\u{0458}', // 0xC0
+    '\u{0405}', // 0xC1
+    '\u{00AC}', // 0xC2
+    '\u{221A}', // 0xC3
+    '\u{0192}', // 0xC4
+    '\u{2248}', // 0xC5
+    '\u{2206}', // 0xC6
+    '\u{00AB}', // 0xC7
+    '\u{00BB}', // 0xC8
+    '\u{2026}', // 0xC9
+    '\u{00A0}', // 0xCA
+    '\u{040B}', // 0xCB
+    '\u{045B}', // 0xCC
+    '\u{040C}', // 0xCD
+    '\u{045C}', // 0xCE
+    '\u{0455}', // 0xCF
+    '\u{2013}', // 0xD0
+    '\u{2014}', // 0xD1
+    '\u{201C}', // 0xD2
+    '\u{201D}', // 0xD3
+    '\u{2018}', // 0xD4
+    '\u{2019}', // 0xD5
+    '\u{00F7}', // 0xD6
+    '\u{201E}', // 0xD7
+    '\u{040E}', // 0xD8
+    '\u{045E}', // 0xD9
+    '\u{040F}', // 0xDA
+    '\u{045F}', // 0xDB
+    '\u{2116}', // 0xDC
+    '\u{0401}', // 0xDD
+    '\u{0451}', // 0xDE
+    '\u{044F}', // 0xDF
+    '\u{0430}', // 0xE0
+    '\u{0431}', // 0xE1
+    '\u{0432}', // 0xE2
+    '\u{0433}', // 0xE3
+    '\u{0434}', // 0xE4
+    '\u{0435}', // 0xE5
+    '\u{0436}', // 0xE6
+    '\u{0437}', // 0xE7
+    '\u{0438}', // 0xE8
+    '\u{0439}', // 0xE9
+    '\u{043A}', // 0xEA
+    '\u{043B}', // 0xEB
+    '\u{043C}', // 0xEC
+    '\u{043D}', // 0xED
+    '\u{043E}', // 0xEE
+    '\u{043F}', // 0xEF
+    '\u{0440}', // 0xF0
+    '\u{0441}', // 0xF1
+    '\u{0442}', // 0xF2
+    '\u{0443}', // 0xF3
+    '\u{0444}', // 0xF4
+    '\u{0445}', // 0xF5
+    '\u{0446}', // 0xF6
+    '\u{0447}', // 0xF7
+    '\u{0448}', // 0xF8
+    '\u{0449}', // 0xF9
+    '\u{044A}', // 0xFA
+    '\u{044B}', // 0xFB
+    '\u{044C}', // 0xFC
+    '\u{044D}', // 0xFD
+    '\u{044E}', // 0xFE
+    '\u{20AC}', // 0xFF
+];
+
+fn decode_x_mac_cyrillic(bytes: &[u8]) -> String {
+    let mut result = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b >= 0x80 {
+            result.push(X_MAC_CYRILLIC_MAP[(b - 0x80) as usize]);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4920,5 +5071,54 @@ mod tests {
         assert_eq!(decode(&[0xD0], Charset::Macintosh), "–"); // EN DASH (U+2013)
         assert_eq!(decode(&[0xF0], Charset::Macintosh), ""); // APPLE LOGO (U+F8FF)
         assert_eq!(decode(&[0xFF], Charset::Macintosh), "ˇ"); // CARON (U+02C7)
+    }
+
+    #[test]
+    fn test_x_mac_cyrillic_sniff() {
+        assert_eq!(
+            sniff_charset(b"abc", Some("x-mac-cyrillic")),
+            Charset::XMacCyrillic
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("x-mac-ukrainian")),
+            Charset::XMacCyrillic
+        );
+
+        // Case-insensitivity check
+        assert_eq!(
+            sniff_charset(b"abc", Some("X-MAC-CYRILLIC")),
+            Charset::XMacCyrillic
+        );
+        assert_eq!(
+            sniff_charset(b"abc", Some("X-MAC-UKRAINIAN")),
+            Charset::XMacCyrillic
+        );
+
+        // Meta prescan check
+        let html_meta_cyrillic = b"<html><head><meta charset=\"x-mac-cyrillic\"></head></html>";
+        assert_eq!(
+            sniff_charset(html_meta_cyrillic, None),
+            Charset::XMacCyrillic
+        );
+        let html_meta_ukrainian = b"<html><head><meta charset=\"x-mac-ukrainian\"></head></html>";
+        assert_eq!(
+            sniff_charset(html_meta_ukrainian, None),
+            Charset::XMacCyrillic
+        );
+    }
+
+    #[test]
+    fn test_x_mac_cyrillic_decode() {
+        // Pure-ASCII round-trip
+        assert_eq!(decode(b"Hello 123", Charset::XMacCyrillic), "Hello 123");
+
+        // x-mac-cyrillic specific bytes and other characters
+        assert_eq!(decode(&[0x80], Charset::XMacCyrillic), "А"); // U+0410
+        assert_eq!(decode(&[0x81], Charset::XMacCyrillic), "Б"); // U+0411
+        assert_eq!(decode(&[0xA2], Charset::XMacCyrillic), "Ґ"); // U+0490
+        assert_eq!(decode(&[0xB6], Charset::XMacCyrillic), "ґ"); // U+0491
+        assert_eq!(decode(&[0xA0], Charset::XMacCyrillic), "†"); // DAGGER (U+2020)
+        assert_eq!(decode(&[0xCA], Charset::XMacCyrillic), "\u{00A0}"); // NBSP (U+00A0)
+        assert_eq!(decode(&[0xFF], Charset::XMacCyrillic), "€"); // EURO SIGN (U+20AC)
     }
 }
