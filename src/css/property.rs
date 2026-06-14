@@ -152,6 +152,12 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "word-wrap",
+        inherited: true,
+        initial: "normal",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "text-align-last",
         inherited: true,
         initial: "auto",
@@ -861,6 +867,12 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         animatable: false,
     },
     PropertyMetadata {
+        name: "background-blend-mode",
+        inherited: false,
+        initial: "normal",
+        animatable: false,
+    },
+    PropertyMetadata {
         name: "border-top-left-radius",
         inherited: false,
         initial: "0",
@@ -1332,6 +1344,18 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         name: "column-width",
         inherited: false,
         initial: "auto",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "column-span",
+        inherited: false,
+        initial: "none",
+        animatable: false,
+    },
+    PropertyMetadata {
+        name: "column-fill",
+        inherited: false,
+        initial: "balance",
         animatable: false,
     },
     PropertyMetadata {
@@ -3944,6 +3968,29 @@ mod tests {
             ("animation-direction", false, "normal", false),
             ("animation-fill-mode", false, "none", false),
             ("animation-play-state", false, "running", false),
+        ];
+
+        for (name, inherited, initial, animatable) in props {
+            let meta =
+                lookup(name).unwrap_or_else(|| panic!("property {} must be registered", name));
+            assert_eq!(meta.name, name);
+            assert_eq!(meta.inherited, inherited, "inherited mismatch for {}", name);
+            assert_eq!(meta.initial, initial, "initial mismatch for {}", name);
+            assert_eq!(
+                meta.animatable, animatable,
+                "animatable mismatch for {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_additive_properties_t0862() {
+        let props = [
+            ("word-wrap", true, "normal", false),
+            ("column-span", false, "none", false),
+            ("column-fill", false, "balance", false),
+            ("background-blend-mode", false, "normal", false),
         ];
 
         for (name, inherited, initial, animatable) in props {
