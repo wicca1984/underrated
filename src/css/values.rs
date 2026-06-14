@@ -3027,43 +3027,471 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
     }
 }
 
-fn parse_grid_template(components: &[ComponentValue]) -> Option<CssValue> {
-    let mut tracks = Vec::new();
+#[derive(Debug, PartialEq, Clone)]
+pub struct AttrValue {
+    pub name: String,
+    pub type_or_unit: Option<String>,
+    pub fallback: Option<Box<AttrFallback>>,
+}
 
-    for component in components {
-        match component {
-            ComponentValue::Token(CssToken::Whitespace) => {
-                // Skip whitespace
+#[derive(Debug, PartialEq, Clone)]
+pub enum AttrFallback {
+    Value(CssValue),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ToggleValue {
+    pub values: Vec<CssValue>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ScrollValue {
+    pub scroller: Option<String>,
+    pub axis: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ViewValue {
+    pub axis: Option<String>,
+    pub inset: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum RepeatCount {
+    Number(i32),
+    AutoFill,
+    AutoFit,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum AdditionalTrackSize {
+    MinMax(Box<AdditionalTrackSize>, Box<AdditionalTrackSize>),
+    FitContent(Box<AdditionalTrackSize>),
+    Repeat(RepeatCount, Vec<AdditionalTrackSize>),
+    Px(f32),
+    Percent(f32),
+    Fr(f32),
+    Auto,
+    MinContent,
+    MaxContent,
+}
+
+impl AdditionalTrackSize {
+    pub fn format(&self) -> String {
+        match self {
+            AdditionalTrackSize::Px(v) => format!("{}px", v),
+            AdditionalTrackSize::Percent(v) => format!("{}%", v),
+            AdditionalTrackSize::Fr(v) => format!("{}fr", v),
+            AdditionalTrackSize::Auto => "auto".to_string(),
+            AdditionalTrackSize::MinContent => "min-content".to_string(),
+            AdditionalTrackSize::MaxContent => "max-content".to_string(),
+            AdditionalTrackSize::MinMax(min, max) => {
+                format!("minmax({}, {})", min.format(), max.format())
             }
-            ComponentValue::Token(CssToken::Dimension { value, unit }) => {
-                let lower_unit = unit.to_ascii_lowercase();
-                match lower_unit.as_str() {
-                    "px" => tracks.push(GridTrackSize::Px(*value as f32)),
-                    "em" | "rem" | "pt" | "vw" | "vh" => {
-                        tracks.push(GridTrackSize::Px(*value as f32));
-                    }
-                    "fr" => tracks.push(GridTrackSize::Fr(*value as f32)),
-                    _ => {
-                        // TODO(spec): minmax(), repeat(), fit-content, named lines not yet supported
-                    }
-                }
+            AdditionalTrackSize::FitContent(limit) => {
+                format!("fit-content({})", limit.format())
             }
-            ComponentValue::Token(CssToken::Percentage(v)) => {
-                tracks.push(GridTrackSize::Percent(*v as f32));
-            }
-            ComponentValue::Token(CssToken::Number(v)) if *v == 0.0 => {
-                tracks.push(GridTrackSize::Px(0.0));
-            }
-            ComponentValue::Token(CssToken::Ident(s)) if s.eq_ignore_ascii_case("auto") => {
-                tracks.push(GridTrackSize::Auto);
-            }
-            _ => {
-                // TODO(spec): minmax(), repeat(), fit-content, named lines not yet supported
+            AdditionalTrackSize::Repeat(count, sub_tracks) => {
+                let count_str = match count {
+                    RepeatCount::Number(n) => n.to_string(),
+                    RepeatCount::AutoFill => "auto-fill".to_string(),
+                    RepeatCount::AutoFit => "auto-fit".to_string(),
+                };
+                let tracks_str = sub_tracks
+                    .iter()
+                    .map(|t| t.format())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("repeat({}, {})", count_str, tracks_str)
             }
         }
     }
+}
 
-    Some(CssValue::GridTemplate(tracks))
+fn parse_additional_track_size_single(comp: &ComponentValue) -> Option<AdditionalTrackSize> {
+    match comp {
+        ComponentValue::Token(CssToken::Dimension { value, unit }) => {
+            let lower_unit = unit.to_ascii_lowercase();
+            match lower_unit.as_str() {
+                "px" => Some(AdditionalTrackSize::Px(*value as f32)),
+                "em" | "rem" | "pt" | "vw" | "vh" => Some(AdditionalTrackSize::Px(*value as f32)),
+                "fr" => Some(AdditionalTrackSize::Fr(*value as f32)),
+                _ => None,
+            }
+        }
+        ComponentValue::Token(CssToken::Percentage(v)) => {
+            Some(AdditionalTrackSize::Percent(*v as f32))
+        }
+        ComponentValue::Token(CssToken::Number(v)) if *v == 0.0 => {
+            Some(AdditionalTrackSize::Px(0.0))
+        }
+        ComponentValue::Token(CssToken::Ident(s)) => {
+            let s_lower = s.to_ascii_lowercase();
+            if s_lower == "auto" {
+                Some(AdditionalTrackSize::Auto)
+            } else if s_lower == "min-content" {
+                Some(AdditionalTrackSize::MinContent)
+            } else if s_lower == "max-content" {
+                Some(AdditionalTrackSize::MaxContent)
+            } else {
+                None
+            }
+        }
+        ComponentValue::Function { name, value } => {
+            if name.eq_ignore_ascii_case("minmax") {
+                let first_comma_idx = value
+                    .iter()
+                    .position(|c| matches!(c, ComponentValue::Token(CssToken::Comma)));
+                if let Some(idx) = first_comma_idx {
+                    let min_comps: Vec<&ComponentValue> = value[..idx]
+                        .iter()
+                        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+                        .collect();
+                    let max_comps: Vec<&ComponentValue> = value[idx + 1..]
+                        .iter()
+                        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+                        .collect();
+                    if min_comps.len() == 1 && max_comps.len() == 1 {
+                        let min_size = parse_additional_track_size_single(min_comps[0])?;
+                        let max_size = parse_additional_track_size_single(max_comps[0])?;
+                        return Some(AdditionalTrackSize::MinMax(
+                            Box::new(min_size),
+                            Box::new(max_size),
+                        ));
+                    }
+                }
+                None
+            } else if name.eq_ignore_ascii_case("fit-content") {
+                let limit_comps: Vec<&ComponentValue> = value
+                    .iter()
+                    .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+                    .collect();
+                if limit_comps.len() == 1 {
+                    let limit_size = parse_additional_track_size_single(limit_comps[0])?;
+                    if matches!(
+                        limit_size,
+                        AdditionalTrackSize::Px(_) | AdditionalTrackSize::Percent(_)
+                    ) {
+                        return Some(AdditionalTrackSize::FitContent(Box::new(limit_size)));
+                    }
+                }
+                None
+            } else if name.eq_ignore_ascii_case("repeat") {
+                let first_comma_idx = value
+                    .iter()
+                    .position(|c| matches!(c, ComponentValue::Token(CssToken::Comma)));
+                if let Some(idx) = first_comma_idx {
+                    let count_comps: Vec<&ComponentValue> = value[..idx]
+                        .iter()
+                        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+                        .collect();
+                    let track_comps = &value[idx + 1..];
+                    if count_comps.len() == 1 {
+                        let count = match count_comps[0] {
+                            ComponentValue::Token(CssToken::Number(v)) if *v >= 1.0 => {
+                                Some(RepeatCount::Number((*v).round() as i32))
+                            }
+                            ComponentValue::Token(CssToken::Ident(s))
+                                if s.eq_ignore_ascii_case("auto-fill") =>
+                            {
+                                Some(RepeatCount::AutoFill)
+                            }
+                            ComponentValue::Token(CssToken::Ident(s))
+                                if s.eq_ignore_ascii_case("auto-fit") =>
+                            {
+                                Some(RepeatCount::AutoFit)
+                            }
+                            _ => None,
+                        }?;
+
+                        let mut sub_tracks = Vec::new();
+                        for comp in track_comps {
+                            if matches!(comp, ComponentValue::Token(CssToken::Whitespace)) {
+                                continue;
+                            }
+                            let sub_size = parse_additional_track_size_single(comp)?;
+                            sub_tracks.push(sub_size);
+                        }
+                        if !sub_tracks.is_empty() {
+                            return Some(AdditionalTrackSize::Repeat(count, sub_tracks));
+                        }
+                    }
+                }
+                None
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn format_additional_track_sizes(tracks: &[AdditionalTrackSize]) -> String {
+    tracks
+        .iter()
+        .map(|t| t.format())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn parse_attr_function(components: &[ComponentValue]) -> Option<AttrValue> {
+    let first_comma_idx = components
+        .iter()
+        .position(|comp| matches!(comp, ComponentValue::Token(CssToken::Comma)));
+
+    let (main_part, fallback_part) = match first_comma_idx {
+        Some(idx) => (&components[..idx], &components[idx + 1..]),
+        None => (components, &[][..]),
+    };
+
+    let main_non_ws: Vec<&ComponentValue> = main_part
+        .iter()
+        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+    if main_non_ws.is_empty() || main_non_ws.len() > 2 {
+        return None;
+    }
+
+    let name = match main_non_ws[0] {
+        ComponentValue::Token(CssToken::Ident(s)) => s.clone(),
+        _ => return None,
+    };
+
+    let type_or_unit = if main_non_ws.len() == 2 {
+        match main_non_ws[1] {
+            ComponentValue::Token(CssToken::Ident(s)) => Some(s.clone()),
+            ComponentValue::Token(CssToken::Percentage(_)) => Some("%".to_string()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let fallback = if !fallback_part.is_empty() {
+        let has_non_ws = fallback_part
+            .iter()
+            .any(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)));
+        if has_non_ws {
+            Some(Box::new(AttrFallback::Value(parse_value(fallback_part)?)))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some(AttrValue {
+        name,
+        type_or_unit,
+        fallback,
+    })
+}
+
+pub fn parse_toggle_function(components: &[ComponentValue]) -> Option<ToggleValue> {
+    let parts = split_components_by_comma(components);
+    let mut values = Vec::new();
+    for part in parts {
+        let has_non_ws = part
+            .iter()
+            .any(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)));
+        if !has_non_ws {
+            return None;
+        }
+        let parsed = parse_value(&part)?;
+        values.push(parsed);
+    }
+    if values.is_empty() {
+        return None;
+    }
+    Some(ToggleValue { values })
+}
+
+fn split_components_by_comma(components: &[ComponentValue]) -> Vec<Vec<ComponentValue>> {
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+    for comp in components {
+        if matches!(comp, ComponentValue::Token(CssToken::Comma)) {
+            parts.push(current);
+            current = Vec::new();
+        } else {
+            current.push(comp.clone());
+        }
+    }
+    parts.push(current);
+    parts
+}
+
+pub fn parse_scroll_function(components: &[ComponentValue]) -> Option<ScrollValue> {
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+    if non_ws.len() > 2 {
+        return None;
+    }
+
+    let mut scroller = None;
+    let mut axis = None;
+
+    if non_ws.len() == 1 {
+        match non_ws[0] {
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                let s_lower = s.to_ascii_lowercase();
+                if matches!(s_lower.as_str(), "root" | "nearest" | "self") {
+                    scroller = Some(s_lower);
+                } else if matches!(s_lower.as_str(), "block" | "inline" | "x" | "y") {
+                    axis = Some(s_lower);
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    } else if non_ws.len() == 2 {
+        let first_s = match non_ws[0] {
+            ComponentValue::Token(CssToken::Ident(s)) => s.to_ascii_lowercase(),
+            _ => return None,
+        };
+        let second_s = match non_ws[1] {
+            ComponentValue::Token(CssToken::Ident(s)) => s.to_ascii_lowercase(),
+            _ => return None,
+        };
+
+        if matches!(first_s.as_str(), "root" | "nearest" | "self") {
+            scroller = Some(first_s);
+        } else {
+            return None;
+        }
+
+        if matches!(second_s.as_str(), "block" | "inline" | "x" | "y") {
+            axis = Some(second_s);
+        } else {
+            return None;
+        }
+    }
+
+    Some(ScrollValue { scroller, axis })
+}
+
+pub fn parse_view_function(components: &[ComponentValue]) -> Option<ViewValue> {
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+    if non_ws.len() > 3 {
+        return None;
+    }
+
+    let mut axis = None;
+    let mut inset = None;
+
+    if non_ws.len() == 1 {
+        match non_ws[0] {
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                let s_lower = s.to_ascii_lowercase();
+                if matches!(s_lower.as_str(), "block" | "inline" | "x" | "y") {
+                    axis = Some(s_lower);
+                } else {
+                    inset = Some(serialize_component_value(non_ws[0]));
+                }
+            }
+            _ => {
+                inset = Some(serialize_component_value(non_ws[0]));
+            }
+        }
+    } else if non_ws.len() == 2 {
+        let first_is_axis = match non_ws[0] {
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                matches!(
+                    s.to_ascii_lowercase().as_str(),
+                    "block" | "inline" | "x" | "y"
+                )
+            }
+            _ => false,
+        };
+
+        if first_is_axis {
+            if let ComponentValue::Token(CssToken::Ident(s)) = non_ws[0] {
+                axis = Some(s.to_ascii_lowercase());
+            }
+            inset = Some(serialize_component_value(non_ws[1]));
+        } else {
+            let combined = format!(
+                "{} {}",
+                serialize_component_value(non_ws[0]),
+                serialize_component_value(non_ws[1])
+            );
+            inset = Some(combined);
+        }
+    } else if non_ws.len() == 3 {
+        let first_is_axis = match non_ws[0] {
+            ComponentValue::Token(CssToken::Ident(s)) => {
+                matches!(
+                    s.to_ascii_lowercase().as_str(),
+                    "block" | "inline" | "x" | "y"
+                )
+            }
+            _ => false,
+        };
+        if !first_is_axis {
+            return None;
+        }
+        if let ComponentValue::Token(CssToken::Ident(s)) = non_ws[0] {
+            axis = Some(s.to_ascii_lowercase());
+        }
+        let combined = format!(
+            "{} {}",
+            serialize_component_value(non_ws[1]),
+            serialize_component_value(non_ws[2])
+        );
+        inset = Some(combined);
+    }
+
+    Some(ViewValue { axis, inset })
+}
+
+fn parse_grid_template(components: &[ComponentValue]) -> Option<CssValue> {
+    let mut tracks = Vec::new();
+    let mut has_complex = false;
+
+    for component in components {
+        if matches!(component, ComponentValue::Token(CssToken::Whitespace)) {
+            continue;
+        }
+        if let Some(track) = parse_additional_track_size_single(component) {
+            match &track {
+                AdditionalTrackSize::MinMax(_, _)
+                | AdditionalTrackSize::FitContent(_)
+                | AdditionalTrackSize::Repeat(_, _)
+                | AdditionalTrackSize::MinContent
+                | AdditionalTrackSize::MaxContent => {
+                    has_complex = true;
+                }
+                _ => {}
+            }
+            tracks.push(track);
+        } else {
+            return None;
+        }
+    }
+
+    if has_complex {
+        let serialized = format_additional_track_sizes(&tracks);
+        Some(CssValue::Keyword(serialized))
+    } else {
+        let mut simple_tracks = Vec::new();
+        for t in tracks {
+            let simple = match t {
+                AdditionalTrackSize::Px(v) => GridTrackSize::Px(v),
+                AdditionalTrackSize::Percent(v) => GridTrackSize::Percent(v),
+                AdditionalTrackSize::Fr(v) => GridTrackSize::Fr(v),
+                AdditionalTrackSize::Auto => GridTrackSize::Auto,
+                _ => unreachable!(),
+            };
+            simple_tracks.push(simple);
+        }
+        Some(CssValue::GridTemplate(simple_tracks))
+    }
 }
 
 fn parse_scroll_snap_type(components: &[ComponentValue]) -> Option<CssValue> {
@@ -4352,6 +4780,30 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             }
             if name.eq_ignore_ascii_case("anchor-size") {
                 return parse_anchor_size_function(value);
+            }
+            if name.eq_ignore_ascii_case("attr") {
+                if parse_attr_function(value).is_some() {
+                    return Some(CssValue::Keyword(serialize_component_value(components[0])));
+                }
+                return None;
+            }
+            if name.eq_ignore_ascii_case("toggle") {
+                if parse_toggle_function(value).is_some() {
+                    return Some(CssValue::Keyword(serialize_component_value(components[0])));
+                }
+                return None;
+            }
+            if name.eq_ignore_ascii_case("scroll") {
+                if parse_scroll_function(value).is_some() {
+                    return Some(CssValue::Keyword(serialize_component_value(components[0])));
+                }
+                return None;
+            }
+            if name.eq_ignore_ascii_case("view") {
+                if parse_view_function(value).is_some() {
+                    return Some(CssValue::Keyword(serialize_component_value(components[0])));
+                }
+                return None;
             }
             None // TODO(spec): other functions
         }
@@ -14115,6 +14567,199 @@ mod tests {
         assert_eq!(
             ColorSchemeValue::try_from(&CssValue::Keyword("banana".to_string())),
             Err(())
+        );
+    }
+
+    #[test]
+    fn test_grid_template_with_functions() {
+        // minmax(100px, 1fr)
+        let minmax_comp = ComponentValue::Function {
+            name: "minmax".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 100.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "fr".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_property_value("grid-template-columns", std::slice::from_ref(&minmax_comp)),
+            Some(CssValue::Keyword("minmax(100px, 1fr)".to_string()))
+        );
+
+        // fit-content(40%)
+        let fit_comp = ComponentValue::Function {
+            name: "fit-content".to_string(),
+            value: vec![token(CssToken::Percentage(40.0))],
+        };
+        assert_eq!(
+            parse_property_value("grid-template-columns", std::slice::from_ref(&fit_comp)),
+            Some(CssValue::Keyword("fit-content(40%)".to_string()))
+        );
+
+        // repeat(3, 20px)
+        let repeat_comp = ComponentValue::Function {
+            name: "repeat".to_string(),
+            value: vec![
+                token(CssToken::Number(3.0)),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_property_value("grid-template-columns", std::slice::from_ref(&repeat_comp)),
+            Some(CssValue::Keyword("repeat(3, 20px)".to_string()))
+        );
+
+        // Combination: 100px minmax(100px, 1fr)
+        let combo = [
+            token(CssToken::Dimension {
+                value: 100.0,
+                unit: "px".to_string(),
+            }),
+            token(CssToken::Whitespace),
+            minmax_comp,
+        ];
+        assert_eq!(
+            parse_property_value("grid-template-columns", &combo),
+            Some(CssValue::Keyword("100px minmax(100px, 1fr)".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_attr_parsing() {
+        // attr(data-size)
+        let attr_simple = ComponentValue::Function {
+            name: "attr".to_string(),
+            value: vec![token(CssToken::Ident("data-size".to_string()))],
+        };
+        let inner_val1 = match &attr_simple {
+            ComponentValue::Function { value, .. } => value,
+            _ => unreachable!(),
+        };
+        let parsed = parse_attr_function(inner_val1);
+        assert!(parsed.is_some());
+        let val = parsed.unwrap();
+        assert_eq!(val.name, "data-size");
+        assert_eq!(val.type_or_unit, None);
+        assert!(val.fallback.is_none());
+
+        assert_eq!(
+            parse_value(&[attr_simple]),
+            Some(CssValue::Keyword("attr(data-size)".to_string()))
+        );
+
+        // attr(data-margin px, 10px)
+        let attr_complex = ComponentValue::Function {
+            name: "attr".to_string(),
+            value: vec![
+                token(CssToken::Ident("data-margin".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("px".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        let inner_val2 = match &attr_complex {
+            ComponentValue::Function { value, .. } => value,
+            _ => unreachable!(),
+        };
+        let parsed2 = parse_attr_function(inner_val2);
+        assert!(parsed2.is_some());
+        let val2 = parsed2.unwrap();
+        assert_eq!(val2.name, "data-margin");
+        assert_eq!(val2.type_or_unit, Some("px".to_string()));
+        assert!(val2.fallback.is_some());
+
+        assert_eq!(
+            parse_value(&[attr_complex]),
+            Some(CssValue::Keyword("attr(data-margin px,10px)".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_toggle_parsing() {
+        // toggle(italic, normal)
+        let toggle_comp = ComponentValue::Function {
+            name: "toggle".to_string(),
+            value: vec![
+                token(CssToken::Ident("italic".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Ident("normal".to_string())),
+            ],
+        };
+        let inner_val = match &toggle_comp {
+            ComponentValue::Function { value, .. } => value,
+            _ => unreachable!(),
+        };
+        let parsed = parse_toggle_function(inner_val);
+        assert!(parsed.is_some());
+        let val = parsed.unwrap();
+        assert_eq!(val.values.len(), 2);
+        assert_eq!(val.values[0], CssValue::Keyword("italic".to_string()));
+        assert_eq!(val.values[1], CssValue::Keyword("normal".to_string()));
+
+        assert_eq!(
+            parse_value(&[toggle_comp]),
+            Some(CssValue::Keyword("toggle(italic,normal)".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_scroll_view_parsing() {
+        // scroll(root block)
+        let scroll_comp = ComponentValue::Function {
+            name: "scroll".to_string(),
+            value: vec![
+                token(CssToken::Ident("root".to_string())),
+                token(CssToken::Whitespace),
+                token(CssToken::Ident("block".to_string())),
+            ],
+        };
+        let inner_val1 = match &scroll_comp {
+            ComponentValue::Function { value, .. } => value,
+            _ => unreachable!(),
+        };
+        let parsed = parse_scroll_function(inner_val1);
+        assert!(parsed.is_some());
+        let val = parsed.unwrap();
+        assert_eq!(val.scroller, Some("root".to_string()));
+        assert_eq!(val.axis, Some("block".to_string()));
+
+        assert_eq!(
+            parse_value(&[scroll_comp]),
+            Some(CssValue::Keyword("scroll(root block)".to_string()))
+        );
+
+        // view(block)
+        let view_comp = ComponentValue::Function {
+            name: "view".to_string(),
+            value: vec![token(CssToken::Ident("block".to_string()))],
+        };
+        let inner_val2 = match &view_comp {
+            ComponentValue::Function { value, .. } => value,
+            _ => unreachable!(),
+        };
+        let parsed2 = parse_view_function(inner_val2);
+        assert!(parsed2.is_some());
+        let val2 = parsed2.unwrap();
+        assert_eq!(val2.axis, Some("block".to_string()));
+        assert_eq!(val2.inset, None);
+
+        assert_eq!(
+            parse_value(&[view_comp]),
+            Some(CssValue::Keyword("view(block)".to_string()))
         );
     }
 }
