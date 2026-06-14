@@ -343,6 +343,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "none",
     },
+    PropertyMetadata {
+        name: "reading-order",
+        inherited: true,
+        initial: "0",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1169,6 +1174,51 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: false,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "scroll-marker-group",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "reading-flow",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "position-area",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "position-try-fallbacks",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "position-try-order",
+        inherited: false,
+        initial: "normal",
+    },
+    PropertyMetadata {
+        name: "position-visibility",
+        inherited: false,
+        initial: "anchors-visible",
+    },
+    PropertyMetadata {
+        name: "timeline-scope",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "view-transition-class",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "overlay",
+        inherited: false,
+        initial: "none",
+    },
 ];
 
 /// Maps a CSS shorthand property to the ordered list of longhand properties it expands into.
@@ -1380,6 +1430,10 @@ static SHORTHAND_EXPANSIONS: &[ShorthandExpansion] = &[
     ShorthandExpansion {
         name: "place-self",
         longhands: &["align-self", "justify-self"],
+    },
+    ShorthandExpansion {
+        name: "position-try",
+        longhands: &["position-try-order", "position-try-fallbacks"],
     },
     ShorthandExpansion {
         name: "scroll-timeline",
@@ -2316,6 +2370,97 @@ mod tests {
         assert_eq!(line_clamp.name, "line-clamp");
         assert!(!line_clamp.inherited);
         assert_eq!(line_clamp.initial, "none");
+    }
+
+    #[test]
+    fn test_properties_t0773() {
+        // scroll-marker-group
+        let scroll_marker_group = lookup("scroll-marker-group");
+        assert!(scroll_marker_group.is_some());
+        let scroll_marker_group = scroll_marker_group.unwrap();
+        assert_eq!(scroll_marker_group.name, "scroll-marker-group");
+        assert!(!scroll_marker_group.inherited);
+        assert_eq!(scroll_marker_group.initial, "none");
+
+        // reading-flow
+        let reading_flow = lookup("reading-flow");
+        assert!(reading_flow.is_some());
+        let reading_flow = reading_flow.unwrap();
+        assert_eq!(reading_flow.name, "reading-flow");
+        assert!(!reading_flow.inherited);
+        assert_eq!(reading_flow.initial, "normal");
+
+        // reading-order
+        let reading_order = lookup("reading-order");
+        assert!(reading_order.is_some());
+        let reading_order = reading_order.unwrap();
+        assert_eq!(reading_order.name, "reading-order");
+        assert!(reading_order.inherited);
+        assert_eq!(reading_order.initial, "0");
+
+        // position-area
+        let position_area = lookup("position-area");
+        assert!(position_area.is_some());
+        let position_area = position_area.unwrap();
+        assert_eq!(position_area.name, "position-area");
+        assert!(!position_area.inherited);
+        assert_eq!(position_area.initial, "none");
+
+        // position-try-fallbacks
+        let position_try_fallbacks = lookup("position-try-fallbacks");
+        assert!(position_try_fallbacks.is_some());
+        let position_try_fallbacks = position_try_fallbacks.unwrap();
+        assert_eq!(position_try_fallbacks.name, "position-try-fallbacks");
+        assert!(!position_try_fallbacks.inherited);
+        assert_eq!(position_try_fallbacks.initial, "none");
+
+        // position-try-order
+        let position_try_order = lookup("position-try-order");
+        assert!(position_try_order.is_some());
+        let position_try_order = position_try_order.unwrap();
+        assert_eq!(position_try_order.name, "position-try-order");
+        assert!(!position_try_order.inherited);
+        assert_eq!(position_try_order.initial, "normal");
+
+        // position-visibility
+        let position_visibility = lookup("position-visibility");
+        assert!(position_visibility.is_some());
+        let position_visibility = position_visibility.unwrap();
+        assert_eq!(position_visibility.name, "position-visibility");
+        assert!(!position_visibility.inherited);
+        assert_eq!(position_visibility.initial, "anchors-visible");
+
+        // timeline-scope
+        let timeline_scope = lookup("timeline-scope");
+        assert!(timeline_scope.is_some());
+        let timeline_scope = timeline_scope.unwrap();
+        assert_eq!(timeline_scope.name, "timeline-scope");
+        assert!(!timeline_scope.inherited);
+        assert_eq!(timeline_scope.initial, "none");
+
+        // view-transition-class
+        let view_transition_class = lookup("view-transition-class");
+        assert!(view_transition_class.is_some());
+        let view_transition_class = view_transition_class.unwrap();
+        assert_eq!(view_transition_class.name, "view-transition-class");
+        assert!(!view_transition_class.inherited);
+        assert_eq!(view_transition_class.initial, "none");
+
+        // overlay
+        let overlay = lookup("overlay");
+        assert!(overlay.is_some());
+        let overlay = overlay.unwrap();
+        assert_eq!(overlay.name, "overlay");
+        assert!(!overlay.inherited);
+        assert_eq!(overlay.initial, "none");
+
+        // position-try (shorthand)
+        let position_try_shorthand = shorthand_longhands("position-try");
+        assert!(position_try_shorthand.is_some());
+        assert_eq!(
+            position_try_shorthand.unwrap(),
+            &["position-try-order", "position-try-fallbacks"][..]
+        );
     }
 
     #[test]
