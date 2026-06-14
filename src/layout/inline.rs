@@ -756,22 +756,28 @@ fn preprocess_text(text: &str, collapse: bool, preserve_newlines: bool, tab_size
 }
 
 fn apply_text_transform(s: &str, kind: &str) -> String {
-    // TODO(spec): Simplified capitalization logic. For full Unicode word-boundary nuance, a more complex boundary analysis is required.
+    // spec: CSS Text Module Level 3, §2.1 (text-transform property)
+    // The 'capitalize' value puts the first typographical character of each word in uppercase.
+    // For this purpose, a word is a sequence of alphanumeric characters (letters/numbers).
+    // Any punctuation, whitespace, or separator character preceding an alphanumeric character
+    // marks the start of a new word.
     match kind {
         "uppercase" => s.to_uppercase(),
         "lowercase" => s.to_lowercase(),
         "capitalize" => {
             let mut result = String::with_capacity(s.len());
-            let mut capitalize_next = true;
+            let mut in_word = false;
             for c in s.chars() {
-                if c == ' ' {
-                    result.push(c);
-                    capitalize_next = true;
-                } else if capitalize_next {
-                    result.extend(c.to_uppercase());
-                    capitalize_next = false;
+                if c.is_alphanumeric() {
+                    if !in_word {
+                        result.extend(c.to_uppercase());
+                        in_word = true;
+                    } else {
+                        result.push(c);
+                    }
                 } else {
                     result.push(c);
+                    in_word = false;
                 }
             }
             result
@@ -995,6 +1001,35 @@ mod tests {
         }
 
         assert_eq!(leaf_texts, vec!["hello ", "world"]);
+    }
+
+    #[test]
+    fn test_text_transform_capitalize_advanced() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let div = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, div);
+
+        let t = dom.create_node(NodeData::Text("(hello-world) done't. \"quoted\"".into()));
+        dom.append_child(div, t);
+
+        let stylesheet = parse_stylesheet("div { text-transform: capitalize; }");
+        let styles = compute_styles(&dom, &stylesheet);
+
+        let children = dom.children(div);
+        let (line_boxes, _) = layout_inline_run(
+            &dom, &styles, children, 800.0, 0.0, 0.0, 0, "left", 0.0, 0.0,
+        );
+
+        let mut leaf_texts = Vec::new();
+        for line in &line_boxes {
+            leaf_texts.extend(collect_leaf_texts(line));
+        }
+
+        assert_eq!(leaf_texts, vec!["(Hello-World) ", "Done'T. ", "\"Quoted\""]);
     }
 
     #[test]
