@@ -16188,4 +16188,189 @@ mod tests {
         };
         assert_eq!(parse_value(&[var_missing_comma]), None);
     }
+
+    #[test]
+    fn test_t0984_calc_nesting_clamp_min_max_and_units() {
+        // 1. Nested calc() validation: calc(1px + calc(2px + calc(3px + 4px)))
+        let nested_calc_deep = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 1.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 2.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('+')),
+                        token(CssToken::Whitespace),
+                        ComponentValue::Function {
+                            name: "calc".to_string(),
+                            value: vec![
+                                token(CssToken::Dimension {
+                                    value: 3.0,
+                                    unit: "px".to_string(),
+                                }),
+                                token(CssToken::Whitespace),
+                                token(CssToken::Delim('+')),
+                                token(CssToken::Whitespace),
+                                token(CssToken::Dimension {
+                                    value: 4.0,
+                                    unit: "px".to_string(),
+                                }),
+                            ],
+                        },
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[nested_calc_deep]),
+            Some(CssValue::Keyword(
+                "calc(1px + calc(2px + calc(3px + 4px)))".to_string()
+            ))
+        );
+
+        // 2. clamp(), min(), max() parsing with nested expressions
+        // min(10px, calc(5px + 2px))
+        let min_with_nested_calc = ComponentValue::Function {
+            name: "min".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Comma),
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 5.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('+')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Dimension {
+                            value: 2.0,
+                            unit: "px".to_string(),
+                        }),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[min_with_nested_calc]),
+            Some(CssValue::Keyword("min(10px,calc(5px + 2px))".to_string()))
+        );
+
+        // clamp(calc(1px + 1px), 50%, calc(100px - 10px))
+        let clamp_with_nested_calcs = ComponentValue::Function {
+            name: "clamp".to_string(),
+            value: vec![
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 1.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('+')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Dimension {
+                            value: 1.0,
+                            unit: "px".to_string(),
+                        }),
+                    ],
+                },
+                token(CssToken::Comma),
+                token(CssToken::Percentage(50.0)),
+                token(CssToken::Comma),
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 100.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('-')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Dimension {
+                            value: 10.0,
+                            unit: "px".to_string(),
+                        }),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[clamp_with_nested_calcs]),
+            Some(CssValue::Keyword(
+                "clamp(calc(1px + 1px),50%,calc(100px - 10px))".to_string()
+            ))
+        );
+
+        // 3. Additional unit conversions: physical absolute units to Px
+        // 1in = 96px
+        let comp_in = token(CssToken::Dimension {
+            value: 1.0,
+            unit: "in".to_string(),
+        });
+        assert_eq!(
+            parse_value(&[comp_in]),
+            Some(CssValue::Length(96.0, LengthUnit::Px))
+        );
+
+        // 2.54cm = 96px
+        let comp_cm = token(CssToken::Dimension {
+            value: 2.54,
+            unit: "cm".to_string(),
+        });
+        assert_eq!(
+            parse_value(&[comp_cm]),
+            Some(CssValue::Length(96.0, LengthUnit::Px))
+        );
+
+        // 25.4mm = 96px
+        let comp_mm = token(CssToken::Dimension {
+            value: 25.4,
+            unit: "mm".to_string(),
+        });
+        let val_mm = match parse_value(&[comp_mm]).unwrap() {
+            CssValue::Length(v, LengthUnit::Px) => v,
+            _ => panic!("Expected Px length"),
+        };
+        assert!((val_mm - 96.0).abs() < 1e-4);
+
+        // 6pc = 96px
+        let comp_pc = token(CssToken::Dimension {
+            value: 6.0,
+            unit: "pc".to_string(),
+        });
+        assert_eq!(
+            parse_value(&[comp_pc]),
+            Some(CssValue::Length(96.0, LengthUnit::Px))
+        );
+
+        // 101.6q = 96px
+        let comp_q = token(CssToken::Dimension {
+            value: 101.6,
+            unit: "q".to_string(),
+        });
+        let val_q = match parse_value(&[comp_q]).unwrap() {
+            CssValue::Length(v, LengthUnit::Px) => v,
+            _ => panic!("Expected Px length"),
+        };
+        assert!((val_q - 96.0).abs() < 1e-4);
+    }
 }
