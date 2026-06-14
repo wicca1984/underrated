@@ -3444,4 +3444,290 @@ mod tests {
         let normal_comps = crate::css::parser::parse_component_values("10px");
         assert!(expand_shorthand_declaration("margin", &normal_comps).is_none());
     }
+
+    #[test]
+    fn test_t1034_cascade_specificity_and_layers() {
+        let layers = vec!["base".to_string(), "theme".to_string()];
+
+        // Let's verify that important layered beats important unlayered
+        let decl_unlayered_imp = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: true,
+            layer: None,
+            specificity: (0, 1, 0, 0), // Has high specificity
+            source_order: 1,
+        };
+        let decl_layered_imp = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: true,
+            layer: Some("base".to_string()),
+            specificity: (0, 0, 0, 1), // Has low specificity
+            source_order: 2,
+        };
+        // Specificity shouldn't matter; layer priority for important wins
+        assert_eq!(
+            compare_declarations(&decl_unlayered_imp, &decl_layered_imp, &layers),
+            std::cmp::Ordering::Less
+        );
+
+        // Let's verify that normal unlayered beats normal layered
+        let decl_unlayered_norm = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 0, 0, 1), // Has low specificity
+            source_order: 1,
+        };
+        let decl_layered_norm = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: false,
+            layer: Some("base".to_string()),
+            specificity: (0, 1, 0, 0), // Has high specificity
+            source_order: 2,
+        };
+        // Layer priority for normal wins (unlayered beats layered)
+        assert_eq!(
+            compare_declarations(&decl_unlayered_norm, &decl_layered_norm, &layers),
+            std::cmp::Ordering::Greater
+        );
+
+        // Specificity comparison for same layer (e.g., both unlayered)
+        let decl_spec_high = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 1, 0, 0),
+            source_order: 1,
+        };
+        let decl_spec_low = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 0, 1, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_spec_high, &decl_spec_low, &layers),
+            std::cmp::Ordering::Greater
+        );
+
+        // Source order comparison for same specificity and layer
+        let decl_source_early = CascadeDeclaration {
+            value: "red".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 1, 0, 0),
+            source_order: 1,
+        };
+        let decl_source_late = CascadeDeclaration {
+            value: "blue".to_string(),
+            is_important: false,
+            layer: None,
+            specificity: (0, 1, 0, 0),
+            source_order: 2,
+        };
+        assert_eq!(
+            compare_declarations(&decl_source_early, &decl_source_late, &layers),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_t1034_keyword_resolution_details() {
+        let custom_props = HashMap::new();
+
+        // 1. Initial keyword
+        let ctx_initial = ResolveContext {
+            property_name: Some("color".to_string()),
+            ..Default::default()
+        };
+        let comps_initial = crate::css::parser::parse_component_values("initial");
+        // Initial value of color is black (#000000)
+        assert_eq!(
+            resolve_value_with_context(&comps_initial, &ctx_initial, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 0, 255
+            )))
+        );
+
+        // 2. Inherit keyword with parent value
+        let parent_val = CssValue::Color(crate::css::values::Color::Rgba(0, 255, 0, 255));
+        let ctx_inherit = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(parent_val.clone()),
+            ..Default::default()
+        };
+        let comps_inherit = crate::css::parser::parse_component_values("inherit");
+        assert_eq!(
+            resolve_value_with_context(&comps_inherit, &ctx_inherit, &custom_props),
+            Some(parent_val)
+        );
+
+        // Inherit with no parent falls back to initial
+        let ctx_inherit_no_parent = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_value_with_context(&comps_inherit, &ctx_inherit_no_parent, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 0, 255
+            )))
+        );
+
+        // 3. Unset keyword
+        // On inherited properties (like color), unset acts as inherit
+        let ctx_unset_inh = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255,
+            ))),
+            ..Default::default()
+        };
+        let comps_unset = crate::css::parser::parse_component_values("unset");
+        assert_eq!(
+            resolve_value_with_context(&comps_unset, &ctx_unset_inh, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255
+            )))
+        );
+
+        // On non-inherited properties (like background-color), unset acts as initial
+        let ctx_unset_non_inh = ResolveContext {
+            property_name: Some("background-color".to_string()),
+            parent_value: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 255, 255,
+            ))),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_value_with_context(&comps_unset, &ctx_unset_non_inh, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(0, 0, 0, 0))) // transparent
+        );
+
+        // 4. Revert keyword
+        let ctx_revert = ResolveContext {
+            property_name: Some("color".to_string()),
+            revert_value: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 255, 0, 255,
+            ))),
+            ..Default::default()
+        };
+        let comps_revert = crate::css::parser::parse_component_values("revert");
+        assert_eq!(
+            resolve_value_with_context(&comps_revert, &ctx_revert, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 255, 0, 255
+            )))
+        );
+
+        // Revert falls back to inherit if no revert_value is set
+        let ctx_revert_fallback = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255,
+            ))),
+            revert_value: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_value_with_context(&comps_revert, &ctx_revert_fallback, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                255, 0, 0, 255
+            )))
+        );
+    }
+
+    #[test]
+    fn test_t1034_custom_property_substitution_correctness() {
+        let mut custom_props = HashMap::new();
+        custom_props.insert(
+            "--nested-a".to_string(),
+            crate::css::parser::parse_component_values("var(--nested-b)"),
+        );
+        custom_props.insert(
+            "--nested-b".to_string(),
+            crate::css::parser::parse_component_values("var(--nested-c)"),
+        );
+        custom_props.insert(
+            "--nested-c".to_string(),
+            crate::css::parser::parse_component_values("20px"),
+        );
+
+        // Check deep nested custom property
+        assert_eq!(
+            resolve_string("var(--nested-a)", 16.0, 1000.0, 800.0, &custom_props),
+            Some(CssValue::Length(20.0, LengthUnit::Px))
+        );
+
+        // Check cycle with a fallback on the outer var reference
+        // --cycle-a: var(--cycle-b); --cycle-b: var(--cycle-a);
+        custom_props.insert(
+            "--cycle-a".to_string(),
+            crate::css::parser::parse_component_values("var(--cycle-b)"),
+        );
+        custom_props.insert(
+            "--cycle-b".to_string(),
+            crate::css::parser::parse_component_values("var(--cycle-a)"),
+        );
+        assert_eq!(
+            resolve_string("var(--cycle-a, 50px)", 16.0, 1000.0, 800.0, &custom_props),
+            Some(CssValue::Length(50.0, LengthUnit::Px))
+        );
+
+        // Check custom property containing a CSS-wide keyword triggering parent inheritance
+        custom_props.insert(
+            "--my-keyword".to_string(),
+            crate::css::parser::parse_component_values("inherit"),
+        );
+        let parent_val = CssValue::Color(crate::css::values::Color::Rgba(128, 0, 128, 255));
+        let ctx = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(parent_val.clone()),
+            ..Default::default()
+        };
+        let comps = crate::css::parser::parse_component_values("var(--my-keyword)");
+        assert_eq!(
+            resolve_value_with_context(&comps, &ctx, &custom_props),
+            Some(parent_val)
+        );
+
+        // Check custom property containing a CSS-wide keyword triggering initial value
+        let ctx_initial = ResolveContext {
+            property_name: Some("color".to_string()),
+            ..Default::default()
+        };
+        custom_props.insert(
+            "--my-initial-kw".to_string(),
+            crate::css::parser::parse_component_values("initial"),
+        );
+        let comps_init = crate::css::parser::parse_component_values("var(--my-initial-kw)");
+        assert_eq!(
+            resolve_value_with_context(&comps_init, &ctx_initial, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 0, 0, 255
+            )))
+        );
+
+        // Check empty custom property resulting in invalid-at-computed-value-time and falling back to unset
+        custom_props.insert(
+            "--empty-val".to_string(),
+            crate::css::parser::parse_component_values("   "),
+        );
+        let comps_empty = crate::css::parser::parse_component_values("var(--empty-val)");
+        let ctx_empty = ResolveContext {
+            property_name: Some("color".to_string()),
+            parent_value: Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 255, 0, 255,
+            ))),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_value_with_context(&comps_empty, &ctx_empty, &custom_props),
+            Some(CssValue::Color(crate::css::values::Color::Rgba(
+                0, 255, 0, 255
+            ))) // inherits parent color
+        );
+    }
 }
