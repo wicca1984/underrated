@@ -1670,3 +1670,51 @@ fn test_fixture_11_dynamic_dom() {
         last_y = y;
     }
 }
+
+/// This fixture is a real captured JS-gated SERP; 19 elements / this structure is
+/// the CORRECT complete static parse, NOT truncation.
+/// Do not "fix" this as a parser bug in the future.
+/// Reference: MS-1/MS-2 premise was empirically falsified by orchestrator on 2026-06-14.
+#[test]
+fn test_fixture_12_google_serp_real_is_jsgated() {
+    let snapshot = load_fixture_snapshot("12_google_serp_real.html");
+    assert_eq!(snapshot["tag"], "html");
+
+    // Collect all script elements via find_elements_by_tag and assert there are exactly 5.
+    let mut scripts = Vec::new();
+    find_elements_by_tag(&snapshot, "script", &mut scripts);
+    assert_eq!(
+        scripts.len(),
+        5,
+        "Should have exactly 5 script elements, verifying RAWTEXT/script-data termination."
+    );
+
+    // Assert a noscript element exists.
+    let noscript = find_element_by_tag(&snapshot, "noscript");
+    assert!(noscript.is_some(), "noscript element must exist");
+
+    // Assert a meta element exists whose http-equiv attribute equals "refresh".
+    let mut metas = Vec::new();
+    find_elements_by_tag(&snapshot, "meta", &mut metas);
+    let has_refresh_meta = metas
+        .iter()
+        .any(|meta| meta["attrs"]["http-equiv"] == "refresh");
+    assert!(
+        has_refresh_meta,
+        "A meta element with http-equiv='refresh' must exist"
+    );
+
+    // Assert at least one anchor (a) element exists whose href attribute contains the substring "enablejs".
+    let mut anchors = Vec::new();
+    find_elements_by_tag(&snapshot, "a", &mut anchors);
+    let has_enablejs_anchor = anchors.iter().any(|anchor| {
+        anchor["attrs"]["href"]
+            .as_str()
+            .map(|href| href.contains("enablejs"))
+            .unwrap_or(false)
+    });
+    assert!(
+        has_enablejs_anchor,
+        "At least one anchor with href containing 'enablejs' must exist"
+    );
+}
