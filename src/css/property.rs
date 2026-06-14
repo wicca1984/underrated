@@ -2785,6 +2785,1399 @@ pub fn is_animatable(name: &str) -> bool {
     lookup(name).is_some_and(|prop| prop.animatable)
 }
 
+/// Represents an expanded property longhand with its resolved string value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpandedProperty {
+    pub name: &'static str,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShorthandError {
+    InvalidShorthand,
+    InvalidValue,
+    TooManyValues,
+    ZeroValues,
+}
+
+/// Expands a shorthand property and its raw whitespace-split values into longhands.
+///
+/// Handles:
+/// - CSS-wide keywords (e.g. `inherit`, `initial`) on any shorthand.
+/// - `margin` & `padding` (1 to 4 values).
+/// - `border-width`, `border-style`, `border-color` (1 to 4 values).
+/// - `border` & `border-top`, `border-right`, `border-bottom`, `border-left` (order-independent properties).
+/// - `border-radius` (optional `/` separation for horizontal/vertical corners, 1-4 values each).
+pub fn expand_shorthand_values(
+    shorthand_name: &str,
+    values: &[&str],
+) -> Result<Vec<ExpandedProperty>, ShorthandError> {
+    let lower_shorthand = shorthand_name.trim().to_ascii_lowercase();
+
+    // Check zero values
+    if values.is_empty() {
+        return Err(ShorthandError::ZeroValues);
+    }
+
+    // Check for CSS-wide keyword as single value
+    if values.len() == 1 && is_css_wide_keyword(values[0]) {
+        if let Some(longhands) = shorthand_longhands(&lower_shorthand) {
+            let kw = values[0].trim().to_ascii_lowercase();
+            return Ok(longhands
+                .iter()
+                .map(|lh| ExpandedProperty {
+                    name: lh,
+                    value: kw.clone(),
+                })
+                .collect());
+        } else {
+            return Err(ShorthandError::InvalidShorthand);
+        }
+    }
+
+    // If more than 1 value, none can be a CSS-wide keyword
+    if values.len() > 1 && values.iter().any(|&v| is_css_wide_keyword(v)) {
+        return Err(ShorthandError::InvalidValue);
+    }
+
+    match lower_shorthand.as_str() {
+        "margin" | "padding" | "border-width" | "border-style" | "border-color" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 4 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let (v0, v1, v2, v3) = match values.len() {
+                1 => (
+                    (*values[0]).to_string(),
+                    (*values[0]).to_string(),
+                    (*values[0]).to_string(),
+                    (*values[0]).to_string(),
+                ),
+                2 => (
+                    (*values[0]).to_string(),
+                    (*values[1]).to_string(),
+                    (*values[0]).to_string(),
+                    (*values[1]).to_string(),
+                ),
+                3 => (
+                    (*values[0]).to_string(),
+                    (*values[1]).to_string(),
+                    (*values[2]).to_string(),
+                    (*values[1]).to_string(),
+                ),
+                _ => (
+                    (*values[0]).to_string(),
+                    (*values[1]).to_string(),
+                    (*values[2]).to_string(),
+                    (*values[3]).to_string(),
+                ),
+            };
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: v0,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: v1,
+                },
+                ExpandedProperty {
+                    name: longhands[2],
+                    value: v2,
+                },
+                ExpandedProperty {
+                    name: longhands[3],
+                    value: v3,
+                },
+            ])
+        }
+        "border-top" | "border-right" | "border-bottom" | "border-left" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut width = None;
+            let mut style = None;
+            let mut color = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_border_style_keyword(&lower) {
+                    if style.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    style = Some(val.to_string());
+                } else if is_border_width_keyword(&lower) || is_length_value(&lower) {
+                    if width.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    width = Some(val.to_string());
+                } else {
+                    if color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    color = Some(val.to_string());
+                }
+            }
+
+            let w = width.unwrap_or_else(|| "medium".to_string());
+            let s = style.unwrap_or_else(|| "none".to_string());
+            let c = color.unwrap_or_else(|| "currentcolor".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: w,
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: s,
+                },
+                ExpandedProperty {
+                    name: longhands[2],
+                    value: c,
+                },
+            ])
+        }
+        "border" => {
+            // border sets all 4 edges
+            if values.len() > 3 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut width = None;
+            let mut style = None;
+            let mut color = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_border_style_keyword(&lower) {
+                    if style.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    style = Some(val.to_string());
+                } else if is_border_width_keyword(&lower) || is_length_value(&lower) {
+                    if width.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    width = Some(val.to_string());
+                } else {
+                    if color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    color = Some(val.to_string());
+                }
+            }
+
+            let w = width.unwrap_or_else(|| "medium".to_string());
+            let s = style.unwrap_or_else(|| "none".to_string());
+            let c = color.unwrap_or_else(|| "currentcolor".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "border-top-width",
+                    value: w.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-top-style",
+                    value: s.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-top-color",
+                    value: c.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-right-width",
+                    value: w.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-right-style",
+                    value: s.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-right-color",
+                    value: c.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-bottom-width",
+                    value: w.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-bottom-style",
+                    value: s.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-bottom-color",
+                    value: c.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-left-width",
+                    value: w.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-left-style",
+                    value: s.clone(),
+                },
+                ExpandedProperty {
+                    name: "border-left-color",
+                    value: c.clone(),
+                },
+            ])
+        }
+        "border-radius" => {
+            let slash_idx = values.iter().position(|&v| v == "/");
+            let (h_raw, v_raw) = match slash_idx {
+                Some(idx) => (&values[..idx], Some(&values[idx + 1..])),
+                None => (values, None),
+            };
+
+            if h_raw.is_empty() || h_raw.len() > 4 || h_raw.contains(&"/") {
+                return Err(ShorthandError::InvalidValue);
+            }
+            if v_raw.is_some_and(|v| v.is_empty() || v.len() > 4 || v.contains(&"/")) {
+                return Err(ShorthandError::InvalidValue);
+            }
+
+            let h_expanded = expand_radius_1_to_4(h_raw);
+            let v_expanded = v_raw.map(expand_radius_1_to_4);
+
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+
+            let build_val = |idx: usize| -> String {
+                let h = &h_expanded[idx];
+                if let Some(ref v) = v_expanded {
+                    format!("{} {}", h, v[idx])
+                } else {
+                    h.clone()
+                }
+            };
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0],
+                    value: build_val(0),
+                },
+                ExpandedProperty {
+                    name: longhands[1],
+                    value: build_val(1),
+                },
+                ExpandedProperty {
+                    name: longhands[2],
+                    value: build_val(2),
+                },
+                ExpandedProperty {
+                    name: longhands[3],
+                    value: build_val(3),
+                },
+            ])
+        }
+        _ => Err(ShorthandError::InvalidShorthand),
+    }
+}
+
+fn is_border_style_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "none"
+            | "hidden"
+            | "dotted"
+            | "dashed"
+            | "solid"
+            | "double"
+            | "groove"
+            | "ridge"
+            | "inset"
+            | "outset"
+    )
+}
+
+fn is_border_width_keyword(s: &str) -> bool {
+    matches!(s, "thin" | "medium" | "thick")
+}
+
+fn is_length_value(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed == "0" {
+        return true;
+    }
+    if trimmed.is_empty() {
+        return false;
+    }
+    let bytes = trimmed.as_bytes();
+    let first = bytes[0];
+    if first.is_ascii_digit() || first == b'+' || first == b'-' || first == b'.' {
+        trimmed.chars().any(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
+fn expand_radius_1_to_4(values: &[&str]) -> [String; 4] {
+    match values.len() {
+        1 => [
+            (*values[0]).to_string(),
+            (*values[0]).to_string(),
+            (*values[0]).to_string(),
+            (*values[0]).to_string(),
+        ],
+        2 => [
+            (*values[0]).to_string(),
+            (*values[1]).to_string(),
+            (*values[0]).to_string(),
+            (*values[1]).to_string(),
+        ],
+        3 => [
+            (*values[0]).to_string(),
+            (*values[1]).to_string(),
+            (*values[2]).to_string(),
+            (*values[1]).to_string(),
+        ],
+        _ => [
+            (*values[0]).to_string(),
+            (*values[1]).to_string(),
+            (*values[2]).to_string(),
+            (*values[3]).to_string(),
+        ],
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalDirection {
+    BlockStart,
+    BlockEnd,
+    InlineStart,
+    InlineEnd,
+}
+
+pub fn resolve_logical_direction(
+    logical: LogicalDirection,
+    writing_mode: &str,
+    direction: &str,
+) -> &'static str {
+    let wm = writing_mode.trim().to_ascii_lowercase();
+    let dir = direction.trim().to_ascii_lowercase();
+    let is_rtl = dir == "rtl";
+
+    match wm.as_str() {
+        "vertical-rl" | "sideways-rl" => match logical {
+            LogicalDirection::BlockStart => "right",
+            LogicalDirection::BlockEnd => "left",
+            LogicalDirection::InlineStart => {
+                if is_rtl {
+                    "bottom"
+                } else {
+                    "top"
+                }
+            }
+            LogicalDirection::InlineEnd => {
+                if is_rtl {
+                    "top"
+                } else {
+                    "bottom"
+                }
+            }
+        },
+        "vertical-lr" | "sideways-lr" => match logical {
+            LogicalDirection::BlockStart => "left",
+            LogicalDirection::BlockEnd => "right",
+            LogicalDirection::InlineStart => {
+                if is_rtl {
+                    "bottom"
+                } else {
+                    "top"
+                }
+            }
+            LogicalDirection::InlineEnd => {
+                if is_rtl {
+                    "top"
+                } else {
+                    "bottom"
+                }
+            }
+        },
+        _ => {
+            // horizontal-tb or fallback
+            match logical {
+                LogicalDirection::BlockStart => "top",
+                LogicalDirection::BlockEnd => "bottom",
+                LogicalDirection::InlineStart => {
+                    if is_rtl {
+                        "right"
+                    } else {
+                        "left"
+                    }
+                }
+                LogicalDirection::InlineEnd => {
+                    if is_rtl {
+                        "left"
+                    } else {
+                        "right"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalCorner {
+    StartStart,
+    StartEnd,
+    EndStart,
+    EndEnd,
+}
+
+pub fn resolve_logical_corner(
+    corner: LogicalCorner,
+    writing_mode: &str,
+    direction: &str,
+) -> &'static str {
+    let wm = writing_mode.trim().to_ascii_lowercase();
+    let dir = direction.trim().to_ascii_lowercase();
+    let is_rtl = dir == "rtl";
+
+    match wm.as_str() {
+        "vertical-rl" | "sideways-rl" => match corner {
+            LogicalCorner::StartStart => {
+                if is_rtl {
+                    "border-bottom-right-radius"
+                } else {
+                    "border-top-right-radius"
+                }
+            }
+            LogicalCorner::StartEnd => {
+                if is_rtl {
+                    "border-top-right-radius"
+                } else {
+                    "border-bottom-right-radius"
+                }
+            }
+            LogicalCorner::EndStart => {
+                if is_rtl {
+                    "border-bottom-left-radius"
+                } else {
+                    "border-top-left-radius"
+                }
+            }
+            LogicalCorner::EndEnd => {
+                if is_rtl {
+                    "border-top-left-radius"
+                } else {
+                    "border-bottom-left-radius"
+                }
+            }
+        },
+        "vertical-lr" | "sideways-lr" => match corner {
+            LogicalCorner::StartStart => {
+                if is_rtl {
+                    "border-bottom-left-radius"
+                } else {
+                    "border-top-left-radius"
+                }
+            }
+            LogicalCorner::StartEnd => {
+                if is_rtl {
+                    "border-top-left-radius"
+                } else {
+                    "border-bottom-left-radius"
+                }
+            }
+            LogicalCorner::EndStart => {
+                if is_rtl {
+                    "border-bottom-right-radius"
+                } else {
+                    "border-top-right-radius"
+                }
+            }
+            LogicalCorner::EndEnd => {
+                if is_rtl {
+                    "border-top-right-radius"
+                } else {
+                    "border-bottom-right-radius"
+                }
+            }
+        },
+        _ => {
+            // horizontal-tb or fallback
+            match corner {
+                LogicalCorner::StartStart => {
+                    if is_rtl {
+                        "border-top-right-radius"
+                    } else {
+                        "border-top-left-radius"
+                    }
+                }
+                LogicalCorner::StartEnd => {
+                    if is_rtl {
+                        "border-top-left-radius"
+                    } else {
+                        "border-top-right-radius"
+                    }
+                }
+                LogicalCorner::EndStart => {
+                    if is_rtl {
+                        "border-bottom-right-radius"
+                    } else {
+                        "border-bottom-left-radius"
+                    }
+                }
+                LogicalCorner::EndEnd => {
+                    if is_rtl {
+                        "border-bottom-left-radius"
+                    } else {
+                        "border-bottom-right-radius"
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn map_logical_to_physical(
+    property: &str,
+    writing_mode: &str,
+    direction: &str,
+) -> Option<&'static str> {
+    let prop = property.trim().to_ascii_lowercase();
+    let is_vertical = matches!(
+        writing_mode.trim().to_ascii_lowercase().as_str(),
+        "vertical-rl" | "vertical-lr" | "sideways-rl" | "sideways-lr"
+    );
+
+    match prop.as_str() {
+        // Sizing
+        "block-size" => Some(if is_vertical { "width" } else { "height" }),
+        "inline-size" => Some(if is_vertical { "height" } else { "width" }),
+        "min-block-size" => Some(if is_vertical {
+            "min-width"
+        } else {
+            "min-height"
+        }),
+        "min-inline-size" => Some(if is_vertical {
+            "min-height"
+        } else {
+            "min-width"
+        }),
+        "max-block-size" => Some(if is_vertical {
+            "max-width"
+        } else {
+            "max-height"
+        }),
+        "max-inline-size" => Some(if is_vertical {
+            "max-height"
+        } else {
+            "max-width"
+        }),
+
+        // Margins
+        "margin-block-start" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "margin-top",
+                "right" => "margin-right",
+                "bottom" => "margin-bottom",
+                "left" => "margin-left",
+                _ => "margin-top",
+            })
+        }
+        "margin-block-end" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "margin-top",
+                "right" => "margin-right",
+                "bottom" => "margin-bottom",
+                "left" => "margin-left",
+                _ => "margin-bottom",
+            })
+        }
+        "margin-inline-start" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "margin-top",
+                "right" => "margin-right",
+                "bottom" => "margin-bottom",
+                "left" => "margin-left",
+                _ => "margin-left",
+            })
+        }
+        "margin-inline-end" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "margin-top",
+                "right" => "margin-right",
+                "bottom" => "margin-bottom",
+                "left" => "margin-left",
+                _ => "margin-right",
+            })
+        }
+
+        // Paddings
+        "padding-block-start" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "padding-top",
+                "right" => "padding-right",
+                "bottom" => "padding-bottom",
+                "left" => "padding-left",
+                _ => "padding-top",
+            })
+        }
+        "padding-block-end" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "padding-top",
+                "right" => "padding-right",
+                "bottom" => "padding-bottom",
+                "left" => "padding-left",
+                _ => "padding-bottom",
+            })
+        }
+        "padding-inline-start" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "padding-top",
+                "right" => "padding-right",
+                "bottom" => "padding-bottom",
+                "left" => "padding-left",
+                _ => "padding-left",
+            })
+        }
+        "padding-inline-end" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "padding-top",
+                "right" => "padding-right",
+                "bottom" => "padding-bottom",
+                "left" => "padding-left",
+                _ => "padding-right",
+            })
+        }
+
+        // Insets
+        "inset-block-start" => Some(resolve_logical_direction(
+            LogicalDirection::BlockStart,
+            writing_mode,
+            direction,
+        )),
+        "inset-block-end" => Some(resolve_logical_direction(
+            LogicalDirection::BlockEnd,
+            writing_mode,
+            direction,
+        )),
+        "inset-inline-start" => Some(resolve_logical_direction(
+            LogicalDirection::InlineStart,
+            writing_mode,
+            direction,
+        )),
+        "inset-inline-end" => Some(resolve_logical_direction(
+            LogicalDirection::InlineEnd,
+            writing_mode,
+            direction,
+        )),
+
+        // Border Widths
+        "border-block-start-width" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-width",
+                "right" => "border-right-width",
+                "bottom" => "border-bottom-width",
+                "left" => "border-left-width",
+                _ => "border-top-width",
+            })
+        }
+        "border-block-end-width" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-width",
+                "right" => "border-right-width",
+                "bottom" => "border-bottom-width",
+                "left" => "border-left-width",
+                _ => "border-bottom-width",
+            })
+        }
+        "border-inline-start-width" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-width",
+                "right" => "border-right-width",
+                "bottom" => "border-bottom-width",
+                "left" => "border-left-width",
+                _ => "border-left-width",
+            })
+        }
+        "border-inline-end-width" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-width",
+                "right" => "border-right-width",
+                "bottom" => "border-bottom-width",
+                "left" => "border-left-width",
+                _ => "border-right-width",
+            })
+        }
+
+        // Border Styles
+        "border-block-start-style" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-style",
+                "right" => "border-right-style",
+                "bottom" => "border-bottom-style",
+                "left" => "border-left-style",
+                _ => "border-top-style",
+            })
+        }
+        "border-block-end-style" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-style",
+                "right" => "border-right-style",
+                "bottom" => "border-bottom-style",
+                "left" => "border-left-style",
+                _ => "border-bottom-style",
+            })
+        }
+        "border-inline-start-style" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-style",
+                "right" => "border-right-style",
+                "bottom" => "border-bottom-style",
+                "left" => "border-left-style",
+                _ => "border-left-style",
+            })
+        }
+        "border-inline-end-style" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-style",
+                "right" => "border-right-style",
+                "bottom" => "border-bottom-style",
+                "left" => "border-left-style",
+                _ => "border-right-style",
+            })
+        }
+
+        // Border Colors
+        "border-block-start-color" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-color",
+                "right" => "border-right-color",
+                "bottom" => "border-bottom-color",
+                "left" => "border-left-color",
+                _ => "border-top-color",
+            })
+        }
+        "border-block-end-color" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::BlockEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-color",
+                "right" => "border-right-color",
+                "bottom" => "border-bottom-color",
+                "left" => "border-left-color",
+                _ => "border-bottom-color",
+            })
+        }
+        "border-inline-start-color" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineStart, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-color",
+                "right" => "border-right-color",
+                "bottom" => "border-bottom-color",
+                "left" => "border-left-color",
+                _ => "border-left-color",
+            })
+        }
+        "border-inline-end-color" => {
+            let dir =
+                resolve_logical_direction(LogicalDirection::InlineEnd, writing_mode, direction);
+            Some(match dir {
+                "top" => "border-top-color",
+                "right" => "border-right-color",
+                "bottom" => "border-bottom-color",
+                "left" => "border-left-color",
+                _ => "border-right-color",
+            })
+        }
+
+        // Corner Radii
+        "border-start-start-radius" => Some(resolve_logical_corner(
+            LogicalCorner::StartStart,
+            writing_mode,
+            direction,
+        )),
+        "border-start-end-radius" => Some(resolve_logical_corner(
+            LogicalCorner::StartEnd,
+            writing_mode,
+            direction,
+        )),
+        "border-end-start-radius" => Some(resolve_logical_corner(
+            LogicalCorner::EndStart,
+            writing_mode,
+            direction,
+        )),
+        "border-end-end-radius" => Some(resolve_logical_corner(
+            LogicalCorner::EndEnd,
+            writing_mode,
+            direction,
+        )),
+
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomPropertyRegistration {
+    pub name: String,
+    pub syntax: String,
+    pub inherits: bool,
+    pub initial_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomPropertyValidationError {
+    InvalidName,
+    InvalidSyntax,
+    MissingInitialValue,
+    InvalidInitialValue,
+}
+
+pub fn validate_custom_property_registration(
+    reg: &CustomPropertyRegistration,
+) -> Result<(), CustomPropertyValidationError> {
+    let trimmed_name = reg.name.trim();
+    if !trimmed_name.starts_with("--") || trimmed_name.len() <= 2 {
+        return Err(CustomPropertyValidationError::InvalidName);
+    }
+
+    let trimmed_syntax = reg.syntax.trim();
+    if trimmed_syntax.is_empty() {
+        return Err(CustomPropertyValidationError::InvalidSyntax);
+    }
+
+    if trimmed_syntax == "*" {
+        return Ok(());
+    }
+
+    let components = parse_syntax_components(trimmed_syntax)?;
+
+    let val_str = match &reg.initial_value {
+        Some(v) => {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                return Err(CustomPropertyValidationError::MissingInitialValue);
+            }
+            trimmed
+        }
+        None => return Err(CustomPropertyValidationError::MissingInitialValue),
+    };
+
+    let mut matches_any = false;
+    for comp in &components {
+        if validate_value_by_syntax_component(val_str, comp) {
+            matches_any = true;
+            break;
+        }
+    }
+
+    if !matches_any {
+        return Err(CustomPropertyValidationError::InvalidInitialValue);
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaxType {
+    Length,
+    Number,
+    Percentage,
+    LengthPercentage,
+    Color,
+    Image,
+    Url,
+    Integer,
+    Angle,
+    Time,
+    Resolution,
+    TransformFunction,
+    TransformList,
+    CustomIdent,
+    Keyword(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaxMultiplier {
+    None,
+    SpaceSeparated,
+    CommaSeparated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxComponent {
+    pub ty: SyntaxType,
+    pub multiplier: SyntaxMultiplier,
+}
+
+fn parse_syntax_components(
+    syntax: &str,
+) -> Result<Vec<SyntaxComponent>, CustomPropertyValidationError> {
+    let mut comps = Vec::new();
+    for part in syntax.split('|') {
+        let trimmed_part = part.trim();
+        if trimmed_part.is_empty() {
+            return Err(CustomPropertyValidationError::InvalidSyntax);
+        }
+
+        let (base_part, multiplier) = if let Some(stripped) = trimmed_part.strip_suffix('+') {
+            (stripped.trim(), SyntaxMultiplier::SpaceSeparated)
+        } else if let Some(stripped) = trimmed_part.strip_suffix('#') {
+            (stripped.trim(), SyntaxMultiplier::CommaSeparated)
+        } else {
+            (trimmed_part, SyntaxMultiplier::None)
+        };
+
+        if base_part.is_empty() {
+            return Err(CustomPropertyValidationError::InvalidSyntax);
+        }
+
+        let ty = if base_part.starts_with('<') && base_part.ends_with('>') {
+            let inner = base_part[1..base_part.len() - 1].trim();
+            match inner {
+                "length" => SyntaxType::Length,
+                "number" => SyntaxType::Number,
+                "percentage" => SyntaxType::Percentage,
+                "length-percentage" => SyntaxType::LengthPercentage,
+                "color" => SyntaxType::Color,
+                "image" => SyntaxType::Image,
+                "url" => SyntaxType::Url,
+                "integer" => SyntaxType::Integer,
+                "angle" => SyntaxType::Angle,
+                "time" => SyntaxType::Time,
+                "resolution" => SyntaxType::Resolution,
+                "transform-function" => SyntaxType::TransformFunction,
+                "transform-list" => SyntaxType::TransformList,
+                "custom-ident" => SyntaxType::CustomIdent,
+                _ => return Err(CustomPropertyValidationError::InvalidSyntax),
+            }
+        } else {
+            if is_valid_css_identifier(base_part) {
+                SyntaxType::Keyword(base_part.to_string())
+            } else {
+                return Err(CustomPropertyValidationError::InvalidSyntax);
+            }
+        };
+
+        comps.push(SyntaxComponent { ty, multiplier });
+    }
+
+    if comps.is_empty() {
+        return Err(CustomPropertyValidationError::InvalidSyntax);
+    }
+
+    Ok(comps)
+}
+
+fn is_valid_css_identifier(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if is_css_wide_keyword(trimmed) {
+        return false;
+    }
+    let bytes = trimmed.as_bytes();
+    if bytes[0].is_ascii_digit() {
+        return false;
+    }
+    if bytes[0] == b'-' && bytes.len() > 1 && bytes[1].is_ascii_digit() {
+        return false;
+    }
+    trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn validate_value_by_syntax_component(val: &str, comp: &SyntaxComponent) -> bool {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    match comp.multiplier {
+        SyntaxMultiplier::None => validate_single_value_by_type(trimmed, &comp.ty),
+        SyntaxMultiplier::SpaceSeparated => {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.is_empty() {
+                return false;
+            }
+            parts
+                .into_iter()
+                .all(|part| validate_single_value_by_type(part, &comp.ty))
+        }
+        SyntaxMultiplier::CommaSeparated => {
+            let parts: Vec<&str> = trimmed.split(',').collect();
+            if parts.is_empty() {
+                return false;
+            }
+            parts
+                .into_iter()
+                .all(|part| validate_single_value_by_type(part.trim(), &comp.ty))
+        }
+    }
+}
+
+fn validate_single_value_by_type(val: &str, ty: &SyntaxType) -> bool {
+    let lower = val.trim().to_ascii_lowercase();
+    match ty {
+        SyntaxType::Length => is_length_token(&lower),
+        SyntaxType::Number => lower.parse::<f64>().is_ok(),
+        SyntaxType::Percentage => {
+            if lower.ends_with('%') {
+                lower[..lower.len() - 1].parse::<f64>().is_ok()
+            } else {
+                false
+            }
+        }
+        SyntaxType::LengthPercentage => {
+            is_length_token(&lower) || {
+                if lower.ends_with('%') {
+                    lower[..lower.len() - 1].parse::<f64>().is_ok()
+                } else {
+                    false
+                }
+            }
+        }
+        SyntaxType::Color => is_color_token(&lower),
+        SyntaxType::Image => is_image_token(&lower),
+        SyntaxType::Url => is_url_token(&lower),
+        SyntaxType::Integer => {
+            if let Some(first) = lower.chars().next() {
+                let rest = if first == '+' || first == '-' {
+                    &lower[1..]
+                } else {
+                    &lower
+                };
+                !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+            } else {
+                false
+            }
+        }
+        SyntaxType::Angle => {
+            for unit in &["deg", "grad", "rad", "turn"] {
+                if lower.ends_with(unit) {
+                    return lower[..lower.len() - unit.len()].parse::<f64>().is_ok();
+                }
+            }
+            false
+        }
+        SyntaxType::Time => {
+            for unit in &["s", "ms"] {
+                if lower.ends_with(unit) {
+                    return lower[..lower.len() - unit.len()].parse::<f64>().is_ok();
+                }
+            }
+            false
+        }
+        SyntaxType::Resolution => {
+            for unit in &["dpi", "dpcm", "dppx"] {
+                if lower.ends_with(unit) {
+                    return lower[..lower.len() - unit.len()].parse::<f64>().is_ok();
+                }
+            }
+            false
+        }
+        SyntaxType::TransformFunction => is_transform_function_token(&lower),
+        SyntaxType::TransformList => {
+            let parts: Vec<&str> = lower.split_whitespace().collect();
+            if parts.is_empty() {
+                return false;
+            }
+            parts.into_iter().all(is_transform_function_token)
+        }
+        SyntaxType::CustomIdent => is_custom_ident_token(&lower),
+        SyntaxType::Keyword(kw) => is_keyword_token(&lower, kw),
+    }
+}
+
+fn is_length_token(s: &str) -> bool {
+    if s == "0" {
+        return true;
+    }
+    let lower = s.to_ascii_lowercase();
+    for unit in &["px", "em", "rem", "vh", "vw", "cm", "mm", "in", "pt", "pc"] {
+        if lower.ends_with(unit) {
+            let num_part = &lower[..lower.len() - unit.len()];
+            if num_part.parse::<f64>().is_ok() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_color_token(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    let s_trimmed = lower.trim();
+    if let Some(hex) = s_trimmed.strip_prefix('#') {
+        if hex.len() == 3 || hex.len() == 4 || hex.len() == 6 || hex.len() == 8 {
+            return hex.chars().all(|c| c.is_ascii_hexdigit());
+        }
+        return false;
+    }
+    if s_trimmed.starts_with("rgb(")
+        || s_trimmed.starts_with("rgba(")
+        || s_trimmed.starts_with("hsl(")
+        || s_trimmed.starts_with("hsla(")
+    {
+        return s_trimmed.ends_with(')');
+    }
+    matches!(
+        s_trimmed,
+        "transparent"
+            | "currentcolor"
+            | "black"
+            | "silver"
+            | "gray"
+            | "white"
+            | "maroon"
+            | "red"
+            | "purple"
+            | "fuchsia"
+            | "green"
+            | "lime"
+            | "olive"
+            | "yellow"
+            | "navy"
+            | "blue"
+            | "teal"
+            | "aqua"
+            | "orange"
+            | "aliceblue"
+            | "antiquewhite"
+            | "aquamarine"
+            | "azure"
+            | "beige"
+            | "bisque"
+            | "blanchedalmond"
+            | "blueviolet"
+            | "brown"
+            | "burlywood"
+            | "cadetblue"
+            | "chartreuse"
+            | "chocolate"
+            | "coral"
+            | "cornflowerblue"
+            | "cornsilk"
+            | "crimson"
+            | "cyan"
+            | "darkblue"
+            | "darkcyan"
+            | "darkgoldenrod"
+            | "darkgray"
+            | "darkgreen"
+            | "darkgrey"
+            | "darkkhaki"
+            | "darkmagenta"
+            | "darkolivegreen"
+            | "darkorange"
+            | "darkorchid"
+            | "darkred"
+            | "darksalmon"
+            | "darkseagreen"
+            | "darkslateblue"
+            | "darkslategray"
+            | "darkslategrey"
+            | "darkturquoise"
+            | "darkviolet"
+            | "deeppink"
+            | "deepskyblue"
+            | "dimgray"
+            | "dimgrey"
+            | "dodgerblue"
+            | "firebrick"
+            | "floralwhite"
+            | "forestgreen"
+            | "gainsboro"
+            | "ghostwhite"
+            | "gold"
+            | "goldenrod"
+            | "greenyellow"
+            | "grey"
+            | "honeydew"
+            | "hotpink"
+            | "indianred"
+            | "indigo"
+            | "ivory"
+            | "khaki"
+            | "lavender"
+            | "lavenderblush"
+            | "lawngreen"
+            | "lemonchiffon"
+            | "lightblue"
+            | "lightcoral"
+            | "lightcyan"
+            | "lightgoldenrodyellow"
+            | "lightgray"
+            | "lightgreen"
+            | "lightgrey"
+            | "lightpink"
+            | "lightsalmon"
+            | "lightseagreen"
+            | "lightskyblue"
+            | "lightslategray"
+            | "lightslategrey"
+            | "lightsteelblue"
+            | "lightyellow"
+            | "limegreen"
+            | "linen"
+            | "magenta"
+            | "mediumaquamarine"
+            | "mediumblue"
+            | "mediumorchid"
+            | "mediumpurple"
+            | "mediumseagreen"
+            | "mediumslateblue"
+            | "mediumspringgreen"
+            | "mediumturquoise"
+            | "mediumvioletred"
+            | "midnightblue"
+            | "mintcream"
+            | "mistyrose"
+            | "moccasin"
+            | "navajowhite"
+            | "oldlace"
+            | "olivedrab"
+            | "orangered"
+            | "orchid"
+            | "palegoldenrod"
+            | "palegreen"
+            | "paleturquoise"
+            | "palevioletred"
+            | "papayawhip"
+            | "peachpuff"
+            | "peru"
+            | "pink"
+            | "plum"
+            | "powderblue"
+            | "rosybrown"
+            | "royalblue"
+            | "saddlebrown"
+            | "salmon"
+            | "sandybrown"
+            | "seagreen"
+            | "seashell"
+            | "sienna"
+            | "skyblue"
+            | "slateblue"
+            | "slategray"
+            | "slategrey"
+            | "snow"
+            | "springgreen"
+            | "steelblue"
+            | "tan"
+            | "thistle"
+            | "tomato"
+            | "turquoise"
+            | "violet"
+            | "wheat"
+            | "whitesmoke"
+            | "yellowgreen"
+            | "rebeccapurple"
+    )
+}
+
+fn is_url_token(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.starts_with("url(") && lower.ends_with(')')
+}
+
+fn is_image_token(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    is_url_token(s)
+        || lower.starts_with("linear-gradient(")
+        || lower.starts_with("radial-gradient(")
+        || lower.starts_with("conic-gradient(")
+        || lower.starts_with("repeating-linear-gradient(")
+        || lower.starts_with("repeating-radial-gradient(")
+        || lower.starts_with("repeating-conic-gradient(")
+}
+
+fn is_transform_function_token(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    let s_trimmed = lower.trim();
+    (s_trimmed.starts_with("translate(")
+        || s_trimmed.starts_with("translatex(")
+        || s_trimmed.starts_with("translatey(")
+        || s_trimmed.starts_with("translatez(")
+        || s_trimmed.starts_with("translate3d(")
+        || s_trimmed.starts_with("scale(")
+        || s_trimmed.starts_with("scalex(")
+        || s_trimmed.starts_with("scaley(")
+        || s_trimmed.starts_with("scalez(")
+        || s_trimmed.starts_with("scale3d(")
+        || s_trimmed.starts_with("rotate(")
+        || s_trimmed.starts_with("rotatex(")
+        || s_trimmed.starts_with("rotatey(")
+        || s_trimmed.starts_with("rotatez(")
+        || s_trimmed.starts_with("rotate3d(")
+        || s_trimmed.starts_with("skew(")
+        || s_trimmed.starts_with("skewx(")
+        || s_trimmed.starts_with("skewy(")
+        || s_trimmed.starts_with("matrix(")
+        || s_trimmed.starts_with("matrix3d(")
+        || s_trimmed.starts_with("perspective("))
+        && s_trimmed.ends_with(')')
+}
+
+fn is_custom_ident_token(s: &str) -> bool {
+    is_valid_css_identifier(s)
+        && !matches!(
+            s.to_ascii_lowercase().as_str(),
+            "length"
+                | "number"
+                | "percentage"
+                | "length-percentage"
+                | "color"
+                | "image"
+                | "url"
+                | "integer"
+                | "angle"
+                | "time"
+                | "resolution"
+                | "transform-function"
+                | "transform-list"
+                | "custom-ident"
+        )
+}
+
+fn is_keyword_token(s: &str, expected: &str) -> bool {
+    s.eq_ignore_ascii_case(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4921,5 +6314,320 @@ mod tests {
         assert!(!is_css_wide_keyword("auto"));
         assert!(!is_css_wide_keyword("solid"));
         assert!(!is_css_wide_keyword("red"));
+    }
+
+    #[test]
+    fn test_shorthand_expansion_edge_cases_t1014() {
+        // 1. Margin expansions
+        let m1 = expand_shorthand_values("margin", &["10px"]).unwrap();
+        assert_eq!(m1.len(), 4);
+        assert_eq!(m1[0].name, "margin-top");
+        assert_eq!(m1[0].value, "10px");
+        assert_eq!(m1[1].name, "margin-right");
+        assert_eq!(m1[1].value, "10px");
+        assert_eq!(m1[2].name, "margin-bottom");
+        assert_eq!(m1[2].value, "10px");
+        assert_eq!(m1[3].name, "margin-left");
+        assert_eq!(m1[3].value, "10px");
+
+        let m2 = expand_shorthand_values("margin", &["10px", "20px"]).unwrap();
+        assert_eq!(m2[0].value, "10px");
+        assert_eq!(m2[1].value, "20px");
+        assert_eq!(m2[2].value, "10px");
+        assert_eq!(m2[3].value, "20px");
+
+        let m3 = expand_shorthand_values("margin", &["10px", "20px", "30px"]).unwrap();
+        assert_eq!(m3[0].value, "10px");
+        assert_eq!(m3[1].value, "20px");
+        assert_eq!(m3[2].value, "30px");
+        assert_eq!(m3[3].value, "20px");
+
+        let m4 = expand_shorthand_values("margin", &["10px", "20px", "30px", "40px"]).unwrap();
+        assert_eq!(m4[0].value, "10px");
+        assert_eq!(m4[1].value, "20px");
+        assert_eq!(m4[2].value, "30px");
+        assert_eq!(m4[3].value, "40px");
+
+        // 2. CSS-wide keyword inheritance edge cases
+        let m_inherit = expand_shorthand_values("margin", &["inherit"]).unwrap();
+        assert_eq!(m_inherit.len(), 4);
+        assert_eq!(m_inherit[0].value, "inherit");
+        assert_eq!(m_inherit[3].value, "inherit");
+
+        assert_eq!(
+            expand_shorthand_values("margin", &["inherit", "10px"]),
+            Err(ShorthandError::InvalidValue)
+        );
+
+        // 3. Border edges (order independent)
+        let bt1 = expand_shorthand_values("border-top", &["solid"]).unwrap();
+        assert_eq!(bt1[0].value, "medium"); // width
+        assert_eq!(bt1[1].value, "solid"); // style
+        assert_eq!(bt1[2].value, "currentcolor"); // color
+
+        let bt2 = expand_shorthand_values("border-top", &["1px", "red", "dashed"]).unwrap();
+        assert_eq!(bt2[0].value, "1px");
+        assert_eq!(bt2[1].value, "dashed");
+        assert_eq!(bt2[2].value, "red");
+
+        // 4. Border shorthand (sets all 4 edges)
+        let b1 = expand_shorthand_values("border", &["5px", "double"]).unwrap();
+        assert_eq!(b1.len(), 12);
+        assert_eq!(b1[0].name, "border-top-width");
+        assert_eq!(b1[0].value, "5px");
+        assert_eq!(b1[1].name, "border-top-style");
+        assert_eq!(b1[1].value, "double");
+        assert_eq!(b1[2].name, "border-top-color");
+        assert_eq!(b1[2].value, "currentcolor");
+        assert_eq!(b1[9].name, "border-left-width");
+        assert_eq!(b1[9].value, "5px");
+        assert_eq!(b1[10].name, "border-left-style");
+        assert_eq!(b1[10].value, "double");
+        assert_eq!(b1[11].name, "border-left-color");
+        assert_eq!(b1[11].value, "currentcolor");
+
+        // 5. Border-radius with slash horizontal/vertical corners expansion
+        let br1 = expand_shorthand_values("border-radius", &["10px", "20px", "/", "30px"]).unwrap();
+        assert_eq!(br1.len(), 4);
+        assert_eq!(br1[0].name, "border-top-left-radius");
+        assert_eq!(br1[0].value, "10px 30px");
+        assert_eq!(br1[1].name, "border-top-right-radius");
+        assert_eq!(br1[1].value, "20px 30px");
+        assert_eq!(br1[2].name, "border-bottom-right-radius");
+        assert_eq!(br1[2].value, "10px 30px");
+        assert_eq!(br1[3].name, "border-bottom-left-radius");
+        assert_eq!(br1[3].value, "20px 30px");
+
+        let br2 = expand_shorthand_values("border-radius", &["5px"]).unwrap();
+        assert_eq!(br2[0].value, "5px");
+        assert_eq!(br2[3].value, "5px");
+
+        assert_eq!(
+            expand_shorthand_values("border-radius", &["5px", "/", "/", "10px"]),
+            Err(ShorthandError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn test_logical_properties_mapping_t1014() {
+        // Block and inline sizing
+        assert_eq!(
+            map_logical_to_physical("block-size", "horizontal-tb", "ltr"),
+            Some("height")
+        );
+        assert_eq!(
+            map_logical_to_physical("block-size", "vertical-rl", "ltr"),
+            Some("width")
+        );
+        assert_eq!(
+            map_logical_to_physical("inline-size", "horizontal-tb", "ltr"),
+            Some("width")
+        );
+        assert_eq!(
+            map_logical_to_physical("inline-size", "vertical-rl", "ltr"),
+            Some("height")
+        );
+
+        // Margins and paddings
+        assert_eq!(
+            map_logical_to_physical("margin-block-start", "horizontal-tb", "ltr"),
+            Some("margin-top")
+        );
+        assert_eq!(
+            map_logical_to_physical("margin-block-end", "horizontal-tb", "ltr"),
+            Some("margin-bottom")
+        );
+        assert_eq!(
+            map_logical_to_physical("margin-inline-start", "horizontal-tb", "ltr"),
+            Some("margin-left")
+        );
+        assert_eq!(
+            map_logical_to_physical("margin-inline-start", "horizontal-tb", "rtl"),
+            Some("margin-right")
+        );
+        assert_eq!(
+            map_logical_to_physical("margin-inline-start", "vertical-rl", "ltr"),
+            Some("margin-top")
+        );
+        assert_eq!(
+            map_logical_to_physical("margin-inline-start", "vertical-rl", "rtl"),
+            Some("margin-bottom")
+        );
+
+        assert_eq!(
+            map_logical_to_physical("padding-inline-end", "horizontal-tb", "ltr"),
+            Some("padding-right")
+        );
+        assert_eq!(
+            map_logical_to_physical("padding-inline-end", "horizontal-tb", "rtl"),
+            Some("padding-left")
+        );
+
+        // Insets
+        assert_eq!(
+            map_logical_to_physical("inset-block-start", "horizontal-tb", "ltr"),
+            Some("top")
+        );
+        assert_eq!(
+            map_logical_to_physical("inset-inline-start", "horizontal-tb", "ltr"),
+            Some("left")
+        );
+
+        // Border width, style, color
+        assert_eq!(
+            map_logical_to_physical("border-block-start-width", "horizontal-tb", "ltr"),
+            Some("border-top-width")
+        );
+        assert_eq!(
+            map_logical_to_physical("border-inline-end-style", "horizontal-tb", "ltr"),
+            Some("border-right-style")
+        );
+        assert_eq!(
+            map_logical_to_physical("border-block-end-color", "horizontal-tb", "ltr"),
+            Some("border-bottom-color")
+        );
+
+        // Border logical corners radius
+        assert_eq!(
+            map_logical_to_physical("border-start-start-radius", "horizontal-tb", "ltr"),
+            Some("border-top-left-radius")
+        );
+        assert_eq!(
+            map_logical_to_physical("border-start-start-radius", "horizontal-tb", "rtl"),
+            Some("border-top-right-radius")
+        );
+        assert_eq!(
+            map_logical_to_physical("border-start-start-radius", "vertical-rl", "ltr"),
+            Some("border-top-right-radius")
+        );
+        assert_eq!(
+            map_logical_to_physical("border-start-start-radius", "vertical-rl", "rtl"),
+            Some("border-bottom-right-radius")
+        );
+
+        // Unknown
+        assert_eq!(
+            map_logical_to_physical("not-logical", "horizontal-tb", "ltr"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_custom_property_registration_validation_t1014() {
+        // 1. Valid syntax * (any)
+        let r1 = CustomPropertyRegistration {
+            name: "--my-var".to_string(),
+            syntax: "*".to_string(),
+            inherits: true,
+            initial_value: None,
+        };
+        assert_eq!(validate_custom_property_registration(&r1), Ok(()));
+
+        // 2. Valid syntax <color>
+        let r2 = CustomPropertyRegistration {
+            name: "--my-color".to_string(),
+            syntax: "<color>".to_string(),
+            inherits: true,
+            initial_value: Some("red".to_string()),
+        };
+        assert_eq!(validate_custom_property_registration(&r2), Ok(()));
+
+        // 3. Valid keyword
+        let r3 = CustomPropertyRegistration {
+            name: "--my-keyword".to_string(),
+            syntax: "auto".to_string(),
+            inherits: false,
+            initial_value: Some("auto".to_string()),
+        };
+        assert_eq!(validate_custom_property_registration(&r3), Ok(()));
+
+        // 4. Valid alternation
+        let r4 = CustomPropertyRegistration {
+            name: "--my-alt".to_string(),
+            syntax: "<length> | none".to_string(),
+            inherits: true,
+            initial_value: Some("none".to_string()),
+        };
+        assert_eq!(validate_custom_property_registration(&r4), Ok(()));
+
+        // 5. Valid list multiplier (comma separated)
+        let r5 = CustomPropertyRegistration {
+            name: "--my-colors".to_string(),
+            syntax: "<color>#".to_string(),
+            inherits: true,
+            initial_value: Some("red, blue, #fff".to_string()),
+        };
+        assert_eq!(validate_custom_property_registration(&r5), Ok(()));
+
+        // 6. Invalid name (no double-hyphen or too short)
+        let r_err1 = CustomPropertyRegistration {
+            name: "invalid-name".to_string(),
+            syntax: "*".to_string(),
+            inherits: true,
+            initial_value: None,
+        };
+        assert_eq!(
+            validate_custom_property_registration(&r_err1),
+            Err(CustomPropertyValidationError::InvalidName)
+        );
+
+        let r_err2 = CustomPropertyRegistration {
+            name: "--".to_string(),
+            syntax: "*".to_string(),
+            inherits: true,
+            initial_value: None,
+        };
+        assert_eq!(
+            validate_custom_property_registration(&r_err2),
+            Err(CustomPropertyValidationError::InvalidName)
+        );
+
+        // 7. Invalid syntax descriptor (unclosed brackets or unknown type)
+        let r_err3 = CustomPropertyRegistration {
+            name: "--my-var".to_string(),
+            syntax: "<unknown>".to_string(),
+            inherits: true,
+            initial_value: Some("foo".to_string()),
+        };
+        assert_eq!(
+            validate_custom_property_registration(&r_err3),
+            Err(CustomPropertyValidationError::InvalidSyntax)
+        );
+
+        // 8. Missing initial value
+        let r_err4 = CustomPropertyRegistration {
+            name: "--my-var".to_string(),
+            syntax: "<color>".to_string(),
+            inherits: true,
+            initial_value: None,
+        };
+        assert_eq!(
+            validate_custom_property_registration(&r_err4),
+            Err(CustomPropertyValidationError::MissingInitialValue)
+        );
+
+        // 9. Invalid initial value against color
+        let r_err5 = CustomPropertyRegistration {
+            name: "--my-var".to_string(),
+            syntax: "<color>".to_string(),
+            inherits: true,
+            initial_value: Some("not-a-color".to_string()),
+        };
+        assert_eq!(
+            validate_custom_property_registration(&r_err5),
+            Err(CustomPropertyValidationError::InvalidInitialValue)
+        );
+
+        // 10. Invalid initial value against integer (float is invalid)
+        let r_err6 = CustomPropertyRegistration {
+            name: "--my-var".to_string(),
+            syntax: "<integer>".to_string(),
+            inherits: true,
+            initial_value: Some("12.3".to_string()),
+        };
+        assert_eq!(
+            validate_custom_property_registration(&r_err6),
+            Err(CustomPropertyValidationError::InvalidInitialValue)
+        );
     }
 }
