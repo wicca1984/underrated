@@ -2867,6 +2867,7 @@ const NAMED_ENTITIES: &[(&str, &str)] = &[
     ("&Ntilde;", "\u{00D1}"),
     ("&Ntilde", "\u{00D1}"),
     ("&Nu;", "\u{039D}"),
+    ("&NotEqualTilde;", "\u{2242}\u{0338}"),
     ("&Oacute;", "\u{00D3}"),
     ("&Oacute", "\u{00D3}"),
     ("&Ocirc;", "\u{00D4}"),
