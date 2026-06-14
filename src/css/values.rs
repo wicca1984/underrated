@@ -4284,6 +4284,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
             if name.eq_ignore_ascii_case("color") {
                 return parse_color_function(value).map(CssValue::Color);
             }
+            if name.eq_ignore_ascii_case("device-cmyk") {
+                return parse_device_cmyk_function(value).map(CssValue::Color);
+            }
             if name.eq_ignore_ascii_case("color-mix") {
                 return parse_color_mix_function(value).map(CssValue::Color);
             }
@@ -5185,6 +5188,77 @@ fn parse_color_mix_function(components: &[ComponentValue]) -> Option<Color> {
     let a_out = (final_a * 255.0).round().clamp(0.0, 255.0) as u8;
 
     Some(Color::Rgba(r_out, g_out, b_out, a_out))
+}
+
+fn parse_device_cmyk_function(components: &[ComponentValue]) -> Option<Color> {
+    enum CmykArg {
+        Number(f64),
+        Percentage(f64),
+    }
+
+    let mut args = Vec::new();
+    for component in components {
+        match component {
+            ComponentValue::Token(CssToken::Whitespace)
+            | ComponentValue::Token(CssToken::Comma)
+            | ComponentValue::Token(CssToken::Delim('/')) => {}
+            ComponentValue::Token(CssToken::Number(v)) => args.push(CmykArg::Number(*v)),
+            ComponentValue::Token(CssToken::Percentage(v)) => args.push(CmykArg::Percentage(*v)),
+            _ => return None,
+        }
+    }
+
+    if args.len() != 4 && args.len() != 5 {
+        return None;
+    }
+
+    // Parse Cyan (C)
+    let c_val = match args[0] {
+        CmykArg::Number(v) => v,
+        CmykArg::Percentage(v) => v / 100.0,
+    };
+    let c = c_val.clamp(0.0, 1.0);
+
+    // Parse Magenta (M)
+    let m_val = match args[1] {
+        CmykArg::Number(v) => v,
+        CmykArg::Percentage(v) => v / 100.0,
+    };
+    let m = m_val.clamp(0.0, 1.0);
+
+    // Parse Yellow (Y)
+    let y_val = match args[2] {
+        CmykArg::Number(v) => v,
+        CmykArg::Percentage(v) => v / 100.0,
+    };
+    let y = y_val.clamp(0.0, 1.0);
+
+    // Parse Key/Black (K)
+    let k_val = match args[3] {
+        CmykArg::Number(v) => v,
+        CmykArg::Percentage(v) => v / 100.0,
+    };
+    let k = k_val.clamp(0.0, 1.0);
+
+    // Parse Alpha (A)
+    let alpha = if args.len() == 5 {
+        let alpha_val = match args[4] {
+            CmykArg::Number(v) => v,
+            CmykArg::Percentage(v) => v / 100.0,
+        };
+        (alpha_val.clamp(0.0, 1.0) * 255.0).round() as u8
+    } else {
+        255
+    };
+
+    // Naive sRGB conversion (device-cmyk has no colorimetric definition without a profile;
+    // use the standard naive fallback, which is what browsers use without an ICC profile):
+    // TODO(spec): Naive profile-less device-cmyk fallback
+    let r = (255.0 * (1.0 - c) * (1.0 - k)).round().clamp(0.0, 255.0) as u8;
+    let g = (255.0 * (1.0 - m) * (1.0 - k)).round().clamp(0.0, 255.0) as u8;
+    let b = (255.0 * (1.0 - y) * (1.0 - k)).round().clamp(0.0, 255.0) as u8;
+
+    Some(Color::Rgba(r, g, b, alpha))
 }
 
 fn parse_args(components: &[ComponentValue]) -> Option<Vec<&ComponentValue>> {
@@ -6377,6 +6451,48 @@ mod tests {
 
         // Unsupported color space: color(rec2020 1 0 0) -> None
         assert_eq!(parse("color(rec2020 1 0 0)"), None);
+    }
+
+    #[test]
+    fn test_parse_color_device_cmyk() {
+        let parse = |input: &str| {
+            let components = crate::css::parser::parse_component_values(input);
+            parse_value(&components)
+        };
+
+        // 1. device-cmyk(0 0 0 0) -> white (255,255,255)
+        assert_eq!(
+            parse("device-cmyk(0 0 0 0)"),
+            Some(CssValue::Color(Color::Rgba(255, 255, 255, 255)))
+        );
+
+        // 2. device-cmyk(0 0 0 1) -> black (0,0,0)
+        assert_eq!(
+            parse("device-cmyk(0 0 0 1)"),
+            Some(CssValue::Color(Color::Rgba(0, 0, 0, 255)))
+        );
+
+        // 3. device-cmyk(0% 100% 100% 0%) -> red (255,0,0)
+        assert_eq!(
+            parse("device-cmyk(0% 100% 100% 0%)"),
+            Some(CssValue::Color(Color::Rgba(255, 0, 0, 255)))
+        );
+
+        // 4. device-cmyk(0 1 1 0 / 0.5) -> red with alpha ~0.5 (round(0.5*255) = 128)
+        let alpha_cmyk = parse("device-cmyk(0 1 1 0 / 0.5)");
+        match alpha_cmyk {
+            Some(CssValue::Color(Color::Rgba(r, g, b, alpha))) => {
+                assert_eq!(r, 255);
+                assert_eq!(g, 0);
+                assert_eq!(b, 0);
+                assert!((alpha as i32 - 128).abs() <= 1);
+            }
+            _ => panic!("Expected device-cmyk(0 1 1 0 / 0.5) to parse with alpha"),
+        }
+
+        // 5. a malformed case (e.g. wrong arg count) -> None / not recognized
+        assert_eq!(parse("device-cmyk(0 1 1)"), None);
+        assert_eq!(parse("device-cmyk(0 1 1 0 1 2)"), None);
     }
 
     #[test]
