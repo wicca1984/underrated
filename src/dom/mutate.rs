@@ -717,6 +717,182 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `colspan` content attribute of a valid table cell element (`<td>` or `<th>`).
+    /// Returns `None` if the node is not a table cell element, has no `colspan` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_colspan(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("colspan"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `rowspan` content attribute of a valid table cell element (`<td>` or `<th>`).
+    /// Returns `None` if the node is not a table cell element, has no `rowspan` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_rowspan(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("rowspan"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `headers` content attribute of a valid table cell element (`<td>` or `<th>`).
+    /// Returns `None` if the node is not a table cell element, has no `headers` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_headers(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("headers"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `scope` content attribute of a valid `<th>` element.
+    /// Returns `None` if the node is not a `<th>` element, has no `scope` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_scope(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("th")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("scope"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `abbr` content attribute of a valid `<th>` element.
+    /// Returns `None` if the node is not a `<th>` element, has no `abbr` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_abbr(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("th")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("abbr"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `start` content attribute of a valid `<ol>` element.
+    /// Returns `None` if the node is not an `<ol>` element, has no `start` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_start(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("ol")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("start"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `reversed` content attribute of a valid `<ol>` element.
+    /// Returns `None` if the node is not an `<ol>` element, has no `reversed` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_reversed(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("ol")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("reversed"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `value` content attribute of a valid `<li>` element.
+    /// Returns `None` if the node is not an `<li>` element, has no `value` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_value(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("li")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("value"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `content` content attribute of a valid `<meta>` element.
+    /// Returns `None` if the node is not a `<meta>` element, has no `content` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_content(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("meta")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `http-equiv` content attribute of a valid `<meta>` element.
+    /// Returns `None` if the node is not a `<meta>` element, has no `http-equiv` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_http_equiv(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("meta")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("http-equiv"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `charset` content attribute of a valid `<meta>` element.
+    /// Returns `None` if the node is not a `<meta>` element, has no `charset` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_charset(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("meta")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("charset"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -2092,5 +2268,212 @@ mod tests {
         assert_eq!(foreign_dom.get_step(foreign_node), None);
         assert_eq!(foreign_dom.get_pattern(foreign_node), None);
         assert_eq!(foreign_dom.get_accept(foreign_node), None);
+    }
+
+    #[test]
+    fn test_table_cell_list_and_meta_accessors() {
+        let mut dom = Dom::new();
+
+        // --- Table Cell: colspan, rowspan, headers (td, th) ---
+        let td_id = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: vec![
+                ("colspan".to_string(), "2".to_string()),
+                ("rowspan".to_string(), "3".to_string()),
+                ("headers".to_string(), "header-id".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_colspan(td_id), Some("2"));
+        assert_eq!(dom.get_rowspan(td_id), Some("3"));
+        assert_eq!(dom.get_headers(td_id), Some("header-id"));
+
+        let th_id = dom.create_node(NodeData::Element {
+            name: "th".to_string(),
+            attrs: vec![
+                ("colspan".to_string(), "4".to_string()),
+                ("rowspan".to_string(), "5".to_string()),
+                ("headers".to_string(), "h1 h2".to_string()),
+                ("scope".to_string(), "row".to_string()),
+                ("abbr".to_string(), "Abbreviation".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_colspan(th_id), Some("4"));
+        assert_eq!(dom.get_rowspan(th_id), Some("5"));
+        assert_eq!(dom.get_headers(th_id), Some("h1 h2"));
+        assert_eq!(dom.get_scope(th_id), Some("row"));
+        assert_eq!(dom.get_abbr(th_id), Some("Abbreviation"));
+
+        // Case insensitivity for td/th
+        let td_caps_id = dom.create_node(NodeData::Element {
+            name: "TD".to_string(),
+            attrs: vec![
+                ("COLSPAN".to_string(), "10".to_string()),
+                ("ROWSPAN".to_string(), "20".to_string()),
+                ("HEADERS".to_string(), "cap-header".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_colspan(td_caps_id), Some("10"));
+        assert_eq!(dom.get_rowspan(td_caps_id), Some("20"));
+        assert_eq!(dom.get_headers(td_caps_id), Some("cap-header"));
+
+        let th_caps_id = dom.create_node(NodeData::Element {
+            name: "TH".to_string(),
+            attrs: vec![
+                ("SCOPE".to_string(), "col".to_string()),
+                ("ABBR".to_string(), "Short".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_scope(th_caps_id), Some("col"));
+        assert_eq!(dom.get_abbr(th_caps_id), Some("Short"));
+
+        // Negative check: wrong tags return None
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("colspan".to_string(), "2".to_string()),
+                ("rowspan".to_string(), "3".to_string()),
+                ("headers".to_string(), "header-id".to_string()),
+                ("scope".to_string(), "col".to_string()),
+                ("abbr".to_string(), "Abbreviation".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_colspan(div_id), None);
+        assert_eq!(dom.get_rowspan(div_id), None);
+        assert_eq!(dom.get_headers(div_id), None);
+        assert_eq!(dom.get_scope(div_id), None);
+        assert_eq!(dom.get_abbr(div_id), None);
+
+        // td has no scope/abbr defined by spec
+        assert_eq!(dom.get_scope(td_id), None);
+        assert_eq!(dom.get_abbr(td_id), None);
+
+        // Absent attributes on th return None
+        let th_empty_id = dom.create_node(NodeData::Element {
+            name: "th".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_colspan(th_empty_id), None);
+        assert_eq!(dom.get_rowspan(th_empty_id), None);
+        assert_eq!(dom.get_headers(th_empty_id), None);
+        assert_eq!(dom.get_scope(th_empty_id), None);
+        assert_eq!(dom.get_abbr(th_empty_id), None);
+
+        // --- Ordered List: start, reversed (ol); List Item: value (li) ---
+        let ol_id = dom.create_node(NodeData::Element {
+            name: "ol".to_string(),
+            attrs: vec![
+                ("start".to_string(), "5".to_string()),
+                ("reversed".to_string(), "reversed".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_start(ol_id), Some("5"));
+        assert_eq!(dom.get_reversed(ol_id), Some("reversed"));
+
+        let li_id = dom.create_node(NodeData::Element {
+            name: "li".to_string(),
+            attrs: vec![("value".to_string(), "10".to_string())],
+        });
+        assert_eq!(dom.get_value(li_id), Some("10"));
+
+        // Case insensitivity
+        let ol_caps_id = dom.create_node(NodeData::Element {
+            name: "OL".to_string(),
+            attrs: vec![
+                ("START".to_string(), "1".to_string()),
+                ("REVERSED".to_string(), "".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_start(ol_caps_id), Some("1"));
+        assert_eq!(dom.get_reversed(ol_caps_id), Some(""));
+
+        let li_caps_id = dom.create_node(NodeData::Element {
+            name: "LI".to_string(),
+            attrs: vec![("VALUE".to_string(), "42".to_string())],
+        });
+        assert_eq!(dom.get_value(li_caps_id), Some("42"));
+
+        // Negative check: wrong tags return None
+        assert_eq!(dom.get_start(div_id), None);
+        assert_eq!(dom.get_reversed(div_id), None);
+        assert_eq!(dom.get_value(div_id), None);
+
+        // ol has no value, li has no start/reversed
+        assert_eq!(dom.get_value(ol_id), None);
+        assert_eq!(dom.get_start(li_id), None);
+        assert_eq!(dom.get_reversed(li_id), None);
+
+        // Absent attributes
+        let ol_empty_id = dom.create_node(NodeData::Element {
+            name: "ol".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_start(ol_empty_id), None);
+        assert_eq!(dom.get_reversed(ol_empty_id), None);
+
+        let li_empty_id = dom.create_node(NodeData::Element {
+            name: "li".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_value(li_empty_id), None);
+
+        // --- Meta: name, content, http-equiv, charset (meta) ---
+        let meta_id = dom.create_node(NodeData::Element {
+            name: "meta".to_string(),
+            attrs: vec![
+                ("name".to_string(), "description".to_string()),
+                ("content".to_string(), "hello world".to_string()),
+                ("http-equiv".to_string(), "content-type".to_string()),
+                ("charset".to_string(), "utf-8".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_name(meta_id), Some("description"));
+        assert_eq!(dom.get_content(meta_id), Some("hello world"));
+        assert_eq!(dom.get_http_equiv(meta_id), Some("content-type"));
+        assert_eq!(dom.get_charset(meta_id), Some("utf-8"));
+
+        // Case insensitivity
+        let meta_caps_id = dom.create_node(NodeData::Element {
+            name: "META".to_string(),
+            attrs: vec![
+                ("NAME".to_string(), "viewport".to_string()),
+                ("CONTENT".to_string(), "width=device-width".to_string()),
+                ("HTTP-EQUIV".to_string(), "refresh".to_string()),
+                ("CHARSET".to_string(), "iso-8859-1".to_string()),
+            ],
+        });
+        assert_eq!(dom.get_name(meta_caps_id), Some("viewport"));
+        assert_eq!(dom.get_content(meta_caps_id), Some("width=device-width"));
+        assert_eq!(dom.get_http_equiv(meta_caps_id), Some("refresh"));
+        assert_eq!(dom.get_charset(meta_caps_id), Some("iso-8859-1"));
+
+        // Negative check: wrong tag returns None
+        assert_eq!(dom.get_content(div_id), None);
+        assert_eq!(dom.get_http_equiv(div_id), None);
+        assert_eq!(dom.get_charset(div_id), None);
+
+        // Absent attributes
+        let meta_empty_id = dom.create_node(NodeData::Element {
+            name: "meta".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_name(meta_empty_id), None);
+        assert_eq!(dom.get_content(meta_empty_id), None);
+        assert_eq!(dom.get_http_equiv(meta_empty_id), None);
+        assert_eq!(dom.get_charset(meta_empty_id), None);
+
+        // --- Invalid NodeId returns None for all new getters ---
+        let foreign_dom = Dom::new();
+        let foreign_node = dom.create_node(NodeData::Text("hi".to_string()));
+        assert_eq!(foreign_dom.get_colspan(foreign_node), None);
+        assert_eq!(foreign_dom.get_rowspan(foreign_node), None);
+        assert_eq!(foreign_dom.get_headers(foreign_node), None);
+        assert_eq!(foreign_dom.get_scope(foreign_node), None);
+        assert_eq!(foreign_dom.get_abbr(foreign_node), None);
+        assert_eq!(foreign_dom.get_start(foreign_node), None);
+        assert_eq!(foreign_dom.get_reversed(foreign_node), None);
+        assert_eq!(foreign_dom.get_value(foreign_node), None);
+        assert_eq!(foreign_dom.get_content(foreign_node), None);
+        assert_eq!(foreign_dom.get_http_equiv(foreign_node), None);
+        assert_eq!(foreign_dom.get_charset(foreign_node), None);
     }
 }
