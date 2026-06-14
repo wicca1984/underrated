@@ -2867,15 +2867,13 @@ impl Tokenizer {
 
     fn perform_named_character_reference_match(&mut self) {
         let mut longest_match: Option<(&'static str, &'static str)> = None;
-        for (name, replacement) in NAMED_ENTITIES {
-            if self.temporary_buffer.starts_with(name) {
-                if let Some((prev_name, _)) = longest_match {
-                    if name.len() > prev_name.len() {
-                        longest_match = Some((*name, *replacement));
-                    }
-                } else {
-                    longest_match = Some((*name, *replacement));
-                }
+        let temp_len = self.temporary_buffer.len();
+        for len in (1..=temp_len).rev() {
+            let prefix = &self.temporary_buffer[..len];
+            if let Ok(idx) = NAMED_ENTITIES.binary_search_by(|(name, _)| name.cmp(&prefix)) {
+                let (name, replacement) = NAMED_ENTITIES[idx];
+                longest_match = Some((name, replacement));
+                break;
             }
         }
 
@@ -2932,12 +2930,16 @@ impl Tokenizer {
     }
 
     fn is_maybe_named_match(&self) -> bool {
-        for (name, _) in NAMED_ENTITIES {
-            if name.starts_with(&self.temporary_buffer) {
-                return true;
-            }
-        }
-        false
+        let prefix = self.temporary_buffer.as_str();
+        NAMED_ENTITIES
+            .binary_search_by(|(name, _)| {
+                if name.starts_with(prefix) {
+                    std::cmp::Ordering::Equal
+                } else {
+                    name.cmp(&prefix)
+                }
+            })
+            .is_ok()
     }
 }
 
@@ -6692,5 +6694,48 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn test_t1074_binary_search_and_ambiguous_ampersands() {
+        // 1. Decodes standard named entities correctly
+        let mut t = Tokenizer::new(InputStream::from_utf8(b"&amp;"));
+        assert_eq!(t.next_token(), Token::Character('&'));
+        assert_eq!(t.next_token(), Token::Eof);
+
+        // 2. Decodes entity without semicolon in data state
+        let mut t2 = Tokenizer::new(InputStream::from_utf8(b"&amp"));
+        assert_eq!(t2.next_token(), Token::Character('&'));
+        assert_eq!(t2.next_token(), Token::Eof);
+
+        // 3. Ambiguous ampersand in data state (non-attribute)
+        let mut t3 = Tokenizer::new(InputStream::from_utf8(b"&ampx"));
+        assert_eq!(t3.next_token(), Token::Character('&'));
+        assert_eq!(t3.next_token(), Token::Character('x'));
+        assert_eq!(t3.next_token(), Token::Eof);
+
+        // 4. Legitimate partial match where &not is a valid entity
+        let mut t4 = Tokenizer::new(InputStream::from_utf8(b"&notanentity;"));
+        let mut decoded = String::new();
+        loop {
+            match t4.next_token() {
+                Token::Character(c) => decoded.push(c),
+                Token::Eof => break,
+                _ => {}
+            }
+        }
+        assert_eq!(decoded, "¬anentity;");
+
+        // 5. Completely unknown named entity
+        let mut t5 = Tokenizer::new(InputStream::from_utf8(b"&xyz;"));
+        let mut decoded5 = String::new();
+        loop {
+            match t5.next_token() {
+                Token::Character(c) => decoded5.push(c),
+                Token::Eof => break,
+                _ => {}
+            }
+        }
+        assert_eq!(decoded5, "&xyz;");
     }
 }
