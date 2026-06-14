@@ -1219,6 +1219,27 @@ fn plain_stop_immediate_propagation(
     Ok(JsValue::undefined())
 }
 
+fn plain_stop_propagation(
+    this: &JsValue,
+    _args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    if let Some(obj) = this.as_object() {
+        obj.set(
+            JsString::from("propagationStopped"),
+            JsValue::from(true),
+            false,
+            context,
+        )?;
+
+        // If it's a CustomEvent, also set its inner propagation_stopped
+        if let Some(custom_event) = obj.downcast_ref::<crate::script::CustomEvent>() {
+            *custom_event.propagation_stopped.borrow_mut() = true;
+        }
+    }
+    Ok(JsValue::undefined())
+}
+
 pub fn dispatch_event(
     this: &JsValue,
     args: &[JsValue],
@@ -1394,6 +1415,21 @@ pub fn dispatch_event(
             context,
         )?;
 
+        let original_stop_propagation =
+            event_obj.get(JsString::from("stopPropagation"), context)?;
+        let plain_stop_propagation_fn = FunctionObjectBuilder::new(
+            &context.realm().clone(),
+            NativeFunction::from_fn_ptr(plain_stop_propagation),
+        )
+        .name("stopPropagation")
+        .build();
+        event_obj.set(
+            JsString::from("stopPropagation"),
+            JsValue::from(plain_stop_propagation_fn),
+            false,
+            context,
+        )?;
+
         let original_stop_immediate_propagation =
             event_obj.get(JsString::from("stopImmediatePropagation"), context)?;
         let plain_stop_immediate_propagation_fn = FunctionObjectBuilder::new(
@@ -1510,6 +1546,12 @@ pub fn dispatch_event(
         let _ = event_obj.set(
             JsString::from("preventDefault"),
             original_prevent_default,
+            false,
+            context,
+        );
+        let _ = event_obj.set(
+            JsString::from("stopPropagation"),
+            original_stop_propagation,
             false,
             context,
         );
@@ -2843,6 +2885,159 @@ mod tests {
 
                 if (sigCount !== 1) {
                     throw new Error("signal aborted listener should not run again: got count " + sigCount);
+                }
+
+                return "OK";
+            } catch (err) {
+                return "ERROR: " + err.message + "\n" + err.stack;
+            }
+        })()"#;
+
+        match host.eval_with_dom(script, &mut dom) {
+            Ok(res) => {
+                println!("EVAL RES IS: {:?}", res);
+                assert_eq!(res, "OK");
+                set_max_script_length(5000);
+            }
+            Err(err) => {
+                set_max_script_length(5000);
+                panic!("Javascript execution failed: {:?}", err);
+            }
+        }
+    }
+
+    #[test]
+    fn test_t1078_expanded_event_surface_compliance() {
+        use crate::script::{BoaHost, set_max_script_length};
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        // Ensure the script is not skipped by limits set by other concurrent/sequential tests
+        set_max_script_length(100000);
+
+        let script = r#"(function() {
+            try {
+                // 1. Verify Event phase constants are on Event, Event.prototype, and event instances
+                if (Event.NONE !== 0) throw new Error("Event.NONE mismatch");
+                if (Event.CAPTURING_PHASE !== 1) throw new Error("Event.CAPTURING_PHASE mismatch");
+                if (Event.AT_TARGET !== 2) throw new Error("Event.AT_TARGET mismatch");
+                if (Event.BUBBLING_PHASE !== 3) throw new Error("Event.BUBBLING_PHASE mismatch");
+
+                if (Event.prototype.NONE !== 0) throw new Error("Event.prototype.NONE mismatch");
+                if (Event.prototype.CAPTURING_PHASE !== 1) throw new Error("Event.prototype.CAPTURING_PHASE mismatch");
+                if (Event.prototype.AT_TARGET !== 2) throw new Error("Event.prototype.AT_TARGET mismatch");
+                if (Event.prototype.BUBBLING_PHASE !== 3) throw new Error("Event.prototype.BUBBLING_PHASE mismatch");
+
+                const ev = new Event("click");
+                if (ev.NONE !== 0) throw new Error("ev.NONE mismatch");
+                if (ev.CAPTURING_PHASE !== 1) throw new Error("ev.CAPTURING_PHASE mismatch");
+                if (ev.AT_TARGET !== 2) throw new Error("ev.AT_TARGET mismatch");
+                if (ev.BUBBLING_PHASE !== 3) throw new Error("ev.BUBBLING_PHASE mismatch");
+
+                // 2. Verify plain object events support stopPropagation and stopImmediatePropagation
+                const parent = new EventTarget();
+                const child = new EventTarget();
+                child.parentNode = parent;
+
+                let parent_called = false;
+                let child_listener_1_called = false;
+                let child_listener_2_called = false;
+
+                parent.addEventListener("click", () => {
+                    parent_called = true;
+                });
+
+                child.addEventListener("click", (e) => {
+                    child_listener_1_called = true;
+                    if (typeof e.stopPropagation !== "function") {
+                        throw new Error("plain event is missing stopPropagation");
+                    }
+                    e.stopPropagation();
+                });
+
+                child.addEventListener("click", (e) => {
+                    child_listener_2_called = true;
+                });
+
+                const plain_ev = { type: "click", bubbles: true };
+                child.dispatchEvent(plain_ev);
+
+                if (!child_listener_1_called) throw new Error("child listener 1 was not called");
+                if (!child_listener_2_called) throw new Error("child listener 2 was not called after stopPropagation");
+                if (parent_called) throw new Error("parent listener was called after stopPropagation");
+
+                // Reset logs and test stopImmediatePropagation on plain event
+                parent_called = false;
+                let child_imm_1_called = false;
+                let child_imm_2_called = false;
+
+                const child_imm = new EventTarget();
+                child_imm.parentNode = parent;
+
+                child_imm.addEventListener("click", (e) => {
+                    child_imm_1_called = true;
+                    if (typeof e.stopImmediatePropagation !== "function") {
+                        throw new Error("plain event is missing stopImmediatePropagation");
+                    }
+                    e.stopImmediatePropagation();
+                });
+
+                child_imm.addEventListener("click", () => {
+                    child_imm_2_called = true;
+                });
+
+                const plain_ev2 = { type: "click", bubbles: true };
+                child_imm.dispatchEvent(plain_ev2);
+
+                if (!child_imm_1_called) throw new Error("child imm 1 was not called");
+                if (child_imm_2_called) throw new Error("child imm 2 was called after stopImmediatePropagation");
+                if (parent_called) throw new Error("parent listener was called after stopImmediatePropagation");
+
+                // 3. Verify once listener on plain event
+                const target_once = new EventTarget();
+                let once_called_count = 0;
+                target_once.addEventListener("foo", () => {
+                    once_called_count++;
+                }, { once: true });
+
+                const plain_once_ev = { type: "foo" };
+                target_once.dispatchEvent(plain_once_ev);
+                target_once.dispatchEvent(plain_once_ev);
+
+                if (once_called_count !== 1) {
+                    throw new Error("once listener on plain event should only be called once, got: " + once_called_count);
+                }
+
+                // 4. Verify passive listener on plain event
+                const target_passive = new EventTarget();
+                let passive_called = false;
+                target_passive.addEventListener("bar", (e) => {
+                    passive_called = true;
+                    e.preventDefault();
+                }, { passive: true });
+
+                const plain_passive_ev = { type: "bar" };
+                target_passive.dispatchEvent(plain_passive_ev);
+
+                if (!passive_called) throw new Error("passive listener not called");
+                if (plain_passive_ev.defaultPrevented !== false) {
+                    throw new Error("plain passive event should not allow preventDefault");
+                }
+
+                // 5. Verify normal dispatch defaultPrevented works on plain event
+                const target_normal = new EventTarget();
+                let normal_called = false;
+                target_normal.addEventListener("bar", (e) => {
+                    normal_called = true;
+                    e.preventDefault();
+                });
+
+                const plain_normal_ev = { type: "bar" };
+                target_normal.dispatchEvent(plain_normal_ev);
+
+                if (!normal_called) throw new Error("normal listener not called");
+                if (plain_normal_ev.defaultPrevented !== true) {
+                    throw new Error("plain normal event should allow preventDefault");
                 }
 
                 return "OK";
