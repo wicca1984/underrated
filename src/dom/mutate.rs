@@ -4190,13 +4190,24 @@ impl Dom {
             }
         }
 
-        let reference_child = match viable_previous_sibling {
-            None => self.children(parent).first().copied(),
-            Some(sibling) => {
-                let children = self.children(parent);
-                let pos = children.iter().position(|&c| c == sibling);
-                pos.and_then(|idx| children.get(idx + 1).copied())
+        // To avoid finding a reference child that is about to be detached/inserted,
+        // we find the first sibling after viable_previous_sibling (or the first child if null)
+        // that is NOT in nodes_to_check.
+        let reference_child = if let Some(sibling) = viable_previous_sibling {
+            let children = self.children(parent);
+            if let Some(pos) = children.iter().position(|&c| c == sibling) {
+                children[pos + 1..]
+                    .iter()
+                    .copied()
+                    .find(|c| !nodes_to_check.contains(c))
+            } else {
+                None
             }
+        } else {
+            self.children(parent)
+                .iter()
+                .copied()
+                .find(|c| !nodes_to_check.contains(c))
         };
 
         if !self.check_mutation_validity(parent, nodes, reference_child, None, false) {
@@ -8394,5 +8405,87 @@ mod tests {
         assert_eq!(dom.children(doc), &[f_ok]);
         assert_eq!(dom.parent(f_ok), Some(doc));
         assert_eq!(dom.children(frag_ok), &[] as &[NodeId]);
+    }
+
+    #[test]
+    fn test_t1080_before_after_replacewith_self_mutation() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let node = elem(&mut dom, "span");
+        dom.append_child(parent, node);
+
+        // 1. node.before(node) -> No-op, node stays where it is, parent is unchanged.
+        dom.before(node, &[NodeOrString::Node(node)]);
+        assert_eq!(dom.children(parent), &[node]);
+        assert_eq!(dom.parent(node), Some(parent));
+
+        // Add another sibling for more complex tests
+        let other = elem(&mut dom, "p");
+        dom.append_child(parent, other);
+        assert_eq!(dom.children(parent), &[node, other]);
+
+        // 2. node.before(node, other) -> Both node and other are moved correctly.
+        // In this case, node is already before other. Let's test node.before(other) -> other should be moved before node.
+        dom.before(node, &[NodeOrString::Node(other)]);
+        assert_eq!(dom.children(parent), &[other, node]);
+        assert_eq!(dom.parent(other), Some(parent));
+        assert_eq!(dom.parent(node), Some(parent));
+
+        // 3. node.after(node) -> No-op.
+        dom.after(node, &[NodeOrString::Node(node)]);
+        assert_eq!(dom.children(parent), &[other, node]);
+
+        // 4. node.replace_with(node) -> No-op.
+        dom.replace_with(node, &[NodeOrString::Node(node)]);
+        assert_eq!(dom.children(parent), &[other, node]);
+    }
+
+    #[test]
+    fn test_t1080_document_fragment_more_edge_cases() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+
+        // Create a DocumentFragment (modelled as Document)
+        let frag = dom.create_node(NodeData::Document);
+        let f1 = elem(&mut dom, "a");
+        let f2 = elem(&mut dom, "b");
+        dom.append_child(frag, f1);
+        dom.append_child(frag, f2);
+
+        // 1. insertBefore(fragment, None) -> Appends all children and empties fragment.
+        dom.insert_before(parent, frag, None);
+        assert_eq!(dom.children(parent), &[f1, f2]);
+        assert_eq!(dom.children(frag), &[] as &[NodeId]);
+
+        // Re-append to frag
+        dom.append_child(frag, f1);
+        dom.append_child(frag, f2);
+
+        // 2. insertBefore(fragment, Some(f1)) -> Fails because reference (f1) is inside fragment (parent of f1 is frag, not parent)
+        dom.insert_before(parent, frag, Some(f1));
+        assert_eq!(dom.children(parent), &[] as &[NodeId]);
+        assert_eq!(dom.children(frag), &[f1, f2]);
+    }
+
+    #[test]
+    fn test_t1080_replace_child_more_edge_cases() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let child1 = elem(&mut dom, "span");
+        let child2 = elem(&mut dom, "p");
+        dom.append_child(parent, child1);
+        dom.append_child(parent, child2);
+
+        // Create fragment
+        let frag = dom.create_node(NodeData::Document);
+        let f1 = elem(&mut dom, "b");
+        dom.append_child(frag, f1);
+
+        // Replace child1 with frag. f1 should take child1's place.
+        let res = dom.replace_child(parent, frag, child1);
+        assert_eq!(res, Some(child1));
+        assert_eq!(dom.children(parent), &[f1, child2]);
+        assert_eq!(dom.parent(child1), None);
+        assert_eq!(dom.parent(f1), Some(parent));
     }
 }
