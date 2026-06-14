@@ -94,9 +94,7 @@ pub fn setup_storage(context: &mut Context) {
                 }
 
                 key(index) {
-                    const idx = Number(index);
-                    if (isNaN(idx)) return null;
-                    return bridge.getKey(this.__type__, idx);
+                    return bridge.getKey(this.__type__, Number(index));
                 }
 
                 get length() {
@@ -357,10 +355,19 @@ fn storage_get_key(
         return Ok(JsValue::null());
     };
 
-    let index = if let Some(arg) = args.get(1) {
-        arg.to_number(context)? as usize
+    let index_f = if let Some(arg) = args.get(1) {
+        arg.to_number(context)?
     } else {
         return Ok(JsValue::null());
+    };
+
+    let index = if index_f.is_nan() || index_f.is_infinite() {
+        0
+    } else {
+        let int_part = index_f.trunc();
+        let rem = int_part % 4294967296.0;
+        let u_val = if rem < 0.0 { rem + 4294967296.0 } else { rem };
+        u_val as u32 as usize
     };
 
     let key_opt = if storage_type == "local" {
@@ -523,5 +530,44 @@ mod tests {
 
         // Object.keys(localStorage) should also work and be sorted
         assert!(host.eval("const keys = Object.keys(localStorage); if (keys.length !== 2 || keys[0] !== 'k1' || keys[1] !== 'k2') throw 'error';").is_ok());
+
+        // Test WebIDL key index conversions & coercion
+        // - negative indices should wrap or be invalid (returning null)
+        assert!(
+            host.eval("if (localStorage.key(-1) !== null) throw 'error1';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (localStorage.key(-1.5) !== null) throw 'error2';")
+                .is_ok()
+        );
+        // - floats should be truncated: key(1.5) should be key(1) which is 'k2'
+        assert!(
+            host.eval("if (localStorage.key(1.5) !== 'k2') throw 'error3';")
+                .is_ok()
+        );
+        // - wrap around: key(4294967297) should wrap to key(1) which is 'k2'
+        assert!(
+            host.eval("if (localStorage.key(4294967297) !== 'k2') throw 'error4';")
+                .is_ok()
+        );
+        // - wrap around: key(4294967296) should wrap to key(0) which is 'k1'
+        assert!(
+            host.eval("if (localStorage.key(4294967296) !== 'k1') throw 'error5';")
+                .is_ok()
+        );
+        // - NaN / missing / invalid: should convert to 0, returning 'k1'
+        assert!(
+            host.eval("if (localStorage.key(NaN) !== 'k1') throw 'error6';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (localStorage.key('abc') !== 'k1') throw 'error7';")
+                .is_ok()
+        );
+        assert!(
+            host.eval("if (localStorage.key() !== 'k1') throw 'error8';")
+                .is_ok()
+        );
     }
 }
