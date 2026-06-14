@@ -139,6 +139,18 @@ impl BoaHost {
         let _ = encoding::register_encoding_builtins(&mut context);
         let _ = encoding::register_base64_builtins(&mut context);
 
+        // Override base64 global utility functions with spec-compliant versions (t0761)
+        let _ = context.register_global_builtin_callable(
+            JsString::from("btoa"),
+            1,
+            NativeFunction::from_fn_ptr(btoa_fn),
+        );
+        let _ = context.register_global_builtin_callable(
+            JsString::from("atob"),
+            1,
+            NativeFunction::from_fn_ptr(atob_fn),
+        );
+
         // Setup structuredClone global (t0514)
         let _ = context.register_global_builtin_callable(
             JsString::from("structuredClone"),
@@ -10557,9 +10569,269 @@ pub fn blob_text(this: &JsValue, _args: &[JsValue], _context: &mut Context) -> J
     Ok(JsValue::from(JsString::from(text)))
 }
 
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(data: &[u8]) -> String {
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
+    let mut chunks = data.chunks_exact(3);
+    for chunk in chunks.by_ref() {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk[1] as usize;
+        let b2 = chunk[2] as usize;
+        let val = (b0 << 16) | (b1 << 8) | b2;
+        result.push(BASE64_ALPHABET[(val >> 18) & 0x3F] as char);
+        result.push(BASE64_ALPHABET[(val >> 12) & 0x3F] as char);
+        result.push(BASE64_ALPHABET[(val >> 6) & 0x3F] as char);
+        result.push(BASE64_ALPHABET[val & 0x3F] as char);
+    }
+    let remainder = chunks.remainder();
+    if remainder.len() == 1 {
+        let b0 = remainder[0] as usize;
+        let val = b0 << 16;
+        result.push(BASE64_ALPHABET[(val >> 18) & 0x3F] as char);
+        result.push(BASE64_ALPHABET[(val >> 12) & 0x3F] as char);
+        result.push('=');
+        result.push('=');
+    } else if remainder.len() == 2 {
+        let b0 = remainder[0] as usize;
+        let b1 = remainder[1] as usize;
+        let val = (b0 << 16) | (b1 << 8);
+        result.push(BASE64_ALPHABET[(val >> 18) & 0x3F] as char);
+        result.push(BASE64_ALPHABET[(val >> 12) & 0x3F] as char);
+        result.push(BASE64_ALPHABET[(val >> 6) & 0x3F] as char);
+        result.push('=');
+    }
+    result
+}
+
+fn forgiving_base64_decode(data: &str) -> Option<Vec<u8>> {
+    // 1. Remove all ASCII whitespace
+    let mut cleaned = String::with_capacity(data.len());
+    for c in data.chars() {
+        if c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\x0c' {
+            cleaned.push(c);
+        }
+    }
+
+    // 2. Normalize padding
+    if cleaned.len().is_multiple_of(4) {
+        if cleaned.ends_with("==") {
+            cleaned.truncate(cleaned.len() - 2);
+        } else if cleaned.ends_with('=') {
+            cleaned.truncate(cleaned.len() - 1);
+        }
+    }
+
+    // 3. Check length
+    if cleaned.len() % 4 == 1 {
+        return None;
+    }
+
+    // 4. Validate Alphabet & Convert characters to 6-bit values
+    let mut values = Vec::with_capacity(cleaned.len());
+    for c in cleaned.chars() {
+        let val = match c {
+            'A'..='Z' => (c as u32 - 'A' as u32) as u8,
+            'a'..='z' => (c as u32 - 'a' as u32 + 26) as u8,
+            '0'..='9' => (c as u32 - '0' as u32 + 52) as u8,
+            '+' => 62,
+            '/' => 63,
+            _ => return None, // invalid character
+        };
+        values.push(val);
+    }
+
+    // 5. Initialize buffer and output
+    let mut output = Vec::with_capacity(values.len().div_ceil(4) * 3);
+    let mut buffer: u32 = 0;
+    let mut bit_count = 0;
+
+    // 6. Process characters
+    for &val in &values {
+        buffer = (buffer << 6) | (val as u32);
+        bit_count += 6;
+        if bit_count == 24 {
+            output.push(((buffer >> 16) & 0xFF) as u8);
+            output.push(((buffer >> 8) & 0xFF) as u8);
+            output.push((buffer & 0xFF) as u8);
+            buffer = 0;
+            bit_count = 0;
+        }
+    }
+
+    // 7. Handle remaining bits
+    if bit_count == 12 {
+        output.push(((buffer >> 4) & 0xFF) as u8);
+    } else if bit_count == 18 {
+        output.push(((buffer >> 10) & 0xFF) as u8);
+        output.push(((buffer >> 2) & 0xFF) as u8);
+    }
+
+    // 8. Return output
+    Some(output)
+}
+
+fn throw_dom_exception(name: &str, message: &str, context: &mut Context) -> JsError {
+    // 1. Get DOMException class constructor from global object
+    let dom_exception_constructor = context
+        .global_object()
+        .get(JsString::from("DOMException"), context);
+    if let Some(constructor_obj) = dom_exception_constructor
+        .ok()
+        .as_ref()
+        .and_then(|val| val.as_object())
+    {
+        // 2. Construct it: new DOMException(message, name)
+        let args = [
+            JsValue::from(JsString::from(message)),
+            JsValue::from(JsString::from(name)),
+        ];
+        if let Ok(exception_obj) = constructor_obj.construct(&args, None, context) {
+            return JsError::from_opaque(JsValue::from(exception_obj));
+        }
+    }
+    // Fallback if DOMException constructor is not found or construction fails
+    JsError::from(JsNativeError::typ().with_message(format!("{}: {}", name, message)))
+}
+
+fn btoa_fn(_this: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsError> {
+    let input_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let input_str = input_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let mut bytes = Vec::with_capacity(input_str.len());
+    for c in input_str.chars() {
+        let code = c as u32;
+        if code > 0xFF {
+            return Err(throw_dom_exception(
+                "InvalidCharacterError",
+                "String contains characters outside of Latin1 range (0..=255)",
+                context,
+            ));
+        }
+        bytes.push(code as u8);
+    }
+
+    let encoded = base64_encode(&bytes);
+    Ok(JsValue::from(JsString::from(encoded)))
+}
+
+fn atob_fn(_this: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsError> {
+    let input_val = args.first().cloned().unwrap_or(JsValue::undefined());
+    let input_str = input_val
+        .to_string(context)?
+        .to_std_string()
+        .unwrap_or_default();
+
+    let decoded_bytes = forgiving_base64_decode(&input_str).ok_or_else(|| {
+        throw_dom_exception(
+            "InvalidCharacterError",
+            "The string to be decoded is not correctly encoded.",
+            context,
+        )
+    })?;
+
+    let mut output = String::with_capacity(decoded_bytes.len());
+    for &b in &decoded_bytes {
+        output.push(b as char);
+    }
+
+    Ok(JsValue::from(JsString::from(output)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_btoa_atob_base64_utility_methods_t0761() {
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        // 1. btoa("hello") === "aGVsbG8="
+        assert!(
+            host.eval_with_dom(
+                "if (btoa('hello') !== 'aGVsbG8=') throw 'btoa hello failed';",
+                &mut dom
+            )
+            .is_ok()
+        );
+
+        // 2. btoa("") === ""
+        assert!(
+            host.eval_with_dom("if (btoa('') !== '') throw 'btoa empty failed';", &mut dom)
+                .is_ok()
+        );
+
+        // 3. atob("aGVsbG8=") === "hello"
+        assert!(
+            host.eval_with_dom(
+                "if (atob('aGVsbG8=') !== 'hello') throw 'atob hello failed';",
+                &mut dom
+            )
+            .is_ok()
+        );
+
+        // 4. round-trip: atob(btoa("Man")) === "Man" and btoa("Man") === "TWFu"
+        assert!(
+            host.eval_with_dom(
+                "if (btoa('Man') !== 'TWFu') throw 'btoa Man failed';",
+                &mut dom
+            )
+            .is_ok()
+        );
+        assert!(
+            host.eval_with_dom(
+                "if (atob(btoa('Man')) !== 'Man') throw 'round-trip Man failed';",
+                &mut dom
+            )
+            .is_ok()
+        );
+
+        // 5. atob with embedded whitespace decodes the same as without
+        assert!(
+            host.eval_with_dom(
+                "if (atob(' a G V s\\tb G 8 = ') !== 'hello') throw 'atob whitespace failed';",
+                &mut dom
+            )
+            .is_ok()
+        );
+
+        // 6. btoa on a string containing a char > U+00FF throws DOMException InvalidCharacterError
+        let btoa_throw_script = "
+            {
+                let threw = false;
+                try {
+                    btoa('hello \\u0100');
+                } catch (e) {
+                    if (e instanceof DOMException && e.name === 'InvalidCharacterError') {
+                        threw = true;
+                    }
+                }
+                if (!threw) throw 'btoa did not throw InvalidCharacterError for > U+00FF';
+            }
+        ";
+        assert!(host.eval_with_dom(btoa_throw_script, &mut dom).is_ok());
+
+        // 7. atob on input of length%4==1 throws DOMException InvalidCharacterError
+        let atob_throw_script = "
+            {
+                let threw = false;
+                try {
+                    atob('a');
+                } catch (e) {
+                    if (e instanceof DOMException && e.name === 'InvalidCharacterError') {
+                        threw = true;
+                    }
+                }
+                if (!threw) throw 'atob did not throw InvalidCharacterError for length % 4 == 1';
+            }
+        ";
+        assert!(host.eval_with_dom(atob_throw_script, &mut dom).is_ok());
+    }
 
     #[test]
     fn test_mutation_observer_t0525() {
