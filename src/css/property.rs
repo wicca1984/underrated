@@ -323,6 +323,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "block-ellipsis",
+        inherited: true,
+        initial: "none",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
@@ -1108,6 +1113,41 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         name: "scroll-timeline-axis",
         inherited: false,
         initial: "block",
+    },
+    PropertyMetadata {
+        name: "text-box-trim",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "text-box-edge",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "-webkit-line-clamp",
+        inherited: false,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "alignment-baseline",
+        inherited: false,
+        initial: "baseline",
+    },
+    PropertyMetadata {
+        name: "baseline-shift",
+        inherited: false,
+        initial: "0",
+    },
+    PropertyMetadata {
+        name: "baseline-source",
+        inherited: false,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "dominant-baseline",
+        inherited: false,
+        initial: "auto",
     },
 ];
 
@@ -2166,6 +2206,65 @@ mod tests {
         assert_eq!(prop.name, "initial-letter");
         assert!(!prop.inherited);
         assert_eq!(prop.initial, "normal");
+    }
+
+    #[test]
+    fn test_properties_t0760() {
+        let text_box_trim = lookup("text-box-trim");
+        assert!(text_box_trim.is_some());
+        let text_box_trim = text_box_trim.unwrap();
+        assert_eq!(text_box_trim.name, "text-box-trim");
+        assert!(!text_box_trim.inherited);
+        assert_eq!(text_box_trim.initial, "none");
+
+        let text_box_edge = lookup("text-box-edge");
+        assert!(text_box_edge.is_some());
+        let text_box_edge = text_box_edge.unwrap();
+        assert_eq!(text_box_edge.name, "text-box-edge");
+        assert!(!text_box_edge.inherited);
+        assert_eq!(text_box_edge.initial, "auto");
+
+        let webkit_line_clamp = lookup("-webkit-line-clamp");
+        assert!(webkit_line_clamp.is_some());
+        let webkit_line_clamp = webkit_line_clamp.unwrap();
+        assert_eq!(webkit_line_clamp.name, "-webkit-line-clamp");
+        assert!(!webkit_line_clamp.inherited);
+        assert_eq!(webkit_line_clamp.initial, "none");
+
+        let block_ellipsis = lookup("block-ellipsis");
+        assert!(block_ellipsis.is_some());
+        let block_ellipsis = block_ellipsis.unwrap();
+        assert_eq!(block_ellipsis.name, "block-ellipsis");
+        assert!(block_ellipsis.inherited);
+        assert_eq!(block_ellipsis.initial, "none");
+
+        let alignment_baseline = lookup("alignment-baseline");
+        assert!(alignment_baseline.is_some());
+        let alignment_baseline = alignment_baseline.unwrap();
+        assert_eq!(alignment_baseline.name, "alignment-baseline");
+        assert!(!alignment_baseline.inherited);
+        assert_eq!(alignment_baseline.initial, "baseline");
+
+        let baseline_shift = lookup("baseline-shift");
+        assert!(baseline_shift.is_some());
+        let baseline_shift = baseline_shift.unwrap();
+        assert_eq!(baseline_shift.name, "baseline-shift");
+        assert!(!baseline_shift.inherited);
+        assert_eq!(baseline_shift.initial, "0");
+
+        let baseline_source = lookup("baseline-source");
+        assert!(baseline_source.is_some());
+        let baseline_source = baseline_source.unwrap();
+        assert_eq!(baseline_source.name, "baseline-source");
+        assert!(!baseline_source.inherited);
+        assert_eq!(baseline_source.initial, "auto");
+
+        let dominant_baseline = lookup("dominant-baseline");
+        assert!(dominant_baseline.is_some());
+        let dominant_baseline = dominant_baseline.unwrap();
+        assert_eq!(dominant_baseline.name, "dominant-baseline");
+        assert!(!dominant_baseline.inherited);
+        assert_eq!(dominant_baseline.initial, "auto");
     }
 
     #[test]
