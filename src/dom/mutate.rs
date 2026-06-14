@@ -277,6 +277,27 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `target` content attribute of a valid element node,
+    /// but only if `target` is a defined attribute for its element tag (a, area, base, form).
+    /// Returns `None` if the node is not one of those element tags, has no `target` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_target(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined = name.eq_ignore_ascii_case("a")
+                || name.eq_ignore_ascii_case("area")
+                || name.eq_ignore_ascii_case("base")
+                || name.eq_ignore_ascii_case("form");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("target"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
     /// Sets the current value of an `<input>` element, marking it as dirty.
     /// No-op if the node is not an `<input>` element, or if the `NodeId` is invalid.
     pub fn set_input_value(&mut self, node: NodeId, value: &str) {
@@ -930,5 +951,70 @@ mod tests {
         dom.clear_dirty();
         dom.set_input_value(div_id, "new-val");
         assert!(!dom.has_dirty());
+    }
+
+    #[test]
+    fn test_target_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. <a target="_blank"> => get_target returns Some("_blank").
+        let a_id = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("target".to_string(), "_blank".to_string())],
+        });
+        assert_eq!(dom.get_target(a_id), Some("_blank"));
+
+        // 2. <form target="_parent"> => get_target returns Some("_parent").
+        let form_id = dom.create_node(NodeData::Element {
+            name: "form".to_string(),
+            attrs: vec![("target".to_string(), "_parent".to_string())],
+        });
+        assert_eq!(dom.get_target(form_id), Some("_parent"));
+
+        // 3. <base target="_top"> => get_target returns Some("_top").
+        let base_id = dom.create_node(NodeData::Element {
+            name: "base".to_string(),
+            attrs: vec![("target".to_string(), "_top".to_string())],
+        });
+        assert_eq!(dom.get_target(base_id), Some("_top"));
+
+        // 4. <area target="_self"> => get_target returns Some("_self").
+        let area_id = dom.create_node(NodeData::Element {
+            name: "area".to_string(),
+            attrs: vec![("target".to_string(), "_self".to_string())],
+        });
+        assert_eq!(dom.get_target(area_id), Some("_self"));
+
+        // 5. <div target="_blank"> => get_target returns None (target not defined on div).
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("target".to_string(), "_blank".to_string())],
+        });
+        assert_eq!(dom.get_target(div_id), None);
+
+        // 6. Element of right tag but missing the target attribute => None.
+        let a_no_target = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_target(a_no_target), None);
+
+        // 7. Non-element node (e.g. Text node) => None.
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_target(text_id), None);
+
+        // 8. Case-insensitive tag name is honored.
+        let a_caps = dom.create_node(NodeData::Element {
+            name: "A".to_string(),
+            attrs: vec![("target".to_string(), "_blank".to_string())],
+        });
+        assert_eq!(dom.get_target(a_caps), Some("_blank"));
+
+        // 9. Case-insensitive attribute name is honored.
+        let a_attr_caps = dom.create_node(NodeData::Element {
+            name: "a".to_string(),
+            attrs: vec![("TARGET".to_string(), "_blank".to_string())],
+        });
+        assert_eq!(dom.get_target(a_attr_caps), Some("_blank"));
     }
 }
