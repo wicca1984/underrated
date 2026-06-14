@@ -195,6 +195,9 @@ thread_local! {
     static HORIZONTAL_VIEWPORT_SEGMENTS: Cell<i32> = const { Cell::new(1) };
     static VERTICAL_VIEWPORT_SEGMENTS: Cell<i32> = const { Cell::new(1) };
     static DEVICE_PIXEL_RATIO: Cell<f32> = const { Cell::new(1.0) };
+    static COLOR_GAMUT: Cell<ColorGamut> = const { Cell::new(ColorGamut::Srgb) };
+    static DEVICE_WIDTH: Cell<f32> = const { Cell::new(1920.0) };
+    static DEVICE_HEIGHT: Cell<f32> = const { Cell::new(1080.0) };
 }
 
 /// Sets the device pixel ratio (DPR) for the current thread (default 1.0).
@@ -235,6 +238,26 @@ pub fn set_viewport_h(h: f32) {
 /// Gets the viewport height for the current thread.
 pub fn viewport_h() -> f32 {
     VIEWPORT_H.with(|c| c.get())
+}
+
+/// Sets the device width for the current thread (default 1920.0).
+pub fn set_device_width(w: f32) {
+    DEVICE_WIDTH.with(|c| c.set(w));
+}
+
+/// Gets the device width for the current thread.
+pub fn device_width() -> f32 {
+    DEVICE_WIDTH.with(|c| c.get())
+}
+
+/// Sets the device height for the current thread (default 1080.0).
+pub fn set_device_height(h: f32) {
+    DEVICE_HEIGHT.with(|c| c.set(h));
+}
+
+/// Gets the device height for the current thread.
+pub fn device_height() -> f32 {
+    DEVICE_HEIGHT.with(|c| c.get())
 }
 
 /// Sets the preferred color scheme for the current thread.
@@ -447,10 +470,14 @@ pub fn display_shape() -> DisplayShape {
     DISPLAY_SHAPE.with(|c| c.get())
 }
 
+/// Sets the color gamut of the output device.
+pub fn set_color_gamut(val: ColorGamut) {
+    COLOR_GAMUT.with(|c| c.set(val));
+}
+
 /// Gets the color gamut of the output device.
-/// TODO(spec): true environment querying is not yet wired.
 pub fn color_gamut() -> ColorGamut {
-    ColorGamut::Srgb
+    COLOR_GAMUT.with(|c| c.get())
 }
 
 /// Gets the display mode of the application.
@@ -924,9 +951,19 @@ fn get_range_feature_value(name: &str, viewport_w: f32) -> Option<FeatureValue> 
     match clean_name {
         "width" => Some(FeatureValue::Length(viewport_w)),
         "height" => Some(FeatureValue::Length(viewport_h())),
+        "device-width" => Some(FeatureValue::Length(device_width())),
+        "device-height" => Some(FeatureValue::Length(device_height())),
         "aspect-ratio" => {
             let ratio = if viewport_h() > 0.0 {
                 viewport_w / viewport_h()
+            } else {
+                0.0
+            };
+            Some(FeatureValue::Ratio(ratio))
+        }
+        "device-aspect-ratio" => {
+            let ratio = if device_height() > 0.0 {
+                device_width() / device_height()
             } else {
                 0.0
             };
@@ -1116,6 +1153,15 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
             "-webkit-device-pixel-ratio" => return true,
             "-webkit-min-device-pixel-ratio" => return true,
             "-webkit-max-device-pixel-ratio" => return true,
+            "device-width" => return true,
+            "min-device-width" => return true,
+            "max-device-width" => return true,
+            "device-height" => return true,
+            "min-device-height" => return true,
+            "max-device-height" => return true,
+            "device-aspect-ratio" => return true,
+            "min-device-aspect-ratio" => return true,
+            "max-device-aspect-ratio" => return true,
             _ => return false,
         }
     }
@@ -1307,10 +1353,10 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         if let CssToken::Ident(val) = &tokens[2] {
             let val_lower = val.to_ascii_lowercase();
             let current = color_gamut();
-            match (current, val_lower.as_str()) {
-                (ColorGamut::Srgb, "srgb") => return true,
-                (ColorGamut::P3, "p3") => return true,
-                (ColorGamut::Rec2020, "rec2020") => return true,
+            match val_lower.as_str() {
+                "srgb" => return true,
+                "p3" => return matches!(current, ColorGamut::P3 | ColorGamut::Rec2020),
+                "rec2020" => return matches!(current, ColorGamut::Rec2020),
                 _ => return false,
             }
         }
@@ -1579,6 +1625,26 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         return false;
     }
 
+    if feature_name == "device-aspect-ratio"
+        || feature_name == "min-device-aspect-ratio"
+        || feature_name == "max-device-aspect-ratio"
+    {
+        if let Some(target_ratio) = parse_ratio(&tokens[2..]) {
+            let current_ratio = if device_height() > 0.0 {
+                device_width() / device_height()
+            } else {
+                0.0
+            };
+            match feature_name.as_str() {
+                "device-aspect-ratio" => return (current_ratio - target_ratio).abs() < 1e-5,
+                "min-device-aspect-ratio" => return current_ratio >= target_ratio - 1e-5,
+                "max-device-aspect-ratio" => return current_ratio <= target_ratio + 1e-5,
+                _ => return false,
+            }
+        }
+        return false;
+    }
+
     if feature_name == "color" || feature_name == "min-color" || feature_name == "max-color" {
         if let CssToken::Number(val) = &tokens[2] {
             let limit = *val as i32;
@@ -1672,6 +1738,12 @@ fn evaluate_feature(tokens: &[CssToken], viewport_w: f32) -> bool {
         "min-height" => value_px.is_some_and(|limit| viewport_h() >= limit),
         "max-height" => value_px.is_some_and(|limit| viewport_h() <= limit),
         "height" => value_px.is_some_and(|limit| (viewport_h() - limit).abs() < 1e-5),
+        "min-device-width" => value_px.is_some_and(|limit| device_width() >= limit),
+        "max-device-width" => value_px.is_some_and(|limit| device_width() <= limit),
+        "device-width" => value_px.is_some_and(|limit| (device_width() - limit).abs() < 1e-5),
+        "min-device-height" => value_px.is_some_and(|limit| device_height() >= limit),
+        "max-device-height" => value_px.is_some_and(|limit| device_height() <= limit),
+        "device-height" => value_px.is_some_and(|limit| (device_height() - limit).abs() < 1e-5),
         _ => {
             // TODO(spec): other media features
             false
@@ -3125,5 +3197,65 @@ mod tests {
             "(not (hover: hover)) or (width >= 1000px)",
             600.0
         ));
+    }
+
+    #[test]
+    fn test_device_dimensions_and_aspect_ratio() {
+        set_device_width(1920.0);
+        set_device_height(1080.0);
+
+        // 1. Existential/boolean queries
+        assert!(media_matches("(device-width)", 1000.0));
+        assert!(media_matches("(device-height)", 1000.0));
+        assert!(media_matches("(device-aspect-ratio)", 1000.0));
+
+        // 2. Colon-based queries (exact, min, max)
+        assert!(media_matches("(device-width: 1920px)", 1000.0));
+        assert!(media_matches("(min-device-width: 1000px)", 1000.0));
+        assert!(media_matches("(max-device-width: 2000px)", 1000.0));
+        assert!(!media_matches("(device-width: 1000px)", 1000.0));
+
+        assert!(media_matches("(device-height: 1080px)", 1000.0));
+        assert!(media_matches("(min-device-height: 1000px)", 1000.0));
+        assert!(media_matches("(max-device-height: 1200px)", 1000.0));
+        assert!(!media_matches("(device-height: 1000px)", 1000.0));
+
+        // Aspect ratio: 1920 / 1080 = 1.777777... (i.e. 16/9)
+        assert!(media_matches("(device-aspect-ratio: 16/9)", 1000.0));
+        assert!(media_matches("(min-device-aspect-ratio: 4/3)", 1000.0));
+        assert!(media_matches("(max-device-aspect-ratio: 2/1)", 1000.0));
+        assert!(!media_matches("(device-aspect-ratio: 4/3)", 1000.0));
+
+        // 3. Range-based queries (Form 1, 2, 3)
+        assert!(media_matches("(device-width >= 1000px)", 1000.0));
+        assert!(media_matches("(1000px <= device-width <= 2000px)", 1000.0));
+        assert!(media_matches("(device-height <= 1200px)", 1000.0));
+        assert!(media_matches("(device-aspect-ratio > 1.5)", 1000.0));
+        assert!(media_matches("(1.5 < device-aspect-ratio < 2.0)", 1000.0));
+
+        // Reset
+        set_device_width(1920.0);
+        set_device_height(1080.0);
+    }
+
+    #[test]
+    fn test_color_gamut_subset() {
+        // Rec2020 should match srgb, p3, rec2020
+        set_color_gamut(ColorGamut::Rec2020);
+        assert!(media_matches("(color-gamut: srgb)", 1000.0));
+        assert!(media_matches("(color-gamut: p3)", 1000.0));
+        assert!(media_matches("(color-gamut: rec2020)", 1000.0));
+
+        // P3 should match srgb, p3, but not rec2020
+        set_color_gamut(ColorGamut::P3);
+        assert!(media_matches("(color-gamut: srgb)", 1000.0));
+        assert!(media_matches("(color-gamut: p3)", 1000.0));
+        assert!(!media_matches("(color-gamut: rec2020)", 1000.0));
+
+        // Srgb should match srgb, but not p3 or rec2020
+        set_color_gamut(ColorGamut::Srgb);
+        assert!(media_matches("(color-gamut: srgb)", 1000.0));
+        assert!(!media_matches("(color-gamut: p3)", 1000.0));
+        assert!(!media_matches("(color-gamut: rec2020)", 1000.0));
     }
 }
