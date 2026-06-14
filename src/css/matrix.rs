@@ -723,6 +723,34 @@ impl Decomposed2d {
             .multiply(&skew_aff)
             .multiply(&scale)
     }
+
+    pub fn interpolate(&self, other: &Self, t: f32) -> Self {
+        let translate = (
+            self.translate.0 + (other.translate.0 - self.translate.0) * t,
+            self.translate.1 + (other.translate.1 - self.translate.1) * t,
+        );
+        let scale = (
+            self.scale.0 + (other.scale.0 - self.scale.0) * t,
+            self.scale.1 + (other.scale.1 - self.scale.1) * t,
+        );
+        let skew = self.skew + (other.skew - self.skew) * t;
+
+        // Angle interpolation using shortest path
+        let mut diff = (other.angle - self.angle) % 360.0;
+        if diff > 180.0 {
+            diff -= 360.0;
+        } else if diff < -180.0 {
+            diff += 360.0;
+        }
+        let angle = self.angle + diff * t;
+
+        Decomposed2d {
+            translate,
+            scale,
+            angle,
+            skew,
+        }
+    }
 }
 
 impl Affine {
@@ -774,6 +802,21 @@ impl Affine {
             angle,
             skew,
         })
+    }
+
+    /// Interpolate this matrix with `other` by progress `t` [0.0, 1.0].
+    /// If either matrix cannot be decomposed, we fall back to linear interpolation
+    /// of each component of the matrix directly.
+    pub fn interpolate(&self, other: &Self, t: f32) -> Self {
+        if let (Some(d1), Some(d2)) = (self.decompose(), other.decompose()) {
+            d1.interpolate(&d2, t).recompose()
+        } else {
+            let mut m = [0.0; 6];
+            for (i, val) in m.iter_mut().enumerate() {
+                *val = self.m[i] + (other.m[i] - self.m[i]) * t;
+            }
+            Affine { m }
+        }
     }
 }
 
@@ -1053,6 +1096,21 @@ impl Matrix3d {
             quaternion,
         })
     }
+
+    /// Interpolate this matrix with `other` by progress `t` [0.0, 1.0].
+    /// If either matrix cannot be decomposed, we fall back to linear interpolation
+    /// of each component of the matrix directly.
+    pub fn interpolate(&self, other: &Self, t: f32) -> Self {
+        if let (Some(d1), Some(d2)) = (self.decompose(), other.decompose()) {
+            d1.interpolate(&d2, t).recompose()
+        } else {
+            let mut m = [0.0; 16];
+            for (i, val) in m.iter_mut().enumerate() {
+                *val = self.m[i] + (other.m[i] - self.m[i]) * t;
+            }
+            Matrix3d { m }
+        }
+    }
 }
 
 impl Decomposed3d {
@@ -1115,6 +1173,92 @@ impl Decomposed3d {
             .multiply(&rot_m)
             .multiply(&skew_m)
             .multiply(&scale_m)
+    }
+
+    pub fn interpolate(&self, other: &Self, t: f32) -> Self {
+        let translate = (
+            self.translate.0 + (other.translate.0 - self.translate.0) * t,
+            self.translate.1 + (other.translate.1 - self.translate.1) * t,
+            self.translate.2 + (other.translate.2 - self.translate.2) * t,
+        );
+        let scale = (
+            self.scale.0 + (other.scale.0 - self.scale.0) * t,
+            self.scale.1 + (other.scale.1 - self.scale.1) * t,
+            self.scale.2 + (other.scale.2 - self.scale.2) * t,
+        );
+        let skew = (
+            self.skew.0 + (other.skew.0 - self.skew.0) * t,
+            self.skew.1 + (other.skew.1 - self.skew.1) * t,
+            self.skew.2 + (other.skew.2 - self.skew.2) * t,
+        );
+        let perspective = (
+            self.perspective.0 + (other.perspective.0 - self.perspective.0) * t,
+            self.perspective.1 + (other.perspective.1 - self.perspective.1) * t,
+            self.perspective.2 + (other.perspective.2 - self.perspective.2) * t,
+            self.perspective.3 + (other.perspective.3 - self.perspective.3) * t,
+        );
+
+        let q1 = self.quaternion;
+        let q2 = other.quaternion;
+        let mut dot = q1.0 * q2.0 + q1.1 * q2.1 + q1.2 * q2.2 + q1.3 * q2.3;
+
+        let mut q2_adj = q2;
+        if dot < 0.0 {
+            dot = -dot;
+            q2_adj = (-q2.0, -q2.1, -q2.2, -q2.3);
+        }
+
+        let quaternion = if dot > 0.9995 {
+            // Linear interpolation + normalize
+            let x = q1.0 + (q2_adj.0 - q1.0) * t;
+            let y = q1.1 + (q2_adj.1 - q1.1) * t;
+            let z = q1.2 + (q2_adj.2 - q1.2) * t;
+            let w = q1.3 + (q2_adj.3 - q1.3) * t;
+            let len = (x * x + y * y + z * z + w * w).sqrt();
+            if len > 0.0 {
+                (x / len, y / len, z / len, w / len)
+            } else {
+                q1
+            }
+        } else {
+            // Spherical Linear Interpolation (Slerp)
+            let theta_0 = dot.acos();
+            let theta = theta_0 * t;
+            let sin_theta = theta.sin();
+            let sin_theta_0 = theta_0.sin();
+
+            if sin_theta_0.abs() < 1e-6 {
+                // Fallback to LERP if sin_theta_0 is somehow extremely small
+                let x = q1.0 + (q2_adj.0 - q1.0) * t;
+                let y = q1.1 + (q2_adj.1 - q1.1) * t;
+                let z = q1.2 + (q2_adj.2 - q1.2) * t;
+                let w = q1.3 + (q2_adj.3 - q1.3) * t;
+                let len = (x * x + y * y + z * z + w * w).sqrt();
+                if len > 0.0 {
+                    (x / len, y / len, z / len, w / len)
+                } else {
+                    q1
+                }
+            } else {
+                let s0 = (theta_0 - theta).sin() / sin_theta_0;
+                let s1 = sin_theta / sin_theta_0;
+
+                (
+                    q1.0 * s0 + q2_adj.0 * s1,
+                    q1.1 * s0 + q2_adj.1 * s1,
+                    q1.2 * s0 + q2_adj.2 * s1,
+                    q1.3 * s0 + q2_adj.3 * s1,
+                )
+            }
+        };
+
+        Decomposed3d {
+            translate,
+            scale,
+            skew,
+            perspective,
+            quaternion,
+        }
     }
 }
 
@@ -1577,5 +1721,110 @@ mod tests {
             .multiply(&Matrix3d::skew(30.0, 30.0))
             .multiply(&Matrix3d::perspective(10.0));
         assert_eq!(m3d_comp, expected_m3d_comp);
+    }
+
+    #[test]
+    fn test_interpolate_2d_decomposed_t0974() {
+        let d1 = Decomposed2d {
+            translate: (10.0, 20.0),
+            scale: (1.0, 2.0),
+            angle: 10.0,
+            skew: 0.1,
+        };
+        let d2 = Decomposed2d {
+            translate: (20.0, 40.0),
+            scale: (3.0, 4.0),
+            angle: 350.0,
+            skew: 0.5,
+        };
+
+        let res = d1.interpolate(&d2, 0.5);
+        assert!((res.translate.0 - 15.0).abs() < 1e-5);
+        assert!((res.translate.1 - 30.0).abs() < 1e-5);
+        assert!((res.scale.0 - 2.0).abs() < 1e-5);
+        assert!((res.scale.1 - 3.0).abs() < 1e-5);
+        assert!((res.skew - 0.3).abs() < 1e-5);
+        assert!(res.angle.abs() < 1e-5);
+
+        let start = d1.interpolate(&d2, 0.0);
+        assert!((start.angle - 10.0).abs() < 1e-5);
+        let end = d1.interpolate(&d2, 1.0);
+        assert!((end.angle - -10.0).abs() < 1e-5 || (end.angle - 350.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_interpolate_2d_affine_t0974() {
+        let a1 = Affine::translate(10.0, 20.0).multiply(&Affine::scale(2.0, 2.0));
+        let a2 = Affine::translate(30.0, 40.0).multiply(&Affine::scale(4.0, 4.0));
+
+        let res = a1.interpolate(&a2, 0.5);
+        let expected = Affine::translate(20.0, 30.0).multiply(&Affine::scale(3.0, 3.0));
+        for i in 0..6 {
+            assert!((res.m[i] - expected.m[i]).abs() < 1e-4);
+        }
+
+        let singular1 = Affine::matrix(1.0, 2.0, 2.0, 4.0, 0.0, 0.0);
+        let singular2 = Affine::matrix(2.0, 4.0, 4.0, 8.0, 10.0, 10.0);
+
+        let fallback_res = singular1.interpolate(&singular2, 0.5);
+        let expected_fallback = Affine::matrix(1.5, 3.0, 3.0, 6.0, 5.0, 5.0);
+        assert_eq!(fallback_res.m, expected_fallback.m);
+    }
+
+    #[test]
+    fn test_interpolate_3d_decomposed_t0974() {
+        let d1 = Decomposed3d {
+            translate: (10.0, 20.0, 30.0),
+            scale: (1.0, 2.0, 3.0),
+            skew: (0.1, 0.2, 0.3),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, 0.0, 1.0),
+        };
+        let sin45 = 45.0f32.to_radians().sin();
+        let cos45 = 45.0f32.to_radians().cos();
+        let d2 = Decomposed3d {
+            translate: (20.0, 40.0, 60.0),
+            scale: (3.0, 4.0, 5.0),
+            skew: (0.5, 0.6, 0.7),
+            perspective: (0.0, 0.0, 0.0, 1.0),
+            quaternion: (0.0, 0.0, sin45, cos45),
+        };
+
+        let res = d1.interpolate(&d2, 0.5);
+        assert!((res.translate.0 - 15.0).abs() < 1e-5);
+        assert!((res.translate.1 - 30.0).abs() < 1e-5);
+        assert!((res.translate.2 - 45.0).abs() < 1e-5);
+        assert!((res.scale.0 - 2.0).abs() < 1e-5);
+        assert!((res.scale.1 - 3.0).abs() < 1e-5);
+        assert!((res.scale.2 - 4.0).abs() < 1e-5);
+
+        let sin22_5 = 22.5f32.to_radians().sin();
+        let cos22_5 = 22.5f32.to_radians().cos();
+        assert!(res.quaternion.0.abs() < 1e-5);
+        assert!(res.quaternion.1.abs() < 1e-5);
+        assert!((res.quaternion.2 - sin22_5).abs() < 1e-5);
+        assert!((res.quaternion.3 - cos22_5).abs() < 1e-5);
+
+        let res_collinear = d1.interpolate(&d1, 0.5);
+        assert_eq!(res_collinear.quaternion, d1.quaternion);
+    }
+
+    #[test]
+    fn test_interpolate_3d_matrix_t0974() {
+        let m1 = Matrix3d::translate(10.0, 20.0, 30.0).multiply(&Matrix3d::scale(2.0, 2.0, 2.0));
+        let m2 = Matrix3d::translate(30.0, 40.0, 50.0).multiply(&Matrix3d::scale(4.0, 4.0, 4.0));
+
+        let res = m1.interpolate(&m2, 0.5);
+        let expected =
+            Matrix3d::translate(20.0, 30.0, 40.0).multiply(&Matrix3d::scale(3.0, 3.0, 3.0));
+        for i in 0..16 {
+            assert!((res.m[i] - expected.m[i]).abs() < 1e-4);
+        }
+
+        let singular1 = Matrix3d::scale(1.0, 0.0, 1.0);
+        let singular2 = Matrix3d::scale(3.0, 0.0, 5.0);
+        let fallback_res = singular1.interpolate(&singular2, 0.5);
+        let expected_fallback = Matrix3d::scale(2.0, 0.0, 3.0);
+        assert_eq!(fallback_res.m, expected_fallback.m);
     }
 }
