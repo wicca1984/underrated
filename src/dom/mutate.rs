@@ -1287,6 +1287,262 @@ impl Dom {
         }
     }
 
+    /// Returns the value of the `kind` content attribute of a valid `<track>` element.
+    /// Returns `None` if the node is not a `<track>` element, has no `kind` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_kind(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("kind"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `srclang` content attribute of a valid `<track>` element.
+    /// Returns `None` if the node is not a `<track>` element, has no `srclang` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_srclang(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("srclang"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `label` content attribute of a valid `<track>` element.
+    /// Returns `None` if the node is not a `<track>` element, has no `label` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_label(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("track")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("label"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `sandbox` content attribute of a valid `<iframe>` element.
+    /// Returns `None` if the node is not an `<iframe>` element, has no `sandbox` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_sandbox(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("sandbox"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `allow` content attribute of a valid `<iframe>` element.
+    /// Returns `None` if the node is not an `<iframe>` element, has no `allow` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_allow(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && name.eq_ignore_ascii_case("iframe")
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("allow"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `formaction` content attribute of a valid submit button element
+    /// (input, button).
+    /// Returns `None` if the node is not one of these elements, has no `formaction` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_formaction(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("formaction"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `formmethod` content attribute of a valid submit button element
+    /// (input, button).
+    /// Returns `None` if the node is not one of these elements, has no `formmethod` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_formmethod(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("formmethod"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `formtarget` content attribute of a valid submit button element
+    /// (input, button).
+    /// Returns `None` if the node is not one of these elements, has no `formtarget` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_formtarget(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("formtarget"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns whether the `formnovalidate` content attribute is present on a valid submit button element
+    /// (input, button).
+    /// Returns `None` if the node is not one of these elements, or if the `NodeId` is invalid.
+    pub fn get_formnovalidate(&self, node: NodeId) -> Option<bool> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("button"))
+        {
+            return Some(
+                attrs
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("formnovalidate")),
+            );
+        }
+        None
+    }
+
+    /// Returns the value of the `inputmode` content attribute of a valid form control element
+    /// (input, textarea, select, button).
+    /// Returns `None` if the node is not one of these elements, has no `inputmode` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_inputmode(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("textarea")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("button"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("inputmode"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `enterkeyhint` content attribute of a valid form control element
+    /// (input, textarea, select, button).
+    /// Returns `None` if the node is not one of these elements, has no `enterkeyhint` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_enterkeyhint(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input")
+                || name.eq_ignore_ascii_case("textarea")
+                || name.eq_ignore_ascii_case("select")
+                || name.eq_ignore_ascii_case("button"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("enterkeyhint"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `dirname` content attribute of a valid form control element
+    /// (input, textarea).
+    /// Returns `None` if the node is not one of these elements, has no `dirname` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_dirname(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("dirname"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `maxlength` content attribute of a valid form control element
+    /// (input, textarea).
+    /// Returns `None` if the node is not one of these elements, has no `maxlength` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_maxlength(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("maxlength"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `minlength` content attribute of a valid form control element
+    /// (input, textarea).
+    /// Returns `None` if the node is not one of these elements, has no `minlength` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_minlength(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("textarea"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("minlength"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
+    /// Returns the value of the `size` content attribute of a valid form control element
+    /// (input, select).
+    /// Returns `None` if the node is not one of these elements, has no `size` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_size(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data
+            && (name.eq_ignore_ascii_case("input") || name.eq_ignore_ascii_case("select"))
+        {
+            return attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("size"))
+                .map(|(_, v)| v.as_str());
+        }
+        None
+    }
+
     // TODO(spec): muted reflects defaultMuted
 }
 
@@ -3265,5 +3521,194 @@ mod tests {
         assert_eq!(foreign_dom.get_datetime(foreign_node), None);
         assert_eq!(foreign_dom.get_media(foreign_node), None);
         assert_eq!(foreign_dom.get_wrap(foreign_node), None);
+    }
+
+    #[test]
+    fn test_reflected_content_attribute_accessors_t0772() {
+        let mut dom = Dom::new();
+
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![
+                ("kind".to_string(), "subtitles".to_string()),
+                ("srclang".to_string(), "en".to_string()),
+                ("label".to_string(), "English".to_string()),
+                ("sandbox".to_string(), "allow-scripts".to_string()),
+                ("allow".to_string(), "geolocation".to_string()),
+                ("formaction".to_string(), "/submit".to_string()),
+                ("formmethod".to_string(), "post".to_string()),
+                ("formtarget".to_string(), "_blank".to_string()),
+                ("formnovalidate".to_string(), "".to_string()),
+                ("inputmode".to_string(), "numeric".to_string()),
+                ("enterkeyhint".to_string(), "search".to_string()),
+                ("dirname".to_string(), "user.dir".to_string()),
+                ("maxlength".to_string(), "100".to_string()),
+                ("minlength".to_string(), "10".to_string()),
+                ("size".to_string(), "20".to_string()),
+            ],
+        });
+
+        // 1. kind, srclang, label (the <track> element trio)
+        let track_id = dom.create_node(NodeData::Element {
+            name: "track".to_string(),
+            attrs: vec![
+                ("KIND".to_string(), "subtitles".to_string()),
+                ("srclang".to_string(), "en".to_string()),
+                ("LABEL".to_string(), "English".to_string()),
+            ],
+        });
+        let track_absent = dom.create_node(NodeData::Element {
+            name: "track".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_kind(track_id), Some("subtitles"));
+        assert_eq!(dom.get_srclang(track_id), Some("en"));
+        assert_eq!(dom.get_label(track_id), Some("English"));
+        assert_eq!(dom.get_kind(track_absent), None);
+        assert_eq!(dom.get_srclang(track_absent), None);
+        assert_eq!(dom.get_label(track_absent), None);
+        assert_eq!(dom.get_kind(div_id), None);
+        assert_eq!(dom.get_srclang(div_id), None);
+        assert_eq!(dom.get_label(div_id), None);
+
+        // 2. sandbox, allow (the <iframe> pair)
+        let iframe_id = dom.create_node(NodeData::Element {
+            name: "iframe".to_string(),
+            attrs: vec![
+                ("SANDBOX".to_string(), "allow-scripts".to_string()),
+                ("allow".to_string(), "geolocation".to_string()),
+            ],
+        });
+        let iframe_absent = dom.create_node(NodeData::Element {
+            name: "iframe".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_sandbox(iframe_id), Some("allow-scripts"));
+        assert_eq!(dom.get_allow(iframe_id), Some("geolocation"));
+        assert_eq!(dom.get_sandbox(iframe_absent), None);
+        assert_eq!(dom.get_allow(iframe_absent), None);
+        assert_eq!(dom.get_sandbox(div_id), None);
+        assert_eq!(dom.get_allow(div_id), None);
+
+        // 3. formaction, formmethod, formtarget, formnovalidate (form-associated submit buttons)
+        let input_submit_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![
+                ("formaction".to_string(), "/submit".to_string()),
+                ("formmethod".to_string(), "post".to_string()),
+                ("FORMTARGET".to_string(), "_blank".to_string()),
+                ("formnovalidate".to_string(), "".to_string()),
+            ],
+        });
+        let button_submit_id = dom.create_node(NodeData::Element {
+            name: "button".to_string(),
+            attrs: vec![
+                ("formaction".to_string(), "/action".to_string()),
+                ("FORMMETHOD".to_string(), "get".to_string()),
+                ("formtarget".to_string(), "_self".to_string()),
+            ],
+        });
+        let input_submit_absent = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_formaction(input_submit_id), Some("/submit"));
+        assert_eq!(dom.get_formmethod(input_submit_id), Some("post"));
+        assert_eq!(dom.get_formtarget(input_submit_id), Some("_blank"));
+        assert_eq!(dom.get_formnovalidate(input_submit_id), Some(true));
+
+        assert_eq!(dom.get_formaction(button_submit_id), Some("/action"));
+        assert_eq!(dom.get_formmethod(button_submit_id), Some("get"));
+        assert_eq!(dom.get_formtarget(button_submit_id), Some("_self"));
+        assert_eq!(dom.get_formnovalidate(button_submit_id), Some(false));
+
+        assert_eq!(dom.get_formaction(input_submit_absent), None);
+        assert_eq!(dom.get_formmethod(input_submit_absent), None);
+        assert_eq!(dom.get_formtarget(input_submit_absent), None);
+        assert_eq!(dom.get_formnovalidate(input_submit_absent), Some(false));
+
+        assert_eq!(dom.get_formaction(div_id), None);
+        assert_eq!(dom.get_formmethod(div_id), None);
+        assert_eq!(dom.get_formtarget(div_id), None);
+        assert_eq!(dom.get_formnovalidate(div_id), None);
+
+        // 4. inputmode, enterkeyhint (form controls)
+        let select_id = dom.create_node(NodeData::Element {
+            name: "select".to_string(),
+            attrs: vec![
+                ("inputmode".to_string(), "numeric".to_string()),
+                ("ENTERKEYHINT".to_string(), "done".to_string()),
+            ],
+        });
+        let select_absent = dom.create_node(NodeData::Element {
+            name: "select".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_inputmode(select_id), Some("numeric"));
+        assert_eq!(dom.get_enterkeyhint(select_id), Some("done"));
+        assert_eq!(dom.get_inputmode(select_absent), None);
+        assert_eq!(dom.get_enterkeyhint(select_absent), None);
+        assert_eq!(dom.get_inputmode(div_id), None);
+        assert_eq!(dom.get_enterkeyhint(div_id), None);
+
+        // 5. dirname, maxlength, minlength (input, textarea)
+        let textarea_fc_id = dom.create_node(NodeData::Element {
+            name: "textarea".to_string(),
+            attrs: vec![
+                ("DIRNAME".to_string(), "text.dir".to_string()),
+                ("maxlength".to_string(), "150".to_string()),
+                ("MINLENGTH".to_string(), "5".to_string()),
+            ],
+        });
+        let textarea_fc_absent = dom.create_node(NodeData::Element {
+            name: "textarea".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_dirname(textarea_fc_id), Some("text.dir"));
+        assert_eq!(dom.get_maxlength(textarea_fc_id), Some("150"));
+        assert_eq!(dom.get_minlength(textarea_fc_id), Some("5"));
+        assert_eq!(dom.get_dirname(textarea_fc_absent), None);
+        assert_eq!(dom.get_maxlength(textarea_fc_absent), None);
+        assert_eq!(dom.get_minlength(textarea_fc_absent), None);
+        assert_eq!(dom.get_dirname(div_id), None);
+        assert_eq!(dom.get_maxlength(div_id), None);
+        assert_eq!(dom.get_minlength(div_id), None);
+
+        // 6. size (input, select)
+        let input_size_id = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![("SIZE".to_string(), "40".to_string())],
+        });
+        let input_size_absent = dom.create_node(NodeData::Element {
+            name: "input".to_string(),
+            attrs: vec![],
+        });
+
+        assert_eq!(dom.get_size(input_size_id), Some("40"));
+        assert_eq!(dom.get_size(input_size_absent), None);
+        assert_eq!(dom.get_size(div_id), None);
+
+        // 7. Non-element node / foreign NodeId
+        let foreign_node = dom.create_node(NodeData::Text("some text".to_string()));
+        assert_eq!(dom.get_kind(foreign_node), None);
+        assert_eq!(dom.get_srclang(foreign_node), None);
+        assert_eq!(dom.get_label(foreign_node), None);
+        assert_eq!(dom.get_sandbox(foreign_node), None);
+        assert_eq!(dom.get_allow(foreign_node), None);
+        assert_eq!(dom.get_formaction(foreign_node), None);
+        assert_eq!(dom.get_formmethod(foreign_node), None);
+        assert_eq!(dom.get_formtarget(foreign_node), None);
+        assert_eq!(dom.get_formnovalidate(foreign_node), None);
+        assert_eq!(dom.get_inputmode(foreign_node), None);
+        assert_eq!(dom.get_enterkeyhint(foreign_node), None);
+        assert_eq!(dom.get_dirname(foreign_node), None);
+        assert_eq!(dom.get_maxlength(foreign_node), None);
+        assert_eq!(dom.get_minlength(foreign_node), None);
+        assert_eq!(dom.get_size(foreign_node), None);
     }
 }
