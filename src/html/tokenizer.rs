@@ -1608,11 +1608,17 @@ impl Tokenizer {
                             self.emit_error("unexpected-equals-sign-before-attribute-name");
                             self.current_attribute = Some(("=".to_string(), String::new()));
                             self.state = State::AttributeName;
+                            if matches!(self.current_token, Some(Token::EndTag { .. })) {
+                                self.emit_error("end-tag-with-attributes");
+                            }
                         }
                         Some(_) => {
                             self.current_attribute = Some((String::new(), String::new()));
                             self.state = State::AttributeName;
                             self.input.reconsume();
+                            if matches!(self.current_token, Some(Token::EndTag { .. })) {
+                                self.emit_error("end-tag-with-attributes");
+                            }
                         }
                     }
                 }
@@ -1837,6 +1843,9 @@ impl Tokenizer {
                     // // spec: §13.2.5.40 Self-closing start tag state
                     match c {
                         Some('>') => {
+                            if matches!(self.current_token, Some(Token::EndTag { .. })) {
+                                self.emit_error("end-tag-with-trailing-solidus");
+                            }
                             if let Some(
                                 Token::StartTag {
                                     ref mut self_closing,
@@ -5813,6 +5822,209 @@ mod tests {
             assert_eq!(decoded, "\u{001F}");
             let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
             assert!(errors.contains(&"control-character-reference".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_t0998_strengthen_correctness() {
+        // 1. End Tag Attributes & Trailing Solidus
+        {
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"</div class=\"abc\">"));
+            assert_eq!(
+                t.next_token(),
+                Token::EndTag {
+                    name: "div".to_string(),
+                    attrs: vec![("class".to_string(), "abc".to_string())],
+                    self_closing: false,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"end-tag-with-attributes".to_string()));
+        }
+        {
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"</div/>"));
+            assert_eq!(
+                t.next_token(),
+                Token::EndTag {
+                    name: "div".to_string(),
+                    attrs: Vec::new(),
+                    self_closing: true,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"end-tag-with-trailing-solidus".to_string()));
+        }
+
+        // 2. RAWTEXT & Script appropriate/inappropriate end tag handling with attributes/solidus
+        {
+            // Inside <xmp>, </xmp class="abc"> is appropriate and should have attributes/error
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<xmp></xmp class=\"abc\">"));
+            assert_eq!(
+                t.next_token(),
+                Token::StartTag {
+                    name: "xmp".to_string(),
+                    attrs: Vec::new(),
+                    self_closing: false,
+                }
+            );
+            assert_eq!(
+                t.next_token(),
+                Token::EndTag {
+                    name: "xmp".to_string(),
+                    attrs: vec![("class".to_string(), "abc".to_string())],
+                    self_closing: false,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"end-tag-with-attributes".to_string()));
+        }
+        {
+            // Inside <xmp>, </xmp/> is appropriate and self-closing
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<xmp></xmp/>"));
+            assert_eq!(
+                t.next_token(),
+                Token::StartTag {
+                    name: "xmp".to_string(),
+                    attrs: Vec::new(),
+                    self_closing: false,
+                }
+            );
+            assert_eq!(
+                t.next_token(),
+                Token::EndTag {
+                    name: "xmp".to_string(),
+                    attrs: Vec::new(),
+                    self_closing: true,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"end-tag-with-trailing-solidus".to_string()));
+        }
+        {
+            // Inside <script>, </script class="foo"> is appropriate and has attributes/error
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<script></script class=\"foo\">"));
+            assert_eq!(
+                t.next_token(),
+                Token::StartTag {
+                    name: "script".to_string(),
+                    attrs: Vec::new(),
+                    self_closing: false,
+                }
+            );
+            assert_eq!(
+                t.next_token(),
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: vec![("class".to_string(), "foo".to_string())],
+                    self_closing: false,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"end-tag-with-attributes".to_string()));
+        }
+        {
+            // Inside <script>, </script/> is appropriate and self-closing
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<script></script/>"));
+            assert_eq!(
+                t.next_token(),
+                Token::StartTag {
+                    name: "script".to_string(),
+                    attrs: Vec::new(),
+                    self_closing: false,
+                }
+            );
+            assert_eq!(
+                t.next_token(),
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: Vec::new(),
+                    self_closing: true,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"end-tag-with-trailing-solidus".to_string()));
+        }
+
+        // 3. Character reference termination
+        {
+            // In body text: &notit; -> ¬it;
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"&notit;"));
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{00AC}it;");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"missing-semicolon-after-character-reference".to_string()));
+            assert!(errors.contains(&"ambiguous-ampersand".to_string()));
+        }
+        {
+            // In attribute: &notit; -> &notit; (not decoded, as followed by alpha)
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<div a=\"&notit;\">"));
+            assert_eq!(
+                t.next_token(),
+                Token::StartTag {
+                    name: "div".to_string(),
+                    attrs: vec![("a".to_string(), "&notit;".to_string())],
+                    self_closing: false,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(
+                errors.is_empty(),
+                "Expected no errors for ignored char ref, got {:?}",
+                errors
+            );
+        }
+        {
+            // &#x123 at EOF: missing semicolon
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"&#x123"));
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{0123}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"missing-semicolon-after-character-reference".to_string()));
+        }
+        {
+            // &#123 at EOF: missing semicolon
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"&#123"));
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    other => panic!("Unexpected token: {:?}", other),
+                }
+            }
+            assert_eq!(decoded, "\u{007B}");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"missing-semicolon-after-character-reference".to_string()));
+        }
+
+        // 4. Bogus Comments & Mismatched Markup
+        {
+            // <!> -> empty comment, mismatched markup error
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<!>"));
+            assert_eq!(t.next_token(), Token::Comment(String::new()));
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"mismatched-markup-declaration-open".to_string()));
+        }
+        {
+            // <!-> -> comment with "-", mismatched markup error
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<!->"));
+            assert_eq!(t.next_token(), Token::Comment("-".to_string()));
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"incorrect-formatting-of-html-comment".to_string()));
         }
     }
 }
