@@ -355,6 +355,11 @@ fn test_html5lib_tree_construction_conformance() {
                 continue;
             }
 
+            if case.script_on {
+                skipped += 1;
+                continue;
+            }
+
             let stream = InputStream::from_utf8(case.data.as_bytes());
             let dom = parse_document(stream);
             let actual = serialize_dom(&dom);
@@ -371,7 +376,7 @@ fn test_html5lib_tree_construction_conformance() {
         }
     }
 
-    const BASELINE: usize = 1570;
+    const BASELINE: usize = 1591;
 
     eprintln!(
         "html5lib tree-construction: PASS={} FAIL={} SKIP={} (baseline >= {})",

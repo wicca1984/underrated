@@ -711,7 +711,6 @@ impl TreeBuilder {
                 mut attrs,
                 self_closing,
             } => {
-                self.frameset_ok = false;
                 let is_html_breaking = match name.as_str() {
                     "b" | "big" | "blockquote" | "body" | "br" | "center" | "code" | "dd"
                     | "div" | "dl" | "dt" | "em" | "embed" | "h1" | "h2" | "h3" | "h4" | "h5"
@@ -1112,6 +1111,7 @@ impl TreeBuilder {
                 self.open_elements_push(node);
                 self.tokenizer.set_initial_state("RCDATA state");
                 self.tokenizer.set_last_start_tag(&name);
+                self.original_insertion_mode = Some(self.insertion_mode);
                 self.insertion_mode = InsertionMode::Text;
             }
             Token::StartTag { name, attrs, .. } if name == "style" || name == "noframes" => {
@@ -1119,6 +1119,7 @@ impl TreeBuilder {
                 self.open_elements_push(node);
                 self.tokenizer.set_initial_state("RAWTEXT state");
                 self.tokenizer.set_last_start_tag(&name);
+                self.original_insertion_mode = Some(self.insertion_mode);
                 self.insertion_mode = InsertionMode::Text;
             }
             Token::StartTag { name, attrs, .. } if name == "noscript" => {
@@ -1131,6 +1132,7 @@ impl TreeBuilder {
                 self.open_elements_push(node);
                 self.tokenizer.set_initial_state("Script data state");
                 self.tokenizer.set_last_start_tag(&name);
+                self.original_insertion_mode = Some(self.insertion_mode);
                 self.insertion_mode = InsertionMode::Text;
             }
             Token::StartTag { name, attrs, .. } if name == "template" => {
@@ -1275,6 +1277,11 @@ impl TreeBuilder {
                 self.frameset_ok = false;
                 self.insertion_mode = InsertionMode::InBody;
             }
+            Token::StartTag { name, attrs, .. } if name == "frameset" => {
+                let node = self.create_and_insert_element(name, attrs);
+                self.open_elements_push(node);
+                self.insertion_mode = InsertionMode::InFrameset;
+            }
             Token::StartTag { name, attrs, .. } if name == "template" => {
                 if let Some(head_id) = self.head_element_pointer {
                     self.open_elements_push(head_id);
@@ -1312,6 +1319,8 @@ impl TreeBuilder {
                     self.open_elements_retain(|id| id != head_id);
                     if self.insertion_mode == InsertionMode::InHead {
                         self.insertion_mode = old_mode;
+                    } else if self.insertion_mode == InsertionMode::Text {
+                        self.original_insertion_mode = Some(old_mode);
                     }
                 }
             }
@@ -1340,12 +1349,20 @@ impl TreeBuilder {
             Token::Eof => {
                 // Parse error.
                 self.open_elements_pop();
-                self.reset_insertion_mode_appropriately();
+                if let Some(mode) = self.original_insertion_mode.take() {
+                    self.insertion_mode = mode;
+                } else {
+                    self.reset_insertion_mode_appropriately();
+                }
                 self.process_token(token);
             }
             Token::EndTag { .. } => {
                 self.open_elements_pop();
-                self.reset_insertion_mode_appropriately();
+                if let Some(mode) = self.original_insertion_mode.take() {
+                    self.insertion_mode = mode;
+                } else {
+                    self.reset_insertion_mode_appropriately();
+                }
             }
             _ => {}
         }
@@ -1394,7 +1411,7 @@ impl TreeBuilder {
                         let second_id = self.stack_of_open_elements[1];
                         let is_body = matches!(self.dom.data(second_id), Some(NodeData::Element { name, .. }) if name == "body");
                         if is_body {
-                            // TODO(spec): set frameset-ok to not ok
+                            self.frameset_ok = false;
                             self.append_attributes_if_missing(second_id, attrs);
                         }
                     }
@@ -1665,6 +1682,7 @@ impl TreeBuilder {
                     self.tokenizer.set_initial_state("RCDATA state");
                     self.tokenizer.set_last_start_tag(&name);
                     self.ignore_next_lf = true;
+                    self.original_insertion_mode = Some(self.insertion_mode);
                     self.insertion_mode = InsertionMode::Text;
                     self.frameset_ok = false;
                 }
@@ -1677,6 +1695,7 @@ impl TreeBuilder {
                     self.open_elements_push(node);
                     self.tokenizer.set_initial_state("RAWTEXT state");
                     self.tokenizer.set_last_start_tag(&name);
+                    self.original_insertion_mode = Some(self.insertion_mode);
                     self.insertion_mode = InsertionMode::Text;
                     self.frameset_ok = false;
                 }
@@ -1722,6 +1741,9 @@ impl TreeBuilder {
 
                         self.insertion_mode = InsertionMode::InFrameset;
                     }
+                }
+                "frame" => {
+                    // Parse error. Ignore the token.
                 }
                 "image" => {
                     self.process_token(Token::StartTag {
@@ -3600,9 +3622,12 @@ impl TreeBuilder {
             name,
             "area"
                 | "base"
+                | "basefont"
+                | "bgsound"
                 | "br"
                 | "col"
                 | "embed"
+                | "frame"
                 | "hr"
                 | "img"
                 | "input"
@@ -4094,6 +4119,9 @@ impl TreeBuilder {
                     }
                     "head" if !last => {
                         self.insertion_mode = InsertionMode::InHead;
+                    }
+                    "noscript" if !last => {
+                        self.insertion_mode = InsertionMode::InHeadNoscript;
                     }
                     "body" => {
                         self.insertion_mode = InsertionMode::InBody;
