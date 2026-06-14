@@ -41,6 +41,12 @@ pub enum BoxSizingValue {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum ColumnSpanValue {
+    None,
+    All,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum DisplayValue {
     Block,
     Inline,
@@ -1899,6 +1905,7 @@ pub enum CssValue {
     Position(PositionValue),
     Overflow(OverflowValue),
     BoxSizing(BoxSizingValue),
+    ColumnSpan(ColumnSpanValue),
     Display(DisplayValue),
     FlexDirection(FlexDirectionValue),
     JustifyContent(JustifyContentValue),
@@ -2011,6 +2018,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "overflow-x"
             | "overflow-y"
             | "box-sizing"
+            | "column-span"
             | "display"
             | "flex-direction"
             | "justify-content"
@@ -2266,6 +2274,13 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
                 )
             }
             CssValue::BoxSizing(_) => true,
+            _ => false,
+        },
+        "column-span" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(kw.to_ascii_lowercase().as_str(), "none" | "all")
+            }
+            CssValue::ColumnSpan(_) => true,
             _ => false,
         },
         "display" => match value {
@@ -3405,6 +3420,18 @@ pub fn parse_property_value(
                     _ => return None,
                 };
                 Some(CssValue::BoxSizing(typed))
+            } else {
+                None
+            }
+        }
+        "column-span" => {
+            if let CssValue::Keyword(kw) = &val {
+                let typed = match kw.to_ascii_lowercase().as_str() {
+                    "none" => ColumnSpanValue::None,
+                    "all" => ColumnSpanValue::All,
+                    _ => return None,
+                };
+                Some(CssValue::ColumnSpan(typed))
             } else {
                 None
             }
@@ -5147,6 +5174,45 @@ mod tests {
             parse_property_value(
                 "box-sizing",
                 &[token(CssToken::Ident("invalid-box-sizing".to_string()))]
+            ),
+            None
+        );
+
+        // Test column-span
+        assert!(is_known_layout_property("column-span"));
+        assert!(is_known_layout_property("Column-Span"));
+        assert!(is_valid_property_value(
+            "column-span",
+            &CssValue::ColumnSpan(ColumnSpanValue::None)
+        ));
+        assert!(is_valid_property_value(
+            "column-span",
+            &CssValue::ColumnSpan(ColumnSpanValue::All)
+        ));
+        assert!(is_valid_property_value(
+            "column-span",
+            &CssValue::Keyword("none".to_string())
+        ));
+        assert!(is_valid_property_value(
+            "column-span",
+            &CssValue::Keyword("all".to_string())
+        ));
+        assert!(!is_valid_property_value(
+            "column-span",
+            &CssValue::Keyword("invalid-column-span".to_string())
+        ));
+        assert_eq!(
+            parse_property_value("column-span", &[token(CssToken::Ident("none".to_string()))]),
+            Some(CssValue::ColumnSpan(ColumnSpanValue::None))
+        );
+        assert_eq!(
+            parse_property_value("column-span", &[token(CssToken::Ident("all".to_string()))]),
+            Some(CssValue::ColumnSpan(ColumnSpanValue::All))
+        );
+        assert_eq!(
+            parse_property_value(
+                "column-span",
+                &[token(CssToken::Ident("invalid-column-span".to_string()))]
             ),
             None
         );
