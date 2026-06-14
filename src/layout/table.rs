@@ -99,68 +99,90 @@ pub fn layout_table_container(
     // Gather table rows
     let rows = gather_table_rows(dom, styles, node);
     if rows.is_empty() {
-        // Empty table, but might have captions
         let table_width = content_width + padding_left + padding_right + border_left + border_right;
-        let mut table_children = Vec::new();
-        let mut top_caption_boxes = Vec::new();
-        let mut bottom_caption_boxes = Vec::new();
+        if captions.is_empty() {
+            return Some(LayoutBox {
+                node: Some(node),
+                rect: Rect::new(
+                    border_box_x,
+                    border_box_y,
+                    table_width,
+                    padding_top + padding_bottom + border_top + border_bottom,
+                ),
+                children: Vec::new(),
+                text: None,
+            });
+        } else {
+            let mut top_caption_boxes = Vec::new();
+            let mut bottom_caption_boxes = Vec::new();
 
-        // Collect and layout captions
-        for &caption_node in &captions {
-            let is_bottom = if let Some(style) = styles.get(&caption_node) {
-                style.inherited_table.caption_side == "bottom" || caption_side_bottom
-            } else {
-                caption_side_bottom
-            };
-
-            if let Some(cap_box) = layout_node(
-                dom,
-                styles,
-                caption_node,
-                table_width,
-                border_box_x,
-                border_box_y,
-                depth + 1,
-            ) {
-                if is_bottom {
-                    bottom_caption_boxes.push(cap_box);
+            for &caption_node in &captions {
+                let is_bottom = if let Some(style) = styles.get(&caption_node) {
+                    style.inherited_table.caption_side == "bottom" || caption_side_bottom
                 } else {
-                    top_caption_boxes.push(cap_box);
+                    caption_side_bottom
+                };
+
+                if let Some(cap_box) = layout_node(
+                    dom,
+                    styles,
+                    caption_node,
+                    table_width,
+                    border_box_x,
+                    border_box_y,
+                    depth + 1,
+                ) {
+                    if is_bottom {
+                        bottom_caption_boxes.push(cap_box);
+                    } else {
+                        top_caption_boxes.push(cap_box);
+                    }
                 }
             }
+
+            let mut curr_y = border_box_y;
+            let mut wrapper_children = Vec::new();
+
+            // Position top captions (stacking top to bottom)
+            for mut cap_box in top_caption_boxes {
+                let dy = curr_y - cap_box.rect.origin.y;
+                translate_y(&mut cap_box, dy);
+                curr_y += cap_box.rect.size.height;
+                wrapper_children.push(cap_box);
+            }
+
+            let grid_box_y = curr_y;
+            let grid_box_height = padding_top + padding_bottom + border_top + border_bottom;
+            curr_y += grid_box_height;
+
+            let empty_table_grid_box = LayoutBox {
+                node: Some(node),
+                rect: Rect::new(border_box_x, grid_box_y, table_width, grid_box_height),
+                children: Vec::new(),
+                text: None,
+            };
+            wrapper_children.push(empty_table_grid_box);
+
+            // Position bottom captions (stacking top to bottom)
+            for mut cap_box in bottom_caption_boxes {
+                let dy = curr_y - cap_box.rect.origin.y;
+                translate_y(&mut cap_box, dy);
+                curr_y += cap_box.rect.size.height;
+                wrapper_children.push(cap_box);
+            }
+
+            return Some(LayoutBox {
+                node: None, // Table Wrapper Box is anonymous
+                rect: Rect::new(
+                    border_box_x,
+                    border_box_y,
+                    table_width,
+                    curr_y - border_box_y,
+                ),
+                children: wrapper_children,
+                text: None,
+            });
         }
-
-        // Position top captions (stacking top to bottom)
-        let mut curr_y = border_box_y;
-        for mut cap_box in top_caption_boxes {
-            let dy = curr_y - cap_box.rect.origin.y;
-            translate_y(&mut cap_box, dy);
-            curr_y += cap_box.rect.size.height;
-            table_children.push(cap_box);
-        }
-
-        // Space for table border box
-        curr_y += padding_top + padding_bottom + border_top + border_bottom;
-
-        // Position bottom captions (stacking top to bottom)
-        for mut cap_box in bottom_caption_boxes {
-            let dy = curr_y - cap_box.rect.origin.y;
-            translate_y(&mut cap_box, dy);
-            curr_y += cap_box.rect.size.height;
-            table_children.push(cap_box);
-        }
-
-        return Some(LayoutBox {
-            node: Some(node),
-            rect: Rect::new(
-                border_box_x,
-                border_box_y,
-                table_width,
-                curr_y - border_box_y,
-            ),
-            children: table_children,
-            text: None,
-        });
     }
 
     // Determine cell placements (slot-occupancy model)
@@ -198,8 +220,27 @@ pub fn layout_table_container(
                     rowspan = (rows.len() - r).max(1);
                 }
             } else {
-                let remaining_rows = rows.len() - r;
-                rowspan = rowspan.clamp(1, remaining_rows);
+                if let Some(current_row_node) = row_info.node
+                    && let Some(parent_id) = dom.parent(current_row_node)
+                    && parent_id != node
+                {
+                    let mut count = 0;
+                    for future_row in &rows[r..] {
+                        if let Some(fr_node) = future_row.node {
+                            if dom.parent(fr_node) == Some(parent_id) {
+                                count += 1;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    rowspan = rowspan.clamp(1, count.max(1));
+                } else {
+                    let remaining_rows = rows.len() - r;
+                    rowspan = rowspan.clamp(1, remaining_rows);
+                }
             }
 
             let placement = CellPlacement {
@@ -366,7 +407,7 @@ pub fn layout_table_container(
     for placement in cell_placements.values() {
         if placement.colspan == 1
             && let Some(cell_style) = styles.get(&placement.node)
-            && cell_style.reset_box.width != -1
+            && has_explicit_width(cell_style)
         {
             col_is_explicit[placement.col_idx] = true;
         }
@@ -754,12 +795,13 @@ pub fn layout_table_container(
 
     // 1. Position top captions (stacking top to bottom)
     let mut curr_y = border_box_y;
-    for mut cap_box in top_caption_boxes {
+    for cap_box in &mut top_caption_boxes {
         let dy = curr_y - cap_box.rect.origin.y;
-        translate_y(&mut cap_box, dy);
+        translate_y(cap_box, dy);
         curr_y += cap_box.rect.size.height;
-        table_children.push(cap_box);
     }
+
+    let grid_box_y = curr_y;
 
     // 2. Table row content begins here
     let mut row_y_offsets = vec![0.0_f32; rows.len()];
@@ -882,20 +924,60 @@ pub fn layout_table_container(
         table_children.push(row_box);
     }
 
-    // Append bottom captions at the very end to match paint order
-    table_children.extend(positioned_bottom_captions);
+    if captions.is_empty() {
+        Some(LayoutBox {
+            node: Some(node),
+            rect: Rect::new(
+                border_box_x,
+                border_box_y,
+                table_width,
+                curr_y - border_box_y,
+            ),
+            children: table_children,
+            text: None,
+        })
+    } else {
+        let table_grid_box = LayoutBox {
+            node: Some(node),
+            rect: Rect::new(
+                border_box_x,
+                grid_box_y,
+                table_width,
+                table_bottom_y - grid_box_y,
+            ),
+            children: table_children,
+            text: None,
+        };
 
-    Some(LayoutBox {
-        node: Some(node),
-        rect: Rect::new(
-            border_box_x,
-            border_box_y,
-            table_width,
-            curr_y - border_box_y,
-        ),
-        children: table_children,
-        text: None,
-    })
+        let mut wrapper_children = Vec::new();
+        wrapper_children.extend(top_caption_boxes);
+        wrapper_children.push(table_grid_box);
+        wrapper_children.extend(positioned_bottom_captions);
+
+        Some(LayoutBox {
+            node: None, // Table Wrapper Box is anonymous
+            rect: Rect::new(
+                border_box_x,
+                border_box_y,
+                table_width,
+                curr_y - border_box_y,
+            ),
+            children: wrapper_children,
+            text: None,
+        })
+    }
+}
+
+fn has_explicit_width(style: &CategorizedComputedStyle) -> bool {
+    if style.reset_box.width != -1 {
+        return true;
+    }
+    if let Some(ref extra) = style.extra_values
+        && extra.contains_key("width")
+    {
+        return true;
+    }
+    false
 }
 
 pub(crate) fn is_border_collapse(style: &CategorizedComputedStyle) -> bool {
@@ -1719,7 +1801,7 @@ mod tests {
         // 2. Table total height should include caption (40px) + cell/row (30px) = 70px
         assert_eq!(table_box.rect.size.height, 70.0);
 
-        // 3. Children of table should be: caption and then the row
+        // 3. Children of table should be: caption and then the table grid box
         assert_eq!(table_box.children.len(), 2);
 
         let cap_box = &table_box.children[0];
@@ -1729,7 +1811,11 @@ mod tests {
         assert_eq!(cap_box.rect.size.width, 200.0); // spans full table width
         assert_eq!(cap_box.rect.size.height, 40.0);
 
-        let row_box = &table_box.children[1];
+        let grid_box = &table_box.children[1];
+        assert_eq!(grid_box.node, Some(table_node));
+        assert_eq!(grid_box.children.len(), 1);
+
+        let row_box = &grid_box.children[0];
         assert_eq!(row_box.node, Some(row_node));
         assert_eq!(row_box.rect.origin.x, 10.0);
         assert_eq!(row_box.rect.origin.y, 20.0 + 40.0); // offset downward by caption height
@@ -1809,10 +1895,14 @@ mod tests {
         // 2. Table total height should include caption (40px) + cell/row (30px) = 70px
         assert_eq!(table_box.rect.size.height, 70.0);
 
-        // 3. Children of table should be: row and then the caption
+        // 3. Children of table should be: table grid box and then the caption
         assert_eq!(table_box.children.len(), 2);
 
-        let row_box = &table_box.children[0];
+        let grid_box = &table_box.children[0];
+        assert_eq!(grid_box.node, Some(table_node));
+        assert_eq!(grid_box.children.len(), 1);
+
+        let row_box = &grid_box.children[0];
         assert_eq!(row_box.node, Some(row_node));
         assert_eq!(row_box.rect.origin.x, 10.0);
         assert_eq!(row_box.rect.origin.y, 20.0); // starts at normal top position (not offset)
@@ -1925,7 +2015,7 @@ mod tests {
         //    top captions (20px + 15px) + row (30px) + bottom caption (25px) = 90px
         assert_eq!(table_box.rect.size.height, 90.0);
 
-        // 3. Children of table should be: top captions, then the row, then bottom caption
+        // 3. Children of table should be: top captions, then the table grid box, then bottom caption
         assert_eq!(table_box.children.len(), 4);
 
         let cap1_box = &table_box.children[0];
@@ -1938,7 +2028,11 @@ mod tests {
         assert_eq!(cap2_box.rect.origin.y, 20.0 + 20.0);
         assert_eq!(cap2_box.rect.size.height, 15.0);
 
-        let row_box = &table_box.children[2];
+        let grid_box = &table_box.children[2];
+        assert_eq!(grid_box.node, Some(table_node));
+        assert_eq!(grid_box.children.len(), 1);
+
+        let row_box = &grid_box.children[0];
         assert_eq!(row_box.node, Some(row_node));
         assert_eq!(row_box.rect.origin.y, 40.0 + 15.0);
         assert_eq!(row_box.rect.size.height, 30.0);
@@ -4013,5 +4107,136 @@ mod tests {
 
         assert_eq!(r1.rect.size.height, 40.0);
         assert_eq!(r2.rect.size.height, 110.0);
+    }
+
+    #[test]
+    fn test_rowspan_positive_clamped_to_row_group() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Group 1 (tbody)
+        let tbody_node = dom.create_node(NodeData::Element {
+            name: "tbody".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, tbody_node);
+
+        // Row 1 in tbody
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(tbody_node, row1_node);
+
+        // Cell 1.1: rowspan="3" (but there are only 2 rows in tbody, so should be clamped to 2)
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: vec![("rowspan".to_string(), "3".to_string())],
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        // Cell 1.2
+        let cell12_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell12_node);
+
+        // Row 2 in tbody
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(tbody_node, row2_node);
+
+        // Cell 2.1
+        let cell21_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row2_node, cell21_node);
+
+        // Group 2 (tfoot)
+        let tfoot_node = dom.create_node(NodeData::Element {
+            name: "tfoot".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, tfoot_node);
+
+        // Row 3 (in tfoot)
+        let row3_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(tfoot_node, row3_node);
+
+        // Cell 3.1
+        let cell31_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row3_node, cell31_node);
+
+        let mut styles = HashMap::new();
+        styles.insert(tbody_node, style_with_display("block"));
+        styles.insert(tfoot_node, style_with_display("block"));
+        styles.insert(table_node, style_with_display("table"));
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+        styles.insert(row3_node, style_with_display("table-row"));
+
+        // Set dimensions
+        let mut cell11_style = style_with_display("table-cell");
+        cell11_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell11_style.insert("height".to_string(), CssValue::Length(20.0, LengthUnit::Px));
+        styles.insert(cell11_node, cell11_style);
+
+        let mut cell12_style = style_with_display("table-cell");
+        cell12_style.insert("width".to_string(), CssValue::Length(80.0, LengthUnit::Px));
+        cell12_style.insert("height".to_string(), CssValue::Length(15.0, LengthUnit::Px));
+        styles.insert(cell12_node, cell12_style);
+
+        let mut cell21_style = style_with_display("table-cell");
+        cell21_style.insert("width".to_string(), CssValue::Length(80.0, LengthUnit::Px));
+        cell21_style.insert("height".to_string(), CssValue::Length(25.0, LengthUnit::Px));
+        styles.insert(cell21_node, cell21_style);
+
+        let mut cell31_style = style_with_display("table-cell");
+        cell31_style.insert("width".to_string(), CssValue::Length(50.0, LengthUnit::Px));
+        cell31_style.insert("height".to_string(), CssValue::Length(10.0, LengthUnit::Px));
+        styles.insert(cell31_node, cell31_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Checks:
+        // Cell 1.1 has rowspan="3" but belongs to tbody with only 2 rows. It should be clamped to span 2 rows, not Row 3 (in tfoot).
+        assert_eq!(table_box.children.len(), 3); // 3 rows
+
+        let r1 = &table_box.children[0];
+        let cell11_box = &r1.children[0];
+        assert_eq!(cell11_box.node, Some(cell11_node));
+        assert_eq!(cell11_box.rect.size.width, 50.0);
+        assert_eq!(cell11_box.rect.size.height, 40.0); // Spans row 1 (15px) + row 2 (25px) = 40px
+
+        let cell12_box = &r1.children[1];
+        assert_eq!(cell12_box.node, Some(cell12_node));
+        assert_eq!(cell12_box.rect.size.height, 15.0);
+
+        let r2 = &table_box.children[1];
+        let cell21_box = &r2.children[0];
+        assert_eq!(cell21_box.node, Some(cell21_node));
+        assert_eq!(cell21_box.rect.origin.x, 50.0); // pushed right by the rowspan cell
+
+        let r3 = &table_box.children[2];
+        let cell31_box = &r3.children[0];
+        assert_eq!(cell31_box.node, Some(cell31_node));
+        assert_eq!(cell31_box.rect.origin.x, 0.0); // starts at column 0 because the rowspan cell did NOT leak into row 3!
     }
 }
