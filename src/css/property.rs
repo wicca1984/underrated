@@ -268,11 +268,41 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "currentcolor",
     },
+    PropertyMetadata {
+        name: "text-justify",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "text-combine-upright",
+        inherited: true,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "text-decoration-skip-ink",
+        inherited: true,
+        initial: "auto",
+    },
+    PropertyMetadata {
+        name: "hanging-punctuation",
+        inherited: true,
+        initial: "none",
+    },
+    PropertyMetadata {
+        name: "text-rendering",
+        inherited: true,
+        initial: "auto",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "scrollbar-gutter",
         inherited: false,
         initial: "auto",
+    },
+    PropertyMetadata {
+        name: "color-scheme",
+        inherited: false,
+        initial: "normal",
     },
     PropertyMetadata {
         name: "display",
@@ -1590,6 +1620,57 @@ mod tests {
         assert_eq!(inset_inline_start.name, "inset-inline-start");
         assert!(!inset_inline_start.inherited);
         assert_eq!(inset_inline_start.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0725() {
+        // text-justify
+        let text_justify = lookup("text-justify");
+        assert!(text_justify.is_some());
+        let text_justify = text_justify.unwrap();
+        assert_eq!(text_justify.name, "text-justify");
+        assert!(text_justify.inherited);
+        assert_eq!(text_justify.initial, "auto");
+
+        // text-combine-upright
+        let text_combine_upright = lookup("text-combine-upright");
+        assert!(text_combine_upright.is_some());
+        let text_combine_upright = text_combine_upright.unwrap();
+        assert_eq!(text_combine_upright.name, "text-combine-upright");
+        assert!(text_combine_upright.inherited);
+        assert_eq!(text_combine_upright.initial, "none");
+
+        // text-decoration-skip-ink
+        let text_decoration_skip_ink = lookup("text-decoration-skip-ink");
+        assert!(text_decoration_skip_ink.is_some());
+        let text_decoration_skip_ink = text_decoration_skip_ink.unwrap();
+        assert_eq!(text_decoration_skip_ink.name, "text-decoration-skip-ink");
+        assert!(text_decoration_skip_ink.inherited);
+        assert_eq!(text_decoration_skip_ink.initial, "auto");
+
+        // hanging-punctuation
+        let hanging_punctuation = lookup("hanging-punctuation");
+        assert!(hanging_punctuation.is_some());
+        let hanging_punctuation = hanging_punctuation.unwrap();
+        assert_eq!(hanging_punctuation.name, "hanging-punctuation");
+        assert!(hanging_punctuation.inherited);
+        assert_eq!(hanging_punctuation.initial, "none");
+
+        // color-scheme
+        let color_scheme = lookup("color-scheme");
+        assert!(color_scheme.is_some());
+        let color_scheme = color_scheme.unwrap();
+        assert_eq!(color_scheme.name, "color-scheme");
+        assert!(!color_scheme.inherited);
+        assert_eq!(color_scheme.initial, "normal");
+
+        // text-rendering
+        let text_rendering = lookup("text-rendering");
+        assert!(text_rendering.is_some());
+        let text_rendering = text_rendering.unwrap();
+        assert_eq!(text_rendering.name, "text-rendering");
+        assert!(text_rendering.inherited);
+        assert_eq!(text_rendering.initial, "auto");
     }
 
     #[test]
