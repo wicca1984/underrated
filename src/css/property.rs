@@ -2900,7 +2900,8 @@ pub fn expand_shorthand_values(
         | "border-block-start"
         | "border-block-end"
         | "border-inline-start"
-        | "border-inline-end" => {
+        | "border-inline-end"
+        | "column-rule" => {
             let longhands =
                 shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
             if values.len() > 3 {
@@ -3717,6 +3718,906 @@ pub fn expand_shorthand_values(
                     value: dl,
                 },
             ])
+        }
+        "container" => {
+            let slash_idx = values.iter().position(|&v| v == "/");
+            let (name_vals, type_vals) = match slash_idx {
+                Some(idx) => (&values[..idx], Some(&values[idx + 1..])),
+                None => (values, None),
+            };
+
+            if name_vals.is_empty() || name_vals.contains(&"/") {
+                return Err(ShorthandError::InvalidValue);
+            }
+            if type_vals.is_some_and(|v| v.is_empty() || v.len() > 1 || v.contains(&"/")) {
+                return Err(ShorthandError::InvalidValue);
+            }
+
+            let name_str = name_vals.join(" ");
+            let type_str = match type_vals {
+                Some(v) => v[0].to_string(),
+                None => "normal".to_string(),
+            };
+
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0], // container-name
+                    value: name_str,
+                },
+                ExpandedProperty {
+                    name: longhands[1], // container-type
+                    value: type_str,
+                },
+            ])
+        }
+        "text-decoration" => {
+            if values.len() > 4 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut line = None;
+            let mut style = None;
+            let mut color = None;
+            let mut thickness = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if lower == "none"
+                    || lower == "underline"
+                    || lower == "overline"
+                    || lower == "line-through"
+                    || lower == "blink"
+                {
+                    if line.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    line = Some(val.to_string());
+                } else if lower == "solid"
+                    || lower == "double"
+                    || lower == "dotted"
+                    || lower == "dashed"
+                    || lower == "wavy"
+                {
+                    if style.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    style = Some(val.to_string());
+                } else if lower == "auto" || lower == "from-font" || is_length_token(&lower) {
+                    if thickness.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    thickness = Some(val.to_string());
+                } else if is_color_token(&lower) {
+                    if color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    color = Some(val.to_string());
+                } else {
+                    return Err(ShorthandError::InvalidValue);
+                }
+            }
+
+            let l = line.unwrap_or_else(|| "none".to_string());
+            let s = style.unwrap_or_else(|| "solid".to_string());
+            let c = color.unwrap_or_else(|| "currentcolor".to_string());
+            let t = thickness.unwrap_or_else(|| "auto".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "text-decoration-line",
+                    value: l,
+                },
+                ExpandedProperty {
+                    name: "text-decoration-style",
+                    value: s,
+                },
+                ExpandedProperty {
+                    name: "text-decoration-color",
+                    value: c,
+                },
+                ExpandedProperty {
+                    name: "text-decoration-thickness",
+                    value: t,
+                },
+            ])
+        }
+        "background" => {
+            if values.len() > 10 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut bg_color = None;
+            let mut bg_image = None;
+            let mut bg_repeat = None;
+            let mut bg_position = None;
+            let mut bg_size = None;
+            let mut bg_attachment = None;
+            let mut bg_origin = None;
+            let mut bg_clip = None;
+
+            let slash_idx = values.iter().position(|&v| v == "/");
+            let (pos_and_others, _has_size) = match slash_idx {
+                Some(idx) => {
+                    let size_vals = &values[idx + 1..];
+                    if size_vals.is_empty() || size_vals.len() > 2 {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    bg_size = Some(size_vals.join(" "));
+                    (&values[..idx], true)
+                }
+                None => (values, false),
+            };
+
+            let mut iter = pos_and_others.iter().peekable();
+            while let Some(&&val) = iter.peek() {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_image_token(&lower) {
+                    if bg_image.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    bg_image = Some(val.to_string());
+                    iter.next();
+                } else if matches!(
+                    lower.as_str(),
+                    "repeat" | "no-repeat" | "repeat-x" | "repeat-y" | "space" | "round"
+                ) {
+                    if bg_repeat.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    bg_repeat = Some(val.to_string());
+                    iter.next();
+                } else if matches!(lower.as_str(), "scroll" | "fixed" | "local") {
+                    if bg_attachment.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    bg_attachment = Some(val.to_string());
+                    iter.next();
+                } else if matches!(lower.as_str(), "border-box" | "padding-box" | "content-box") {
+                    if bg_origin.is_none() {
+                        bg_origin = Some(val.to_string());
+                    } else if bg_clip.is_none() {
+                        bg_clip = Some(val.to_string());
+                    } else {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    iter.next();
+                } else if is_color_token(&lower) {
+                    if bg_color.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    bg_color = Some(val.to_string());
+                    iter.next();
+                } else if matches!(
+                    lower.as_str(),
+                    "top" | "bottom" | "left" | "right" | "center"
+                ) || is_length_token(&lower)
+                    || lower.ends_with('%')
+                {
+                    if bg_position.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    let mut pos_vals = vec![val.to_string()];
+                    iter.next();
+                    if let Some(&&next_val) = iter.peek() {
+                        let next_lower = next_val.trim().to_ascii_lowercase();
+                        if matches!(
+                            next_lower.as_str(),
+                            "top" | "bottom" | "left" | "right" | "center"
+                        ) || is_length_token(&next_lower)
+                            || next_lower.ends_with('%')
+                        {
+                            pos_vals.push(next_val.to_string());
+                            iter.next();
+                        }
+                    }
+                    bg_position = Some(pos_vals.join(" "));
+                } else {
+                    return Err(ShorthandError::InvalidValue);
+                }
+            }
+
+            if bg_origin.is_some() && bg_clip.is_none() {
+                bg_clip = bg_origin.clone();
+            }
+
+            let color_str = bg_color.unwrap_or_else(|| "transparent".to_string());
+            let image_str = bg_image.unwrap_or_else(|| "none".to_string());
+            let position_str = bg_position.unwrap_or_else(|| "0% 0%".to_string());
+            let size_str = bg_size.unwrap_or_else(|| "auto".to_string());
+            let repeat_str = bg_repeat.unwrap_or_else(|| "repeat".to_string());
+            let origin_str = bg_origin.unwrap_or_else(|| "padding-box".to_string());
+            let clip_str = bg_clip.unwrap_or_else(|| "border-box".to_string());
+            let attachment_str = bg_attachment.unwrap_or_else(|| "scroll".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "background-color",
+                    value: color_str,
+                },
+                ExpandedProperty {
+                    name: "background-image",
+                    value: image_str,
+                },
+                ExpandedProperty {
+                    name: "background-position",
+                    value: position_str,
+                },
+                ExpandedProperty {
+                    name: "background-size",
+                    value: size_str,
+                },
+                ExpandedProperty {
+                    name: "background-repeat",
+                    value: repeat_str,
+                },
+                ExpandedProperty {
+                    name: "background-origin",
+                    value: origin_str,
+                },
+                ExpandedProperty {
+                    name: "background-clip",
+                    value: clip_str,
+                },
+                ExpandedProperty {
+                    name: "background-attachment",
+                    value: attachment_str,
+                },
+            ])
+        }
+        "grid-area" => {
+            let mut parts = Vec::new();
+            let mut current_part = Vec::new();
+            for &val in values {
+                if val == "/" {
+                    if current_part.is_empty() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    parts.push(current_part.join(" "));
+                    current_part = Vec::new();
+                } else {
+                    current_part.push(val.to_string());
+                }
+            }
+            if current_part.is_empty() {
+                return Err(ShorthandError::InvalidValue);
+            }
+            parts.push(current_part.join(" "));
+
+            if parts.len() > 4 {
+                return Err(ShorthandError::TooManyValues);
+            }
+
+            let row_start = parts[0].clone();
+            let col_start = if parts.len() > 1 {
+                parts[1].clone()
+            } else {
+                "auto".to_string()
+            };
+            let row_end = if parts.len() > 2 {
+                parts[2].clone()
+            } else {
+                "auto".to_string()
+            };
+            let col_end = if parts.len() > 3 {
+                parts[3].clone()
+            } else {
+                "auto".to_string()
+            };
+
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0], // grid-row-start
+                    value: row_start,
+                },
+                ExpandedProperty {
+                    name: longhands[1], // grid-column-start
+                    value: col_start,
+                },
+                ExpandedProperty {
+                    name: longhands[2], // grid-row-end
+                    value: row_end,
+                },
+                ExpandedProperty {
+                    name: longhands[3], // grid-column-end
+                    value: col_end,
+                },
+            ])
+        }
+        "grid-template" => {
+            if values.len() == 1 && values[0].trim().eq_ignore_ascii_case("none") {
+                return Ok(vec![
+                    ExpandedProperty {
+                        name: "grid-template-columns",
+                        value: "none".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "grid-template-rows",
+                        value: "none".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "grid-template-areas",
+                        value: "none".to_string(),
+                    },
+                ]);
+            }
+
+            let slash_idx = values.iter().position(|&v| v == "/");
+            match slash_idx {
+                Some(idx) => {
+                    let rows_vals = &values[..idx];
+                    let cols_vals = &values[idx + 1..];
+                    if rows_vals.is_empty() || cols_vals.is_empty() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    if rows_vals.contains(&"/") || cols_vals.contains(&"/") {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    Ok(vec![
+                        ExpandedProperty {
+                            name: "grid-template-columns",
+                            value: cols_vals.join(" "),
+                        },
+                        ExpandedProperty {
+                            name: "grid-template-rows",
+                            value: rows_vals.join(" "),
+                        },
+                        ExpandedProperty {
+                            name: "grid-template-areas",
+                            value: "none".to_string(),
+                        },
+                    ])
+                }
+                None => Err(ShorthandError::InvalidValue),
+            }
+        }
+        "font-variant" => {
+            if values.len() == 1
+                && (values[0].trim().eq_ignore_ascii_case("normal")
+                    || values[0].trim().eq_ignore_ascii_case("none"))
+            {
+                let kw = values[0].trim().to_ascii_lowercase();
+                let longhands = shorthand_longhands(&lower_shorthand)
+                    .ok_or(ShorthandError::InvalidShorthand)?;
+                return Ok(longhands
+                    .iter()
+                    .map(|lh| ExpandedProperty {
+                        name: lh,
+                        value: kw.clone(),
+                    })
+                    .collect());
+            }
+
+            let mut ligatures = None;
+            let mut caps = None;
+            let mut numeric = None;
+            let mut east_asian = None;
+            let mut alternates = None;
+            let mut position = None;
+            let mut emoji = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                match lower.as_str() {
+                    "common-ligatures"
+                    | "no-common-ligatures"
+                    | "discretionary-ligatures"
+                    | "no-discretionary-ligatures"
+                    | "historical-ligatures"
+                    | "no-historical-ligatures"
+                    | "contextual"
+                    | "no-contextual" => {
+                        if ligatures.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        ligatures = Some(val.to_string());
+                    }
+                    "small-caps" | "all-small-caps" | "petite-caps" | "all-petite-caps"
+                    | "unicase" | "titling-caps" => {
+                        if caps.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        caps = Some(val.to_string());
+                    }
+                    "lining-nums" | "oldstyle-nums" | "proportional-nums" | "tabular-nums"
+                    | "diagonal-fractions" | "stacked-fractions" | "ordinal" | "slashed-zero" => {
+                        if numeric.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        numeric = Some(val.to_string());
+                    }
+                    "jis78" | "jis83" | "jis90" | "jis04" | "simplified" | "traditional"
+                    | "full-width" | "proportional-width" | "ruby" => {
+                        if east_asian.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        east_asian = Some(val.to_string());
+                    }
+                    "historical-forms" => {
+                        if alternates.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        alternates = Some(val.to_string());
+                    }
+                    "sub" | "super" => {
+                        if position.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        position = Some(val.to_string());
+                    }
+                    "text" | "emoji" | "unicode" => {
+                        if emoji.is_some() {
+                            return Err(ShorthandError::InvalidValue);
+                        }
+                        emoji = Some(val.to_string());
+                    }
+                    _ => return Err(ShorthandError::InvalidValue),
+                }
+            }
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "font-variant-ligatures",
+                    value: ligatures.unwrap_or_else(|| "normal".to_string()),
+                },
+                ExpandedProperty {
+                    name: "font-variant-caps",
+                    value: caps.unwrap_or_else(|| "normal".to_string()),
+                },
+                ExpandedProperty {
+                    name: "font-variant-numeric",
+                    value: numeric.unwrap_or_else(|| "normal".to_string()),
+                },
+                ExpandedProperty {
+                    name: "font-variant-east-asian",
+                    value: east_asian.unwrap_or_else(|| "normal".to_string()),
+                },
+                ExpandedProperty {
+                    name: "font-variant-alternates",
+                    value: alternates.unwrap_or_else(|| "normal".to_string()),
+                },
+                ExpandedProperty {
+                    name: "font-variant-position",
+                    value: position.unwrap_or_else(|| "normal".to_string()),
+                },
+                ExpandedProperty {
+                    name: "font-variant-emoji",
+                    value: emoji.unwrap_or_else(|| "normal".to_string()),
+                },
+            ])
+        }
+        "animation" => {
+            if values.len() > 8 {
+                return Err(ShorthandError::TooManyValues);
+            }
+
+            let mut name = None;
+            let mut duration = None;
+            let mut timing_function = None;
+            let mut delay = None;
+            let mut iteration_count = None;
+            let mut direction = None;
+            let mut fill_mode = None;
+            let mut play_state = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if is_time_value(&lower) {
+                    if duration.is_none() {
+                        duration = Some(val.to_string());
+                    } else if delay.is_none() {
+                        delay = Some(val.to_string());
+                    } else {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                } else if is_timing_function_value(&lower) {
+                    if timing_function.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    timing_function = Some(val.to_string());
+                } else if lower == "infinite" || lower.parse::<f64>().is_ok() {
+                    if iteration_count.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    iteration_count = Some(val.to_string());
+                } else if matches!(
+                    lower.as_str(),
+                    "normal" | "reverse" | "alternate" | "alternate-reverse"
+                ) {
+                    if direction.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    direction = Some(val.to_string());
+                } else if matches!(lower.as_str(), "none" | "forwards" | "backwards" | "both") {
+                    if fill_mode.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    fill_mode = Some(val.to_string());
+                } else if matches!(lower.as_str(), "running" | "paused") {
+                    if play_state.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    play_state = Some(val.to_string());
+                } else {
+                    if name.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    name = Some(val.to_string());
+                }
+            }
+
+            let n = name.unwrap_or_else(|| "none".to_string());
+            let dur = duration.unwrap_or_else(|| "0s".to_string());
+            let tf = timing_function.unwrap_or_else(|| "ease".to_string());
+            let dl = delay.unwrap_or_else(|| "0s".to_string());
+            let ic = iteration_count.unwrap_or_else(|| "1".to_string());
+            let dir = direction.unwrap_or_else(|| "normal".to_string());
+            let fm = fill_mode.unwrap_or_else(|| "none".to_string());
+            let ps = play_state.unwrap_or_else(|| "running".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "animation-name",
+                    value: n,
+                },
+                ExpandedProperty {
+                    name: "animation-duration",
+                    value: dur,
+                },
+                ExpandedProperty {
+                    name: "animation-timing-function",
+                    value: tf,
+                },
+                ExpandedProperty {
+                    name: "animation-delay",
+                    value: dl,
+                },
+                ExpandedProperty {
+                    name: "animation-iteration-count",
+                    value: ic,
+                },
+                ExpandedProperty {
+                    name: "animation-direction",
+                    value: dir,
+                },
+                ExpandedProperty {
+                    name: "animation-fill-mode",
+                    value: fm,
+                },
+                ExpandedProperty {
+                    name: "animation-play-state",
+                    value: ps,
+                },
+            ])
+        }
+        "font" => {
+            let joined = values.join(" ");
+            let normalized = joined.replace("/", " / ");
+            let norm_values: Vec<&str> = normalized.split_whitespace().collect();
+
+            if norm_values.is_empty() {
+                return Err(ShorthandError::ZeroValues);
+            }
+
+            let mut style = None;
+            let mut variant = None;
+            let mut weight = None;
+            let mut size = None;
+            let mut line_height = None;
+            let mut family_parts = Vec::new();
+
+            let mut idx = 0;
+            while idx < norm_values.len() {
+                let val = norm_values[idx];
+                let lower = val.to_ascii_lowercase();
+
+                let is_size = matches!(
+                    lower.as_str(),
+                    "xx-small"
+                        | "x-small"
+                        | "small"
+                        | "medium"
+                        | "large"
+                        | "x-large"
+                        | "xx-large"
+                        | "xxx-large"
+                        | "larger"
+                        | "smaller"
+                ) || is_length_token(&lower)
+                    || lower.ends_with('%');
+
+                if is_size {
+                    size = Some(val.to_string());
+                    idx += 1;
+                    break;
+                }
+
+                if matches!(lower.as_str(), "italic" | "oblique") {
+                    style = Some(val.to_string());
+                } else if matches!(lower.as_str(), "bold" | "bolder" | "lighter")
+                    || lower.parse::<f64>().is_ok()
+                {
+                    weight = Some(val.to_string());
+                } else if lower == "small-caps" {
+                    variant = Some(val.to_string());
+                } else if lower == "normal" {
+                    // default to normal
+                } else {
+                    return Err(ShorthandError::InvalidValue);
+                }
+                idx += 1;
+            }
+
+            if idx < norm_values.len() && norm_values[idx] == "/" {
+                idx += 1;
+                if idx >= norm_values.len() {
+                    return Err(ShorthandError::InvalidValue);
+                }
+                line_height = Some(norm_values[idx].to_string());
+                idx += 1;
+            }
+
+            while idx < norm_values.len() {
+                family_parts.push(norm_values[idx]);
+                idx += 1;
+            }
+
+            if size.is_none() || family_parts.is_empty() {
+                return Err(ShorthandError::InvalidValue);
+            }
+
+            let s = style.unwrap_or_else(|| "normal".to_string());
+            let v = variant.unwrap_or_else(|| "normal".to_string());
+            let w = weight.unwrap_or_else(|| "normal".to_string());
+            let sz = size.ok_or(ShorthandError::InvalidValue)?;
+            let lh = line_height.unwrap_or_else(|| "normal".to_string());
+            let fam = family_parts.join(" ");
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "font-style",
+                    value: s,
+                },
+                ExpandedProperty {
+                    name: "font-variant",
+                    value: v,
+                },
+                ExpandedProperty {
+                    name: "font-weight",
+                    value: w,
+                },
+                ExpandedProperty {
+                    name: "font-size",
+                    value: sz,
+                },
+                ExpandedProperty {
+                    name: "line-height",
+                    value: lh,
+                },
+                ExpandedProperty {
+                    name: "font-family",
+                    value: fam,
+                },
+            ])
+        }
+        "border-image" => {
+            let joined = values.join(" ");
+            let normalized = joined.replace("/", " / ");
+            let norm_values: Vec<&str> = normalized.split_whitespace().collect();
+
+            let mut source = None;
+            let mut slice_parts = Vec::new();
+            let mut width_parts = Vec::new();
+            let mut outset_parts = Vec::new();
+            let mut repeat_parts = Vec::new();
+
+            let mut slash_count = 0;
+
+            for val in norm_values {
+                let lower = val.to_ascii_lowercase();
+                if lower == "/" {
+                    slash_count += 1;
+                    if slash_count > 2 {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    continue;
+                }
+
+                if is_image_token(&lower) {
+                    if source.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    source = Some(val.to_string());
+                } else if matches!(lower.as_str(), "stretch" | "repeat" | "round" | "space") {
+                    if repeat_parts.len() >= 2 {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    repeat_parts.push(val.to_string());
+                } else {
+                    match slash_count {
+                        0 => {
+                            if slice_parts.len() >= 4 {
+                                return Err(ShorthandError::InvalidValue);
+                            }
+                            slice_parts.push(val.to_string());
+                        }
+                        1 => {
+                            if width_parts.len() >= 4 {
+                                return Err(ShorthandError::InvalidValue);
+                            }
+                            width_parts.push(val.to_string());
+                        }
+                        _ => {
+                            if outset_parts.len() >= 4 {
+                                return Err(ShorthandError::InvalidValue);
+                            }
+                            outset_parts.push(val.to_string());
+                        }
+                    }
+                }
+            }
+
+            let src = source.unwrap_or_else(|| "none".to_string());
+            let slc = if slice_parts.is_empty() {
+                "100%".to_string()
+            } else {
+                slice_parts.join(" ")
+            };
+            let w = if width_parts.is_empty() {
+                "1".to_string()
+            } else {
+                width_parts.join(" ")
+            };
+            let o = if outset_parts.is_empty() {
+                "0".to_string()
+            } else {
+                outset_parts.join(" ")
+            };
+            let rep = if repeat_parts.is_empty() {
+                "stretch".to_string()
+            } else {
+                repeat_parts.join(" ")
+            };
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: "border-image-source",
+                    value: src,
+                },
+                ExpandedProperty {
+                    name: "border-image-slice",
+                    value: slc,
+                },
+                ExpandedProperty {
+                    name: "border-image-width",
+                    value: w,
+                },
+                ExpandedProperty {
+                    name: "border-image-outset",
+                    value: o,
+                },
+                ExpandedProperty {
+                    name: "border-image-repeat",
+                    value: rep,
+                },
+            ])
+        }
+        "position-try" => {
+            let longhands =
+                shorthand_longhands(&lower_shorthand).ok_or(ShorthandError::InvalidShorthand)?;
+            if values.len() > 2 {
+                return Err(ShorthandError::TooManyValues);
+            }
+            let mut order = None;
+            let mut fallbacks = None;
+
+            for &val in values {
+                let lower = val.trim().to_ascii_lowercase();
+                if matches!(
+                    lower.as_str(),
+                    "normal"
+                        | "most-width"
+                        | "most-height"
+                        | "most-block-size"
+                        | "most-inline-size"
+                ) {
+                    if order.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    order = Some(val.to_string());
+                } else {
+                    if fallbacks.is_some() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    fallbacks = Some(val.to_string());
+                }
+            }
+
+            let o = order.unwrap_or_else(|| "normal".to_string());
+            let f = fallbacks.unwrap_or_else(|| "none".to_string());
+
+            Ok(vec![
+                ExpandedProperty {
+                    name: longhands[0], // position-try-order
+                    value: o,
+                },
+                ExpandedProperty {
+                    name: longhands[1], // position-try-fallbacks
+                    value: f,
+                },
+            ])
+        }
+        "grid" => {
+            if values.len() == 1 && values[0].trim().eq_ignore_ascii_case("none") {
+                return Ok(vec![
+                    ExpandedProperty {
+                        name: "grid-template-rows",
+                        value: "none".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "grid-template-columns",
+                        value: "none".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "grid-template-areas",
+                        value: "none".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "grid-auto-rows",
+                        value: "auto".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "grid-auto-columns",
+                        value: "auto".to_string(),
+                    },
+                    ExpandedProperty {
+                        name: "grid-auto-flow",
+                        value: "row".to_string(),
+                    },
+                ]);
+            }
+
+            let slash_idx = values.iter().position(|&v| v == "/");
+            match slash_idx {
+                Some(idx) => {
+                    let rows_vals = &values[..idx];
+                    let cols_vals = &values[idx + 1..];
+                    if rows_vals.is_empty() || cols_vals.is_empty() {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    if rows_vals.contains(&"/") || cols_vals.contains(&"/") {
+                        return Err(ShorthandError::InvalidValue);
+                    }
+                    Ok(vec![
+                        ExpandedProperty {
+                            name: "grid-template-rows",
+                            value: rows_vals.join(" "),
+                        },
+                        ExpandedProperty {
+                            name: "grid-template-columns",
+                            value: cols_vals.join(" "),
+                        },
+                        ExpandedProperty {
+                            name: "grid-template-areas",
+                            value: "none".to_string(),
+                        },
+                        ExpandedProperty {
+                            name: "grid-auto-rows",
+                            value: "auto".to_string(),
+                        },
+                        ExpandedProperty {
+                            name: "grid-auto-columns",
+                            value: "auto".to_string(),
+                        },
+                        ExpandedProperty {
+                            name: "grid-auto-flow",
+                            value: "row".to_string(),
+                        },
+                    ])
+                }
+                None => Err(ShorthandError::InvalidValue),
+            }
         }
         _ => Err(ShorthandError::InvalidShorthand),
     }
@@ -7365,6 +8266,188 @@ mod tests {
         assert_eq!(tr2[1].value, "0.5s");
         assert_eq!(tr2[2].value, "linear");
         assert_eq!(tr2[3].value, "1s");
+
+        // 17. column-rule
+        let col_rule = expand_shorthand_values("column-rule", &["1px", "solid", "red"]).unwrap();
+        assert_eq!(col_rule.len(), 3);
+        assert_eq!(col_rule[0].name, "column-rule-width");
+        assert_eq!(col_rule[0].value, "1px");
+        assert_eq!(col_rule[1].name, "column-rule-style");
+        assert_eq!(col_rule[1].value, "solid");
+        assert_eq!(col_rule[2].name, "column-rule-color");
+        assert_eq!(col_rule[2].value, "red");
+
+        // 18. container
+        let cont1 =
+            expand_shorthand_values("container", &["my-container", "/", "inline-size"]).unwrap();
+        assert_eq!(cont1.len(), 2);
+        assert_eq!(cont1[0].name, "container-name");
+        assert_eq!(cont1[0].value, "my-container");
+        assert_eq!(cont1[1].name, "container-type");
+        assert_eq!(cont1[1].value, "inline-size");
+
+        let cont2 = expand_shorthand_values("container", &["my-container"]).unwrap();
+        assert_eq!(cont2[0].value, "my-container");
+        assert_eq!(cont2[1].value, "normal");
+
+        // 19. text-decoration
+        let td1 =
+            expand_shorthand_values("text-decoration", &["underline", "dotted", "red", "2px"])
+                .unwrap();
+        assert_eq!(td1.len(), 4);
+        assert_eq!(td1[0].name, "text-decoration-line");
+        assert_eq!(td1[0].value, "underline");
+        assert_eq!(td1[1].name, "text-decoration-style");
+        assert_eq!(td1[1].value, "dotted");
+        assert_eq!(td1[2].name, "text-decoration-color");
+        assert_eq!(td1[2].value, "red");
+        assert_eq!(td1[3].name, "text-decoration-thickness");
+        assert_eq!(td1[3].value, "2px");
+
+        let td2 = expand_shorthand_values("text-decoration", &["none"]).unwrap();
+        assert_eq!(td2[0].value, "none");
+        assert_eq!(td2[1].value, "solid");
+        assert_eq!(td2[2].value, "currentcolor");
+        assert_eq!(td2[3].value, "auto");
+
+        // 20. background
+        let bg1 = expand_shorthand_values(
+            "background",
+            &["red", "url(bg.png)", "no-repeat", "center", "/", "cover"],
+        )
+        .unwrap();
+        assert_eq!(bg1.len(), 8);
+        assert_eq!(bg1[0].name, "background-color");
+        assert_eq!(bg1[0].value, "red");
+        assert_eq!(bg1[1].name, "background-image");
+        assert_eq!(bg1[1].value, "url(bg.png)");
+        assert_eq!(bg1[2].name, "background-position");
+        assert_eq!(bg1[2].value, "center");
+        assert_eq!(bg1[3].name, "background-size");
+        assert_eq!(bg1[3].value, "cover");
+        assert_eq!(bg1[4].name, "background-repeat");
+        assert_eq!(bg1[4].value, "no-repeat");
+
+        // 21. grid-area
+        let ga1 =
+            expand_shorthand_values("grid-area", &["a", "/", "b", "/", "c", "/", "d"]).unwrap();
+        assert_eq!(ga1.len(), 4);
+        assert_eq!(ga1[0].name, "grid-row-start");
+        assert_eq!(ga1[0].value, "a");
+        assert_eq!(ga1[1].name, "grid-column-start");
+        assert_eq!(ga1[1].value, "b");
+        assert_eq!(ga1[2].name, "grid-row-end");
+        assert_eq!(ga1[2].value, "c");
+        assert_eq!(ga1[3].name, "grid-column-end");
+        assert_eq!(ga1[3].value, "d");
+
+        let ga2 = expand_shorthand_values("grid-area", &["a"]).unwrap();
+        assert_eq!(ga2[0].value, "a");
+        assert_eq!(ga2[1].value, "auto");
+
+        // 22. grid-template
+        let gt1 = expand_shorthand_values("grid-template", &["100px", "/", "200px"]).unwrap();
+        assert_eq!(gt1.len(), 3);
+        assert_eq!(gt1[0].name, "grid-template-columns");
+        assert_eq!(gt1[0].value, "200px");
+        assert_eq!(gt1[1].name, "grid-template-rows");
+        assert_eq!(gt1[1].value, "100px");
+        assert_eq!(gt1[2].name, "grid-template-areas");
+        assert_eq!(gt1[2].value, "none");
+
+        // 23. font-variant
+        let fv1 = expand_shorthand_values("font-variant", &["small-caps", "lining-nums"]).unwrap();
+        assert_eq!(fv1.len(), 7);
+        assert_eq!(fv1[0].name, "font-variant-ligatures");
+        assert_eq!(fv1[0].value, "normal");
+        assert_eq!(fv1[1].name, "font-variant-caps");
+        assert_eq!(fv1[1].value, "small-caps");
+        assert_eq!(fv1[2].name, "font-variant-numeric");
+        assert_eq!(fv1[2].value, "lining-nums");
+
+        // 24. animation
+        let anim1 = expand_shorthand_values(
+            "animation",
+            &[
+                "my-animation",
+                "2s",
+                "linear",
+                "1s",
+                "infinite",
+                "alternate",
+                "forwards",
+            ],
+        )
+        .unwrap();
+        assert_eq!(anim1.len(), 8);
+        assert_eq!(anim1[0].name, "animation-name");
+        assert_eq!(anim1[0].value, "my-animation");
+        assert_eq!(anim1[1].name, "animation-duration");
+        assert_eq!(anim1[1].value, "2s");
+        assert_eq!(anim1[2].name, "animation-timing-function");
+        assert_eq!(anim1[2].value, "linear");
+        assert_eq!(anim1[3].name, "animation-delay");
+        assert_eq!(anim1[3].value, "1s");
+        assert_eq!(anim1[4].name, "animation-iteration-count");
+        assert_eq!(anim1[4].value, "infinite");
+        assert_eq!(anim1[5].name, "animation-direction");
+        assert_eq!(anim1[5].value, "alternate");
+        assert_eq!(anim1[6].name, "animation-fill-mode");
+        assert_eq!(anim1[6].value, "forwards");
+
+        // 25. font
+        let font1 = expand_shorthand_values(
+            "font",
+            &["italic", "bold", "12px", "/", "1.5", "Georgia,", "serif"],
+        )
+        .unwrap();
+        assert_eq!(font1.len(), 6);
+        assert_eq!(font1[0].name, "font-style");
+        assert_eq!(font1[0].value, "italic");
+        assert_eq!(font1[1].name, "font-variant");
+        assert_eq!(font1[1].value, "normal");
+        assert_eq!(font1[2].name, "font-weight");
+        assert_eq!(font1[2].value, "bold");
+        assert_eq!(font1[3].name, "font-size");
+        assert_eq!(font1[3].value, "12px");
+        assert_eq!(font1[4].name, "line-height");
+        assert_eq!(font1[4].value, "1.5");
+        assert_eq!(font1[5].name, "font-family");
+        assert_eq!(font1[5].value, "Georgia, serif");
+
+        // 26. border-image
+        let bi1 = expand_shorthand_values(
+            "border-image",
+            &["url(border.png)", "10", "/", "10px", "repeat"],
+        )
+        .unwrap();
+        assert_eq!(bi1.len(), 5);
+        assert_eq!(bi1[0].name, "border-image-source");
+        assert_eq!(bi1[0].value, "url(border.png)");
+        assert_eq!(bi1[1].name, "border-image-slice");
+        assert_eq!(bi1[1].value, "10");
+        assert_eq!(bi1[2].name, "border-image-width");
+        assert_eq!(bi1[2].value, "10px");
+        assert_eq!(bi1[3].name, "border-image-outset");
+        assert_eq!(bi1[3].value, "0");
+        assert_eq!(bi1[4].name, "border-image-repeat");
+        assert_eq!(bi1[4].value, "repeat");
+
+        // 27. position-try
+        let pt1 = expand_shorthand_values("position-try", &["most-width", "--try-1"]).unwrap();
+        assert_eq!(pt1.len(), 2);
+        assert_eq!(pt1[0].name, "position-try-order");
+        assert_eq!(pt1[0].value, "most-width");
+        assert_eq!(pt1[1].name, "position-try-fallbacks");
+        assert_eq!(pt1[1].value, "--try-1");
+
+        // 28. grid
+        let gd1 = expand_shorthand_values("grid", &["none"]).unwrap();
+        assert_eq!(gd1.len(), 6);
+        assert_eq!(gd1[0].name, "grid-template-rows");
+        assert_eq!(gd1[0].value, "none");
+        assert_eq!(gd1[3].name, "grid-auto-rows");
+        assert_eq!(gd1[3].value, "auto");
     }
 
     #[test]
