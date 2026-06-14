@@ -73,6 +73,41 @@ pub fn parse_component_values(input: &str) -> Vec<ComponentValue> {
     values
 }
 
+// spec: https://www.w3.org/TR/css-syntax-3/#parse-list-of-rules
+pub fn parse_list_of_rules(input: &str) -> Vec<Rule> {
+    let mut tokenizer = CssTokenizer::new(input);
+    let mut parser = Parser::new(&mut tokenizer);
+    parser.consume_list_of_rules(true)
+}
+
+// spec: https://www.w3.org/TR/css-syntax-3/#parse-rule
+pub fn parse_rule(input: &str) -> Option<Rule> {
+    let mut tokenizer = CssTokenizer::new(input);
+    let mut parser = Parser::new(&mut tokenizer);
+    parser.parse_rule()
+}
+
+// spec: https://www.w3.org/TR/css-syntax-3/#parse-declaration
+pub fn parse_declaration(input: &str) -> Option<Declaration> {
+    let mut tokenizer = CssTokenizer::new(input);
+    let mut parser = Parser::new(&mut tokenizer);
+    parser.parse_declaration()
+}
+
+// spec: https://www.w3.org/TR/css-syntax-3/#parse-list-of-declarations
+pub fn parse_list_of_declarations(input: &str) -> Vec<Declaration> {
+    let mut tokenizer = CssTokenizer::new(input);
+    let mut parser = Parser::new(&mut tokenizer);
+    parser.consume_list_of_declarations()
+}
+
+// spec: https://www.w3.org/TR/css-syntax-3/#parse-comma-separated-list-of-component-values
+pub fn parse_comma_separated_list_of_component_values(input: &str) -> Vec<Vec<ComponentValue>> {
+    let mut tokenizer = CssTokenizer::new(input);
+    let mut parser = Parser::new(&mut tokenizer);
+    parser.parse_comma_separated_list_of_component_values()
+}
+
 struct Parser<'a> {
     tokenizer: &'a mut CssTokenizer,
     next_token: Option<CssToken>,
@@ -110,6 +145,80 @@ impl<'a> Parser<'a> {
         let rules = self.consume_list_of_rules(true);
         // 2. Return a new stylesheet with its value set to the consumed rules.
         Stylesheet { rules }
+    }
+
+    // spec: https://www.w3.org/TR/css-syntax-3/#parse-rule
+    fn parse_rule(&mut self) -> Option<Rule> {
+        let mut token = self.consume_token();
+        while token == CssToken::Whitespace {
+            token = self.consume_token();
+        }
+        if token == CssToken::Eof {
+            return None;
+        }
+        let rule = if let CssToken::AtKeyword(_) = token {
+            self.reconsume_token(token);
+            Rule::At(self.consume_at_rule())
+        } else {
+            self.reconsume_token(token);
+            if let Some(r) = self.consume_qualified_rule() {
+                Rule::Qualified(r)
+            } else {
+                return None;
+            }
+        };
+        let mut next_token = self.consume_token();
+        while next_token == CssToken::Whitespace {
+            next_token = self.consume_token();
+        }
+        if next_token == CssToken::Eof {
+            Some(rule)
+        } else {
+            None
+        }
+    }
+
+    // spec: https://www.w3.org/TR/css-syntax-3/#parse-declaration
+    fn parse_declaration(&mut self) -> Option<Declaration> {
+        let mut token = self.consume_token();
+        while token == CssToken::Whitespace {
+            token = self.consume_token();
+        }
+        if !matches!(token, CssToken::Ident(_)) {
+            return None;
+        }
+        let mut values = vec![ComponentValue::Token(token)];
+        loop {
+            let next = self.consume_token();
+            if next == CssToken::Eof {
+                break;
+            }
+            self.reconsume_token(next);
+            values.push(self.consume_component_value());
+        }
+        self.consume_declaration_from_component_values(values)
+    }
+
+    // spec: https://www.w3.org/TR/css-syntax-3/#parse-comma-separated-list-of-component-values
+    fn parse_comma_separated_list_of_component_values(&mut self) -> Vec<Vec<ComponentValue>> {
+        // 2. Let list of cvs be an empty list of component values, containing an initially empty list.
+        let mut list_of_cvs = vec![Vec::new()];
+        loop {
+            let token = self.consume_token();
+            if token == CssToken::Eof {
+                break;
+            }
+            if token == CssToken::Comma {
+                list_of_cvs.push(Vec::new());
+            } else {
+                self.reconsume_token(token);
+                let cv = self.consume_component_value();
+                if let Some(last) = list_of_cvs.last_mut() {
+                    last.push(cv);
+                }
+            }
+        }
+        list_of_cvs
     }
 
     // spec: https://www.w3.org/TR/css-syntax-3/#consume-list-of-rules
@@ -780,5 +889,84 @@ mod tests {
         } else {
             panic!("Expected qualified rule");
         }
+    }
+
+    #[test]
+    fn test_new_standard_parser_entry_points() {
+        // 1. test parse_list_of_rules
+        let rules_input = "a { color: red; } @media screen {}";
+        let rules = parse_list_of_rules(rules_input);
+        assert_eq!(rules.len(), 2);
+        assert!(matches!(rules[0], Rule::Qualified(_)));
+        assert!(matches!(rules[1], Rule::At(_)));
+
+        // 2. test parse_rule
+        let rule_ok = "p { margin: 10px; }";
+        let parsed_rule_ok = parse_rule(rule_ok);
+        assert!(parsed_rule_ok.is_some());
+        if let Some(Rule::Qualified(r)) = parsed_rule_ok {
+            assert_eq!(r.declarations.len(), 1);
+            assert_eq!(r.declarations[0].name, "margin");
+        } else {
+            panic!("Expected qualified rule");
+        }
+
+        // Test whitespace padding on parse_rule
+        let rule_ws = "  \n  @media print {}  \t  ";
+        let parsed_rule_ws = parse_rule(rule_ws);
+        assert!(parsed_rule_ws.is_some());
+        if let Some(Rule::At(r)) = parsed_rule_ws {
+            assert_eq!(r.name, "media");
+        } else {
+            panic!("Expected at rule");
+        }
+
+        // Test syntax error (extra tokens after rule) on parse_rule
+        let rule_err = "p { color: blue; } extra";
+        assert!(parse_rule(rule_err).is_none());
+
+        // 3. test parse_declaration
+        let decl_ok = "color: blue";
+        let parsed_decl = parse_declaration(decl_ok);
+        assert!(parsed_decl.is_some());
+        if let Some(d) = parsed_decl {
+            assert_eq!(d.name, "color");
+            assert!(!d.important);
+        }
+
+        let decl_important = "margin: 20px !important";
+        let parsed_decl_imp = parse_declaration(decl_important);
+        assert!(parsed_decl_imp.is_some());
+        if let Some(d) = parsed_decl_imp {
+            assert_eq!(d.name, "margin");
+            assert!(d.important);
+        }
+
+        let decl_err = "not-a-declaration";
+        assert!(parse_declaration(decl_err).is_none());
+
+        // 4. test parse_list_of_declarations
+        let list_input = "color: red; margin: 10px; padding: 5px";
+        let decls = parse_list_of_declarations(list_input);
+        assert_eq!(decls.len(), 3);
+        assert_eq!(decls[0].name, "color");
+        assert_eq!(decls[1].name, "margin");
+        assert_eq!(decls[2].name, "padding");
+
+        // 5. test parse_comma_separated_list_of_component_values
+        let comma_input = "a, b, c";
+        let lists = parse_comma_separated_list_of_component_values(comma_input);
+        assert_eq!(lists.len(), 3);
+        // "a"
+        assert_eq!(lists[0].len(), 1);
+        // " b" (whitespace + "b")
+        assert_eq!(lists[1].len(), 2);
+        // " c" (whitespace + "c")
+        assert_eq!(lists[2].len(), 2);
+
+        let empty_comma = "";
+        let empty_lists = parse_comma_separated_list_of_component_values(empty_comma);
+        assert_eq!(empty_lists.len(), 1);
+        assert_eq!(empty_lists[0].len(), 0);
     }
 }
