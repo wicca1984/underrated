@@ -198,6 +198,11 @@ static PROPERTY_METADATA: &[PropertyMetadata] = &[
         inherited: true,
         initial: "auto",
     },
+    PropertyMetadata {
+        name: "scrollbar-color",
+        inherited: true,
+        initial: "auto",
+    },
     // NON-INHERITED PROPERTIES
     PropertyMetadata {
         name: "display",
@@ -1183,6 +1188,16 @@ mod tests {
         assert_eq!(scrollbar_width.name, "scrollbar-width");
         assert!(scrollbar_width.inherited);
         assert_eq!(scrollbar_width.initial, "auto");
+    }
+
+    #[test]
+    fn test_additive_properties_t0698() {
+        let scrollbar_color = lookup("scrollbar-color");
+        assert!(scrollbar_color.is_some());
+        let scrollbar_color = scrollbar_color.unwrap();
+        assert_eq!(scrollbar_color.name, "scrollbar-color");
+        assert!(scrollbar_color.inherited);
+        assert_eq!(scrollbar_color.initial, "auto");
     }
 
     #[test]
