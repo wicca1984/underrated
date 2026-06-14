@@ -4677,6 +4677,113 @@ fn serialize_component_value(cv: &ComponentValue) -> String {
     }
 }
 
+fn validate_math_expression(components: &[ComponentValue]) -> bool {
+    for comp in components {
+        match comp {
+            ComponentValue::Token(token) => match token {
+                CssToken::Number(_)
+                | CssToken::Percentage(_)
+                | CssToken::Dimension { .. }
+                | CssToken::Ident(_)
+                | CssToken::Whitespace
+                | CssToken::Delim(_)
+                | CssToken::Comma
+                | CssToken::LeftParen
+                | CssToken::RightParen => {}
+                _ => return false,
+            },
+            ComponentValue::SimpleBlock { associated, value } => {
+                if *associated != '(' {
+                    return false;
+                }
+                if !validate_math_expression(value) {
+                    return false;
+                }
+            }
+            ComponentValue::Function { name, value } => {
+                let name_lower = name.to_ascii_lowercase();
+                if name_lower == "calc"
+                    || name_lower == "min"
+                    || name_lower == "max"
+                    || name_lower == "clamp"
+                    || name_lower == "round"
+                    || name_lower == "mod"
+                    || name_lower == "rem"
+                    || name_lower == "abs"
+                    || name_lower == "sign"
+                    || name_lower == "sin"
+                    || name_lower == "cos"
+                    || name_lower == "tan"
+                    || name_lower == "asin"
+                    || name_lower == "acos"
+                    || name_lower == "atan"
+                    || name_lower == "atan2"
+                    || name_lower == "pow"
+                    || name_lower == "sqrt"
+                    || name_lower == "hypot"
+                    || name_lower == "log"
+                    || name_lower == "exp"
+                    || name_lower == "var"
+                    || name_lower == "env"
+                    || name_lower == "calc-size"
+                {
+                    if !validate_math_expression(value) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn parse_calc_function(
+    _name: &str,
+    value: &[ComponentValue],
+    orig_comp: &ComponentValue,
+) -> Option<CssValue> {
+    if !validate_math_expression(value) {
+        return None;
+    }
+    Some(CssValue::Keyword(serialize_component_value(orig_comp)))
+}
+
+fn parse_env_function(components: &[ComponentValue]) -> Option<CssValue> {
+    let non_ws: Vec<&ComponentValue> = components
+        .iter()
+        .filter(|c| !matches!(c, ComponentValue::Token(CssToken::Whitespace)))
+        .collect();
+
+    if non_ws.is_empty() {
+        return None;
+    }
+
+    match non_ws[0] {
+        ComponentValue::Token(CssToken::Ident(_)) => {}
+        _ => return None,
+    }
+
+    if non_ws.len() > 1 {
+        match non_ws[1] {
+            ComponentValue::Token(CssToken::Comma) => {}
+            _ => return None,
+        }
+
+        if non_ws.len() < 3 {
+            return None;
+        }
+    }
+
+    let mut serialized = "env(".to_string();
+    for comp in components {
+        serialized.push_str(&serialize_component_value(comp));
+    }
+    serialized.push(')');
+    Some(CssValue::Keyword(serialized))
+}
+
 fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
     if components.len() != 1 {
         // TODO(spec): Support complex single values (e.g. 1px/2px)
@@ -4728,6 +4835,20 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 || lower_unit == "cap"
                 || lower_unit == "lh"
                 || lower_unit == "rlh"
+                || lower_unit == "deg"
+                || lower_unit == "rad"
+                || lower_unit == "grad"
+                || lower_unit == "turn"
+                || lower_unit == "dpi"
+                || lower_unit == "dpcm"
+                || lower_unit == "dppx"
+                || lower_unit == "x"
+                || lower_unit == "cqw"
+                || lower_unit == "cqh"
+                || lower_unit == "cqi"
+                || lower_unit == "cqb"
+                || lower_unit == "cqmin"
+                || lower_unit == "cqmax"
             {
                 return Some(CssValue::Keyword(format!("{}{}", value, lower_unit)));
             }
@@ -4861,6 +4982,9 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 }
                 return None;
             }
+            if name.eq_ignore_ascii_case("env") {
+                return parse_env_function(value);
+            }
             if name.eq_ignore_ascii_case("calc")
                 || name.eq_ignore_ascii_case("min")
                 || name.eq_ignore_ascii_case("max")
@@ -4882,7 +5006,11 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 || name.eq_ignore_ascii_case("hypot")
                 || name.eq_ignore_ascii_case("log")
                 || name.eq_ignore_ascii_case("exp")
-                || name.eq_ignore_ascii_case("repeating-linear-gradient")
+                || name.eq_ignore_ascii_case("calc-size")
+            {
+                return parse_calc_function(name, value, components[0]);
+            }
+            if name.eq_ignore_ascii_case("repeating-linear-gradient")
                 || name.eq_ignore_ascii_case("repeating-radial-gradient")
                 || name.eq_ignore_ascii_case("repeating-conic-gradient")
                 || name.eq_ignore_ascii_case("blur")
@@ -4902,7 +5030,6 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 || name.eq_ignore_ascii_case("path")
                 || name.eq_ignore_ascii_case("rect")
                 || name.eq_ignore_ascii_case("xywh")
-                || name.eq_ignore_ascii_case("calc-size")
                 || name.eq_ignore_ascii_case("container-progress")
                 || name.eq_ignore_ascii_case("scroll-progress")
                 || name.eq_ignore_ascii_case("view-progress")
@@ -4912,7 +5039,6 @@ fn parse_single_value(components: &[&ComponentValue]) -> Option<CssValue> {
                 || name.eq_ignore_ascii_case("src")
                 || name.eq_ignore_ascii_case("shape")
                 || name.eq_ignore_ascii_case("ray")
-                || name.eq_ignore_ascii_case("env")
             {
                 return Some(CssValue::Keyword(serialize_component_value(components[0])));
             }
@@ -15822,5 +15948,142 @@ mod tests {
             parse_hsl_function(&hsl_components),
             Some(Color::Rgba(0, 153, 0, 255))
         );
+    }
+
+    #[test]
+    fn test_t0943_css_values_additions() {
+        // 1. Test new parsed length, angle, resolution, and container query units
+        let test_units = [
+            "deg", "rad", "grad", "turn", "dpi", "dpcm", "dppx", "x", "cqw", "cqh", "cqi", "cqb",
+            "cqmin", "cqmax",
+        ];
+        for unit in &test_units {
+            let comp = token(CssToken::Dimension {
+                value: 12.5,
+                unit: unit.to_string(),
+            });
+            assert_eq!(
+                parse_value(&[comp]),
+                Some(CssValue::Keyword(format!("12.5{}", unit)))
+            );
+        }
+
+        // 2. Test env() fallback validation
+        // Valid env with no fallback
+        let env_valid_no_fallback = ComponentValue::Function {
+            name: "env".to_string(),
+            value: vec![token(CssToken::Ident("safe-area-inset-top".to_string()))],
+        };
+        assert_eq!(
+            parse_value(&[env_valid_no_fallback]),
+            Some(CssValue::Keyword("env(safe-area-inset-top)".to_string()))
+        );
+
+        // Valid env with fallback
+        let env_valid_with_fallback = ComponentValue::Function {
+            name: "env".to_string(),
+            value: vec![
+                token(CssToken::Ident("safe-area-inset-bottom".to_string())),
+                token(CssToken::Comma),
+                token(CssToken::Dimension {
+                    value: 20.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(
+            parse_value(&[env_valid_with_fallback]),
+            Some(CssValue::Keyword(
+                "env(safe-area-inset-bottom,20px)".to_string()
+            ))
+        );
+
+        // Invalid env: empty
+        let env_empty = ComponentValue::Function {
+            name: "env".to_string(),
+            value: vec![],
+        };
+        assert_eq!(parse_value(&[env_empty]), None);
+
+        // Invalid env: first arg not ident
+        let env_first_not_ident = ComponentValue::Function {
+            name: "env".to_string(),
+            value: vec![token(CssToken::Number(10.0))],
+        };
+        assert_eq!(parse_value(&[env_first_not_ident]), None);
+
+        // Invalid env: missing fallback after comma
+        let env_missing_fallback = ComponentValue::Function {
+            name: "env".to_string(),
+            value: vec![
+                token(CssToken::Ident("safe-area-inset-left".to_string())),
+                token(CssToken::Comma),
+            ],
+        };
+        assert_eq!(parse_value(&[env_missing_fallback]), None);
+
+        // Invalid env: missing comma before fallback
+        let env_missing_comma = ComponentValue::Function {
+            name: "env".to_string(),
+            value: vec![
+                token(CssToken::Ident("safe-area-inset-left".to_string())),
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+            ],
+        };
+        assert_eq!(parse_value(&[env_missing_comma]), None);
+
+        // 3. Test nested calc() validation
+        // Valid nested calc
+        let nested_calc_valid = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "calc".to_string(),
+                    value: vec![
+                        token(CssToken::Dimension {
+                            value: 5.0,
+                            unit: "px".to_string(),
+                        }),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Delim('*')),
+                        token(CssToken::Whitespace),
+                        token(CssToken::Number(2.0)),
+                    ],
+                },
+            ],
+        };
+        assert_eq!(
+            parse_value(&[nested_calc_valid]),
+            Some(CssValue::Keyword("calc(10px + calc(5px * 2))".to_string()))
+        );
+
+        // Invalid nested calc (contains invalid token/function)
+        let nested_calc_invalid = ComponentValue::Function {
+            name: "calc".to_string(),
+            value: vec![
+                token(CssToken::Dimension {
+                    value: 10.0,
+                    unit: "px".to_string(),
+                }),
+                token(CssToken::Whitespace),
+                token(CssToken::Delim('+')),
+                token(CssToken::Whitespace),
+                ComponentValue::Function {
+                    name: "invalid-fn".to_string(),
+                    value: vec![token(CssToken::Number(5.0))],
+                },
+            ],
+        };
+        assert_eq!(parse_value(&[nested_calc_invalid]), None);
     }
 }
