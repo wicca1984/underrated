@@ -904,6 +904,58 @@ impl TryFrom<&CssValue> for CaptionSideValue {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum BreakInsideValue {
+    #[default]
+    Auto,
+    Avoid,
+    AvoidPage,
+    AvoidColumn,
+    AvoidRegion,
+}
+
+impl BreakInsideValue {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "avoid" => Some(Self::Avoid),
+            "avoid-page" => Some(Self::AvoidPage),
+            "avoid-column" => Some(Self::AvoidColumn),
+            "avoid-region" => Some(Self::AvoidRegion),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Avoid => "avoid",
+            Self::AvoidPage => "avoid-page",
+            Self::AvoidColumn => "avoid-column",
+            Self::AvoidRegion => "avoid-region",
+        }
+    }
+}
+
+impl std::str::FromStr for BreakInsideValue {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
+    }
+}
+
+impl TryFrom<&CssValue> for BreakInsideValue {
+    type Error = ();
+
+    fn try_from(value: &CssValue) -> Result<Self, Self::Error> {
+        match value {
+            CssValue::Keyword(s) => s.parse(),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum EmptyCellsValue {
     Show,
@@ -2013,6 +2065,7 @@ pub fn is_known_layout_property(name: &str) -> bool {
             | "word-wrap"
             | "object-fit"
             | "caption-side"
+            | "break-inside"
             | "pointer-events"
             | "unicode-bidi"
     )
@@ -2419,6 +2472,15 @@ pub fn is_valid_property_value(name: &str, value: &CssValue) -> bool {
         "caption-side" => match value {
             CssValue::Keyword(kw) => {
                 matches!(kw.to_ascii_lowercase().as_str(), "top" | "bottom")
+            }
+            _ => false,
+        },
+        "break-inside" => match value {
+            CssValue::Keyword(kw) => {
+                matches!(
+                    kw.to_ascii_lowercase().as_str(),
+                    "auto" | "avoid" | "avoid-page" | "avoid-column" | "avoid-region"
+                )
             }
             _ => false,
         },
@@ -3518,6 +3580,16 @@ pub fn parse_property_value(
             if let CssValue::Keyword(kw) = &val {
                 match kw.to_ascii_lowercase().as_str() {
                     "top" | "bottom" => Some(val),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "break-inside" => {
+            if let CssValue::Keyword(kw) = &val {
+                match kw.to_ascii_lowercase().as_str() {
+                    "auto" | "avoid" | "avoid-page" | "avoid-column" | "avoid-region" => Some(val),
                     _ => None,
                 }
             } else {
@@ -5745,6 +5817,73 @@ mod tests {
     }
 
     #[test]
+    fn test_break_inside_value() {
+        // Test parsing keyword strings to BreakInsideValue
+        assert_eq!(
+            BreakInsideValue::parse("auto"),
+            Some(BreakInsideValue::Auto)
+        );
+        assert_eq!(
+            BreakInsideValue::parse("avoid"),
+            Some(BreakInsideValue::Avoid)
+        );
+        assert_eq!(
+            BreakInsideValue::parse("avoid-page"),
+            Some(BreakInsideValue::AvoidPage)
+        );
+        assert_eq!(
+            BreakInsideValue::parse("avoid-column"),
+            Some(BreakInsideValue::AvoidColumn)
+        );
+        assert_eq!(
+            BreakInsideValue::parse("avoid-region"),
+            Some(BreakInsideValue::AvoidRegion)
+        );
+
+        assert_eq!(
+            BreakInsideValue::parse("AUTO"),
+            Some(BreakInsideValue::Auto)
+        );
+        assert_eq!(
+            BreakInsideValue::parse("Avoid-Page"),
+            Some(BreakInsideValue::AvoidPage)
+        );
+        assert_eq!(BreakInsideValue::parse("invalid"), None);
+
+        // Test FromStr implementation
+        assert_eq!(
+            "auto".parse::<BreakInsideValue>(),
+            Ok(BreakInsideValue::Auto)
+        );
+        assert_eq!(
+            "avoid-column".parse::<BreakInsideValue>(),
+            Ok(BreakInsideValue::AvoidColumn)
+        );
+        assert_eq!("BOGUS".parse::<BreakInsideValue>(), Err(()));
+
+        // Test serialization to canonical CSS keywords
+        assert_eq!(BreakInsideValue::Auto.as_str(), "auto");
+        assert_eq!(BreakInsideValue::Avoid.as_str(), "avoid");
+        assert_eq!(BreakInsideValue::AvoidPage.as_str(), "avoid-page");
+        assert_eq!(BreakInsideValue::AvoidColumn.as_str(), "avoid-column");
+        assert_eq!(BreakInsideValue::AvoidRegion.as_str(), "avoid-region");
+
+        // Test TryFrom<&CssValue> implementation
+        assert_eq!(
+            BreakInsideValue::try_from(&CssValue::Keyword("auto".to_string())),
+            Ok(BreakInsideValue::Auto)
+        );
+        assert_eq!(
+            BreakInsideValue::try_from(&CssValue::Keyword("AVOID-COLUMN".to_string())),
+            Ok(BreakInsideValue::AvoidColumn)
+        );
+        assert_eq!(BreakInsideValue::try_from(&CssValue::Number(1.0)), Err(()));
+
+        // Test Default implementation
+        assert_eq!(BreakInsideValue::default(), BreakInsideValue::Auto);
+    }
+
+    #[test]
     fn test_empty_cells_value() {
         // Test parsing keyword strings to EmptyCellsValue
         assert_eq!(EmptyCellsValue::parse("show"), Some(EmptyCellsValue::Show));
@@ -7802,6 +7941,49 @@ mod tests {
         }
         assert!(!is_valid_property_value(
             "caption-side",
+            &CssValue::Keyword("invalid-value".to_string())
+        ));
+
+        // Test parse_property_value and is_valid_property_value for break-inside (t0658)
+        assert!(is_known_layout_property("break-inside"));
+        assert!(is_known_layout_property("Break-Inside"));
+
+        for val in &[
+            "auto",
+            "avoid",
+            "avoid-page",
+            "avoid-column",
+            "avoid-region",
+            "AVOID-COLUMN",
+        ] {
+            assert_eq!(
+                parse_property_value("break-inside", &[token(CssToken::Ident(val.to_string()))]),
+                Some(CssValue::Keyword(val.to_string()))
+            );
+        }
+        assert_eq!(
+            parse_property_value(
+                "break-inside",
+                &[token(CssToken::Ident("invalid-value".to_string()))]
+            ),
+            None
+        );
+
+        for val in &[
+            "auto",
+            "avoid",
+            "avoid-page",
+            "avoid-column",
+            "avoid-region",
+            "AVOID-COLUMN",
+        ] {
+            assert!(is_valid_property_value(
+                "break-inside",
+                &CssValue::Keyword(val.to_string())
+            ));
+        }
+        assert!(!is_valid_property_value(
+            "break-inside",
             &CssValue::Keyword("invalid-value".to_string())
         ));
 
