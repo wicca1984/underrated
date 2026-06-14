@@ -59,7 +59,18 @@ pub fn serialize(dom: &Dom, node: NodeId) -> String {
                 }
             }
             NodeData::Text(text) => {
-                result.push_str(&escape_text(text));
+                let mut is_raw = false;
+                if let Some(parent_id) = dom.parent(node)
+                    && let Some(NodeData::Element { name, .. }) = dom.data(parent_id)
+                {
+                    is_raw = is_raw_text_element(name);
+                }
+
+                if is_raw {
+                    result.push_str(text);
+                } else {
+                    result.push_str(&escape_text(text));
+                }
             }
             NodeData::Comment(comment) => {
                 result.push_str("<!--");
@@ -101,6 +112,15 @@ fn is_void_element(name: &str) -> bool {
     )
 }
 
+/// Returns true if the element is a raw text element.
+// spec: https://html.spec.whatwg.org/multipage/parsing.html#html-fragment-serialization-algorithm
+fn is_raw_text_element(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" | "plaintext" | "noscript"
+    )
+}
+
 fn escape_text(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     for c in text.chars() {
@@ -108,6 +128,7 @@ fn escape_text(text: &str) -> String {
             '&' => result.push_str("&amp;"),
             '<' => result.push_str("&lt;"),
             '>' => result.push_str("&gt;"),
+            '\u{00A0}' => result.push_str("&nbsp;"),
             _ => result.push(c),
         }
     }
@@ -122,8 +143,52 @@ fn escape_attribute(value: &str) -> String {
             '<' => result.push_str("&lt;"),
             '>' => result.push_str("&gt;"),
             '"' => result.push_str("&quot;"),
+            '\u{00A0}' => result.push_str("&nbsp;"),
             _ => result.push(c),
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_raw_text_elements() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let script = dom.create_node(NodeData::Element {
+            name: "script".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, script);
+        let text = dom.create_node(NodeData::Text(
+            "if (a < b && c > d) console.log('hello');".into(),
+        ));
+        dom.append_child(script, text);
+
+        assert_eq!(
+            dom.serialize(doc),
+            "<script>if (a < b && c > d) console.log('hello');</script>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_nbsp_escaping() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let p = dom.create_node(NodeData::Element {
+            name: "p".into(),
+            attrs: vec![("title".into(), "hello\u{00A0}world".into())],
+        });
+        dom.append_child(doc, p);
+        let text = dom.create_node(NodeData::Text("hello\u{00A0}world".into()));
+        dom.append_child(p, text);
+
+        assert_eq!(
+            dom.serialize(doc),
+            "<p title=\"hello&nbsp;world\">hello&nbsp;world</p>"
+        );
+    }
 }
