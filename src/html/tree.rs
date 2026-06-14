@@ -642,6 +642,7 @@ impl TreeBuilder {
         match token {
             Token::Character(c) => {
                 // TODO(spec): handle null character
+                self.reconstruct_active_formatting_elements();
                 self.insert_character(c);
             }
             Token::Comment(data) => {
@@ -1878,6 +1879,7 @@ impl TreeBuilder {
     fn close_p_element_if_in_button_scope(&mut self) {
         // spec: https://html.spec.whatwg.org/multipage/parsing.html#close-a-p-element
         if self.is_in_button_scope("p") {
+            self.generate_implied_end_tags(Some("p"));
             self.pop_until("p");
         }
     }
@@ -1913,11 +1915,334 @@ impl TreeBuilder {
         node
     }
 
+    fn generate_implied_end_tags(&mut self, except: Option<&str>) {
+        while let Some(&top_id) = self.stack_of_open_elements.last() {
+            if let Some(NodeData::Element { name, .. }) = self.dom.data(top_id) {
+                if let Some(except_name) = except
+                    && name == except_name
+                {
+                    break;
+                }
+                if matches!(
+                    name.as_str(),
+                    "dd" | "dt" | "li" | "optgroup" | "option" | "p" | "rb" | "rp" | "rt" | "rtc"
+                ) {
+                    self.stack_of_open_elements.pop();
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
     fn run_adoption_agency_algorithm(&mut self, name: &str) {
-        // TODO(spec): full implementation of AAA.
-        // For now, this is a very minimal subset to pass simple tests.
-        if self.is_in_scope(name) {
-            self.pop_until(name);
+        // spec: https://html.spec.whatwg.org/multipage/parsing.html#adoption-agency-algorithm
+        let subject = name;
+
+        // Step 1:
+        let current_node = match self.stack_of_open_elements.last().copied() {
+            Some(n) => n,
+            None => return,
+        };
+
+        // Step 2:
+        let is_in_active_formatting_elements =
+            self.list_of_active_formatting_elements
+                .iter()
+                .any(|item| match item {
+                    FormattingElement::Node(id) => *id == current_node,
+                    _ => false,
+                });
+        if let Some(NodeData::Element { name: el_name, .. }) = self.dom.data(current_node)
+            && el_name == subject
+            && !is_in_active_formatting_elements
+        {
+            self.stack_of_open_elements.pop();
+            return;
+        }
+
+        // Step 3-5 (Outer loop):
+        for _outer_loop_counter in 0..8 {
+            // Step 6:
+            let mut formatting_element_idx = None;
+            for (idx, item) in self
+                .list_of_active_formatting_elements
+                .iter()
+                .enumerate()
+                .rev()
+            {
+                match item {
+                    FormattingElement::Marker => break,
+                    FormattingElement::Node(id) => {
+                        if let Some(NodeData::Element { name: n, .. }) = self.dom.data(*id)
+                            && n == subject
+                        {
+                            formatting_element_idx = Some(idx);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let formatting_element_idx = match formatting_element_idx {
+                Some(idx) => idx,
+                None => {
+                    // Any other end tag entry
+                    let mut found_in_stack = false;
+                    for &id in self.stack_of_open_elements.iter().rev() {
+                        if matches!(self.dom.data(id), Some(NodeData::Element { name: n, .. }) if n == subject)
+                        {
+                            found_in_stack = true;
+                            break;
+                        }
+                    }
+                    if found_in_stack {
+                        self.generate_implied_end_tags(Some(subject));
+                        self.pop_until(subject);
+                    }
+                    return;
+                }
+            };
+
+            let formatting_element =
+                match self.list_of_active_formatting_elements[formatting_element_idx] {
+                    FormattingElement::Node(id) => id,
+                    _ => return,
+                };
+
+            // Step 7:
+            let in_stack_idx = self
+                .stack_of_open_elements
+                .iter()
+                .position(|&id| id == formatting_element);
+            let in_stack_idx = match in_stack_idx {
+                Some(idx) => idx,
+                None => {
+                    self.list_of_active_formatting_elements
+                        .remove(formatting_element_idx);
+                    return;
+                }
+            };
+
+            // Step 8:
+            if !self.is_in_scope(subject) {
+                // Parse error.
+                return;
+            }
+
+            // Step 9: (If formatting_element is not the current node, then this is a parse error.)
+
+            // Step 10:
+            let mut furthest_block = None;
+            let mut furthest_block_stack_idx = None;
+            for idx in ((in_stack_idx + 1)..self.stack_of_open_elements.len()).rev() {
+                let id = self.stack_of_open_elements[idx];
+                if let Some(NodeData::Element { name: n, .. }) = self.dom.data(id)
+                    && self.is_special_element(n)
+                {
+                    furthest_block = Some(id);
+                    furthest_block_stack_idx = Some(idx);
+                    break;
+                }
+            }
+
+            let (furthest_block, furthest_block_stack_idx) =
+                match (furthest_block, furthest_block_stack_idx) {
+                    (Some(fb), Some(fb_idx)) => (fb, fb_idx),
+                    _ => {
+                        while let Some(top_id) = self.stack_of_open_elements.pop() {
+                            if top_id == formatting_element {
+                                break;
+                            }
+                        }
+                        self.list_of_active_formatting_elements
+                            .retain(|&e| match e {
+                                FormattingElement::Node(id) => id != formatting_element,
+                                _ => true,
+                            });
+                        return;
+                    }
+                };
+
+            // Step 11:
+            let common_ancestor = if in_stack_idx > 0 {
+                self.stack_of_open_elements[in_stack_idx - 1]
+            } else {
+                self.dom.document()
+            };
+
+            // Step 12:
+            let mut bookmark_idx = formatting_element_idx;
+
+            // Step 13:
+            let mut node;
+            let mut last_node = furthest_block;
+            let mut node_stack_idx = furthest_block_stack_idx;
+
+            // Step 15:
+            let mut inner_loop_counter = 0;
+            loop {
+                inner_loop_counter += 1;
+
+                // Let node be the node immediately above node in the stack of open elements (i.e. parent in stack)
+                node_stack_idx -= 1;
+                node = self.stack_of_open_elements[node_stack_idx];
+
+                // If node is formatting_element, then break.
+                if node == formatting_element {
+                    break;
+                }
+
+                // If inner_loop_counter is greater than 3 and node is in the list of active formatting elements, then remove node from the list of active formatting elements.
+                let in_formatting_idx =
+                    self.list_of_active_formatting_elements
+                        .iter()
+                        .position(|&e| match e {
+                            FormattingElement::Node(id) => id == node,
+                            _ => false,
+                        });
+
+                if inner_loop_counter > 3
+                    && let Some(f_idx) = in_formatting_idx
+                {
+                    self.list_of_active_formatting_elements.remove(f_idx);
+                    if bookmark_idx > f_idx {
+                        bookmark_idx -= 1;
+                    }
+                    continue;
+                }
+
+                // If node is not in the list of active formatting elements, then remove node from the stack of open elements, and repeat this loop.
+                let f_idx = match in_formatting_idx {
+                    Some(idx) => idx,
+                    None => {
+                        self.stack_of_open_elements.remove(node_stack_idx);
+                        continue;
+                    }
+                };
+
+                // Create a new element with the same tag name and attributes as node.
+                let (node_name, node_attrs) = match self.dom.data(node) {
+                    Some(NodeData::Element { name, attrs }) => (name.clone(), attrs.clone()),
+                    _ => continue, // Should never happen
+                };
+                let clone_node = self.dom.create_node(NodeData::Element {
+                    name: node_name,
+                    attrs: node_attrs,
+                });
+
+                // Replace the entry for node in the list of active formatting elements with clone_node.
+                self.list_of_active_formatting_elements[f_idx] =
+                    FormattingElement::Node(clone_node);
+
+                // Replace the entry for node in the stack of open elements with clone_node.
+                self.stack_of_open_elements[node_stack_idx] = clone_node;
+
+                // Let node be clone_node.
+                node = clone_node;
+
+                // If last_node is furthest_block, then let bookmark be the position of the newly clone_node in the list of active formatting elements.
+                if last_node == furthest_block {
+                    bookmark_idx = f_idx;
+                }
+
+                // Append last_node to node.
+                self.dom.append_child(node, last_node);
+
+                // Let last_node be node.
+                last_node = node;
+            } // end of Loop (Step 16)
+
+            // Step 17:
+            let common_ancestor_name = match self.dom.data(common_ancestor) {
+                Some(NodeData::Element { name, .. }) => name.as_str(),
+                _ => "",
+            };
+
+            if matches!(
+                common_ancestor_name,
+                "table" | "tbody" | "tfoot" | "thead" | "tr"
+            ) {
+                let mut foster_table_idx = None;
+                for (idx, &node_id) in self.stack_of_open_elements.iter().enumerate().rev() {
+                    if matches!(self.dom.data(node_id), Some(NodeData::Element { name, .. }) if name == "table")
+                    {
+                        foster_table_idx = Some(idx);
+                        break;
+                    }
+                }
+
+                if let Some(idx) = foster_table_idx {
+                    let table_id = self.stack_of_open_elements[idx];
+                    if let Some(parent) = self.dom.parent(table_id) {
+                        self.dom.insert_before(parent, last_node, Some(table_id));
+                    } else {
+                        let fallback_parent = if idx > 0 {
+                            self.stack_of_open_elements[idx - 1]
+                        } else {
+                            common_ancestor
+                        };
+                        self.dom.append_child(fallback_parent, last_node);
+                    }
+                } else {
+                    self.dom.append_child(common_ancestor, last_node);
+                }
+            } else {
+                self.dom.append_child(common_ancestor, last_node);
+            }
+
+            // Step 18:
+            let (f_name, f_attrs) = match self.dom.data(formatting_element) {
+                Some(NodeData::Element { name, attrs }) => (name.clone(), attrs.clone()),
+                _ => return, // Should never happen
+            };
+
+            let clone_formatting_element = self.dom.create_node(NodeData::Element {
+                name: f_name,
+                attrs: f_attrs,
+            });
+
+            // Step 19:
+            let children = self.dom.children(furthest_block).to_vec();
+            for child in children {
+                self.dom.append_child(clone_formatting_element, child);
+            }
+
+            // Step 20:
+            self.dom
+                .append_child(furthest_block, clone_formatting_element);
+
+            // Step 21:
+            self.list_of_active_formatting_elements
+                .retain(|&e| match e {
+                    FormattingElement::Node(id) => id != formatting_element,
+                    _ => true,
+                });
+
+            if bookmark_idx < self.list_of_active_formatting_elements.len() {
+                self.list_of_active_formatting_elements.insert(
+                    bookmark_idx,
+                    FormattingElement::Node(clone_formatting_element),
+                );
+            } else {
+                self.list_of_active_formatting_elements
+                    .push(FormattingElement::Node(clone_formatting_element));
+            }
+
+            // Step 22:
+            self.stack_of_open_elements
+                .retain(|&id| id != formatting_element);
+
+            let fb_idx = self
+                .stack_of_open_elements
+                .iter()
+                .position(|&id| id == furthest_block);
+            if let Some(idx) = fb_idx {
+                self.stack_of_open_elements
+                    .insert(idx + 1, clone_formatting_element);
+            } else {
+                self.stack_of_open_elements.push(clone_formatting_element);
+            }
         }
     }
 
@@ -2114,7 +2439,47 @@ impl TreeBuilder {
     }
 
     fn push_formatting_element(&mut self, node: NodeId) {
-        // TODO(spec): "Noah's Ark" clause
+        let (node_name, node_attrs) = match self.dom.data(node) {
+            Some(NodeData::Element { name, attrs }) => (name.as_str(), attrs),
+            _ => {
+                self.list_of_active_formatting_elements
+                    .push(FormattingElement::Node(node));
+                return;
+            }
+        };
+
+        // Find elements with same name and same attributes after the last Marker.
+        let mut same_elements = Vec::new();
+        for (idx, item) in self
+            .list_of_active_formatting_elements
+            .iter()
+            .enumerate()
+            .rev()
+        {
+            match item {
+                FormattingElement::Marker => break,
+                FormattingElement::Node(id) => {
+                    if let Some(NodeData::Element { name, attrs }) = self.dom.data(*id)
+                        && name == node_name
+                    {
+                        let mut attrs1 = node_attrs.clone();
+                        let mut attrs2 = attrs.clone();
+                        attrs1.sort();
+                        attrs2.sort();
+                        if attrs1 == attrs2 {
+                            same_elements.push(idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        if same_elements.len() >= 3
+            && let Some(&earliest_idx) = same_elements.last()
+        {
+            self.list_of_active_formatting_elements.remove(earliest_idx);
+        }
+
         self.list_of_active_formatting_elements
             .push(FormattingElement::Node(node));
     }
@@ -2125,11 +2490,50 @@ impl TreeBuilder {
         }
 
         let last_idx = self.list_of_active_formatting_elements.len() - 1;
-        if !matches!(
-            self.list_of_active_formatting_elements[last_idx],
-            FormattingElement::Marker
-        ) {
-            // TODO(spec): full reconstruction algorithm
+        match self.list_of_active_formatting_elements[last_idx] {
+            FormattingElement::Marker => return,
+            FormattingElement::Node(id) => {
+                if self.stack_of_open_elements.contains(&id) {
+                    return;
+                }
+            }
+        }
+
+        let mut entry_idx = last_idx;
+        loop {
+            if entry_idx == 0 {
+                break;
+            }
+            let prev_idx = entry_idx - 1;
+            match self.list_of_active_formatting_elements[prev_idx] {
+                FormattingElement::Marker => break,
+                FormattingElement::Node(id) => {
+                    if self.stack_of_open_elements.contains(&id) {
+                        break;
+                    }
+                }
+            }
+            entry_idx = prev_idx;
+        }
+
+        while let FormattingElement::Node(entry_id) =
+            self.list_of_active_formatting_elements[entry_idx]
+        {
+            let (name, attrs) = match self.dom.data(entry_id) {
+                Some(NodeData::Element { name, attrs }) => (name.clone(), attrs.clone()),
+                _ => break,
+            };
+
+            let clone_node = self.create_and_insert_element(name, attrs);
+            self.stack_of_open_elements.push(clone_node);
+
+            self.list_of_active_formatting_elements[entry_idx] =
+                FormattingElement::Node(clone_node);
+
+            if entry_idx == last_idx {
+                break;
+            }
+            entry_idx += 1;
         }
     }
 
@@ -2395,10 +2799,9 @@ mod tests {
     fn test_formatting_elements_reconstruction() {
         let html = "<b>bold<i>italic</b>still italic</i>";
         let dom = parse_document(InputStream::from_utf8(html.as_bytes()));
-        // AAA subset just pops elements, so it might not be perfect yet
         assert_eq!(
             dom.serialize(dom.document()),
-            "<html><head></head><body><b>bold<i>italic</i></b>still italic</body></html>"
+            "<html><head></head><body><b>bold<i>italic</i></b><i>still italic</i></body></html>"
         );
     }
 
