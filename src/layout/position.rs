@@ -308,7 +308,15 @@ fn calculate_sticky_offset(
     while let Some(anc) = current {
         if let Some(anc_style) = styles.get(&anc) {
             let overflow = &anc_style.reset_box.overflow;
-            if overflow == "scroll" || overflow == "auto" {
+            let overflow_x = &anc_style.reset_box.overflow_x;
+            let overflow_y = &anc_style.reset_box.overflow_y;
+            if overflow == "scroll"
+                || overflow == "auto"
+                || overflow_x == "scroll"
+                || overflow_x == "auto"
+                || overflow_y == "scroll"
+                || overflow_y == "auto"
+            {
                 scroll_container_id = Some(anc);
                 break;
             }
@@ -323,7 +331,29 @@ fn calculate_sticky_offset(
         let (s_x, s_y) = SCROLL_OFFSETS
             .with(|map| map.borrow().get(&sc_id).copied())
             .unwrap_or((0.0, 0.0));
-        (sc_box_rect, s_x, s_y)
+
+        let sc_style = styles.get(&sc_id);
+        let border_left =
+            sc_style.map_or(0.0, |s| crate::layout::get_px(s, "border-left-width", 0.0));
+        let border_top =
+            sc_style.map_or(0.0, |s| crate::layout::get_px(s, "border-top-width", 0.0));
+        let border_right =
+            sc_style.map_or(0.0, |s| crate::layout::get_px(s, "border-right-width", 0.0));
+        let border_bottom = sc_style.map_or(0.0, |s| {
+            crate::layout::get_px(s, "border-bottom-width", 0.0)
+        });
+
+        let adjusted_rect = crate::geom::Rect {
+            origin: crate::geom::Point {
+                x: sc_box_rect.origin.x + border_left,
+                y: sc_box_rect.origin.y + border_top,
+            },
+            size: crate::geom::Size {
+                width: (sc_box_rect.size.width - border_left - border_right).max(0.0),
+                height: (sc_box_rect.size.height - border_top - border_bottom).max(0.0),
+            },
+        };
+        (adjusted_rect, s_x, s_y)
     } else {
         // Viewport scroll
         let (s_x, s_y) = SCROLL_OFFSETS.with(|map| {
@@ -679,6 +709,100 @@ fn max_content_width_local(
     }
 }
 
+fn establishes_containing_block_for_absolute_or_fixed(
+    style: &crate::style::CategorizedComputedStyle,
+) -> bool {
+    // 1. Any non-empty transform establishes a containing block
+    if !style.reset_effects.transform.is_empty() {
+        return true;
+    }
+
+    // 2. Check other extra values
+    if let Some(ref extra) = style.extra_values {
+        // filter: anything other than "none"
+        if let Some(filter_val) = extra.get("filter") {
+            if let crate::css::values::CssValue::Keyword(kw) = filter_val {
+                if kw != "none" {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+
+        // perspective: anything other than "none"
+        if let Some(perspective_val) = extra.get("perspective") {
+            if let crate::css::values::CssValue::Keyword(kw) = perspective_val {
+                if kw != "none" {
+                    return true;
+                }
+            } else if let crate::css::values::CssValue::Length(v, _) = perspective_val {
+                if *v != 0.0 {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+
+        // contain: paint, layout, content, strict, or any set containing them
+        if let Some(contain_val) = extra.get("contain") {
+            if let crate::css::values::CssValue::Keyword(kw) = contain_val {
+                if kw == "paint" || kw == "layout" || kw == "content" || kw == "strict" {
+                    return true;
+                }
+            } else if let crate::css::values::CssValue::Multiple(vals) = contain_val {
+                for val in vals {
+                    if let crate::css::values::CssValue::Keyword(kw) = val
+                        && (kw == "paint" || kw == "layout" || kw == "content" || kw == "strict")
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // will-change: if it contains "transform", "perspective", "filter", "contain", or "backdrop-filter"
+        if let Some(wc_val) = extra.get("will-change") {
+            if let crate::css::values::CssValue::Keyword(kw) = wc_val {
+                if kw == "transform"
+                    || kw == "perspective"
+                    || kw == "filter"
+                    || kw == "contain"
+                    || kw == "backdrop-filter"
+                {
+                    return true;
+                }
+            } else if let crate::css::values::CssValue::Multiple(vals) = wc_val {
+                for val in vals {
+                    if let crate::css::values::CssValue::Keyword(kw) = val
+                        && (kw == "transform"
+                            || kw == "perspective"
+                            || kw == "filter"
+                            || kw == "contain"
+                            || kw == "backdrop-filter")
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // backdrop-filter: anything other than "none"
+        if let Some(bf_val) = extra.get("backdrop-filter") {
+            if let crate::css::values::CssValue::Keyword(kw) = bf_val {
+                if kw != "none" {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Performs layout for absolute and fixed elements and integrates them into the layout tree.
 /// spec: S-31
 pub fn layout_absolute_and_fixed_elements(
@@ -724,12 +848,11 @@ pub fn layout_absolute_and_fixed_elements(
             while let Some(ancestor) = current {
                 if let Some(anc_style) = styles.get(&ancestor) {
                     let pos = &anc_style.reset_box.position;
-                    let has_transform = !anc_style.reset_effects.transform.is_empty();
                     if pos == "relative"
                         || pos == "absolute"
                         || pos == "fixed"
                         || pos == "sticky"
-                        || has_transform
+                        || establishes_containing_block_for_absolute_or_fixed(anc_style)
                     {
                         positioned_ancestor = Some(ancestor);
                         break;
@@ -740,12 +863,11 @@ pub fn layout_absolute_and_fixed_elements(
         } else if style.reset_box.position == "fixed" {
             let mut current = dom.parent(node);
             while let Some(ancestor) = current {
-                if let Some(anc_style) = styles.get(&ancestor) {
-                    let has_transform = !anc_style.reset_effects.transform.is_empty();
-                    if has_transform {
-                        positioned_ancestor = Some(ancestor);
-                        break;
-                    }
+                if let Some(anc_style) = styles.get(&ancestor)
+                    && establishes_containing_block_for_absolute_or_fixed(anc_style)
+                {
+                    positioned_ancestor = Some(ancestor);
+                    break;
                 }
                 current = dom.parent(ancestor);
             }
@@ -2557,5 +2679,143 @@ mod tests {
         assert_eq!(sorted[0].node, Some(id2));
         assert_eq!(sorted[1].node, Some(id3));
         assert_eq!(sorted[2].node, Some(id1));
+    }
+
+    #[test]
+    fn test_containing_block_properties() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(body, parent);
+
+        let child = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "child".into())],
+        });
+        dom.append_child(parent, child);
+
+        // Test filter: blur(5px)
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .parent {
+                display: block;
+                width: 300px;
+                height: 200px;
+                margin-left: 100px;
+                margin-top: 100px;
+                filter: blur(5px);
+            }
+            .child {
+                display: block;
+                position: absolute;
+                left: 10px;
+                top: 20px;
+                width: 50px;
+                height: 50px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let mut child_box = None;
+        let mut stack = vec![&layout_tree];
+        while let Some(current) = stack.pop() {
+            if current.node == Some(child) {
+                child_box = Some(current);
+                break;
+            }
+            for c in &current.children {
+                stack.push(c);
+            }
+        }
+        let child_box = child_box.expect("Child box not found");
+        // Because of filter, the child should resolve its containing block to the parent.
+        // Parent is at (100, 100) due to margins.
+        // Child should be at 100 + 10 = 110, and 100 + 20 = 120.
+        assert_eq!(child_box.rect.origin.x, 110.0);
+        assert_eq!(child_box.rect.origin.y, 120.0);
+    }
+
+    #[test]
+    fn test_sticky_overflow_sub_properties_and_borders() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+        let body = dom.create_node(NodeData::Element {
+            name: "body".into(),
+            attrs: vec![],
+        });
+        dom.append_child(doc, body);
+
+        let scroll_container = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "scroll-container".into())],
+        });
+        dom.append_child(body, scroll_container);
+
+        let parent = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "parent".into())],
+        });
+        dom.append_child(scroll_container, parent);
+
+        let sticky_item = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("class".into(), "sticky-item".into())],
+        });
+        dom.append_child(parent, sticky_item);
+
+        let stylesheet = parse_stylesheet(
+            "
+            body { display: block; width: 500px; }
+            .scroll-container {
+                display: block;
+                overflow-y: scroll; /* Sub-property! */
+                border-top-width: 15px; /* Border offset! */
+                border-top-style: solid;
+                border-left-width: 20px;
+                border-left-style: solid;
+                height: 200px;
+                width: 500px;
+            }
+            .parent {
+                display: block;
+                height: 400px;
+                width: 500px;
+            }
+            .sticky-item {
+                display: block;
+                position: sticky;
+                top: 10px;
+                height: 50px;
+                width: 500px;
+            }
+        ",
+        );
+        let styles = compute_styles(&dom, &stylesheet);
+
+        // Case: scroll_y = 50.0
+        set_scroll_offset(scroll_container, 0.0, 50.0);
+        let layout_tree = layout_document(&dom, &styles, 800.0);
+        let item_box = find_layout_box(&layout_tree, sticky_item, 0).unwrap();
+        // Container content area is shifted by its border: (20.0, 15.0).
+        // Since parent static_y = 15.0 (due to border-top of scroll_container).
+        // scrollport top starts at sc_rect.origin.y + border_top (15.0) + scroll_y (50.0) = 65.0.
+        // wanted_y = 15.0 (border_top) + 50.0 (scroll_y) + top (10.0) = 75.0.
+        // Static y is 15.0.
+        // Pushed down to 75.0!
+        assert_eq!(item_box.rect.origin.y, 75.0);
+
+        // Clean up
+        clear_scroll_offsets();
     }
 }
