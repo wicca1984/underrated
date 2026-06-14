@@ -472,23 +472,45 @@ pub fn layout_table_container(
             }
         }
 
-        let sum_explicit_widths: f32 = col_widths.iter().sum();
-        let leftover = avail_content_width - sum_explicit_widths;
-        let auto_count = col_has_width.iter().filter(|&&has| !has).count();
-        if auto_count > 0 {
-            let share = if leftover > 0.0 {
-                leftover / auto_count as f32
-            } else {
-                0.0
-            };
-            for c in 0..num_cols {
-                if !col_has_width[c] {
-                    col_widths[c] = share;
+        let has_definite_width = style.reset_box.width != -1;
+        if has_definite_width {
+            let sum_explicit_widths: f32 = col_widths.iter().sum();
+            let leftover = avail_content_width - sum_explicit_widths;
+            let auto_count = col_has_width.iter().filter(|&&has| !has).count();
+            if auto_count > 0 {
+                let share = if leftover > 0.0 {
+                    leftover / auto_count as f32
+                } else {
+                    0.0
+                };
+                for c in 0..num_cols {
+                    if !col_has_width[c] {
+                        col_widths[c] = share;
+                    }
                 }
             }
+            content_width
+        } else {
+            // For width: auto table in fixed layout, any auto-columns (col_has_width == false)
+            // use the preferred width of their first-row cell, or default to 0.0.
+            for placement in cell_placements.values().filter(|p| p.row_idx == 0) {
+                for c in placement.col_idx..(placement.col_idx + placement.colspan) {
+                    if c < num_cols && !col_has_width[c] {
+                        let cell_pref_w = get_cell_preferred_width(
+                            dom,
+                            styles,
+                            placement.node,
+                            avail_content_width,
+                            depth + 1,
+                        );
+                        let share = cell_pref_w / placement.colspan as f32;
+                        col_widths[c] = col_widths[c].max(share);
+                    }
+                }
+            }
+            let sum_col_widths: f32 = col_widths.iter().sum();
+            (sum_col_widths + total_spacing_h).min(content_width)
         }
-        // TODO(spec): percentage column widths, and width: auto table (treat table width as already resolved by the existing code)
-        content_width
     } else {
         // Initialize col_widths with column element widths as baseline
         for (c, item) in col_element_widths.iter().enumerate().take(num_cols) {
@@ -985,6 +1007,30 @@ pub(crate) fn is_border_collapse(style: &CategorizedComputedStyle) -> bool {
 }
 
 fn get_border_spacing(style: &CategorizedComputedStyle) -> (f32, f32) {
+    if let Some(ref extra) = style.extra_values
+        && let Some(val) = extra.get("border-spacing")
+    {
+        match val {
+            CssValue::Length(v, _) | CssValue::Number(v) => {
+                return (*v, *v);
+            }
+            CssValue::Multiple(vec) => {
+                let resolved: Vec<f32> = vec
+                    .iter()
+                    .filter_map(|item| match item {
+                        CssValue::Length(v, _) | CssValue::Number(v) => Some(*v),
+                        _ => None,
+                    })
+                    .collect();
+                if resolved.len() == 2 {
+                    return (resolved[0], resolved[1]);
+                } else if resolved.len() == 1 {
+                    return (resolved[0], resolved[0]);
+                }
+            }
+            _ => {}
+        }
+    }
     let bs = style.inherited_table.border_spacing as f32;
     (bs, bs)
 }
@@ -4238,5 +4284,188 @@ mod tests {
         let cell31_box = &r3.children[0];
         assert_eq!(cell31_box.node, Some(cell31_node));
         assert_eq!(cell31_box.rect.origin.x, 0.0); // starts at column 0 because the rowspan cell did NOT leak into row 3!
+    }
+
+    #[test]
+    fn test_table_border_spacing_dual_values() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // 2x2 table
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Row 1
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row1_node);
+
+        // Cell 1.1
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        // Cell 1.2
+        let cell12_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell12_node);
+
+        // Row 2
+        let row2_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row2_node);
+
+        // Cell 2.1
+        let cell21_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row2_node, cell21_node);
+
+        // Cell 2.2
+        let cell22_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row2_node, cell22_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width 200px, border-spacing: 15px 5px;
+        let mut table_style = style_with_display("table");
+        table_style.insert("width".to_string(), CssValue::Length(200.0, LengthUnit::Px));
+        table_style.insert(
+            "border-spacing".to_string(),
+            CssValue::Multiple(vec![
+                CssValue::Length(15.0, LengthUnit::Px),
+                CssValue::Length(5.0, LengthUnit::Px),
+            ]),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row1_node, style_with_display("table-row"));
+        styles.insert(row2_node, style_with_display("table-row"));
+
+        // Cell 1.1: width 60px, height 30px
+        let mut cell11_style = style_with_display("table-cell");
+        cell11_style.insert("width".to_string(), CssValue::Length(60.0, LengthUnit::Px));
+        cell11_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        styles.insert(cell11_node, cell11_style);
+
+        // Cell 1.2: width 40px, height 30px
+        let mut cell12_style = style_with_display("table-cell");
+        cell12_style.insert("width".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        cell12_style.insert("height".to_string(), CssValue::Length(30.0, LengthUnit::Px));
+        styles.insert(cell12_node, cell12_style);
+
+        // Cell 2.1: width 60px, height 40px
+        let mut cell21_style = style_with_display("table-cell");
+        cell21_style.insert("width".to_string(), CssValue::Length(60.0, LengthUnit::Px));
+        cell21_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        styles.insert(cell21_node, cell21_style);
+
+        // Cell 2.2: width 40px, height 40px
+        let mut cell22_style = style_with_display("table-cell");
+        cell22_style.insert("width".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        cell22_style.insert("height".to_string(), CssValue::Length(40.0, LengthUnit::Px));
+        styles.insert(cell22_node, cell22_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 10.0, 20.0, 0)
+            .expect("should layout table");
+
+        // Table box checks:
+        // Table total height = row 1 (30px) + row 2 (40px) + 3 vertical spacings (3 * 5px = 15px) = 85px
+        assert_eq!(table_box.rect.size.height, 85.0);
+
+        // Row 1 checks:
+        let r1 = &table_box.children[0];
+        assert_eq!(r1.rect.origin.y, 25.0); // 20.0 + 5.0 (vertical spacing)
+
+        // Cell 1.1 checks:
+        let c11 = &r1.children[0];
+        assert_eq!(c11.rect.origin.x, 25.0); // 10.0 + 15.0 (horizontal spacing)
+    }
+
+    #[test]
+    fn test_table_layout_fixed_width_auto() {
+        let mut dom = Dom::new();
+        let doc = dom.document();
+
+        // Create table element (width: auto)
+        let table_node = dom.create_node(NodeData::Element {
+            name: "table".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(doc, table_node);
+
+        // Row 1
+        let row1_node = dom.create_node(NodeData::Element {
+            name: "tr".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(table_node, row1_node);
+
+        // Cell 1.1 (width: 120px)
+        let cell11_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell11_node);
+
+        // Cell 1.2 (width: 80px)
+        let cell12_node = dom.create_node(NodeData::Element {
+            name: "td".to_string(),
+            attrs: Vec::new(),
+        });
+        dom.append_child(row1_node, cell12_node);
+
+        let mut styles = HashMap::new();
+
+        // Table style: width: auto, table-layout: fixed, border-collapse: collapse
+        let mut table_style = style_with_display("table");
+        table_style.insert(
+            "table-layout".to_string(),
+            CssValue::Keyword("fixed".to_string()),
+        );
+        table_style.insert(
+            "border-collapse".to_string(),
+            CssValue::Keyword("collapse".to_string()),
+        );
+        styles.insert(table_node, table_style);
+
+        styles.insert(row1_node, style_with_display("table-row"));
+
+        // Row 1 Cell widths
+        let mut cell11_style = style_with_display("table-cell");
+        cell11_style.insert("width".to_string(), CssValue::Length(120.0, LengthUnit::Px));
+        styles.insert(cell11_node, cell11_style);
+
+        let mut cell12_style = style_with_display("table-cell");
+        cell12_style.insert("width".to_string(), CssValue::Length(80.0, LengthUnit::Px));
+        styles.insert(cell12_node, cell12_style);
+
+        let table_box = layout_table_container(&dom, &styles, table_node, 500.0, 0.0, 0.0, 0)
+            .expect("should layout table");
+
+        // Width auto table under fixed table layout should resolve its width to the sum of its column widths: 120.0 + 80.0 = 200.0
+        assert_eq!(table_box.rect.size.width, 200.0);
+
+        let r1 = &table_box.children[0];
+        let c11_box = &r1.children[0];
+        let c12_box = &r1.children[1];
+
+        assert_eq!(c11_box.rect.size.width, 120.0);
+        assert_eq!(c12_box.rect.size.width, 80.0);
     }
 }
