@@ -268,6 +268,11 @@ fn matches_component(comp: &Component, dom: &Dom, node: NodeId) -> bool {
                         // Thus, :modal always returns false.
                         false
                     }
+                    "popover-open" => {
+                        // TODO(spec): Real :popover-open matching requires popover top-layer showing state
+                        // which this engine does not track, thus it always returns false.
+                        false
+                    }
                     "fullscreen" => {
                         // TODO(spec): Real :fullscreen matching requires a Fullscreen API and tracking of
                         // the fullscreen element(s), which is intentionally out of scope and not implemented
@@ -3178,6 +3183,22 @@ mod tests {
         });
         dom.append_child(doc, dialog_elem);
         assert!(!matches(&sel_modal, &dom, dialog_elem));
+
+        // Matches :popover-open (should never match since we have no popover/top-layer mechanism)
+        let sel_popover_open = parse_selector_list(":popover-open").unwrap();
+        assert!(!matches(&sel_popover_open, &dom, a_with_href));
+        assert!(!matches(&sel_popover_open, &dom, area_with_href));
+        assert!(!matches(&sel_popover_open, &dom, link_with_href));
+        assert!(!matches(&sel_popover_open, &dom, a_no_href));
+        assert!(!matches(&sel_popover_open, &dom, div_with_href));
+
+        // Ensure elements with popover attribute also never match :popover-open
+        let popover_elem = dom.create_node(NodeData::Element {
+            name: "div".into(),
+            attrs: vec![("popover".into(), "auto".into())],
+        });
+        dom.append_child(doc, popover_elem);
+        assert!(!matches(&sel_popover_open, &dom, popover_elem));
 
         // Matches :picture-in-picture (should never match since we have no Picture-in-Picture API)
         let sel_pip = parse_selector_list(":picture-in-picture").unwrap();
