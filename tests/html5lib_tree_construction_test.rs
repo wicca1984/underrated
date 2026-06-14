@@ -283,8 +283,20 @@ fn serialize_dom(dom: &Dom) -> String {
                     out.push(attr_line);
                 }
 
-                for &child in dom.children(node).iter().rev() {
-                    stack.push((child, depth + 1));
+                if name == "template" {
+                    let mut content_line = String::new();
+                    content_line.push_str("| ");
+                    content_line.push_str(&"  ".repeat(depth + 1));
+                    content_line.push_str("content");
+                    out.push(content_line);
+
+                    for &child in dom.children(node).iter().rev() {
+                        stack.push((child, depth + 2));
+                    }
+                } else {
+                    for &child in dom.children(node).iter().rev() {
+                        stack.push((child, depth + 1));
+                    }
                 }
             }
             NodeData::Text(text) => {
@@ -360,7 +372,7 @@ fn test_html5lib_tree_construction_conformance() {
         }
     }
 
-    const BASELINE: usize = 1157;
+    const BASELINE: usize = 1263;
 
     eprintln!(
         "html5lib tree-construction: PASS={} FAIL={} SKIP={} (baseline >= {})",
