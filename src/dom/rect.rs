@@ -673,6 +673,381 @@ impl Extend<DomRect> for DomRectList {
     }
 }
 
+fn min4(a: f64, b: f64, c: f64, d: f64) -> f64 {
+    if a.is_nan() || b.is_nan() || c.is_nan() || d.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b).min(c).min(d)
+    }
+}
+
+fn max4(a: f64, b: f64, c: f64, d: f64) -> f64 {
+    if a.is_nan() || b.is_nan() || c.is_nan() || d.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b).max(c).max(d)
+    }
+}
+
+/// `DomPointReadOnly` represents a read-only 2D or 3D point, which is a standard base
+/// interface for `DOMPoint` per the CSS Geometry Interfaces standard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DomPointReadOnly {
+    x: f64,
+    y: f64,
+    z: f64,
+    w: f64,
+}
+
+impl Default for DomPointReadOnly {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        }
+    }
+}
+
+impl DomPointReadOnly {
+    /// Creates a new `DomPointReadOnly` with the given coordinates.
+    pub fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
+        Self { x, y, z, w }
+    }
+
+    /// Returns the x-coordinate of the point.
+    pub fn x(&self) -> f64 {
+        self.x
+    }
+
+    /// Returns the y-coordinate of the point.
+    pub fn y(&self) -> f64 {
+        self.y
+    }
+
+    /// Returns the z-coordinate of the point.
+    pub fn z(&self) -> f64 {
+        self.z
+    }
+
+    /// Returns the w-coordinate of the point.
+    pub fn w(&self) -> f64 {
+        self.w
+    }
+
+    /// Returns a mutable `DomPoint` copy.
+    pub fn to_mutable(self) -> DomPoint {
+        DomPoint::new(self.x, self.y, self.z, self.w)
+    }
+
+    /// Serializes this `DomPointReadOnly` to a JSON object.
+    pub fn serialize(&self) -> serde_json::Value {
+        serde_json::json!({
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "w": self.w,
+        })
+    }
+
+    /// Returns a plain JSON object with keys x, y, z, w holding current numeric values.
+    pub fn to_json(self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Non-snake-case alias of `to_json` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn toJSON(self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Static-like factory to create a new `DomPointReadOnly` from a dictionary-like JSON representation.
+    pub fn from_point(other: Option<&serde_json::Value>) -> Self {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut z = 0.0;
+        let mut w = 1.0;
+
+        if let Some(obj) = other.and_then(|v| v.as_object()) {
+            if let Some(val) = obj.get("x") {
+                x = coerce_to_f64(val);
+            }
+            if let Some(val) = obj.get("y") {
+                y = coerce_to_f64(val);
+            }
+            if let Some(val) = obj.get("z") {
+                z = coerce_to_f64(val);
+            }
+            if let Some(val) = obj.get("w") {
+                w = coerce_to_f64(val);
+            }
+        }
+
+        Self::new(x, y, z, w)
+    }
+
+    /// Non-snake-case alias of `from_point` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn fromPoint(other: Option<&serde_json::Value>) -> Self {
+        Self::from_point(other)
+    }
+}
+
+/// `DomPoint` represents a 2D or 3D point, which is a standard read-write interface
+/// per the CSS Geometry Interfaces standard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DomPoint {
+    x: f64,
+    y: f64,
+    z: f64,
+    w: f64,
+}
+
+impl Default for DomPoint {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        }
+    }
+}
+
+impl DomPoint {
+    /// Creates a new `DomPoint` with the given coordinates.
+    pub fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
+        Self { x, y, z, w }
+    }
+
+    /// Returns the x-coordinate of the point.
+    pub fn x(&self) -> f64 {
+        self.x
+    }
+
+    /// Returns the y-coordinate of the point.
+    pub fn y(&self) -> f64 {
+        self.y
+    }
+
+    /// Returns the z-coordinate of the point.
+    pub fn z(&self) -> f64 {
+        self.z
+    }
+
+    /// Returns the w-coordinate of the point.
+    pub fn w(&self) -> f64 {
+        self.w
+    }
+
+    /// Sets the x-coordinate of the point.
+    pub fn set_x(&mut self, val: f64) {
+        self.x = val;
+    }
+
+    /// Sets the y-coordinate of the point.
+    pub fn set_y(&mut self, val: f64) {
+        self.y = val;
+    }
+
+    /// Sets the z-coordinate of the point.
+    pub fn set_z(&mut self, val: f64) {
+        self.z = val;
+    }
+
+    /// Sets the w-coordinate of the point.
+    pub fn set_w(&mut self, val: f64) {
+        self.w = val;
+    }
+
+    /// Returns a read-only `DomPointReadOnly` copy.
+    pub fn to_readonly(self) -> DomPointReadOnly {
+        DomPointReadOnly::new(self.x, self.y, self.z, self.w)
+    }
+
+    /// Serializes this `DomPoint` to a JSON object.
+    pub fn serialize(&self) -> serde_json::Value {
+        serde_json::json!({
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "w": self.w,
+        })
+    }
+
+    /// Returns a plain JSON object with keys x, y, z, w holding current numeric values.
+    pub fn to_json(self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Non-snake-case alias of `to_json` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn toJSON(self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Static-like factory to create a new `DomPoint` from a dictionary-like JSON representation.
+    pub fn from_point(other: Option<&serde_json::Value>) -> Self {
+        let readonly = DomPointReadOnly::from_point(other);
+        Self::new(readonly.x, readonly.y, readonly.z, readonly.w)
+    }
+
+    /// Non-snake-case alias of `from_point` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn fromPoint(other: Option<&serde_json::Value>) -> Self {
+        Self::from_point(other)
+    }
+}
+
+impl From<DomPoint> for DomPointReadOnly {
+    fn from(pt: DomPoint) -> Self {
+        Self::new(pt.x, pt.y, pt.z, pt.w)
+    }
+}
+
+impl From<DomPointReadOnly> for DomPoint {
+    fn from(pt: DomPointReadOnly) -> Self {
+        Self::new(pt.x, pt.y, pt.z, pt.w)
+    }
+}
+
+impl From<crate::geom::Point> for DomPoint {
+    fn from(pt: crate::geom::Point) -> Self {
+        Self::new(pt.x as f64, pt.y as f64, 0.0, 1.0)
+    }
+}
+
+impl From<crate::geom::Point> for DomPointReadOnly {
+    fn from(pt: crate::geom::Point) -> Self {
+        Self::new(pt.x as f64, pt.y as f64, 0.0, 1.0)
+    }
+}
+
+impl From<DomPoint> for crate::geom::Point {
+    fn from(pt: DomPoint) -> Self {
+        crate::geom::Point {
+            x: pt.x as f32,
+            y: pt.y as f32,
+        }
+    }
+}
+
+impl From<DomPointReadOnly> for crate::geom::Point {
+    fn from(pt: DomPointReadOnly) -> Self {
+        crate::geom::Point {
+            x: pt.x as f32,
+            y: pt.y as f32,
+        }
+    }
+}
+
+/// `DomQuad` represents a quadrilateral with four corners (p1, p2, p3, p4),
+/// which is a standard interface per the CSS Geometry Interfaces standard.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DomQuad {
+    pub p1: DomPoint,
+    pub p2: DomPoint,
+    pub p3: DomPoint,
+    pub p4: DomPoint,
+}
+
+impl DomQuad {
+    /// Creates a new `DomQuad` with the four given corners.
+    pub fn new(p1: DomPoint, p2: DomPoint, p3: DomPoint, p4: DomPoint) -> Self {
+        Self { p1, p2, p3, p4 }
+    }
+
+    /// Returns a new `DomQuad` with corner boundaries computed from a `DomRectReadOnly` or `DomRect` (or anything converting to DomRectReadOnly).
+    pub fn from_rect_readonly(rect: DomRectReadOnly) -> Self {
+        let p1 = DomPoint::new(rect.x(), rect.y(), 0.0, 1.0);
+        let p2 = DomPoint::new(rect.x() + rect.width(), rect.y(), 0.0, 1.0);
+        let p3 = DomPoint::new(rect.x() + rect.width(), rect.y() + rect.height(), 0.0, 1.0);
+        let p4 = DomPoint::new(rect.x(), rect.y() + rect.height(), 0.0, 1.0);
+        Self::new(p1, p2, p3, p4)
+    }
+
+    /// Non-snake-case alias of `from_rect_readonly` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn fromRectReadOnly(rect: DomRectReadOnly) -> Self {
+        Self::from_rect_readonly(rect)
+    }
+
+    /// Static-like factory to create a new `DomQuad` from a dictionary-like JSON representation (DOMRectInit).
+    pub fn from_rect(other: Option<&serde_json::Value>) -> Self {
+        let rect = DomRectReadOnly::from_rect(other);
+        Self::from_rect_readonly(rect)
+    }
+
+    /// Non-snake-case alias of `from_rect` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn fromRect(other: Option<&serde_json::Value>) -> Self {
+        Self::from_rect(other)
+    }
+
+    /// Static-like factory to create a new `DomQuad` from a dictionary-like JSON representation (DOMQuadInit/DOMQuad).
+    pub fn from_quad(other: Option<&serde_json::Value>) -> Self {
+        let mut p1 = DomPoint::new(0.0, 0.0, 0.0, 1.0);
+        let mut p2 = DomPoint::new(0.0, 0.0, 0.0, 1.0);
+        let mut p3 = DomPoint::new(0.0, 0.0, 0.0, 1.0);
+        let mut p4 = DomPoint::new(0.0, 0.0, 0.0, 1.0);
+
+        if let Some(obj) = other.and_then(|v| v.as_object()) {
+            if let Some(val) = obj.get("p1") {
+                p1 = DomPoint::from_point(Some(val));
+            }
+            if let Some(val) = obj.get("p2") {
+                p2 = DomPoint::from_point(Some(val));
+            }
+            if let Some(val) = obj.get("p3") {
+                p3 = DomPoint::from_point(Some(val));
+            }
+            if let Some(val) = obj.get("p4") {
+                p4 = DomPoint::from_point(Some(val));
+            }
+        }
+
+        Self::new(p1, p2, p3, p4)
+    }
+
+    /// Non-snake-case alias of `from_quad` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn fromQuad(other: Option<&serde_json::Value>) -> Self {
+        Self::from_quad(other)
+    }
+
+    /// Returns the bounding box of the quadrilateral as a `DomRectReadOnly`.
+    pub fn bounds(&self) -> DomRectReadOnly {
+        let left = min4(self.p1.x, self.p2.x, self.p3.x, self.p4.x);
+        let right = max4(self.p1.x, self.p2.x, self.p3.x, self.p4.x);
+        let top = min4(self.p1.y, self.p2.y, self.p3.y, self.p4.y);
+        let bottom = max4(self.p1.y, self.p2.y, self.p3.y, self.p4.y);
+
+        DomRectReadOnly::new(left, top, right - left, bottom - top)
+    }
+
+    /// Serializes this `DomQuad` to a JSON object containing its four corners.
+    pub fn serialize(&self) -> serde_json::Value {
+        serde_json::json!({
+            "p1": self.p1.serialize(),
+            "p2": self.p2.serialize(),
+            "p3": self.p3.serialize(),
+            "p4": self.p4.serialize(),
+        })
+    }
+
+    /// Returns a plain JSON object representation of the quad.
+    pub fn to_json(self) -> serde_json::Value {
+        self.serialize()
+    }
+
+    /// Non-snake-case alias of `to_json` for compatibility.
+    #[allow(non_snake_case)]
+    pub fn toJSON(self) -> serde_json::Value {
+        self.serialize()
+    }
+}
+
 impl Dom {
     /// Returns the bounding client rect of the element.
     ///
@@ -1145,5 +1520,146 @@ mod tests {
         let collected_list: DomRectList = vec![r1, r2].into_iter().collect();
         assert_eq!(collected_list.length(), 2);
         assert_eq!(collected_list[0], r1);
+    }
+
+    #[test]
+    fn test_dompoint_basic() {
+        let mut pt = DomPoint::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(pt.x(), 1.0);
+        assert_eq!(pt.y(), 2.0);
+        assert_eq!(pt.z(), 3.0);
+        assert_eq!(pt.w(), 4.0);
+
+        pt.set_x(10.0);
+        pt.set_y(20.0);
+        pt.set_z(30.0);
+        pt.set_w(40.0);
+        assert_eq!(pt.x(), 10.0);
+        assert_eq!(pt.y(), 20.0);
+        assert_eq!(pt.z(), 30.0);
+        assert_eq!(pt.w(), 40.0);
+
+        let pt_readonly = pt.to_readonly();
+        assert_eq!(pt_readonly.x(), 10.0);
+        assert_eq!(pt_readonly.y(), 20.0);
+        assert_eq!(pt_readonly.z(), 30.0);
+        assert_eq!(pt_readonly.w(), 40.0);
+
+        let pt_mut = pt_readonly.to_mutable();
+        assert_eq!(pt_mut, pt);
+    }
+
+    #[test]
+    fn test_dompoint_defaults() {
+        let pt_def = DomPoint::default();
+        assert_eq!(pt_def.x(), 0.0);
+        assert_eq!(pt_def.y(), 0.0);
+        assert_eq!(pt_def.z(), 0.0);
+        assert_eq!(pt_def.w(), 1.0);
+
+        let pt_ro_def = DomPointReadOnly::default();
+        assert_eq!(pt_ro_def.x(), 0.0);
+        assert_eq!(pt_ro_def.y(), 0.0);
+        assert_eq!(pt_ro_def.z(), 0.0);
+        assert_eq!(pt_ro_def.w(), 1.0);
+    }
+
+    #[test]
+    fn test_dompoint_json() {
+        let init = serde_json::json!({
+            "x": 5.0,
+            "y": 10.0,
+            "z": 15.0,
+            "w": 20.0
+        });
+        let pt = DomPoint::from_point(Some(&init));
+        assert_eq!(pt.x(), 5.0);
+        assert_eq!(pt.y(), 10.0);
+        assert_eq!(pt.z(), 15.0);
+        assert_eq!(pt.w(), 20.0);
+
+        let serialized = pt.serialize();
+        assert_eq!(serialized["x"], 5.0);
+        assert_eq!(serialized["y"], 10.0);
+        assert_eq!(serialized["z"], 15.0);
+        assert_eq!(serialized["w"], 20.0);
+
+        let pt_camel = DomPointReadOnly::fromPoint(Some(&init));
+        assert_eq!(pt_camel.x(), 5.0);
+    }
+
+    #[test]
+    fn test_domquad_basic() {
+        let p1 = DomPoint::new(0.0, 0.0, 0.0, 1.0);
+        let p2 = DomPoint::new(10.0, 0.0, 0.0, 1.0);
+        let p3 = DomPoint::new(10.0, 20.0, 0.0, 1.0);
+        let p4 = DomPoint::new(0.0, 20.0, 0.0, 1.0);
+
+        let quad = DomQuad::new(p1, p2, p3, p4);
+        assert_eq!(quad.p1, p1);
+        assert_eq!(quad.p2, p2);
+        assert_eq!(quad.p3, p3);
+        assert_eq!(quad.p4, p4);
+
+        let bounds = quad.bounds();
+        assert_eq!(bounds.x(), 0.0);
+        assert_eq!(bounds.y(), 0.0);
+        assert_eq!(bounds.width(), 10.0);
+        assert_eq!(bounds.height(), 20.0);
+    }
+
+    #[test]
+    fn test_domquad_from_rect() {
+        let rect = DomRect::new(5.0, 10.0, 50.0, 100.0);
+        let quad = DomQuad::from_rect_readonly(rect.to_readonly());
+
+        assert_eq!(quad.p1, DomPoint::new(5.0, 10.0, 0.0, 1.0));
+        assert_eq!(quad.p2, DomPoint::new(55.0, 10.0, 0.0, 1.0));
+        assert_eq!(quad.p3, DomPoint::new(55.0, 110.0, 0.0, 1.0));
+        assert_eq!(quad.p4, DomPoint::new(5.0, 110.0, 0.0, 1.0));
+
+        let bounds = quad.bounds();
+        assert_eq!(bounds.x(), 5.0);
+        assert_eq!(bounds.y(), 10.0);
+        assert_eq!(bounds.width(), 50.0);
+        assert_eq!(bounds.height(), 100.0);
+    }
+
+    #[test]
+    fn test_domquad_json() {
+        let init = serde_json::json!({
+            "p1": {"x": 1.0, "y": 2.0},
+            "p2": {"x": 3.0, "y": 4.0},
+            "p3": {"x": 5.0, "y": 6.0},
+            "p4": {"x": 7.0, "y": 8.0}
+        });
+        let quad = DomQuad::from_quad(Some(&init));
+        assert_eq!(quad.p1.x(), 1.0);
+        assert_eq!(quad.p1.y(), 2.0);
+        assert_eq!(quad.p2.x(), 3.0);
+        assert_eq!(quad.p2.y(), 4.0);
+        assert_eq!(quad.p3.x(), 5.0);
+        assert_eq!(quad.p3.y(), 6.0);
+        assert_eq!(quad.p4.x(), 7.0);
+        assert_eq!(quad.p4.y(), 8.0);
+
+        let serialized = quad.serialize();
+        assert_eq!(serialized["p1"]["x"], 1.0);
+        assert_eq!(serialized["p2"]["y"], 4.0);
+    }
+
+    #[test]
+    fn test_domquad_nan_propagation() {
+        let p1 = DomPoint::new(f64::NAN, 0.0, 0.0, 1.0);
+        let p2 = DomPoint::new(10.0, 0.0, 0.0, 1.0);
+        let p3 = DomPoint::new(10.0, 20.0, 0.0, 1.0);
+        let p4 = DomPoint::new(0.0, 20.0, 0.0, 1.0);
+
+        let quad = DomQuad::new(p1, p2, p3, p4);
+        let bounds = quad.bounds();
+        assert!(bounds.x().is_nan());
+        assert!(bounds.width().is_nan());
+        assert_eq!(bounds.y(), 0.0);
+        assert_eq!(bounds.height(), 20.0);
     }
 }
