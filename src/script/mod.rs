@@ -1958,6 +1958,17 @@ impl BoaHost {
                         configurable: true
                     });
 
+                    Object.defineProperty(node, 'itemId', {
+                        get() {
+                            return this.getAttribute('itemid') || '';
+                        },
+                        set(val) {
+                            this.setAttribute('itemid', String(val));
+                        },
+                        enumerable: true,
+                        configurable: true
+                    });
+
                     Object.defineProperty(node, 'hidden', {
                         get() {
                             return this.hasAttribute('hidden');
@@ -13110,6 +13121,26 @@ mod tests {
         assert_eq!(
             host.eval_with_dom(script, &mut dom),
             Ok("|true|false||yes|no||true|false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_element_reflected_item_id() {
+        let mut dom = Dom::new();
+        let mut host = BoaHost::new();
+
+        let script = "
+            let div = document.createElement('div');
+            let val_absent = div.itemId;
+            div.itemId = 'urn:isbn:123';
+            let val_set = div.getAttribute('itemid');
+            div.setAttribute('itemid', 'x');
+            let val_get = div.itemId;
+            [val_absent, val_set, val_get].join('|');
+        ";
+        assert_eq!(
+            host.eval_with_dom(script, &mut dom),
+            Ok("|urn:isbn:123|x".to_string())
         );
     }
 
