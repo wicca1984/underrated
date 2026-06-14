@@ -249,6 +249,85 @@ impl Dom {
         None
     }
 
+    /// Returns the value of the `srcset` content attribute of a valid element node,
+    /// but only if `srcset` is a defined attribute for its element tag (img, source).
+    /// Returns `None` if the node is not one of those element tags, has no `srcset` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_srcset(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined =
+                name.eq_ignore_ascii_case("img") || name.eq_ignore_ascii_case("source");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("srcset"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
+    /// Returns the value of the `sizes` content attribute of a valid element node,
+    /// but only if `sizes` is a defined attribute for its element tag (img, source, link).
+    /// Returns `None` if the node is not one of those element tags, has no `sizes` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_sizes(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined = name.eq_ignore_ascii_case("img")
+                || name.eq_ignore_ascii_case("source")
+                || name.eq_ignore_ascii_case("link");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("sizes"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
+    /// Returns the value of the `decoding` content attribute of a valid element node,
+    /// but only if `decoding` is a defined attribute for its element tag (img).
+    /// Returns `None` if the node is not one of those element tags, has no `decoding` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_decoding(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined = name.eq_ignore_ascii_case("img");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("decoding"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
+    /// Returns the value of the `crossorigin` content attribute of a valid element node,
+    /// but only if `crossorigin` is a defined attribute for its element tag (img, script, link, audio, video).
+    /// Returns `None` if the node is not one of those element tags, has no `crossorigin` attribute,
+    /// or if the `NodeId` is invalid.
+    pub fn get_cross_origin(&self, node: NodeId) -> Option<&str> {
+        let n = self.arena.get(node)?;
+        if let NodeData::Element { name, attrs } = &n.data {
+            let is_defined = name.eq_ignore_ascii_case("img")
+                || name.eq_ignore_ascii_case("script")
+                || name.eq_ignore_ascii_case("link")
+                || name.eq_ignore_ascii_case("audio")
+                || name.eq_ignore_ascii_case("video");
+            if is_defined {
+                return attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("crossorigin"))
+                    .map(|(_, v)| v.as_str());
+            }
+        }
+        None
+    }
+
     /// Returns the value of the `placeholder` content attribute of a valid element node.
     /// Returns `None` if the node has no `placeholder` attribute, is not an element node,
     /// or if the `NodeId` is invalid.
@@ -1093,6 +1172,174 @@ mod tests {
             foreign_node = elem(&mut foreign_dom, "img");
         }
         assert_eq!(dom.get_alt(foreign_node), None);
+    }
+
+    #[test]
+    fn test_srcset_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element of allowed tag with srcset -> returns Some
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![("srcset".to_string(), "foo.png 1x, bar.png 2x".to_string())],
+        });
+        assert_eq!(dom.get_srcset(img_id), Some("foo.png 1x, bar.png 2x"));
+
+        let source_id = dom.create_node(NodeData::Element {
+            name: "source".to_string(),
+            attrs: vec![("SRCSET".to_string(), "baz.png 1x".to_string())],
+        });
+        assert_eq!(dom.get_srcset(source_id), Some("baz.png 1x"));
+
+        // 2. Element of not allowed tag with srcset -> returns None
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("srcset".to_string(), "foo.png".to_string())],
+        });
+        assert_eq!(dom.get_srcset(div_id), None);
+
+        // 3. Allowed tag without srcset -> returns None
+        let img_no_attr_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_srcset(img_no_attr_id), None);
+
+        // 4. Non-element node -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_srcset(text_id), None);
+    }
+
+    #[test]
+    fn test_sizes_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element of allowed tag with sizes -> returns Some
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![("sizes".to_string(), "100vw".to_string())],
+        });
+        assert_eq!(dom.get_sizes(img_id), Some("100vw"));
+
+        let source_id = dom.create_node(NodeData::Element {
+            name: "source".to_string(),
+            attrs: vec![("SIZES".to_string(), "50vw".to_string())],
+        });
+        assert_eq!(dom.get_sizes(source_id), Some("50vw"));
+
+        let link_id = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![("sizes".to_string(), "16x16".to_string())],
+        });
+        assert_eq!(dom.get_sizes(link_id), Some("16x16"));
+
+        // 2. Element of not allowed tag with sizes -> returns None
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("sizes".to_string(), "100vw".to_string())],
+        });
+        assert_eq!(dom.get_sizes(div_id), None);
+
+        // 3. Allowed tag without sizes -> returns None
+        let img_no_attr_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_sizes(img_no_attr_id), None);
+
+        // 4. Non-element node -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_sizes(text_id), None);
+    }
+
+    #[test]
+    fn test_decoding_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element of allowed tag with decoding -> returns Some
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![("decoding".to_string(), "async".to_string())],
+        });
+        assert_eq!(dom.get_decoding(img_id), Some("async"));
+
+        let img_upper_id = dom.create_node(NodeData::Element {
+            name: "IMG".to_string(),
+            attrs: vec![("DECODING".to_string(), "sync".to_string())],
+        });
+        assert_eq!(dom.get_decoding(img_upper_id), Some("sync"));
+
+        // 2. Element of not allowed tag with decoding -> returns None
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("decoding".to_string(), "async".to_string())],
+        });
+        assert_eq!(dom.get_decoding(div_id), None);
+
+        // 3. Allowed tag without decoding -> returns None
+        let img_no_attr_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_decoding(img_no_attr_id), None);
+
+        // 4. Non-element node -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_decoding(text_id), None);
+    }
+
+    #[test]
+    fn test_cross_origin_accessor() {
+        let mut dom = Dom::new();
+
+        // 1. Element of allowed tag with crossorigin -> returns Some
+        let img_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![("crossorigin".to_string(), "anonymous".to_string())],
+        });
+        assert_eq!(dom.get_cross_origin(img_id), Some("anonymous"));
+
+        let script_id = dom.create_node(NodeData::Element {
+            name: "script".to_string(),
+            attrs: vec![("CROSSORIGIN".to_string(), "use-credentials".to_string())],
+        });
+        assert_eq!(dom.get_cross_origin(script_id), Some("use-credentials"));
+
+        let link_id = dom.create_node(NodeData::Element {
+            name: "link".to_string(),
+            attrs: vec![("crossorigin".to_string(), "anonymous".to_string())],
+        });
+        assert_eq!(dom.get_cross_origin(link_id), Some("anonymous"));
+
+        let audio_id = dom.create_node(NodeData::Element {
+            name: "audio".to_string(),
+            attrs: vec![("crossorigin".to_string(), "anonymous".to_string())],
+        });
+        assert_eq!(dom.get_cross_origin(audio_id), Some("anonymous"));
+
+        let video_id = dom.create_node(NodeData::Element {
+            name: "video".to_string(),
+            attrs: vec![("crossorigin".to_string(), "anonymous".to_string())],
+        });
+        assert_eq!(dom.get_cross_origin(video_id), Some("anonymous"));
+
+        // 2. Element of not allowed tag with crossorigin -> returns None
+        let div_id = dom.create_node(NodeData::Element {
+            name: "div".to_string(),
+            attrs: vec![("crossorigin".to_string(), "anonymous".to_string())],
+        });
+        assert_eq!(dom.get_cross_origin(div_id), None);
+
+        // 3. Allowed tag without crossorigin -> returns None
+        let img_no_attr_id = dom.create_node(NodeData::Element {
+            name: "img".to_string(),
+            attrs: vec![],
+        });
+        assert_eq!(dom.get_cross_origin(img_no_attr_id), None);
+
+        // 4. Non-element node -> returns None
+        let text_id = dom.create_node(NodeData::Text("hello".to_string()));
+        assert_eq!(dom.get_cross_origin(text_id), None);
     }
 
     #[test]
