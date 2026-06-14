@@ -6027,4 +6027,240 @@ mod tests {
             assert!(errors.contains(&"incorrect-formatting-of-html-comment".to_string()));
         }
     }
+
+    #[test]
+    fn test_t1026_strengthen_special_states_robustness() {
+        let run_case =
+            |input: &[u8], initial_state: &str, last_start_tag: Option<&str>| -> Vec<Token> {
+                let stream = InputStream::from_utf8(input);
+                let mut tokenizer = Tokenizer::new(stream);
+                tokenizer.set_initial_state(initial_state);
+                if let Some(tag) = last_start_tag {
+                    tokenizer.set_last_start_tag(tag);
+                }
+                let mut tokens = Vec::new();
+                loop {
+                    let tok = tokenizer.next_token();
+                    if tok == Token::Eof {
+                        break;
+                    }
+                    tokens.push(tok);
+                }
+                tokens
+            };
+
+        // Helper to extract characters as a String
+        let get_chars = |tokens: &[Token]| -> String {
+            let mut s = String::new();
+            for tok in tokens {
+                if let Token::Character(c) = tok {
+                    s.push(*c);
+                } else {
+                    panic!("Expected only character tokens, but got: {:?}", tok);
+                }
+            }
+            s
+        };
+
+        // 1. RCDATA End Tag Name Case Insensitivity
+        {
+            let tokens = run_case(b"</TITLE>", "RCDATA state", Some("title"));
+            assert_eq!(tokens.len(), 1);
+            assert_eq!(
+                tokens[0],
+                Token::EndTag {
+                    name: "title".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+
+            let tokens2 = run_case(b"</tItLe>", "RCDATA state", Some("title"));
+            assert_eq!(tokens2.len(), 1);
+            assert_eq!(
+                tokens2[0],
+                Token::EndTag {
+                    name: "title".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+        }
+
+        // 2. RCDATA End Tag Attributes Transition
+        {
+            let tokens = run_case(b"</title class=\"abc\">", "RCDATA state", Some("title"));
+            assert_eq!(tokens.len(), 1);
+            assert_eq!(
+                tokens[0],
+                Token::EndTag {
+                    name: "title".to_string(),
+                    attrs: vec![("class".to_string(), "abc".to_string())],
+                    self_closing: false
+                }
+            );
+        }
+
+        // 3. RCDATA End Tag Self-Closing Transition
+        {
+            let tokens = run_case(b"</title/>", "RCDATA state", Some("title"));
+            assert_eq!(tokens.len(), 1);
+            assert_eq!(
+                tokens[0],
+                Token::EndTag {
+                    name: "title".to_string(),
+                    attrs: vec![],
+                    self_closing: true
+                }
+            );
+        }
+
+        // 4. RAWTEXT End Tag Case Insensitivity and Mixed cases
+        {
+            let tokens = run_case(b"</STYLE>", "RAWTEXT state", Some("style"));
+            assert_eq!(tokens.len(), 1);
+            assert_eq!(
+                tokens[0],
+                Token::EndTag {
+                    name: "style".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+
+            let tokens2 = run_case(b"</sTyLe class='foo'/>", "RAWTEXT state", Some("style"));
+            assert_eq!(tokens2.len(), 1);
+            assert_eq!(
+                tokens2[0],
+                Token::EndTag {
+                    name: "style".to_string(),
+                    attrs: vec![("class".to_string(), "foo".to_string())],
+                    self_closing: true
+                }
+            );
+        }
+
+        // 5. ScriptData End Tag Name Case Insensitivity
+        {
+            let tokens = run_case(b"</SCRIPT>", "Script data state", Some("script"));
+            assert_eq!(tokens.len(), 1);
+            assert_eq!(
+                tokens[0],
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+
+            let tokens2 = run_case(b"</ScRiPt class=val>", "Script data state", Some("script"));
+            assert_eq!(tokens2.len(), 1);
+            assert_eq!(
+                tokens2[0],
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: vec![("class".to_string(), "val".to_string())],
+                    self_closing: false
+                }
+            );
+        }
+
+        // 6. ScriptData Escape Start / Dash / Dash Dash transitions
+        {
+            let tokens = run_case(b"<!-->", "Script data state", Some("script"));
+            // <!-- switches to dash dash, > switches to script data.
+            assert_eq!(get_chars(&tokens), "<!-->");
+
+            let tokens2 = run_case(b"<!--x-->", "Script data state", Some("script"));
+            assert_eq!(get_chars(&tokens2), "<!--x-->");
+        }
+
+        // 7. ScriptData Escaped End Tag Name Robustness (inside comments)
+        {
+            let tokens = run_case(b"<!--</SCRIPT>", "Script data state", Some("script"));
+            // Character tokens of "<!--" followed by EndTag
+            assert_eq!(get_chars(&tokens[0..4]), "<!--");
+            assert_eq!(
+                tokens[4],
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+
+            let tokens2 = run_case(b"<!--</style>", "Script data state", Some("script"));
+            // Inappropriate end tag inside comments should be treated as chars
+            assert_eq!(get_chars(&tokens2), "<!--</style>");
+        }
+
+        // 8. ScriptData Double Escaping sequence robustness (DoubleEscapeStart)
+        {
+            // Case 1: Double Escape Start with lowercase tag name "script"
+            let tokens = run_case(b"<!--<script>", "Script data state", Some("script"));
+            assert_eq!(get_chars(&tokens), "<!--<script>");
+
+            // Case 2: Double Escape Start with uppercase tag name "SCRIPT"
+            let tokens2 = run_case(b"<!--<SCRIPT>", "Script data state", Some("script"));
+            assert_eq!(get_chars(&tokens2), "<!--<SCRIPT>");
+
+            // Case 3: Double Escape Start inappropriate tag name "style"
+            let tokens3 = run_case(b"<!--<style>", "Script data state", Some("script"));
+            assert_eq!(get_chars(&tokens3), "<!--<style>");
+        }
+
+        // 9. ScriptData Double Escaped transitions and double escape end
+        {
+            // Case 1: Double Escape End with lowercase "script"
+            let tokens = run_case(
+                b"<!--<script>hello</script>",
+                "Script data state",
+                Some("script"),
+            );
+            assert_eq!(get_chars(&tokens), "<!--<script>hello</script>");
+
+            // Case 2: Double Escape End with uppercase "SCRIPT"
+            let tokens2 = run_case(
+                b"<!--<script>hello</SCRIPT>",
+                "Script data state",
+                Some("script"),
+            );
+            assert_eq!(get_chars(&tokens2), "<!--<script>hello</SCRIPT>");
+
+            // Case 3: Double Escape End inappropriate "style"
+            let tokens3 = run_case(
+                b"<!--<script>hello</style>",
+                "Script data state",
+                Some("script"),
+            );
+            assert_eq!(get_chars(&tokens3), "<!--<script>hello</style>");
+        }
+
+        // 10. Complex combination: Double escaping and comments transitions
+        {
+            let tokens = run_case(
+                b"<!--<script> <!-- </script>--> </script>",
+                "Script data state",
+                Some("script"),
+            );
+            // Inside double escaped, nested "<!--" or "</script>" are treated as characters.
+            // Until the outer "<!--" and "</script>" transitions are matched appropriately.
+            let end_tag_idx = tokens
+                .iter()
+                .position(|t| matches!(t, Token::EndTag { .. }))
+                .expect("Should find appropriate EndTag");
+            assert_eq!(
+                get_chars(&tokens[0..end_tag_idx]),
+                "<!--<script> <!-- </script>--> "
+            );
+            assert_eq!(
+                tokens[end_tag_idx],
+                Token::EndTag {
+                    name: "script".to_string(),
+                    attrs: vec![],
+                    self_closing: false
+                }
+            );
+        }
+    }
 }
