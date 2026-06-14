@@ -90,37 +90,181 @@ impl Dom {
         if child == parent {
             return;
         }
-        // Only run the expensive contains check if child actually has children.
-        if !self.children(child).is_empty() && self.contains(child, parent) {
-            return;
-        }
 
-        // Detach from the previous parent, if any.
-        if let Some(old) = self.parent(child)
-            && let Some(op) = self.arena.get_mut(old)
-        {
-            op.children.retain(|&c| c != child);
-        }
+        let is_frag =
+            matches!(self.data(child), Some(NodeData::Document)) && child != self.document();
 
-        let inserted = if let Some(p) = self.arena.get_mut(parent) {
-            let idx = match reference {
-                Some(r) => p
-                    .children
-                    .iter()
-                    .position(|&c| c == r)
-                    .unwrap_or(p.children.len()),
-                None => p.children.len(),
+        if is_frag {
+            let frag_children = self.children(child).to_vec();
+            for &sub_child in &frag_children {
+                if self.contains(sub_child, parent) {
+                    return;
+                }
+            }
+
+            // Remove all children from child.
+            if let Some(c_node) = self.arena.get_mut(child) {
+                c_node.children.clear();
+            }
+            self.mark_dirty(child);
+
+            // Insert each of child's children into parent before reference.
+            let inserted_any = if let Some(p) = self.arena.get_mut(parent) {
+                let idx = match reference {
+                    Some(r) => p
+                        .children
+                        .iter()
+                        .position(|&c| c == r)
+                        .unwrap_or(p.children.len()),
+                    None => p.children.len(),
+                };
+                p.children.splice(idx..idx, frag_children.iter().copied());
+                !frag_children.is_empty()
+            } else {
+                false
             };
-            p.children.insert(idx, child);
-            true
+
+            if inserted_any {
+                for &sub_child in &frag_children {
+                    if let Some(sc_node) = self.arena.get_mut(sub_child) {
+                        sc_node.parent = Some(parent);
+                    }
+                }
+                self.mark_dirty(parent);
+            }
         } else {
-            false
-        };
-        if inserted && let Some(c) = self.arena.get_mut(child) {
-            c.parent = Some(parent);
+            // Normal node insertion
+            if !self.children(child).is_empty() && self.contains(child, parent) {
+                return;
+            }
+
+            // Detach from the previous parent, if any.
+            if let Some(old) = self.parent(child)
+                && let Some(op) = self.arena.get_mut(old)
+            {
+                op.children.retain(|&c| c != child);
+                self.mark_dirty(old);
+            }
+
+            let inserted = if let Some(p) = self.arena.get_mut(parent) {
+                let idx = match reference {
+                    Some(r) => p
+                        .children
+                        .iter()
+                        .position(|&c| c == r)
+                        .unwrap_or(p.children.len()),
+                    None => p.children.len(),
+                };
+                p.children.insert(idx, child);
+                true
+            } else {
+                false
+            };
+
+            if inserted && let Some(c) = self.arena.get_mut(child) {
+                c.parent = Some(parent);
+            }
+            if inserted {
+                self.mark_dirty(parent);
+            }
         }
-        if inserted {
+    }
+
+    /// Replaces `old_child` with `new_child` under `parent`.
+    /// Returns `Some(old_child)` on success, or `None` on failure or if `old_child` is not a child of `parent`.
+    // spec: https://dom.spec.whatwg.org/#dom-node-replacechild
+    pub fn replace_child(
+        &mut self,
+        parent: NodeId,
+        new_child: NodeId,
+        old_child: NodeId,
+    ) -> Option<NodeId> {
+        if new_child == parent {
+            return None;
+        }
+
+        // Check if old_child is actually a child of parent
+        let old_idx = self
+            .arena
+            .get(parent)?
+            .children
+            .iter()
+            .position(|&c| c == old_child)?;
+
+        let is_frag = matches!(self.data(new_child), Some(NodeData::Document))
+            && new_child != self.document();
+
+        if is_frag {
+            let frag_children = self.children(new_child).to_vec();
+            for &sub_child in &frag_children {
+                if self.contains(sub_child, parent) {
+                    return None;
+                }
+            }
+
+            // Remove all children from new_child.
+            if let Some(c_node) = self.arena.get_mut(new_child) {
+                c_node.children.clear();
+            }
+            self.mark_dirty(new_child);
+
+            // Replace old_child with the children of DocumentFragment in parent's children.
+            if let Some(p) = self.arena.get_mut(parent) {
+                // We splice frag_children into the spot where old_child was.
+                p.children
+                    .splice(old_idx..=old_idx, frag_children.iter().copied());
+            }
+
+            // Update parent pointers of inserted children
+            for &sub_child in &frag_children {
+                if let Some(sc_node) = self.arena.get_mut(sub_child) {
+                    sc_node.parent = Some(parent);
+                }
+            }
+
+            // Detach old_child
+            if let Some(oc_node) = self.arena.get_mut(old_child) {
+                oc_node.parent = None;
+            }
+
             self.mark_dirty(parent);
+            Some(old_child)
+        } else {
+            // Normal node replacement
+            if !self.children(new_child).is_empty() && self.contains(new_child, parent) {
+                return None;
+            }
+
+            // Detach new_child from its old parent if it has one
+            if let Some(old) = self.parent(new_child)
+                && let Some(op) = self.arena.get_mut(old)
+            {
+                op.children.retain(|&c| c != new_child);
+                self.mark_dirty(old);
+            }
+
+            // Re-fetch old_idx in case the parent list size has changed because new_child was a sibling
+            let old_idx = self
+                .arena
+                .get(parent)?
+                .children
+                .iter()
+                .position(|&c| c == old_child)?;
+
+            if let Some(p) = self.arena.get_mut(parent) {
+                p.children[old_idx] = new_child;
+            }
+
+            if let Some(c) = self.arena.get_mut(new_child) {
+                c.parent = Some(parent);
+            }
+
+            if let Some(oc_node) = self.arena.get_mut(old_child) {
+                oc_node.parent = None;
+            }
+
+            self.mark_dirty(parent);
+            Some(old_child)
         }
     }
 
@@ -7252,5 +7396,155 @@ mod tests {
         dom.set_no_validate(div_id, true); // no-op
         assert_eq!(dom.get_no_validate(form_id), Some(true));
         assert_eq!(dom.get_no_validate(div_id), None);
+    }
+
+    #[test]
+    fn test_insert_before_document_fragment() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let ref_node = elem(&mut dom, "span");
+        dom.append_child(parent, ref_node);
+
+        // Create document fragment (a Node with NodeData::Document that is NOT dom.document())
+        let frag = dom.create_node(NodeData::Document);
+        let child1 = elem(&mut dom, "p");
+        let child2 = elem(&mut dom, "a");
+        dom.append_child(frag, child1);
+        dom.append_child(frag, child2);
+
+        // Children of fragment before insert
+        assert_eq!(dom.children(frag), &[child1, child2]);
+
+        // Insert before ref_node
+        dom.insert_before(parent, frag, Some(ref_node));
+
+        // Fragment should now be empty
+        assert_eq!(dom.children(frag), &[] as &[NodeId]);
+
+        // Parent should have the children of fragment inserted before ref_node
+        assert_eq!(dom.children(parent), &[child1, child2, ref_node]);
+
+        // Parent pointers should be updated
+        assert_eq!(dom.parent(child1), Some(parent));
+        assert_eq!(dom.parent(child2), Some(parent));
+        assert_eq!(dom.parent(frag), None);
+    }
+
+    #[test]
+    fn test_insert_before_cycle_detection() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let child = elem(&mut dom, "p");
+        dom.append_child(parent, child);
+
+        // Attempting to insert parent inside child (direct cycle)
+        dom.insert_before(child, parent, None);
+        assert_eq!(dom.parent(parent), None); // parent is still root-level / unparented
+
+        // Attempting to insert child inside child (self cycle)
+        dom.insert_before(child, child, None);
+        assert_eq!(dom.children(child), &[] as &[NodeId]);
+
+        // Document fragment cycle detection
+        let frag = dom.create_node(NodeData::Document);
+        let frag_child = elem(&mut dom, "span");
+        dom.append_child(frag, frag_child);
+        dom.append_child(frag_child, parent); // frag_child contains parent
+
+        // Attempt to insert frag into parent (frag_child has parent, which contains parent -> cycle!)
+        dom.insert_before(parent, frag, None);
+        assert_eq!(dom.children(frag), &[frag_child]); // nothing was extracted or moved
+    }
+
+    #[test]
+    fn test_replace_child_basic() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let old_child = elem(&mut dom, "p");
+        let other_child = elem(&mut dom, "a");
+        dom.append_child(parent, old_child);
+        dom.append_child(parent, other_child);
+
+        let new_child = elem(&mut dom, "span");
+
+        // Perform replacement
+        let res = dom.replace_child(parent, new_child, old_child);
+        assert_eq!(res, Some(old_child));
+
+        // Check structure
+        assert_eq!(dom.children(parent), &[new_child, other_child]);
+        assert_eq!(dom.parent(new_child), Some(parent));
+        assert_eq!(dom.parent(old_child), None);
+    }
+
+    #[test]
+    fn test_replace_child_document_fragment() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let old_child = elem(&mut dom, "p");
+        let other_child = elem(&mut dom, "a");
+        dom.append_child(parent, old_child);
+        dom.append_child(parent, other_child);
+
+        let frag = dom.create_node(NodeData::Document);
+        let f1 = elem(&mut dom, "span");
+        let f2 = elem(&mut dom, "em");
+        dom.append_child(frag, f1);
+        dom.append_child(frag, f2);
+
+        // Replace old_child with the fragment
+        let res = dom.replace_child(parent, frag, old_child);
+        assert_eq!(res, Some(old_child));
+
+        // Fragment should now be empty
+        assert_eq!(dom.children(frag), &[] as &[NodeId]);
+
+        // Parent children should now have f1 and f2 in place of old_child
+        assert_eq!(dom.children(parent), &[f1, f2, other_child]);
+        assert_eq!(dom.parent(f1), Some(parent));
+        assert_eq!(dom.parent(f2), Some(parent));
+        assert_eq!(dom.parent(old_child), None);
+    }
+
+    #[test]
+    fn test_replace_child_sibling_reorder() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let first = elem(&mut dom, "span");
+        let second = elem(&mut dom, "p");
+        dom.append_child(parent, first);
+        dom.append_child(parent, second);
+
+        // Replace second with first (so parent should only contain first)
+        let res = dom.replace_child(parent, first, second);
+        assert_eq!(res, Some(second));
+
+        assert_eq!(dom.children(parent), &[first]);
+        assert_eq!(dom.parent(first), Some(parent));
+        assert_eq!(dom.parent(second), None);
+    }
+
+    #[test]
+    fn test_replace_child_cycle_detection() {
+        let mut dom = Dom::new();
+        let parent = elem(&mut dom, "div");
+        let child = elem(&mut dom, "p");
+        dom.append_child(parent, child);
+
+        // Attempting to replace child with parent (cycle)
+        let res = dom.replace_child(parent, parent, child);
+        assert_eq!(res, None); // rejected
+        assert_eq!(dom.children(parent), &[child]);
+
+        // Document fragment replacement cycle check
+        let frag = dom.create_node(NodeData::Document);
+        let frag_child = elem(&mut dom, "span");
+        dom.append_child(frag, frag_child);
+        dom.append_child(frag_child, parent); // frag_child contains parent
+
+        let res2 = dom.replace_child(parent, frag, child);
+        assert_eq!(res2, None); // rejected
+        assert_eq!(dom.children(parent), &[child]);
+        assert_eq!(dom.children(frag), &[frag_child]);
     }
 }
