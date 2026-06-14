@@ -2672,4 +2672,195 @@ mod tests {
         let res = host.eval_with_dom(script, &mut dom).unwrap();
         assert_eq!(res, "OK");
     }
+
+    #[test]
+    fn test_t1062_comprehensive_event_system() {
+        use crate::script::{BoaHost, set_max_script_length};
+        let mut host = BoaHost::new();
+        let mut dom = crate::dom::Dom::new();
+
+        // Ensure the script is not skipped by limits set by other concurrent/sequential tests
+        set_max_script_length(100000);
+
+        let script = r#"(function() {
+            try {
+                // 1. Nested hierarchy 4 levels: root -> grandparent -> parent -> child
+                const root = new EventTarget();
+                const grandparent = new EventTarget();
+                const parent = new EventTarget();
+                const child = new EventTarget();
+
+                child.parentNode = parent;
+                parent.parentNode = grandparent;
+                grandparent.parentNode = root;
+
+                const log = [];
+
+                // Capture listeners
+                root.addEventListener('click', (e) => {
+                    log.push(`root_cap_phase_${e.eventPhase}_target_${e.target === child}`);
+                }, { capture: true });
+
+                grandparent.addEventListener('click', (e) => {
+                    log.push(`grand_cap_phase_${e.eventPhase}_target_${e.target === child}`);
+                }, { capture: true });
+
+                parent.addEventListener('click', (e) => {
+                    log.push(`parent_cap_phase_${e.eventPhase}_target_${e.target === child}`);
+                }, { capture: true });
+
+                child.addEventListener('click', (e) => {
+                    log.push(`child_cap_phase_${e.eventPhase}_target_${e.target === child}`);
+                }, { capture: true });
+
+                // Bubble/target listeners
+                root.addEventListener('click', (e) => {
+                    log.push(`root_bub_phase_${e.eventPhase}_target_${e.target === child}`);
+                });
+
+                grandparent.addEventListener('click', (e) => {
+                    log.push(`grand_bub_phase_${e.eventPhase}_target_${e.target === child}`);
+                });
+
+                parent.addEventListener('click', (e) => {
+                    log.push(`parent_bub_phase_${e.eventPhase}_target_${e.target === child}`);
+                });
+
+                child.addEventListener('click', (e) => {
+                    log.push(`child_bub_phase_${e.eventPhase}_target_${e.target === child}`);
+                });
+
+                child.dispatchEvent(new Event('click', { bubbles: true }));
+
+                const expectedLog1 = [
+                    "root_cap_phase_1_target_true",
+                    "grand_cap_phase_1_target_true",
+                    "parent_cap_phase_1_target_true",
+                    "child_cap_phase_2_target_true",
+                    "child_bub_phase_2_target_true",
+                    "parent_bub_phase_3_target_true",
+                    "grand_bub_phase_3_target_true",
+                    "root_bub_phase_3_target_true"
+                ];
+
+                if (log.length !== expectedLog1.length) {
+                    throw new Error("Log length mismatch: " + log.length);
+                }
+                for (let i = 0; i < expectedLog1.length; i++) {
+                    if (log[i] !== expectedLog1[i]) {
+                        throw new Error(`Log mismatch at index ${i}: expected ${expectedLog1[i]}, got ${log[i]}`);
+                    }
+                }
+
+                // 2. Listener options: once
+                const targetOnce = new EventTarget();
+                let onceCount = 0;
+                targetOnce.addEventListener('foo', () => {
+                    onceCount++;
+                }, { once: true });
+
+                targetOnce.dispatchEvent(new Event('foo'));
+                targetOnce.dispatchEvent(new Event('foo'));
+                if (onceCount !== 1) {
+                    throw new Error("once listener called " + onceCount + " times, expected 1");
+                }
+
+                // 3. Listener options: passive
+                const targetPassive = new EventTarget();
+                let passivePreventedValue = null;
+                targetPassive.addEventListener('bar', (e) => {
+                    e.preventDefault();
+                    passivePreventedValue = e.defaultPrevented;
+                }, { passive: true });
+
+                const evPassive = new Event('bar');
+                targetPassive.dispatchEvent(evPassive);
+                if (passivePreventedValue !== false || evPassive.defaultPrevented !== false) {
+                    throw new Error("passive listener should not preventDefault");
+                }
+
+                // 4. stopPropagation vs stopImmediatePropagation
+                const targetStop = new EventTarget();
+                const parentStop = new EventTarget();
+                targetStop.parentNode = parentStop;
+
+                let stopCount1 = 0;
+                let stopCount2 = 0;
+                let stopCountParent = 0;
+
+                targetStop.addEventListener('baz', (e) => {
+                    stopCount1++;
+                    e.stopPropagation();
+                });
+
+                targetStop.addEventListener('baz', () => {
+                    stopCount2++; // should run because stopPropagation does not stop immediate propagation on same node
+                });
+
+                parentStop.addEventListener('baz', () => {
+                    stopCountParent++; // should NOT run
+                });
+
+                targetStop.dispatchEvent(new Event('baz', { bubbles: true }));
+                if (stopCount1 !== 1 || stopCount2 !== 1 || stopCountParent !== 0) {
+                    throw new Error(`stopPropagation mismatch: ${stopCount1}, ${stopCount2}, ${stopCountParent}`);
+                }
+
+                let immCount1 = 0;
+                let immCount2 = 0;
+                let immCountParent = 0;
+
+                targetStop.addEventListener('qux', (e) => {
+                    immCount1++;
+                    e.stopImmediatePropagation();
+                });
+
+                targetStop.addEventListener('qux', () => {
+                    immCount2++; // should NOT run
+                });
+
+                parentStop.addEventListener('qux', () => {
+                    immCountParent++; // should NOT run
+                });
+
+                targetStop.dispatchEvent(new Event('qux', { bubbles: true }));
+                if (immCount1 !== 1 || immCount2 !== 0 || immCountParent !== 0) {
+                    throw new Error(`stopImmediatePropagation mismatch: ${immCount1}, ${immCount2}, ${immCountParent}`);
+                }
+
+                // 5. Signal option
+                const targetSig = new EventTarget();
+                const controller = new AbortController();
+                let sigCount = 0;
+
+                targetSig.addEventListener('hello', () => {
+                    sigCount++;
+                }, { signal: controller.signal });
+
+                targetSig.dispatchEvent(new Event('hello'));
+                controller.abort();
+                targetSig.dispatchEvent(new Event('hello'));
+
+                if (sigCount !== 1) {
+                    throw new Error("signal aborted listener should not run again: got count " + sigCount);
+                }
+
+                return "OK";
+            } catch (err) {
+                return "ERROR: " + err.message + "\n" + err.stack;
+            }
+        })()"#;
+
+        match host.eval_with_dom(script, &mut dom) {
+            Ok(res) => {
+                println!("EVAL RES IS: {:?}", res);
+                assert_eq!(res, "OK");
+                set_max_script_length(5000);
+            }
+            Err(err) => {
+                set_max_script_length(5000);
+                panic!("Javascript execution failed: {:?}", err);
+            }
+        }
+    }
 }
