@@ -4888,6 +4888,13 @@ enum MathFunc {
     Hypot,
     Log,
     Exp,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5053,6 +5060,26 @@ fn parse_math_tokens(components: &[ComponentValue]) -> Option<Vec<MathToken>> {
                 }
                 CssToken::Dimension { value, unit } => {
                     let lower_unit = unit.to_ascii_lowercase();
+                    if lower_unit == "deg" {
+                        let rads = *value as f32 * std::f32::consts::PI / 180.0;
+                        tokens.push(MathToken::Expr(MathExpr::Number(rads)));
+                        continue;
+                    }
+                    if lower_unit == "rad" {
+                        let rads = *value as f32;
+                        tokens.push(MathToken::Expr(MathExpr::Number(rads)));
+                        continue;
+                    }
+                    if lower_unit == "grad" {
+                        let rads = *value as f32 * std::f32::consts::PI / 200.0;
+                        tokens.push(MathToken::Expr(MathExpr::Number(rads)));
+                        continue;
+                    }
+                    if lower_unit == "turn" {
+                        let rads = *value as f32 * 2.0 * std::f32::consts::PI;
+                        tokens.push(MathToken::Expr(MathExpr::Number(rads)));
+                        continue;
+                    }
                     let (val, unit_enum) = match lower_unit.as_str() {
                         "px" => (*value as f32, LengthUnit::Px),
                         "em" => (*value as f32, LengthUnit::Em),
@@ -5135,10 +5162,18 @@ fn parse_math_tokens(components: &[ComponentValue]) -> Option<Vec<MathToken>> {
                     "hypot" => Some(MathFunc::Hypot),
                     "log" => Some(MathFunc::Log),
                     "exp" => Some(MathFunc::Exp),
+                    "sin" => Some(MathFunc::Sin),
+                    "cos" => Some(MathFunc::Cos),
+                    "tan" => Some(MathFunc::Tan),
+                    "asin" => Some(MathFunc::Asin),
+                    "acos" => Some(MathFunc::Acos),
+                    "atan" => Some(MathFunc::Atan),
+                    "atan2" => Some(MathFunc::Atan2),
                     _ => None,
                 } {
                     if let Some(args) = parse_function_arguments(value) {
                         let ok = match func {
+                            MathFunc::Calc => false,
                             MathFunc::Min | MathFunc::Max => !args.is_empty(),
                             MathFunc::Clamp => args.len() == 3,
                             MathFunc::Abs | MathFunc::Sign | MathFunc::Sqrt | MathFunc::Exp => {
@@ -5147,7 +5182,13 @@ fn parse_math_tokens(components: &[ComponentValue]) -> Option<Vec<MathToken>> {
                             MathFunc::Mod | MathFunc::Rem | MathFunc::Pow => args.len() == 2,
                             MathFunc::Hypot => !args.is_empty(),
                             MathFunc::Log => args.len() == 1 || args.len() == 2,
-                            _ => false,
+                            MathFunc::Sin
+                            | MathFunc::Cos
+                            | MathFunc::Tan
+                            | MathFunc::Asin
+                            | MathFunc::Acos
+                            | MathFunc::Atan => args.len() == 1,
+                            MathFunc::Atan2 => args.len() == 2,
                         };
                         if ok {
                             tokens.push(MathToken::Expr(MathExpr::Func(func, args)));
@@ -5425,6 +5466,19 @@ impl MathExpr {
                         if s_args.is_empty() {
                             MathExpr::Func(*func, s_args)
                         } else {
+                            let mut flattened_args = Vec::new();
+                            for arg in s_args {
+                                match arg {
+                                    MathExpr::Func(MathFunc::Min, nested) => {
+                                        flattened_args.extend(nested);
+                                    }
+                                    _ => {
+                                        flattened_args.push(arg);
+                                    }
+                                }
+                            }
+                            let s_args = flattened_args;
+
                             let mut numbers: Vec<f32> = Vec::new();
                             let mut px_vals = Vec::new();
                             let mut em_vals = Vec::new();
@@ -5763,6 +5817,90 @@ impl MathExpr {
                             MathExpr::Func(*func, s_args)
                         }
                     }
+                    MathFunc::Sin => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => MathExpr::Number(v.sin()),
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Cos => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => MathExpr::Number(v.cos()),
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Tan => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => MathExpr::Number(v.tan()),
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Asin => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => {
+                                    if (-1.0..=1.0).contains(v) {
+                                        MathExpr::Number(v.asin())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Acos => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => {
+                                    if (-1.0..=1.0).contains(v) {
+                                        MathExpr::Number(v.acos())
+                                    } else {
+                                        MathExpr::Func(*func, s_args)
+                                    }
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Atan => {
+                        if s_args.len() == 1 {
+                            match &s_args[0] {
+                                MathExpr::Number(v) => MathExpr::Number(v.atan()),
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
+                    MathFunc::Atan2 => {
+                        if s_args.len() == 2 {
+                            match (&s_args[0], &s_args[1]) {
+                                (MathExpr::Number(vy), MathExpr::Number(vx)) => {
+                                    MathExpr::Number(vy.atan2(*vx))
+                                }
+                                _ => MathExpr::Func(*func, s_args),
+                            }
+                        } else {
+                            MathExpr::Func(*func, s_args)
+                        }
+                    }
                 }
             }
         }
@@ -5817,6 +5955,13 @@ impl MathExpr {
                     MathFunc::Hypot => "hypot",
                     MathFunc::Log => "log",
                     MathFunc::Exp => "exp",
+                    MathFunc::Sin => "sin",
+                    MathFunc::Cos => "cos",
+                    MathFunc::Tan => "tan",
+                    MathFunc::Asin => "asin",
+                    MathFunc::Acos => "acos",
+                    MathFunc::Atan => "atan",
+                    MathFunc::Atan2 => "atan2",
                 };
                 let serialized_args: Vec<String> = args.iter().map(|a| a.serialize()).collect();
                 format!("{}({})", func_name, serialized_args.join(","))
@@ -5860,6 +6005,13 @@ fn serialize_top_level_math(expr: &MathExpr) -> String {
                 MathFunc::Hypot => "hypot",
                 MathFunc::Log => "log",
                 MathFunc::Exp => "exp",
+                MathFunc::Sin => "sin",
+                MathFunc::Cos => "cos",
+                MathFunc::Tan => "tan",
+                MathFunc::Asin => "asin",
+                MathFunc::Acos => "acos",
+                MathFunc::Atan => "atan",
+                MathFunc::Atan2 => "atan2",
             };
             let serialized_args: Vec<String> = args.iter().map(|a| a.serialize()).collect();
             format!("{}({})", func_name, serialized_args.join(","))
@@ -6007,15 +6159,30 @@ fn get_math_expr_type(expr: &MathExpr) -> Option<MathType> {
                     }
                     Some(resolved_type)
                 }
-                MathFunc::Abs | MathFunc::Sign | MathFunc::Sqrt | MathFunc::Exp => {
+                MathFunc::Abs
+                | MathFunc::Sign
+                | MathFunc::Sqrt
+                | MathFunc::Exp
+                | MathFunc::Sin
+                | MathFunc::Cos
+                | MathFunc::Tan
+                | MathFunc::Asin
+                | MathFunc::Acos
+                | MathFunc::Atan => {
                     if args.len() != 1 {
                         return None;
                     }
                     let t = get_math_expr_type(&args[0])?;
                     match func {
                         MathFunc::Abs => Some(t),
-                        MathFunc::Sign => Some(MathType::Number),
-                        MathFunc::Sqrt | MathFunc::Exp => {
+                        MathFunc::Sign | MathFunc::Sin | MathFunc::Cos | MathFunc::Tan => {
+                            Some(MathType::Number)
+                        }
+                        MathFunc::Sqrt
+                        | MathFunc::Exp
+                        | MathFunc::Asin
+                        | MathFunc::Acos
+                        | MathFunc::Atan => {
                             if t == MathType::Number || t == MathType::Unresolved {
                                 Some(MathType::Number)
                             } else {
@@ -6086,6 +6253,20 @@ fn get_math_expr_type(expr: &MathExpr) -> Option<MathType> {
                     }
                     Some(MathType::Number)
                 }
+                MathFunc::Atan2 => {
+                    if args.len() != 2 {
+                        return None;
+                    }
+                    let t_y = get_math_expr_type(&args[0])?;
+                    let t_x = get_math_expr_type(&args[1])?;
+                    if (t_y == MathType::Number || t_y == MathType::Unresolved)
+                        && (t_x == MathType::Number || t_x == MathType::Unresolved)
+                    {
+                        Some(MathType::Number)
+                    } else {
+                        None
+                    }
+                }
             }
         }
     }
@@ -6134,6 +6315,10 @@ fn has_division_by_zero(expr: &MathExpr) -> bool {
                 },
                 MathFunc::Sqrt if !args.is_empty() => match args[0].simplify() {
                     MathExpr::Number(v) if v < 0.0 => return true,
+                    _ => {}
+                },
+                MathFunc::Asin | MathFunc::Acos if !args.is_empty() => match args[0].simplify() {
+                    MathExpr::Number(v) if !(-1.0..=1.0).contains(&v) => return true,
                     _ => {}
                 },
                 MathFunc::Mod | MathFunc::Rem if args.len() == 2 => match args[1].simplify() {
@@ -16990,10 +17175,12 @@ mod tests {
                 unit: "deg".to_string(),
             })],
         };
-        assert_eq!(
-            parse_value(&[sin_comp]),
-            Some(CssValue::Keyword("sin(45deg)".to_string()))
-        );
+        let parsed_sin = parse_value(&[sin_comp]).unwrap();
+        if let CssValue::Number(v) = parsed_sin {
+            assert!((v - 0.70710677).abs() < 1e-4);
+        } else {
+            panic!("Expected Number for sin(45deg)");
+        }
 
         // Test blur(5px)
         let blur_comp = ComponentValue::Function {
@@ -18460,5 +18647,114 @@ mod tests {
                 "calc(5px + var(--a,var(--b,calc(10px + 5px))))".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn test_t1077_trigonometric_and_angles() {
+        // 1. sin(90deg) -> 1
+        let sin_90deg = ComponentValue::Function {
+            name: "sin".to_string(),
+            value: vec![token(CssToken::Dimension {
+                value: 90.0,
+                unit: "deg".to_string(),
+            })],
+        };
+        let parsed_sin = parse_value(&[sin_90deg]).unwrap();
+        if let CssValue::Number(v) = parsed_sin {
+            assert!((v - 1.0).abs() < 1e-4);
+        } else {
+            panic!("Expected Number for sin(90deg)");
+        }
+
+        // 2. cos(0rad) -> 1
+        let cos_0rad = ComponentValue::Function {
+            name: "cos".to_string(),
+            value: vec![token(CssToken::Dimension {
+                value: 0.0,
+                unit: "rad".to_string(),
+            })],
+        };
+        assert_eq!(parse_value(&[cos_0rad]), Some(CssValue::Number(1.0)));
+
+        // 3. tan(0.25turn) is infinity or undefined, but tan(0deg) -> 0
+        let tan_0deg = ComponentValue::Function {
+            name: "tan".to_string(),
+            value: vec![token(CssToken::Dimension {
+                value: 0.0,
+                unit: "deg".to_string(),
+            })],
+        };
+        assert_eq!(parse_value(&[tan_0deg]), Some(CssValue::Number(0.0)));
+
+        // 4. asin(1) -> PI/2 (1.5707963)
+        let asin_1 = ComponentValue::Function {
+            name: "asin".to_string(),
+            value: vec![token(CssToken::Number(1.0))],
+        };
+        let parsed_asin = parse_value(&[asin_1]).unwrap();
+        if let CssValue::Number(v) = parsed_asin {
+            assert!((v - std::f32::consts::PI / 2.0).abs() < 1e-4);
+        } else {
+            panic!("Expected Number for asin(1)");
+        }
+
+        // 5. acos(1) -> 0
+        let acos_1 = ComponentValue::Function {
+            name: "acos".to_string(),
+            value: vec![token(CssToken::Number(1.0))],
+        };
+        assert_eq!(parse_value(&[acos_1]), Some(CssValue::Number(0.0)));
+
+        // 6. atan(0) -> 0
+        let atan_0 = ComponentValue::Function {
+            name: "atan".to_string(),
+            value: vec![token(CssToken::Number(0.0))],
+        };
+        assert_eq!(parse_value(&[atan_0]), Some(CssValue::Number(0.0)));
+
+        // 7. atan2(1, 1) -> PI/4 (0.78539816)
+        let atan2_1_1 = ComponentValue::Function {
+            name: "atan2".to_string(),
+            value: vec![
+                token(CssToken::Number(1.0)),
+                token(CssToken::Comma),
+                token(CssToken::Number(1.0)),
+            ],
+        };
+        let parsed_atan2 = parse_value(&[atan2_1_1]).unwrap();
+        if let CssValue::Number(v) = parsed_atan2 {
+            assert!((v - std::f32::consts::PI / 4.0).abs() < 1e-4);
+        } else {
+            panic!("Expected Number for atan2(1, 1)");
+        }
+
+        // 8. Domain errors: asin(2) -> None
+        let asin_2 = ComponentValue::Function {
+            name: "asin".to_string(),
+            value: vec![token(CssToken::Number(2.0))],
+        };
+        assert_eq!(parse_value(&[asin_2]), None);
+
+        // acos(-1.5) -> None
+        let acos_neg_1_5 = ComponentValue::Function {
+            name: "acos".to_string(),
+            value: vec![token(CssToken::Number(-1.5))],
+        };
+        assert_eq!(parse_value(&[acos_neg_1_5]), None);
+
+        // 9. Nested trig: sin(asin(0.5)) -> 0.5
+        let nested_trig = ComponentValue::Function {
+            name: "sin".to_string(),
+            value: vec![ComponentValue::Function {
+                name: "asin".to_string(),
+                value: vec![token(CssToken::Number(0.5))],
+            }],
+        };
+        let parsed_nested = parse_value(&[nested_trig]).unwrap();
+        if let CssValue::Number(v) = parsed_nested {
+            assert!((v - 0.5).abs() < 1e-4);
+        } else {
+            panic!("Expected Number for sin(asin(0.5))");
+        }
     }
 }
