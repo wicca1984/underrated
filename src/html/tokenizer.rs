@@ -1684,6 +1684,9 @@ impl Tokenizer {
                             self.current_attribute = Some((String::new(), String::new()));
                             self.state = State::AttributeName;
                             self.input.reconsume();
+                            if matches!(self.current_token, Some(Token::EndTag { .. })) {
+                                self.emit_error("end-tag-with-attributes");
+                            }
                         }
                     }
                 }
@@ -6737,5 +6740,58 @@ mod tests {
             }
         }
         assert_eq!(decoded5, "&xyz;");
+    }
+
+    #[test]
+    fn test_t1091_tokenizer_robustness_gaps() {
+        // 1. Verify end-tag-with-attributes is triggered on subsequent attributes processed in AfterAttributeName state
+        {
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"</div a b>"));
+            assert_eq!(
+                t.next_token(),
+                Token::EndTag {
+                    name: "div".to_string(),
+                    attrs: vec![
+                        ("a".to_string(), String::new()),
+                        ("b".to_string(), String::new())
+                    ],
+                    self_closing: false,
+                }
+            );
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"end-tag-with-attributes".to_string()));
+        }
+
+        // 2. Semicolon-less named entity in attribute followed by '=' (ignore match, not decoded)
+        {
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"<div class=\"&amp=x\">"));
+            assert_eq!(
+                t.next_token(),
+                Token::StartTag {
+                    name: "div".to_string(),
+                    attrs: vec![("class".to_string(), "&amp=x".to_string())],
+                    self_closing: false,
+                }
+            );
+        }
+
+        // 3. Ambiguous ampersand in data state followed by alphanumeric and semicolon (e.g. &notanentity;)
+        // In this case, the first parsed entity is the semicolon-less legitimate entity `&not`.
+        // The remaining characters are `anentity;`. Since we go into AmbiguousAmpersand state,
+        // when we encounter the semicolon `;`, it should raise "unknown-named-character-reference".
+        {
+            let mut t = Tokenizer::new(InputStream::from_utf8(b"&notanentity;"));
+            let mut decoded = String::new();
+            loop {
+                match t.next_token() {
+                    Token::Character(c) => decoded.push(c),
+                    Token::Eof => break,
+                    _ => {}
+                }
+            }
+            assert_eq!(decoded, "¬anentity;");
+            let errors: Vec<String> = t.take_errors().into_iter().map(|e| e.code).collect();
+            assert!(errors.contains(&"unknown-named-character-reference".to_string()));
+        }
     }
 }
